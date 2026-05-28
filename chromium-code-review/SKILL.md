@@ -255,6 +255,15 @@ low-severity but legitimate review nits:
 - For changed tests and implementation files, verify new or newly-relevant
   symbols have direct includes in that file. Do not rely on transitive includes
   for STL, base, or test helpers.
+- Run a cheap formatting sanity check when the patchset is materialized locally:
+  `git diff --check` plus a formatter diff for changed files where practical
+  (for example, `git clang-format --diff <parent>` for Chromium C++/Blink
+  changes). Remember that `git diff --check` catches trailing whitespace and
+  conflict markers, but not style artifacts such as extra blank lines.
+- In the manual changed-lines scan, look for artifacts left by deleted blocks:
+  double blank lines, orphaned comments, redundant braces, now-empty sections,
+  and stale TODO wording. Report these as optional P3 nits unless they affect
+  readability or generated formatting.
 - If these are real but non-blocking, report them separately as optional P3 nits
   instead of dropping them from an otherwise LGTM review.
 
