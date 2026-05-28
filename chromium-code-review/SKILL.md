@@ -238,7 +238,22 @@ when sibling modes are well covered.
 Missing coverage for a core/default behavior is usually more important than a
 minor implementation nit.
 
-## 9. Review Criteria
+## 9. Changed-Lines Polish Pass
+
+Before finalizing, do a quick pass over newly-added or modified lines for
+low-severity but legitimate review nits:
+
+- For changed comments and API docs, verify each behavioral clause is literally
+  supported by the implementation. Watch for misleading causal or exclusivity
+  words such as "only", "whenever", "until", "unless", "intervening",
+  "transition", and "edge".
+- For changed tests and implementation files, verify new or newly-relevant
+  symbols have direct includes in that file. Do not rely on transitive includes
+  for STL, base, or test helpers.
+- If these are real but non-blocking, report them separately as optional P3 nits
+  instead of dropping them from an otherwise LGTM review.
+
+## 10. Review Criteria
 
 Evaluate the CL against these areas:
 
@@ -278,7 +293,7 @@ Evaluate the CL against these areas:
 - Can existing and new implementations of the same feature both apply?
 - Is there an appropriate kill-switch for broad runtime behavior changes?
 
-## 10. Severity Calibration
+## 11. Severity Calibration
 
 - **P1:** Serious correctness, security, data loss, UAF, deadlock, or major
   regression risk. Must fix before landing.
@@ -297,7 +312,7 @@ Evaluate the CL against these areas:
 - A mock-time hang that can block CI is more severe than a comparable real-time
   performance nuisance.
 
-## 11. Final Synthesis Pass
+## 12. Final Synthesis Pass
 
 Before final output, run a contradiction pass:
 
@@ -315,7 +330,7 @@ Before final output, run a contradiction pass:
 - What did you not verify: tests not run, callers not traced, platform paths not
   checked, or assumptions that still need confirmation?
 
-## 12. Communication And Tone
+## 13. Communication And Tone
 
 Follow Chromium review norms:
 
@@ -327,7 +342,7 @@ Follow Chromium review norms:
 - Make next steps explicit: what blocks LGTM, what is optional, and what can
   land as follow-up.
 
-## 13. Output Format
+## 14. Output Format
 
 Format the final review as:
 
