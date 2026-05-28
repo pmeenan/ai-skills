@@ -179,6 +179,11 @@ sentinel, explicit cancellation handle vs weak callback pruning, edge-triggered
 vs level-triggered notifications, and owned task cancellation vs caller-managed
 weak callbacks.
 
+Apply the **Simplicity over Salvaging** principle when suggesting or evaluating fixes:
+
+- **Prefer State Invalidation over Partial Recovery:** For any component managing ephemeral, transient, or reconstructible state (e.g., caches, Mojo/IPC channels, page loading/rendering pipelines, media playback states), prefer total state invalidation, reset, or destruction on error/abort over complicating the control flow to salvage partial state. Correctness and code simplicity take priority over absolute retention efficiency.
+- **Avoid Conditional Carve-outs for Errors:** Avoid introducing complex branch logic or conditional carve-outs (e.g., special-casing specific cancellation errors or sub-phases) if resetting the component or restarting from a clean-slate state is a valid and much safer option.
+
 ## 7. Async And Lifecycle Checklist
 
 For changes involving callbacks, timers, `WeakPtr`, `SequenceChecker`,
