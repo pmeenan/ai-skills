@@ -44,8 +44,10 @@ review.
 Use an adversarial mindset, but calibrate severity carefully. The goal is LGTM
 with the smallest necessary set of blocking comments.
 
-If subagents are available and the user explicitly permitted delegation or
-parallel agent work, use them for independent passes such as:
+If subagents are available, use them for non-trivial CLs where independent,
+parallel coverage is worth the overhead. For small CLs, unavailable tools, or
+cases where delegation is not appropriate, perform these passes yourself.
+Useful independent passes include:
 
 - Clean-slate correctness / invariant / architecture review that is not anchored
   to prior findings.
@@ -179,10 +181,28 @@ sentinel, explicit cancellation handle vs weak callback pruning, edge-triggered
 vs level-triggered notifications, and owned task cancellation vs caller-managed
 weak callbacks.
 
-Apply the **Simplicity over Salvaging** principle when suggesting or evaluating fixes:
+Apply the **Simplicity over Salvaging** principle when suggesting or evaluating
+fixes:
 
-- **Prefer State Invalidation over Partial Recovery:** For any component managing ephemeral, transient, or reconstructible state (e.g., caches, Mojo/IPC channels, page loading/rendering pipelines, media playback states), prefer total state invalidation, reset, or destruction on error/abort over complicating the control flow to salvage partial state. Correctness and code simplicity take priority over absolute retention efficiency.
-- **Avoid Conditional Carve-outs for Errors:** Avoid introducing complex branch logic or conditional carve-outs (e.g., special-casing specific cancellation errors or sub-phases) if resetting the component or restarting from a clean-slate state is a valid and much safer option.
+- **Prefer State Invalidation over Partial Recovery:** For any component
+  managing ephemeral, transient, or reconstructible state (e.g., caches,
+  Mojo/IPC channels, page loading/rendering pipelines, media playback states),
+  prefer total state invalidation, reset, or destruction on error/abort over
+  complicating the control flow to salvage partial state. Correctness and code
+  simplicity take priority over absolute retention efficiency.
+- **Avoid Conditional Carve-outs for Errors:** Avoid introducing complex branch
+  logic or conditional carve-outs (e.g., special-casing specific cancellation
+  errors or sub-phases) if resetting the component or restarting from a
+  clean-slate state is a valid and much safer option.
+- **Trace Standard Scheme Registry Invariants Precisely:** When auditing
+  same-origin or security-origin caching optimizations, verify standard and
+  non-standard URL properties against registry constants in `url/url_util.cc`
+  (such as `kFileSystemScheme` or `kBlobScheme`) instead of relying on naive
+  grep searches for literal string schemes.
+- **Distinguish Test-only vs. Production Invalidation:** Verify whether cache
+  invalidation issues or mutations are reachable under the production lifecycle
+  model. If the invalidation problem is strictly test-time, prefer test-scoped
+  invalidation helpers over adding runtime overhead to production hot paths.
 
 ## 7. Async And Lifecycle Checklist
 
@@ -254,7 +274,8 @@ low-severity but legitimate review nits:
   "transition", and "edge".
 - For changed tests and implementation files, verify new or newly-relevant
   symbols have direct includes in that file. Do not rely on transitive includes
-  for STL, base, or test helpers.
+  for STL, base, or test helpers. For example, check that use of `std::fill` or
+  `std::move` has the corresponding standard library include.
 - Run a cheap formatting sanity check when the patchset is materialized locally:
   `git diff --check` plus a formatter diff for changed files where practical
   (for example, `git clang-format --diff <parent>` for Chromium C++/Blink
@@ -264,6 +285,16 @@ low-severity but legitimate review nits:
   double blank lines, orphaned comments, redundant braces, now-empty sections,
   and stale TODO wording. Report these as optional P3 nits unless they affect
   readability or generated formatting.
+- Check that removed statements or call sites did not leave unused locals,
+  stale test setup parameters, or unnecessary lambda captures.
+- Audit linkage and visibility constraints before suggesting test hooks or
+  toggles. Helpers and feature flags inside anonymous namespaces have internal
+  linkage and cannot be referenced directly from another translation unit.
+- Respect forward declarations in public headers. Avoid suggesting wrapper
+  types that require full definitions of heavy or highly transitive types unless
+  the API benefit clearly justifies the compile-time cost.
+- If providing a patch snippet, make it a valid unified diff with accurate
+  symbol names and non-overlapping per-file hunks.
 - If these are real but non-blocking, report them separately as optional P3 nits
   instead of dropping them from an otherwise LGTM review.
 
