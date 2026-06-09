@@ -154,6 +154,11 @@ For each non-trivial correctness finding, verify it before presenting it:
 - Challenge the finding before presenting it: look for alternate caller paths,
   wrappers, overrides, feature gates, or invariants that would make the issue
   unreachable or lower severity.
+- For nullable callbacks, dependencies, sentinels, or optional handles, first
+  verify whether optionality is part of the public contract and whether tests or
+  callers rely on the absent-value path. Suggest making it mandatory only after
+  comparing that API-shape change against preserving the optional contract with
+  clearer tests or docs.
 - Review any proposed fix as carefully as the original bug. Trace it through
   boundary inputs, all affected state transitions, existing tests, and likely
   re-entrant/cancellation paths. If you cannot validate the fix, label it as an
@@ -247,6 +252,16 @@ For new or changed APIs, look for tests covering:
 - The original bug or prior-review issue, in a way that would fail without the
   fix.
 
+When Gerrit or coverage tooling flags an uncovered changed line, treat that as a
+real lead until disproven. Trace the relevant tests to the exact branch or return
+statement rather than trusting the test name. Common misses include an early
+return that is distinct from a later "same value" return, a cap/clamp branch that
+requires prior state initialization before time advances, stale-generation
+callback drops for one callback family but not its sibling, and helper guards
+that appear unreachable because callers pre-check them. If a guard is reachable,
+ask for the smallest public-API test that hits it; if it is not reachable, ask
+whether the defensive branch should be removed or justified.
+
 Treat tests as executable specifications. For important tests, ask whether the
 test would fail without the claimed fix and whether it actually exercises the
 edge case named by its test or comment. For every P1/P2 finding, suggest the
@@ -271,11 +286,27 @@ low-severity but legitimate review nits:
 - For changed comments and API docs, verify each behavioral clause is literally
   supported by the implementation. Watch for misleading causal or exclusivity
   words such as "only", "whenever", "until", "unless", "intervening",
-  "transition", and "edge".
+  "transition", and "edge". Ensure comments describe the right actor and signal
+  direction; for example, producer-side code should not be described as the
+  consumer notifying itself unless that is literally the API model.
+- For C++ comments, prefer backticks around identifiers and symbols instead of
+  old-style `|name|` markers. Also scan changed prose for typos and context-free
+  caller guidance: if a comment says callers should pass null, use a sentinel, or
+  choose a wrapper, it should name the concrete type/API where that choice exists.
 - For changed tests and implementation files, verify new or newly-relevant
   symbols have direct includes in that file. Do not rely on transitive includes
   for STL, base, or test helpers. For example, check that use of `std::fill` or
   `std::move` has the corresponding standard library include.
+- For FIFO/LIFO containers, prefer Chromium's `base::queue` / `base::stack`
+  over `std::queue` / `std::stack` unless the code needs the standard
+  underlying container's pointer/iterator stability or another documented
+  property. `base::queue` uses `base::circular_deque` and is the usual
+  lower-overhead choice for simple `emplace` / `front` / `pop` queues.
+- For sequence-affinity checks, prefer `SEQUENCE_CHECKER()` with
+  `DCHECK_CALLED_ON_VALID_SEQUENCE()` for debug-only validation. If code uses
+  `base::SequenceCheckerImpl` directly, verify there is an intentional
+  release-build `CHECK()` requirement before suggesting the macro; the macro
+  compiles away outside DCHECK builds.
 - Run a cheap formatting sanity check when the patchset is materialized locally:
   `git diff --check` plus a formatter diff for changed files where practical
   (for example, `git clang-format --diff <parent>` for Chromium C++/Blink
