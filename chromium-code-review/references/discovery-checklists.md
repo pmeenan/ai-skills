@@ -66,6 +66,20 @@ to miss by reading.
   active THEN the property the old check enforced is unenforced UNLESS a
   replacement exists." Finding the replacement (or its absence) is
   verification's job; noticing the bypass is not optional.
+- Grep changed files for calls whose return value conveys an accepted,
+  written, or read count (`Push`, `Pull`, `Write`, `Send`, `Read`-shaped
+  APIs) where the result is discarded or compared only against error codes.
+  Every discarded count is a candidate: partial acceptance is the contract,
+  and "assume it all fit" is how bytes silently vanish. (Two measured P0s —
+  dropped download and upload bytes — were exactly a discarded `Push` return
+  and an unchecked short `Write`.)
+- For every named sentinel in the diff (`kUnlimited*`, `kInvalid*`, `kNo*`,
+  0-vs-max conventions): grep the sentinel's name AND its concept across the
+  changed files and their consumers, and list each definition's value side
+  by side. Two modules encoding the same concept with different values is a
+  candidate by default. (Measured: one header's `kUnlimitedThroughput == 0`
+  fed another's `== UINT64_MAX` short-circuit, silently disabling
+  backpressure.)
 - Grep changed files for `PostTask`, `BindOnce`, `BindRepeating`,
   `base::Unretained`, and new timers. For each, name the object that owns the
   callback target and the line that guarantees the callback cannot outlive
@@ -305,6 +319,19 @@ trusted; the candidate stands unless the browser-side range check exists.
   Trace every existing caller at the moment the helper is entered, and the
   helper's side effects (forced success, cleanup, callback state) on the new
   path.
+- For every override of a documented interface method (net/'s `Socket`,
+  `StreamSocket`, `DatagramSocket`, `HostResolver`, and similar): open the
+  base header, enumerate its contract clauses — buffer retention across
+  `ERR_IO_PENDING`, completion-value semantics (`OK` vs byte counts),
+  reentrancy, cancellation obligations, reconnect behavior — and answer
+  each clause as its own matrix row with `path:line` evidence from the
+  implementation. Wrappers and delegating implementations are the highest
+  risk: they look like passthroughs while quietly breaking a clause.
+  (Measured, twice across two models: a `ReadIfReady` implementation
+  stashed the caller's `IOBuffer` in a bare `raw_ptr` across
+  `ERR_IO_PENDING` and completed with a positive count where `socket.h`
+  requires `OK` — the contract was documented in the base header all along,
+  and no thread opened it.)
 
 ## Tests As Specifications
 

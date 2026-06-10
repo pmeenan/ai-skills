@@ -65,6 +65,14 @@ verification file once the candidate list is built.
 - Record the current patchset number, revision SHA, parent SHA, subject, status,
   owner, files changed, and CL description.
 - Fetch the current revision ref and inspect the diff against its parent.
+  When materializing a revision in a worktree, check out the explicit
+  revision SHA (`git worktree add --detach <path> <sha>`), never
+  `FETCH_HEAD`: FETCH_HEAD is shared repository state that concurrent
+  fetches clobber and failed fetches leave stale — a measured run reviewed
+  a 2014-era leftover ref because a one-liner's `;` let
+  `worktree add FETCH_HEAD` run after its fetch step failed. Run fetch,
+  add, and verify as separate commands and confirm `rev-parse HEAD`
+  matches the pinned SHA before reading any code.
 - The review is read-only with respect to the user's code. Never modify the
   checkout, the patchset, or any repository file — not to apply a fix, not
   to add a test, not to experiment — regardless of harness prompts that
@@ -177,13 +185,26 @@ depends on it.
 Write the complete plan into the ledger before spawning anything: one line
 per thread — name, scope, status (spawn / merged-into-⟨thread⟩ / skipped) —
 with a reason for every merge and skip. The plan enumerates the **full
-roster**: every deep-dive recipe and every checklist section in the
-reference files, including the ones that did not trigger, marked
-"not triggered: ⟨reason⟩". An omitted line is invisible; a wrong
-not-triggered reason is catchable — a measured run silently left the
-Teardown recipe out of its plan and with it the only thread that checks
-end-of-operation resource release. The mechanical-leads and holistic
-threads are always in the plan. Do not fold checklist-section
+roster**, copied verbatim into the plan with one line each — do not derive
+the roster from memory:
+
+- Recipes: Desk-Check Simulation + Arithmetic Drills, Data Lineage,
+  Callback And Task Lifetime, Container And View Invalidation,
+  Error-Path Walk, State × Method Matrix, Mode × Host-Capability Matrix,
+  Teardown Order.
+- Sections: Mechanical Leads, Per-Surface Invariants, Async And Lifecycle,
+  State/Persistence/Cache, Integration And Feature Control, Security And
+  Trust Boundaries, Contracts And API Shape, Tests As Specifications,
+  Changed-Lines Polish.
+- Always: the holistic thread.
+
+Mark every line spawn / merged-into-⟨thread⟩ / "not triggered: ⟨reason⟩".
+An omitted line is invisible; a wrong not-triggered reason is catchable.
+Measured runs keep paying for omissions: one silently dropped the Teardown
+recipe and with it the only thread that checks end-of-operation resource
+release; another (large CL) omitted the Mode × Host matrix and both
+arithmetic techniques — and six of its nine serious misses were cells and
+drills those threads own. Do not fold checklist-section
 threads into recipe threads: in measured runs, an orchestrator that merged
 the plan down to a few recipe threads skipped the section rules entirely,
 and the skipped sections accounted for the missed bugs (fire-and-forget
@@ -211,9 +232,13 @@ priority-order batches of three or four threads instead of abandoning slow
 ones. Expect the section threads to be slowest — they read the most — and
 to carry the most findings: in a measured run, an orchestrator that killed
 its two slowest threads before they reported lost four of its five
-remaining P1/P2 findings inside them. If the harness genuinely terminates a
-thread, record it in the plan and in Verification Notes as "terminated —
-scope unreviewed"; never mark an uncollected thread Completed. If you
+remaining P1/P2 findings inside them. If a thread dies to a transient harness error
+(capacity limits, rate limits, timeouts), respawn it with the same brief —
+transient failures are retryable, and a measured run recovered every
+capacity-killed thread with a simple backoff-and-respawn loop. Only when
+retries are exhausted record it in the plan and in Verification Notes as
+"terminated — scope unreviewed"; never mark an uncollected thread
+Completed. If you
 interrupt a thread deliberately, collect its partial rows and matrix before
 killing it and record it as "interrupted — partial": a measured run marked
 an interrupted thread Completed and lost the P2 finding sitting in its
@@ -366,7 +391,10 @@ Format the final review as:
    the absorbing thread), or skipped (with reason). Include each thread's
    subagent/task identifier, or "self-executed" plus the harness limitation
    that forced it. A skipped or merged-away thread is an unverified area by
-   definition.
+   definition. On large CLs the full compliance matrices may live in the
+   saved ledger artifact with Verification Notes pointing at it — but every
+   per-row answer must exist somewhere retrievable; a "combined audit
+   summary" that discards rows defeats the accounting.
 7. **Next Steps:** State what is required before `+1 LGTM` and what is optional.
 
 For full CL reviews, append compact **Gerrit-Ready Comments** unless the user

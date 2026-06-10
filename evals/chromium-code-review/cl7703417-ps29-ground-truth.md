@@ -20,7 +20,10 @@ Grading per item: **Identified** (same root cause and consequence, any
 wording) / **Partially identified** (right code flagged, wrong or incomplete
 root cause/consequence, or only some sub-parts of a bundled item) /
 **Missed**. Report three numbers: P0 recall (x/9), P1 recall (x/3), P2
-recall (x/9).
+recall (x/9). Grade strictly: a test-gap mention of the same area ("upload
+throttling is untested") is at most Partial for a correctness item, and an
+adjacent style nit does not satisfy a design-shape item — measured runs have
+stretched both.
 
 ## P0 — correctness/safety, must fix
 
@@ -144,6 +147,44 @@ recall (x/9).
   completion, shared-upload-throttle correctness, slow-consumer token
   accumulation, sub-1KB/s config, `~NetworkContext` with an active
   isolated session.
+
+## Adjudicated additions (found by eval runs, verified post-hoc)
+
+Score these separately as "A recall (x/4)" so the historical P0/P1/P2
+denominators stay comparable across runs.
+
+- **A-1 Write hang on synchronous drain (P0-class)** —
+  `delayed_stream_socket.cc:~401-411`. `DrainUploadBuffer()` runs *before*
+  `pending_write_callback_` is assigned; if the inner write completes
+  synchronously and empties the buffer, the completion fires into a null
+  callback and `Write()` returns `ERR_IO_PENDING` with no completion ever
+  delivered — permanent hang. Adjudicated 2026-06-10 by direct PS29 source
+  verification (ordering confirmed); a sibling of the PS51 review's B1.
+  Independently rediscovered by all three baseline eval models.
+- **A-2 `BottleneckBuffer` synchronous-callback reentrancy/UAF (P0-class)** —
+  `bottleneck_buffer.cc:136-137, 184-185, 313-314`. `Pull`/`PullFront`/the
+  drain path invoke `space_available_cb_`/`data_ready_cb_` synchronously;
+  a consumer that reads/destroys the owning socket reenters or frees the
+  buffer mid-method. Adjudicated via the PS44 review's finding A3, which
+  independently describes this bug on the reworked code; the same pattern
+  exists at PS29. Missed by all four PS29 reviews.
+- **A-3 Mid-flight fallback to the unthrottled default factory (P2-class)** —
+  `net/url_request/url_request_http_job.cc:~736-741` +
+  `url_request_http_transaction_factory_override`. Once the handle is
+  `Reset()` (profile cleared/updated), the override `Get()` returns null and
+  in-flight/not-yet-started requests silently fall back to the primary,
+  unthrottled factory instead of failing or staying isolated. Adjudicated
+  via the PS51 review's S13, which independently describes the same
+  fallback behavior on later code; found blind at PS29 by a second eval
+  model.
+- **A-4 `BandwidthThrottle::ProcessQueue` runs the callback before popping
+  (P2-class)** — `net/socket/bandwidth_throttle.cc:81-99`. The front
+  request's callback runs while the request is still in
+  `pending_requests_`; a reentrant `RequestBytes` (or a callback that drops
+  the last throttle reference) recurses into `ProcessQueue` and double-pops
+  or frees the queue under the outer frame. Adjudicated via the PS51
+  review's S4, which independently describes the same pop-after-run hazard
+  on later code; found blind at PS29 by two eval models.
 
 ## Not graded
 

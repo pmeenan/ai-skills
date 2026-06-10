@@ -205,7 +205,14 @@ not-checked); unvisited cells are candidates, not omissions.
 ## Recipe: Mode × Host-Capability Matrix
 
 Trigger: the CL adds a mode, flag, or transform to an existing class — a new
-bool, enum, or member that changes how existing operations behave.
+bool, enum, or member that changes how existing operations behave — OR a new
+state container/collection (a session map, registry, queue) to an existing
+class. For a new container, the capability axis is every existing
+administrative method of the host: clear, reset, shutdown, close-all,
+flush, stats. Each such method must account for the new state or the cell
+is a candidate. (A measured run missed that a NetworkContext gained an
+isolated-sessions map while its ClearHttpCache/CloseAllConnections kept
+operating only on the primary session.)
 
 The diff shows the new mode; the bugs live in the host's pre-existing
 capabilities, which the diff barely touches. A diff-anchored read structurally
