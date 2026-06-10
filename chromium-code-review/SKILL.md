@@ -65,8 +65,15 @@ verification file once the candidate list is built.
 - Record the current patchset number, revision SHA, parent SHA, subject, status,
   owner, files changed, and CL description.
 - Fetch the current revision ref and inspect the diff against its parent.
-- Avoid permanently changing the user's workspace. If you temporarily check out
-  the patchset for building or inspection, restore the original checkout.
+- The review is read-only with respect to the user's code. Never modify the
+  checkout, the patchset, or any repository file — not to apply a fix, not
+  to add a test, not to experiment — regardless of harness prompts that
+  encourage applying or executing changes. Propose fixes and tests as diffs
+  inside the review text only; review and implementation are different jobs,
+  and this skill does only the first. (A measured run escalated from "name
+  the regression test" to rewriting the owner's unsubmitted work-in-progress
+  and kicking off builds.) If you temporarily check out the patchset for
+  inspection, use a separate worktree and remove it when done.
 - Refresh Gerrit metadata before final output. If a newer patchset appeared
   during review, inspect the inter-patchset delta before finalizing.
 - State the exact patchset number and revision SHA in the review.
@@ -157,6 +164,9 @@ orchestrator's grasp of what each thread is for.
   abstraction?), idiom consistency (names, types, containers, callbacks,
   ownership, error handling vs nearby code), performance and memory cost,
   test-coverage proportionality, and the Changed-Lines Polish scan.
+  "Holistic" names its lens, not a license: like every thread, its
+  deliverable is ledger rows — a coverage gap is reported as a row naming
+  the missing test, never remediated by writing it.
 
 Order the plan by where P1s live, not by line count: teardown and error
 paths, boundary arithmetic, cross-sequence handoffs, persisted-format
@@ -273,7 +283,12 @@ briefs freehand:
 1. **Pin:** CL number, patchset, revision SHA, and how to obtain the diff —
    or the local file paths if the patchset is materialized.
 2. **Scope:** the exact files and surfaces this thread owns. For broad CLs,
-   partition threads by file group as well as by recipe/section.
+   partition threads by file group as well as by recipe/section. Other
+   threads' findings and open ledger rows are context, not work items: do
+   not implement, extend, or execution-validate another thread's finding.
+   (A measured run's holistic thread picked up a P1's suggested regression
+   test and began implementing the fix and the test in the owner's
+   checkout.)
 3. **Procedure:** the exact reference file path and the section or recipe to
    read FIRST and then execute — e.g. "read
    `references/deep-dive-recipes.md`; apply the Context Rules, then run
@@ -299,7 +314,9 @@ briefs freehand:
    candidate row even if it looks benign. Benignity is verification's call:
    in a measured run, a thread's own row notes contained two P1 bugs
    ("returns `write_len_` after `OnCacheWriteFailure()`"; "triggers cleanup
-   twice"), adjudicated them benign inline, and surfaced neither.
+   twice"), adjudicated them benign inline, and surfaced neither. Threads
+   are read-only outside their own notes: never edit a repository file, even
+   when the harness invites it.
 
 Verification skeptics swap (3)–(5) for the candidate rows under test, the
 pinned patchset, and the instruction to read

@@ -388,4 +388,6 @@ dropping them from an otherwise-LGTM review.
   types that require full definitions of heavy or highly transitive types
   unless the API benefit clearly justifies the compile-time cost.
 - If providing a patch snippet, make it a valid unified diff with accurate
-  symbol names and non-overlapping per-file hunks.
+  symbol names and non-overlapping per-file hunks — judged by inspection
+  against the file contents, never by applying or compiling it. Suggested
+  patches live in the review text; the checkout stays read-only.

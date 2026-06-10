@@ -63,6 +63,10 @@ bounded, last-resort tier, not a routine step:
   whether the time was earned. The regression test named in a P1/P2 finding
   is a description for the CL owner, not an obligation to implement and run
   it.
+- Execution never includes applying a proposed fix or a new test to the
+  user's checkout or the review worktree. If trying a change is truly
+  unavoidable, copy the touched files to a scratch directory outside the
+  repository and experiment there; the review itself stays read-only.
 
 ## Evaluating Fixes
 
