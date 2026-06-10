@@ -10,6 +10,11 @@ finding: if you cannot name the guard, the owner, or the test, write that down
 as the hypothesis instead of moving on. Reviews that only record what they
 proved tend to silently skip exactly the places where proof was hard.
 
+The same closure rules bind every recipe row: clean requires a `path:line`
+citation of what makes it clean, and any anomaly your notes record becomes a
+candidate row regardless of how benign it looks — adjudication belongs to
+verification, not to the thread that found it.
+
 ## Contents
 
 - Context Rules
@@ -172,7 +177,12 @@ in a defined configuration. An error return with a stale `next_state_`
 re-enters a state whose preconditions the cleanup just destroyed; a
 success-shaped return (a positive length, `OK`) emitted after failure cleanup
 makes the loop treat the failure as success. Both read locally like correct
-error handling.
+error handling — which is why a success-shaped return after failure cleanup
+is a **mandatory candidate row, never adjudicated in-thread**: measured runs
+twice recorded exactly this anomaly in their notes, dismissed it as benign,
+and it was a P1 crash both times. Also prefer setting the terminal state
+before invoking completion/notification helpers, so reentrant observers see
+a consistent machine and the helper can assert it.
 
 ## Recipe: State × Method Matrix
 

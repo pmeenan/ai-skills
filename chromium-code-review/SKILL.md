@@ -176,9 +176,14 @@ depends on it.
 
 Write the complete plan into the ledger before spawning anything: one line
 per thread — name, scope, status (spawn / merged-into-⟨thread⟩ / skipped) —
-with a reason for every merge and skip. Every matched recipe AND every
-matched checklist section gets its own line, and the mechanical-leads and
-holistic threads are always in the plan. Do not fold checklist-section
+with a reason for every merge and skip. The plan enumerates the **full
+roster**: every deep-dive recipe and every checklist section in the
+reference files, including the ones that did not trigger, marked
+"not triggered: ⟨reason⟩". An omitted line is invisible; a wrong
+not-triggered reason is catchable — a measured run silently left the
+Teardown recipe out of its plan and with it the only thread that checks
+end-of-operation resource release. The mechanical-leads and holistic
+threads are always in the plan. Do not fold checklist-section
 threads into recipe threads: in measured runs, an orchestrator that merged
 the plan down to a few recipe threads skipped the section rules entirely,
 and the skipped sections accounted for the missed bugs (fire-and-forget

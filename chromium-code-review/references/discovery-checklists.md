@@ -9,6 +9,14 @@ later. Reviews miss most when suspicions are never written down.
 Answer the questions concretely, per surface or per call site: name the
 member, the line, the caller. A yes/no answered from memory is not an answer.
 
+Two rules bind whoever executes a section, orchestrator or subagent: (1) a
+row may be closed clean only with a `path:line` citation of the guard,
+latch, or value that makes it clean — a citation-free PASS is an unanswered
+row; (2) any anomaly your answer records — a success-shaped return after
+failure cleanup, duplicated cleanup, a bypassed check, an unawaited write —
+becomes a candidate row even if you judge it benign. Benignity is
+verification's call, not discovery's.
+
 ## Contents
 
 - Routing
@@ -192,7 +200,10 @@ loop as a wall-time nuisance.
   fails mid-entry, is the whole entry doomed — or does the code fall back
   for just the remaining chunks, persisting a mixed-format entry no reader
   can parse? What marks the entry so readers know which format they are
-  reading?
+  reading? Answer by naming the latch line — the member set once and never
+  re-evaluated, including after a failed init; if you cannot name it, the
+  row is a candidate. (A measured run asserted "decided once per entry" for
+  code whose failed init left the decision re-evaluable on the next chunk.)
 - Count the disk/IPC writes the CL adds per chunk and per entry/operation.
   Two adjacent writes to the same target (for example, response info and
   index metadata both updated at EOF) are a consolidation candidate;
@@ -226,13 +237,20 @@ unobservable.
   dictionary transport) — and read the values its code and tests actually
   emit. Do not reason from plausible values: "responses using feature X
   carry no special marker" is exactly the assumption that turns a gate into
-  production dead code.
+  production dead code. The matrix row for a wire-artifact gate is answered
+  only by naming the producing module and the values it emits, with
+  `path:line`; "gating: PASS" without that citation is an unanswered row.
 - If a producing/writing feature depends on a consuming/reading feature,
   platform support, or another runtime flag: is partial enablement handled
   safely, or is the producing path guarded by the full dependency set?
 - For `#if`, `#if defined(...)`, and `#if !defined(...)` gates: do the
   positive and negative branches match the feature name, the default build
   configuration, and the intended platform support?
+- If the feature cannot operate on some platforms (its implementation or
+  dependency is compiled out there), check whether its runtime predicate is
+  wrapped in the corresponding build gate so unsupported platforms skip the
+  `base::Feature` lookups entirely — feature-list lookups are not free on
+  hot paths.
 
 Example pattern: `#if !defined(FEATURE_X)` guarding the *enabled*
 implementation compiles the feature out exactly where it should exist. The
@@ -384,6 +402,8 @@ dropping them from an otherwise-LGTM review.
   toggles. Helpers and feature flags inside anonymous namespaces have
   internal linkage and cannot be referenced directly from another translation
   unit.
+- A constant declared in a header but used only in the implementation file
+  belongs in the .cc's anonymous namespace, not in the class declaration.
 - Respect forward declarations in public headers. Avoid suggesting wrapper
   types that require full definitions of heavy or highly transitive types
   unless the API benefit clearly justifies the compile-time cost.
