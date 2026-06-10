@@ -88,6 +88,11 @@ Heuristics for choosing between fixes:
   bugs, trace the downstream observable effect — a lost callback, mismatched
   result, corrupt persisted data, spurious retry, or double failure — before
   deciding severity or endorsing a fix.
+- **Fail open for sidecar layers.** When fixing errors in an optimization
+  layer (cache writes, compression, prefetch), prefer dooming the entry and
+  letting the primary operation succeed over propagating the error to the
+  consumer. The primary path's contract outranks the optimization's
+  bookkeeping.
 
 When a fix changes API shape or caller obligations:
 

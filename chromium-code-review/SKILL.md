@@ -128,64 +128,76 @@ Build two artifacts from the diff before forming opinions:
 
 ### Pass 3 — Discovery
 
-Read the discovery-checklist sections selected by the risk map and
-`references/deep-dive-recipes.md`, then:
+Discovery is a set of independent investigation threads, not one long read.
+Runs of this skill show the same pattern across models: a single agent
+sustains real depth on only one or two threads per pass — whichever grab its
+attention — and everything else gets a shallow read. So do not execute
+discovery as one agent. Build a thread plan and give every thread its own
+subagent.
 
-- Apply the context rules from the recipes file before reviewing any hunk:
-  full enclosing functions, class headers and destructors, and the parent
-  revision of heavily changed files.
-- Run the mechanical leads (commands listed in the checklist file). Every hit
-  becomes a ledger candidate to explain or flag.
-- Run every deep-dive recipe whose trigger matches the diff, and record the
-  named work products in the ledger. An incomplete recipe step (a guard you
-  cannot name, a test you cannot find) is itself a candidate.
-- For each surface in the changed-surface inventory, answer the per-surface
-  invariant questions and record **at least three candidate hypotheses** about
-  how it could be wrong before declaring it clean. Write each hypothesis in
-  falsifiable form — "IF ⟨sequence or input⟩ THEN ⟨bad outcome⟩ UNLESS
-  ⟨guard not yet found⟩" — so verification knows exactly what guard to look
-  for. Vague candidates ("might have threading issues") are not ledger
-  entries. All three being refuted later is a good outcome, not wasted work.
-- Walk the required traces for the matching risk areas; the checklist sections
-  state them. Record each walked trace in the ledger as
-  `scenario → lines visited → outcome`. A trace with no written outcome was
-  not walked; "checked cancellation, looks fine" does not count.
-- Trace integration: each new behavior from its public/config entrypoint
-  through wiring to the concrete code that changes, and the disabled/default
-  path to confirm old behavior is preserved (details in the integration
-  checklist section).
-- Answer the holistic questions: Does the CL solve the bug it cites, at a
-  scope appropriate to the stated bug and follow-up stack? Is it cohesive, or
-  does it mix behavior changes with unrelated refactoring? Is it reviewable at
-  this size, or should it be split? Does it avoid unnecessary abstraction? Do
-  names, types, containers, callbacks, ownership, and error handling match
-  nearby Chromium idioms? Are performance and memory costs bounded or
-  documented? Is test coverage proportional to risk and blast radius?
-- Make at least one pass that is not anchored to the largest or most obvious
-  file class in the diff.
+First, read `references/deep-dive-recipes.md` (at minimum the Context Rules
+and each recipe's trigger line) and skim the discovery-checklist sections
+matched by the risk map: the thread plan is only as good as the
+orchestrator's grasp of what each thread is for.
 
-Allocate depth by where P1s live, not by line count: teardown and error
+**Thread plan.** From the risk map and the changed-surface inventory, list:
+
+- One thread per deep-dive recipe whose trigger matches, scoped to the
+  surfaces that triggered it (e.g. "Mode × Host-Capability Matrix for
+  HttpCache::Writers"; "Error-Path Walk for the changed functions in
+  http_cache_writers.cc").
+- One thread per matched discovery-checklist section (async, state,
+  integration, security, contracts, tests), scoped to its files. These
+  threads also walk the section's required traces and, for the surfaces they
+  own, answer the per-surface invariant questions with at least three
+  IF/THEN/UNLESS hypotheses each.
+- One mechanical-leads thread: run the commands, return every hit as a row.
+- One holistic-and-polish thread: bug alignment and scope (does the CL solve
+  the bug it cites, cohesively, at a reviewable size, without unnecessary
+  abstraction?), idiom consistency (names, types, containers, callbacks,
+  ownership, error handling vs nearby code), performance and memory cost,
+  test-coverage proportionality, and the Changed-Lines Polish scan.
+
+Order the plan by where P1s live, not by line count: teardown and error
 paths, boundary arithmetic, cross-sequence handoffs, persisted-format
-changes, and reentrancy harbor most serious bugs; mechanical renames and
-plumbing harbor few.
+changes, and reentrancy first; renames and plumbing last. Ensure some thread
+owns the smallest and least obvious files — the per-file ledger floor
+depends on it.
 
-Do not judge severity, likelihood, or fixability during this pass; that is
-verification's job.
+Spawn one subagent per thread with a self-contained brief (see Subagent
+Briefs); run threads in parallel where the harness allows. Overlap between
+threads is fine — redundant coverage is how disjoint blind spots get closed.
+If subagents are genuinely unavailable, execute the same plan yourself as
+serial sweeps in plan order, completing each thread's rows before starting
+the next.
+
+Merge every returned row into the ledger verbatim. Do not judge severity,
+likelihood, or fixability while merging; duplicates are collapsed and
+quality is judged in verification.
 
 ### Pass 4 — Verification
 
-Read `references/verification-and-fixes.md`, then verify every ledger
-candidate: build a minimal trace, challenge it, classify it, and calibrate
-severity. Candidates that survive become findings; the rest are recorded as
-refuted with a one-line reason. A candidate that honest tracing can neither
-confirm nor refute becomes a question for the CL owner in the review — never
-a silent drop. Evaluate any fix you intend to propose against the fix
-heuristics in the same file.
+Read `references/verification-and-fixes.md`, collapse duplicate ledger rows,
+then verify candidates adversarially — with dedicated skeptic subagents
+where available: one per serious-looking candidate (batch small related
+ones), briefed to REFUTE it under the refutation standard. A skeptic that
+cannot name the guard line or produce the safe trace has confirmed the
+finding, not dismissed it.
+
+For each candidate: build a minimal trace, challenge it, classify it, and
+calibrate severity. Survivors become findings; refuted rows keep their
+one-line refutation. A candidate that honest tracing can neither confirm nor
+refute becomes a question for the CL owner in the review — never a silent
+drop. Evaluate any fix you intend to propose against the fix heuristics in
+the same file, and verify proposed fixes as carefully as bugs.
 
 ### Pass 5 — Synthesis
 
 Run the final synthesis pass from the verification file: contradiction checks,
-ledger reconciliation, and the not-verified list. Refresh Gerrit metadata as
+ledger reconciliation, and the not-verified list. Where subagents are
+available, also spawn one challenger over the draft review, briefed with the
+Final Synthesis checklist, to hunt contradictions, unaccounted ledger rows,
+and miscalibrated severities before sending. Refresh Gerrit metadata as
 described in Fetch And Pin, then produce output.
 
 ## Finding Format
@@ -223,25 +235,34 @@ Calibration notes:
 - Avoid blocking on speculative problems, style preferences, or fixes whose
   tradeoffs have not been validated.
 
-## Subagent Strategy
+## Subagent Briefs
 
-If subagents are available, use them for non-trivial CLs where independent,
-parallel coverage is worth the overhead. Useful passes include:
+Subagents start cold: no conversation memory and no loaded skill. A thread
+is only as good as its brief, so fill in this template rather than composing
+briefs freehand:
 
-- Clean-slate correctness / invariant / architecture review.
-- Async / lifecycle / cancellation review.
-- Tests-as-specifications review.
-- Fast style / consistency / common anti-pattern review.
-- Synthesis pass that challenges findings, severities, and proposed fixes.
+1. **Pin:** CL number, patchset, revision SHA, and how to obtain the diff —
+   or the local file paths if the patchset is materialized.
+2. **Scope:** the exact files and surfaces this thread owns. For broad CLs,
+   partition threads by file group as well as by recipe/section.
+3. **Procedure:** the exact reference file path and the section or recipe to
+   read FIRST and then execute — e.g. "read
+   `references/deep-dive-recipes.md`; apply the Context Rules, then run
+   'Recipe: Error-Path Walk' on these functions." Point at the file rather
+   than paraphrasing the recipe into the brief; paraphrases drop the steps
+   that matter.
+4. **Deliverable:** ledger rows only, no prose narrative. Each row: claim,
+   repo-relative `path:line`, evidence, and either an IF/THEN/UNLESS
+   hypothesis or a trace record (`scenario → lines visited → outcome`).
+   Discovery threads leave severity blank.
+5. **Rules:** discovery enumerates without filtering — "probably fine" rows
+   are still rows; an incomplete recipe step (a guard you cannot name, a
+   test you cannot find) is itself a row; the CL description is a claim to
+   audit, not ground truth.
 
-For broad CLs, partition at least some deep-review work by subsystem or file
-group, not only by review lens. Give each reviewer the finding format, the
-severity calibration, the phase discipline (discovery enumerates without
-filtering; verification prunes), and the deep-dive recipes matching their
-slice, and ask for pre-classified findings. Merge
-subagent output into the ledger rather than pasting it through to the review
-unverified. If subagents are unavailable or overkill, perform the passes
-yourself in the procedure order.
+Verification skeptics swap (3)–(5) for the candidate rows under test, the
+pinned patchset, and the instruction to read
+`references/verification-and-fixes.md` first and refute under its standard.
 
 ## Output Format
 
@@ -258,7 +279,9 @@ Format the final review as:
 5. **Questions:** Only questions whose answers affect correctness, API contract,
    or landing readiness.
 6. **Verification Notes:** State tests run or not run, production wiring traced
-   or not traced, and any important areas not verified.
+   or not traced, and any important areas not verified. List every thread
+   from the thread plan with the rows it returned, and any thread skipped
+   with the reason — a skipped thread is an unverified area by definition.
 7. **Next Steps:** State what is required before `+1 LGTM` and what is optional.
 
 For full CL reviews, append compact **Gerrit-Ready Comments** unless the user

@@ -156,6 +156,14 @@ loop as a wall-time nuisance.
   already-successful primary operation? Can it leave partial or corrupt
   secondary state that is observable rather than invalidated, doomed, or
   unreachable?
+- Optimization sidecars must fail open. The cache — like compression,
+  prefetch, and metrics layers — is an optimization on top of a primary
+  operation; its internal failures must doom the entry or degrade to the
+  non-optimized path, never fail the primary operation. For every new error
+  return, abort, or failure callback the CL adds on a sidecar path, trace
+  who receives it: a cache-write error surfacing in the consumer's
+  completion path (e.g. failing a fetch whose network transfer succeeded) is
+  a candidate by default.
 - Is each piece of metadata optional telemetry/timing, or load-bearing —
   needed to parse, select, or validate persisted data? Load-bearing metadata
   writes must be awaited or covered by a proven atomic/journaled invalidation
@@ -211,7 +219,14 @@ unobservable.
 - For each new gate or predicate, trace the real production values of the
   checked fields from their source to the decision point. Unit-test fixtures
   do not establish realistic headers, flags, state enums, or wrapper
-  behavior.
+  behavior. When the gate tests a wire or protocol artifact (header, MIME
+  type, scheme string, enum value), find the module that *produces* that
+  artifact — grep the tree for the header name or the feature's constants,
+  often in the feature's own directory (e.g. `net/shared_dictionary/` for
+  dictionary transport) — and read the values its code and tests actually
+  emit. Do not reason from plausible values: "responses using feature X
+  carry no special marker" is exactly the assumption that turns a gate into
+  production dead code.
 - If a producing/writing feature depends on a consuming/reading feature,
   platform support, or another runtime flag: is partial enablement handled
   safely, or is the producing path guarded by the full dependency set?
@@ -300,6 +315,12 @@ changed surface.
   defaults, platform state, persisted metadata, and wrappers. A passing test
   cannot stand in for a production trace when fixtures collapse those
   distinctions.
+- Check the delivery pattern of mock data against production. If production
+  receives the body in multiple chunks (network reads, IPC messages), do any
+  tests deliver multi-chunk input — including zero-byte or buffered
+  intermediate results — or do all mocks deliver one single-shot read?
+  Single-shot-only mocks leave every buffering, partial-progress, and
+  chunk-boundary path unexercised.
 - When Gerrit or coverage tooling flags an uncovered changed line, trace the
   relevant tests to the exact branch or return statement. Common real misses:
   an early return distinct from a later "same value" return; a cap/clamp
