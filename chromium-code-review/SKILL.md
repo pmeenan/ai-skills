@@ -204,7 +204,20 @@ Measured runs keep paying for omissions: one silently dropped the Teardown
 recipe and with it the only thread that checks end-of-operation resource
 release; another (large CL) omitted the Mode × Host matrix and both
 arithmetic techniques — and six of its nine serious misses were cells and
-drills those threads own. Do not fold checklist-section
+drills those threads own.
+
+The thread plan IS this roster — every recipe and section name above appears
+as a row, and the Verification Notes reproduce it unchanged. Do not invent
+ad-hoc thread names ("Group A Lifecycle", "Async & Contracts") that bundle
+several roster entries: a bundle hides which entries it actually executed.
+If one subagent covers several roster entries, that is fine, but each
+roster entry still gets its own row marked "merged-into ⟨subagent⟩", and
+that subagent's brief and compliance matrix must carry every merged
+entry's procedure. A measured weak-model run collapsed the roster into 12
+invented thread names; Data Lineage and Container/View Invalidation
+vanished in the collapse, and the two byte-loss P0s those recipes own
+(discarded `Push` return, short inner `Write`) were the run's marquee
+misses — found by the stronger models whose plans kept those rows. Do not fold checklist-section
 threads into recipe threads: in measured runs, an orchestrator that merged
 the plan down to a few recipe threads skipped the section rules entirely,
 and the skipped sections accounted for the missed bugs (fire-and-forget
