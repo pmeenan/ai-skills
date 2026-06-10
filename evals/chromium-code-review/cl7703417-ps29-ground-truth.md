@@ -150,7 +150,7 @@ stretched both.
 
 ## Adjudicated additions (found by eval runs, verified post-hoc)
 
-Score these separately as "A recall (x/4)" so the historical P0/P1/P2
+Score these separately as "A recall (x/5)" so the historical P0/P1/P2
 denominators stay comparable across runs.
 
 - **A-1 Write hang on synchronous drain (P0-class)** —
@@ -185,6 +185,14 @@ denominators stay comparable across runs.
   or frees the queue under the outer frame. Adjudicated via the PS51
   review's S4, which independently describes the same pop-after-run hazard
   on later code; found blind at PS29 by two eval models.
+- **A-5 `Disconnect()` permanently poisons the buffer callbacks (P2-class)** —
+  `delayed_stream_socket.cc` (`Disconnect` calls
+  `weak_factory_.InvalidateWeakPtrs()`; the `BottleneckBuffer`
+  ready/space-available callbacks are bound once in the constructor and never
+  re-armed). A reconnect — valid per `stream_socket.h` — yields a socket
+  whose buffers can never notify it: reads hang. Adjudicated via the PS51
+  review's B3, which independently describes the same poisoning on later
+  code; found blind at PS29 by a fourth eval model.
 
 ## Not graded
 

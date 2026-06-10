@@ -15,7 +15,10 @@ latch, or value that makes it clean — a citation-free PASS is an unanswered
 row; (2) any anomaly your answer records — a success-shaped return after
 failure cleanup, duplicated cleanup, a bypassed check, an unawaited write —
 becomes a candidate row even if you judge it benign. Benignity is
-verification's call, not discovery's.
+verification's call, not discovery's — and especially when your
+justification is "per the comment", "by design", or "intended": a documented
+design is still an unverified design. Four measured runs closed over the
+same P0 throughput collapse by adjudicating the design intended in-thread.
 
 ## Contents
 
@@ -139,6 +142,13 @@ Answer per changed callback, timer, posted task, or async operation:
   it owns timers, a `WeakPtrFactory`, queues, or sequence-bound handles?
 - Can the callback run before the initiating API returns, and does the API
   contract allow that?
+- If the CL delays, queues, or meters work per item (per packet, per chunk,
+  per request): what happens to a burst of N items? Per-item delay without
+  read-ahead or batching serializes the burst — item k delivered at
+  k × delay — and collapses aggregate throughput regardless of the
+  configured bandwidth. If a sibling class in the same CL has read-ahead and
+  this one does not, the asymmetry itself is the candidate. (Four measured
+  runs missed the same per-packet-delay throughput collapse.)
 - Can partial completion, backpressure, or cancellation orphan a caller
   callback or consume a shared resource twice?
 - What is the object's lifetime obligation after invoking a user-provided
@@ -265,6 +275,13 @@ unobservable.
   wrapped in the corresponding build gate so unsupported platforms skip the
   `base::Feature` lookups entirely — feature-list lookups are not free on
   hot paths.
+- For each new control the CL adds (throttle, limit, validator, filter):
+  name the line where it is consulted on the **common** path. A control
+  consulted only on a retry, overflow, or exceptional path is bypassed by
+  the common case. (Measured: an upload throttle consulted only in the
+  buffer-full retry path, so every write that fit the buffer went
+  unthrottled — three of four models missed it even after enumerating the
+  consultation sites.)
 
 Example pattern: `#if !defined(FEATURE_X)` guarding the *enabled*
 implementation compiles the feature out exactly where it should exist. The

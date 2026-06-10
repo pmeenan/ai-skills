@@ -244,9 +244,15 @@ killing it and record it as "interrupted — partial": a measured run marked
 an interrupted thread Completed and lost the P2 finding sitting in its
 workspace.
 
-Merge every returned row into the ledger verbatim. Do not judge severity,
-likelihood, or fixability while merging; duplicates are collapsed and
-quality is judged in verification. One quality gate does apply at merge
+Merge every returned row into the ledger verbatim, **preserving each
+thread's own row IDs** — never compress or rename thread rows into an
+orchestrator digest. Merging duplicates is a reconciliation-table
+disposition ("row X merged into row Y"), not a pre-processing step: a
+measured run hand-consolidated 18 threads' rows into a renamed digest and
+lost three findings (including one a thread had explicitly produced); its
+reconciliation table then faithfully protected the digest — which no longer
+contained them. Do not judge severity, likelihood, or fixability while
+merging; quality is judged in verification. One gate does apply at merge
 time: a matrix row whose answer lacks a `path:line` citation is an
 unanswered row — send it back to the thread or record that scope as
 unreviewed. A bare "PASS" is how a measured run waved through a diff hunk
@@ -272,10 +278,12 @@ the same file, and verify proposed fixes as carefully as bugs.
 
 Run the final synthesis pass from the verification file: contradiction checks,
 ledger reconciliation, and the not-verified list. Synthesis produces a
-**reconciliation table** as a required artifact: every ledger row ID mapped to
-its disposition — promoted (to finding N), refuted (with the citation),
-converted to a question, or merged (into row M). Output is blocked until
-every row has a disposition. In a measured run, a P1 candidate recorded by
+**reconciliation table** as a required artifact: every **thread-emitted**
+ledger row ID mapped to its disposition — promoted (to finding N), refuted
+(with the citation), converted to a question, or merged (into row M). The
+table enumerates the rows as the threads returned them, not an
+orchestrator's summary of them. Output is blocked until every row has a
+disposition. In a measured run, a P1 candidate recorded by
 the error-path thread was silently dropped between ledger and review;
 findings reported by several threads survived consolidation while
 single-source rows vanished — the table exists to protect the single-source

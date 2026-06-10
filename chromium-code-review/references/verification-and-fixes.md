@@ -126,6 +126,13 @@ Heuristics for choosing between fixes:
   letting the primary operation succeed over propagating the error to the
   consumer. The primary path's contract outranks the optimization's
   bookkeeping.
+- **Fail open is for optimizations, not restrictions.** The heuristic
+  inverts when the feature's purpose IS the restriction — throttling,
+  blocking, isolation, quotas: a path that silently degrades to the
+  unrestricted behavior is a finding, not graceful fallback. A measured
+  run's synthesis challenger rejected a real bug ("in-flight requests
+  silently fall back to the unthrottled factory") as "graceful, intended
+  fallback" — exactly this inversion.
 
 When a fix changes API shape or caller obligations:
 
