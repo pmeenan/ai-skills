@@ -17,6 +17,7 @@ member, the line, the caller. A yes/no answered from memory is not an answer.
 - Async And Lifecycle
 - State, Persistence, And Cache
 - Integration And Feature Control
+- Security And Trust Boundaries
 - Contracts And API Shape
 - Tests As Specifications
 - Changed-Lines Polish
@@ -28,6 +29,7 @@ member, the line, the caller. A yes/no answered from memory is not an answer.
 | callbacks, timers, `WeakPtr`, `SequenceChecker`, ref-counting, posted tasks, cancellation handles, Mojo pipes, sockets, task runners | Async And Lifecycle |
 | caches, persisted data, metadata, secondary writes, invalidation, doom/reset paths, origin/scheme decisions | State, Persistence, And Cache |
 | feature flags, `#if` gates, factories, decorators, service wiring, new entrypoints | Integration And Feature Control |
+| Mojo/IPC interfaces, deserialization, renderer- or network-supplied data, origin/site decisions | Security And Trust Boundaries |
 | public headers, API comments, predicates, sentinels, `DCHECK`s, shared helpers | Contracts And API Shape |
 | new or changed tests, any new public behavior | Tests As Specifications |
 | any changed lines | Mechanical Leads, Changed-Lines Polish |
@@ -76,9 +78,12 @@ For each entry in the changed-surface inventory, answer:
 - What happens on invalid, default, zero/empty, and sentinel inputs?
 
 Then record at least three concrete hypotheses about how the surface could be
-wrong (for example: "callback can fire after reset", "size 0 skips the
-flush", "caller X still passes the old enum"). All three being refuted in
-verification is a good outcome, not wasted work.
+wrong, each in falsifiable form: "IF ⟨sequence or input⟩ THEN ⟨bad outcome⟩
+UNLESS ⟨guard not yet found⟩". For example: "IF `Reset()` runs while a flush
+is posted THEN the callback fires into a destroyed member UNLESS something
+stops the timer"; "IF the body is empty THEN the flush is skipped and the
+trailer never written UNLESS the zero-length path flushes elsewhere". All
+three being refuted in verification is a good outcome, not wasted work.
 
 ## Async And Lifecycle
 
@@ -154,6 +159,15 @@ loop as a wall-time nuisance.
   vs non-standard URL scheme properties against the registry constants in
   `url/url_util.cc` (such as `kFileSystemScheme` or `kBlobScheme`) instead of
   grepping for literal scheme strings.
+- If the CL changes a persisted format (cache entry layout, prefs, protos,
+  serialized enums, on-disk flags): what reads new-format data after a
+  rollback to old code, and what reads old-format data after rollout? Where
+  is the version or format check, and what does each reader do on mismatch?
+  Treat "the feature flag turned off after entries were written" as a normal
+  production state, not an edge case — Finch rollbacks guarantee it happens.
+- Renumbering or reusing values of a persisted or serialized enum silently
+  changes the meaning of data already on disk. Verify existing values stay
+  stable and new values append.
 
 Example pattern: the primary cache write succeeds, then a fire-and-forget
 metadata write fails silently. If that metadata later selects or validates
@@ -187,6 +201,37 @@ unobservable.
 Example pattern: `#if !defined(FEATURE_X)` guarding the *enabled*
 implementation compiles the feature out exactly where it should exist. The
 default build silently ships the old path, and every bot stays green.
+
+## Security And Trust Boundaries
+
+For changes to Mojo/IPC interfaces, deserialization, or anything consuming
+renderer-, network-, or extension-supplied data:
+
+- Identify which side of each interface is trusted, and validate on the
+  trusted (browser/GPU) side. A compromised renderer can send any bytes, any
+  enum value, any size, in any order — what the renderer-side code "would"
+  send is irrelevant to the threat model.
+- For every integer that crosses the boundary and feeds arithmetic,
+  allocation, indexing, or resizing: is it range-checked on the trusted side
+  before use? Untrusted sizes demand `base::checked_cast` /
+  `base::CheckedNumeric` rather than raw casts (see the arithmetic drills in
+  the deep-dive recipes).
+- Are enums validated against their defined range (Mojo traits or explicit
+  checks) rather than `static_cast` from an integer?
+- Are handles, mailboxes, and tokens validated before use rather than trusted
+  to be well-formed because the sender constructed them?
+- Can message reordering, duplication, or early pipe disconnect drive the
+  trusted side into an unexpected state? Feed these sequences into the
+  State × Method matrix recipe.
+- For origin/site security decisions, verify the value compared is the one
+  the security model requires — origin vs site vs full URL, initiator vs
+  target — and that scheme properties come from the registry (see the State
+  section).
+
+Example pattern: browser-side code does `static_cast<Mode>(value)` on a
+renderer-supplied uint32 and indexes a handler table with it. "The renderer
+never sends an out-of-range value" is not a refutation — the renderer is not
+trusted; the candidate stands unless the browser-side range check exists.
 
 ## Contracts And API Shape
 
@@ -243,6 +288,11 @@ changed surface.
   them. If the guard is reachable, ask for the smallest public-API test that
   hits it; if it is not, ask whether the defensive branch should be removed
   or justified.
+- Mutation probe: pick the three most critical conditionals in the diff,
+  mentally flip each (`<` ↔ `<=`, `&&` ↔ `||`, invert the condition), and
+  name the existing test that would fail. If no test fails for a flip, the
+  suite does not specify that branch's behavior — file a coverage candidate
+  for it.
 
 Example pattern: the fixture sets `is_compressed = true` directly while
 production derives it from `Content-Encoding` parsing. Every test passes, and

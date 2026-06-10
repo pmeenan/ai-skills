@@ -28,13 +28,19 @@ miss real issues; skipping verification is the main way they report false ones.
   traces, and mechanical lead generation. Read the sections matching the
   risk-area map **before** line-by-line analysis, not at synthesis time — the
   checklists only raise recall if they shape what you look for.
+- `references/deep-dive-recipes.md`: step-by-step trace procedures with named
+  work products — context rules, desk-check simulation, arithmetic drills,
+  data lineage, and recipes for the killer bug classes (lifetime, container
+  invalidation, error paths, state machines, teardown). Read alongside the
+  checklists in Pass 3 for any CL touching arithmetic, buffers, lifetimes,
+  state, persistence, or trust boundaries.
 - `references/verification-and-fixes.md`: how to verify candidate findings,
   evaluate proposed fixes, and run the final synthesis pass. Read before
   promoting candidates into the review or endorsing any fix.
 
-For a full non-trivial CL review both files end up loaded; the only question is
-when. Load discovery sections early, and the verification file once the
-candidate list is built.
+For a full non-trivial CL review all three files end up loaded; the only
+question is when. Load the discovery checklists and recipes early, and the
+verification file once the candidate list is built.
 
 ## Review Modes
 
@@ -90,6 +96,11 @@ it, or record in one line why it was dismissed. Never silently drop an entry —
 information lost at consolidation time is a common source of incomplete
 reviews.
 
+The ledger must contain at least one entry per changed file — a candidate or
+an explicit "clean because X". Attention collapses onto the first and largest
+files; the per-file requirement keeps coverage even across the tail of the
+diff.
+
 ### Pass 1 — Inventory
 
 Build two artifacts from the diff before forming opinions:
@@ -117,14 +128,24 @@ Build two artifacts from the diff before forming opinions:
 
 ### Pass 3 — Discovery
 
-Read the discovery-checklist sections selected by the risk map, then:
+Read the discovery-checklist sections selected by the risk map and
+`references/deep-dive-recipes.md`, then:
 
+- Apply the context rules from the recipes file before reviewing any hunk:
+  full enclosing functions, class headers and destructors, and the parent
+  revision of heavily changed files.
 - Run the mechanical leads (commands listed in the checklist file). Every hit
   becomes a ledger candidate to explain or flag.
+- Run every deep-dive recipe whose trigger matches the diff, and record the
+  named work products in the ledger. An incomplete recipe step (a guard you
+  cannot name, a test you cannot find) is itself a candidate.
 - For each surface in the changed-surface inventory, answer the per-surface
   invariant questions and record **at least three candidate hypotheses** about
-  how it could be wrong before declaring it clean. All three being refuted
-  later is a good outcome, not wasted work.
+  how it could be wrong before declaring it clean. Write each hypothesis in
+  falsifiable form — "IF ⟨sequence or input⟩ THEN ⟨bad outcome⟩ UNLESS
+  ⟨guard not yet found⟩" — so verification knows exactly what guard to look
+  for. Vague candidates ("might have threading issues") are not ledger
+  entries. All three being refuted later is a good outcome, not wasted work.
 - Walk the required traces for the matching risk areas; the checklist sections
   state them.
 - Trace integration: each new behavior from its public/config entrypoint
@@ -141,6 +162,11 @@ Read the discovery-checklist sections selected by the risk map, then:
 - Make at least one pass that is not anchored to the largest or most obvious
   file class in the diff.
 
+Allocate depth by where P1s live, not by line count: teardown and error
+paths, boundary arithmetic, cross-sequence handoffs, persisted-format
+changes, and reentrancy harbor most serious bugs; mechanical renames and
+plumbing harbor few.
+
 Do not judge severity, likelihood, or fixability during this pass; that is
 verification's job.
 
@@ -149,8 +175,10 @@ verification's job.
 Read `references/verification-and-fixes.md`, then verify every ledger
 candidate: build a minimal trace, challenge it, classify it, and calibrate
 severity. Candidates that survive become findings; the rest are recorded as
-refuted with a one-line reason. Evaluate any fix you intend to propose against
-the fix heuristics in the same file.
+refuted with a one-line reason. A candidate that honest tracing can neither
+confirm nor refute becomes a question for the CL owner in the review — never
+a silent drop. Evaluate any fix you intend to propose against the fix
+heuristics in the same file.
 
 ### Pass 5 — Synthesis
 
@@ -206,8 +234,9 @@ parallel coverage is worth the overhead. Useful passes include:
 
 For broad CLs, partition at least some deep-review work by subsystem or file
 group, not only by review lens. Give each reviewer the finding format, the
-severity calibration, and the phase discipline (discovery enumerates without
-filtering; verification prunes), and ask for pre-classified findings. Merge
+severity calibration, the phase discipline (discovery enumerates without
+filtering; verification prunes), and the deep-dive recipes matching their
+slice, and ask for pre-classified findings. Merge
 subagent output into the ledger rather than pasting it through to the review
 unverified. If subagents are unavailable or overkill, perform the passes
 yourself in the procedure order.

@@ -26,6 +26,15 @@ code, not from memory.
 - Check whether existing tests intentionally codify the observed behavior.
 - Challenge the finding: look for alternate caller paths, wrappers, overrides,
   feature gates, or invariants that make it unreachable or lower its severity.
+- To refute a candidate, name the specific guard (the line) that prevents it,
+  or produce the concrete trace that completes safely. "Looks handled" or
+  "the caller probably checks" is not a refutation — it is the shallow read
+  the candidate exists to challenge. For hypotheses written as
+  IF/THEN/UNLESS, refutation means filling in the UNLESS with a citation.
+- If honest tracing can neither confirm nor refute a candidate, do not drop
+  it: convert it into a question for the CL owner in the review's Questions
+  section, stating what you traced and what remains unproven. Uncertainty
+  rounded down to "probably fine" is how reviews miss real bugs.
 - Record refuted candidates in the ledger with a one-line reason instead of
   deleting them; synthesis re-checks the ledger.
 - Distinguish observation from proposed fix. Never recommend a concrete fix
