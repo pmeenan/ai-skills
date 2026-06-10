@@ -184,7 +184,9 @@ combinations (bools, optionals, null-vs-set pointers, pending callbacks).
 Spend extra attention on the cells inspiration never visits: a method called
 after Close/Abort/error, the same method called twice, and any entry point
 arriving while an async operation is in flight. Edge cases are cells of this
-matrix; enumerating them mechanically beats hoping to notice them.
+matrix; enumerating them mechanically beats hoping to notice them. Return
+the rendered table with every cell marked (legal/enforced/what-happens or
+not-checked); unvisited cells are candidates, not omissions.
 
 ## Recipe: Mode × Host-Capability Matrix
 
@@ -202,11 +204,16 @@ cannot see these cells, so enumerate them:
    `truncat`, `resume`, `restart`, `retry`, `range`, `doom`, `join`, plus
    any mode/pattern enums declared in the header.
 3. Build the matrix: new mode × each entry point and capability. Mark every
-   cell compatible, incompatible-but-guarded (name the guard line), or
-   incompatible-unguarded.
-4. Every incompatible-unguarded or unexplained cell is a ledger candidate.
-   The old entry points were written before the new mode existed; assume
-   they mishandle it until the guard is named.
+   cell compatible, incompatible-but-guarded (name the guard line),
+   incompatible-unguarded, or not-checked.
+4. Every incompatible-unguarded, not-checked, or unexplained cell is a
+   ledger candidate. The old entry points were written before the new mode
+   existed; assume they mishandle it until the guard is named.
+5. The deliverable is the rendered table itself — return it with the
+   candidate rows, every cell marked. Returning only the interesting
+   findings is the measured failure mode: a run skipped two of the four
+   cells named in this recipe's own example because nothing forced the
+   table. Cells listed in the example below still require their own rows.
 
 Example pattern: a CL adds on-disk compression to a cache writer. The matrix
 row "compressing" × {parallel writers catching up from disk, StopCaching

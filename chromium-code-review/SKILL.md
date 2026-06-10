@@ -164,12 +164,25 @@ changes, and reentrancy first; renames and plumbing last. Ensure some thread
 owns the smallest and least obvious files — the per-file ledger floor
 depends on it.
 
-Spawn one subagent per thread with a self-contained brief (see Subagent
-Briefs); run threads in parallel where the harness allows. Overlap between
-threads is fine — redundant coverage is how disjoint blind spots get closed.
-If subagents are genuinely unavailable, execute the same plan yourself as
-serial sweeps in plan order, completing each thread's rows before starting
-the next.
+Write the complete plan into the ledger before spawning anything: one line
+per thread — name, scope, status (spawn / merged-into-⟨thread⟩ / skipped) —
+with a reason for every merge and skip. Every matched recipe AND every
+matched checklist section gets its own line, and the mechanical-leads and
+holistic threads are always in the plan. Do not fold checklist-section
+threads into recipe threads: in measured runs, an orchestrator that merged
+the plan down to a few recipe threads skipped the section rules entirely,
+and the skipped sections accounted for the missed bugs (fire-and-forget
+metadata and redundant writes live in the State section; production-value
+gates in Integration; guard-bypass scans in mechanical leads). Merging is
+acceptable only for trivial CLs, and every merge must reappear in
+Verification Notes.
+
+Spawn one subagent per planned thread with a self-contained brief (see
+Subagent Briefs); run threads in parallel where the harness allows. Overlap
+between threads is fine — redundant coverage is how disjoint blind spots get
+closed. If subagents are genuinely unavailable, execute the same plan
+yourself as serial sweeps in plan order, completing each thread's rows
+before starting the next.
 
 Merge every returned row into the ledger verbatim. Do not judge severity,
 likelihood, or fixability while merging; duplicates are collapsed and
@@ -251,10 +264,15 @@ briefs freehand:
    'Recipe: Error-Path Walk' on these functions." Point at the file rather
    than paraphrasing the recipe into the brief; paraphrases drop the steps
    that matter.
-4. **Deliverable:** ledger rows only, no prose narrative. Each row: claim,
-   repo-relative `path:line`, evidence, and either an IF/THEN/UNLESS
-   hypothesis or a trace record (`scenario → lines visited → outcome`).
-   Discovery threads leave severity blank.
+4. **Deliverable:** ledger rows only, no prose narrative. First a
+   compliance matrix: one row per checklist question or recipe step in the
+   brief's scope, each answered with concrete evidence (`path:line`) or
+   N/A-with-reason — an unanswered row is a skipped check, and "no findings"
+   without a complete matrix is not an acceptable return. Then the candidate
+   rows: claim, repo-relative `path:line`, evidence, and either an
+   IF/THEN/UNLESS hypothesis or a trace record
+   (`scenario → lines visited → outcome`). Discovery threads leave severity
+   blank.
 5. **Rules:** discovery enumerates without filtering — "probably fine" rows
    are still rows; an incomplete recipe step (a guard you cannot name, a
    test you cannot find) is itself a row; the CL description is a claim to
@@ -279,9 +297,10 @@ Format the final review as:
 5. **Questions:** Only questions whose answers affect correctness, API contract,
    or landing readiness.
 6. **Verification Notes:** State tests run or not run, production wiring traced
-   or not traced, and any important areas not verified. List every thread
-   from the thread plan with the rows it returned, and any thread skipped
-   with the reason — a skipped thread is an unverified area by definition.
+   or not traced, and any important areas not verified. Reproduce the full
+   thread plan with each thread's outcome: rows returned, or merged (name
+   the absorbing thread), or skipped (with reason). A skipped or merged-away
+   thread is an unverified area by definition.
 7. **Next Steps:** State what is required before `+1 LGTM` and what is optional.
 
 For full CL reviews, append compact **Gerrit-Ready Comments** unless the user
