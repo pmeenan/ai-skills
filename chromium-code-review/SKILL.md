@@ -160,7 +160,7 @@ orchestrator's grasp of what each thread is for.
 - One thread per deep-dive recipe whose trigger matches, scoped to the
   surfaces that triggered it (e.g. "Mode × Host-Capability Matrix for
   HttpCache::Writers"; "Error-Path Walk for the changed functions in
-  http_cache_writers.cc").
+  password_form_manager.cc").
 - One thread per matched discovery-checklist section (async, state,
   integration, security, contracts, tests), scoped to its files. These
   threads also walk the section's required traces and, for the surfaces they

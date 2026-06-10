@@ -336,13 +336,16 @@ trusted; the candidate stands unless the browser-side range check exists.
   Trace every existing caller at the moment the helper is entered, and the
   helper's side effects (forced success, cleanup, callback state) on the new
   path.
-- For every override of a documented interface method (net/'s `Socket`,
-  `StreamSocket`, `DatagramSocket`, `HostResolver`, and similar): open the
-  base header, enumerate its contract clauses — buffer retention across
-  `ERR_IO_PENDING`, completion-value semantics (`OK` vs byte counts),
-  reentrancy, cancellation obligations, reconnect behavior — and answer
-  each clause as its own matrix row with `path:line` evidence from the
-  implementation. Wrappers and delegating implementations are the highest
+- For every override of a documented interface method — any base class
+  whose header spells out per-method contracts, whether net/'s `Socket`
+  and `HostResolver` families, content/'s observer and delegate
+  interfaces, `KeyedService` two-phase shutdown, or a component-local
+  equivalent — open the base header, enumerate its contract clauses
+  (argument/buffer retention across pending async completion,
+  completion-value semantics such as `OK` vs byte counts, reentrancy,
+  cancellation obligations, call ordering and reuse-after-close) — and
+  answer each clause as its own matrix row with `path:line` evidence from
+  the implementation. Wrappers and delegating implementations are the highest
   risk: they look like passthroughs while quietly breaking a clause.
   (Measured, twice across two models: a `ReadIfReady` implementation
   stashed the caller's `IOBuffer` in a bare `raw_ptr` across
@@ -373,8 +376,8 @@ changed surface.
   current implementation? Trace the test's control flow and assertions
   rather than trusting its name.
 - A test-gap row must name the concrete missing scenarios — function plus
-  input class ("partial inner `Write`", "`ReadIfReady` over async mock
-  data") — or it is an unanswered row. Generic "needs more coverage"
+  input class ("partial inner `Write`", "`Reset()` while a flush is
+  posted") — or it is an unanswered row. Generic "needs more coverage"
   buckets do not satisfy this section: a measured run emitted them, and
   synthesis collapsed them into ledger-only language that named nothing.
 - Check mock/fixture fidelity for semantic variables production keeps
@@ -383,7 +386,7 @@ changed surface.
   cannot stand in for a production trace when fixtures collapse those
   distinctions.
 - Check the delivery pattern of mock data against production. If production
-  receives the body in multiple chunks (network reads, IPC messages), do any
+  receives its data in multiple chunks (network reads, IPC messages), do any
   tests deliver multi-chunk input — including zero-byte or buffered
   intermediate results — or do all mocks deliver one single-shot read?
   Single-shot-only mocks leave every buffering, partial-progress, and

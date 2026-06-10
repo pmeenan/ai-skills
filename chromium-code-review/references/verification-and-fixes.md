@@ -56,11 +56,12 @@ bounded, last-resort tier, not a routine step:
   candidate whose paper trace is genuinely contested — where running the
   smallest test would settle confirm-vs-refute.
 - Build only the narrowest target against an existing warm build directory
-  (`autoninja -C out/<existing> net_unittests` plus a tight
-  `--gtest_filter`). Never `gn gen` a fresh output directory in a temporary
-  worktree: a cold Chromium build costs an hour-plus and buys less than an
-  hour of tracing. If no warm build exists, skip execution and record the
-  candidate as "needs execution verification" in Verification Notes.
+  (`autoninja -C out/<existing> <test_target>`, e.g. `net_unittests` or
+  `components_unittests`, plus a tight `--gtest_filter`). Never `gn gen` a
+  fresh output directory in a temporary worktree: a cold Chromium build
+  costs an hour-plus and buys less than an hour of tracing. If no warm
+  build exists, skip execution and record the candidate as "needs
+  execution verification" in Verification Notes.
 - Budget it: if the build or run exceeds roughly ten minutes, stop and fall
   back to the paper trace.
 - Record in Verification Notes exactly what was built or run, how long it

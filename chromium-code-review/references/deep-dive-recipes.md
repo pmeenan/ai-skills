@@ -127,7 +127,8 @@ in the diff.
 
 1. Name the object the callback is bound to and the binding mode
    (`base::Unretained`, `WeakPtr`, `scoped_refptr`, raw `this` capture,
-   owned-by-callback).
+   owned-by-callback; in Blink, `WrapPersistent` / `WrapWeakPersistent`
+   over Oilpan-managed objects).
 2. Name every code path that can destroy or reset that object (destructor,
    reset, disconnect handler, error path, tab close, shutdown).
 3. Name the sequence each of (1) and (2) runs on.
@@ -241,7 +242,9 @@ cannot see these cells, so enumerate them:
    candidate rows, every cell marked. Returning only the interesting
    findings is the measured failure mode: a run skipped two of the four
    cells named in this recipe's own example because nothing forced the
-   table. Cells listed in the example below still require their own rows.
+   table. When an example below happens to match the CL under review, its
+   cells still require their own rows — examples illustrate the procedure,
+   they never pre-fill it.
 
 Example pattern: a CL adds on-disk compression to a cache writer. The matrix
 row "compressing" × {parallel writers catching up from disk, StopCaching
