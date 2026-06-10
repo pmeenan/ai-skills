@@ -208,11 +208,19 @@ to carry the most findings: in a measured run, an orchestrator that killed
 its two slowest threads before they reported lost four of its five
 remaining P1/P2 findings inside them. If the harness genuinely terminates a
 thread, record it in the plan and in Verification Notes as "terminated —
-scope unreviewed"; never mark an uncollected thread Completed.
+scope unreviewed"; never mark an uncollected thread Completed. If you
+interrupt a thread deliberately, collect its partial rows and matrix before
+killing it and record it as "interrupted — partial": a measured run marked
+an interrupted thread Completed and lost the P2 finding sitting in its
+workspace.
 
 Merge every returned row into the ledger verbatim. Do not judge severity,
 likelihood, or fixability while merging; duplicates are collapsed and
-quality is judged in verification.
+quality is judged in verification. One quality gate does apply at merge
+time: a matrix row whose answer lacks a `path:line` citation is an
+unanswered row — send it back to the thread or record that scope as
+unreviewed. A bare "PASS" is how a measured run waved through a diff hunk
+that literally wrapped the old truncation check in `if (!new_flag)`.
 
 ### Pass 4 — Verification
 
@@ -233,11 +241,19 @@ the same file, and verify proposed fixes as carefully as bugs.
 ### Pass 5 — Synthesis
 
 Run the final synthesis pass from the verification file: contradiction checks,
-ledger reconciliation, and the not-verified list. Where subagents are
-available, also spawn one challenger over the draft review, briefed with the
-Final Synthesis checklist, to hunt contradictions, unaccounted ledger rows,
-and miscalibrated severities before sending. Refresh Gerrit metadata as
-described in Fetch And Pin, then produce output.
+ledger reconciliation, and the not-verified list. Synthesis produces a
+**reconciliation table** as a required artifact: every ledger row ID mapped to
+its disposition — promoted (to finding N), refuted (with the citation),
+converted to a question, or merged (into row M). Output is blocked until
+every row has a disposition. In a measured run, a P1 candidate recorded by
+the error-path thread was silently dropped between ledger and review;
+findings reported by several threads survived consolidation while
+single-source rows vanished — the table exists to protect the single-source
+rows. Where subagents are available, also spawn one challenger over the
+draft review, briefed with the Final Synthesis checklist, to hunt
+contradictions, unaccounted ledger rows, and miscalibrated severities before
+sending. Refresh Gerrit metadata as described in Fetch And Pin, then produce
+output.
 
 ## Finding Format
 

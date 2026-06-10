@@ -38,6 +38,11 @@ code, not from memory.
   rounded down to "probably fine" is how reviews miss real bugs.
 - Record refuted candidates in the ledger with a one-line reason instead of
   deleting them; synthesis re-checks the ledger.
+- Matrix cells marked incompatible-but-guarded are verification inputs too:
+  confirm that the named guard actually guards the cell's scenario, on the
+  path the scenario takes. In a measured run a cell cited `ShouldTruncate()`
+  as the guard for `StopCaching(keep_entry=true)` — but that guard only runs
+  on the failure path, and the success path skipped it entirely.
 - Distinguish observation from proposed fix. Never recommend a concrete fix
   until it has been traced through the relevant edge cases below.
 
