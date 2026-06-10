@@ -223,8 +223,17 @@ the plan down to a few recipe threads skipped the section rules entirely,
 and the skipped sections accounted for the missed bugs (fire-and-forget
 metadata and redundant writes live in the State section; production-value
 gates in Integration; guard-bypass scans in mechanical leads). Merging is
-acceptable only for trivial CLs, and every merge must reappear in
-Verification Notes.
+acceptable only for a trivial CL — under ~8 changed files and no file the
+risk map flags async/lifecycle, state, security, or buffering. At or above
+that bar (this is most real CLs), every section gets its own subagent; do
+not merge to fit a thread budget. And never merge away the Mechanical Leads
+or Arithmetic-Drills work even on a small CL: their leads are cheap greps
+(discarded `Push`/`Write` counts, sentinel values side by side, sub-unit
+rate probes) that an absorbing thread predictably skips — a measured
+mid-model run preserved the merged-into rows but its overloaded
+mechanical-leads thread ran none of the greps, and the discarded-count,
+sentinel-mismatch, and fitting-write-bypass P0s were exactly those unrun
+leads. Every merge must reappear in Verification Notes.
 
 Spawn one subagent per planned thread with a self-contained brief (see
 Subagent Briefs); run threads in parallel where the harness allows, and
