@@ -1,15 +1,57 @@
 ---
-name: chromium-cl-reviewer
-description: Reviews a Chromium CL when requested (e.g. "review CL 12345"). Checks bug alignment, patchset freshness, correctness, tests, style, performance, lifecycle, and Chromium conventions.
+name: chromium-code-review
+description: Reviews a Chromium CL when requested (e.g. "review CL 12345") and re-reviews updated patchsets against prior feedback. Checks bug alignment, patchset freshness, correctness, tests, style, performance, lifecycle, and Chromium conventions.
 ---
 
 # Chromium CL Reviewer Skill
 
-When the user asks you to review a Chromium CL, perform a rigorous review of
-the latest patchset and produce actionable feedback suitable for Chromium code
-review.
+When the user asks you to review a Chromium CL, perform a rigorous review of the
+latest patchset and produce actionable feedback suitable for Chromium code
+review. Optimize for a clear landing recommendation with the smallest necessary
+set of blocking comments.
 
-## 1. Fetch And Pin The Patchset
+The review runs in two phases with deliberately different mindsets:
+
+- **Discovery** casts a wide net. Enumerate candidate issues cheaply; a wrong
+  hypothesis costs nothing because verification filters it later. Most missed
+  bugs are missed because the suspicion was never written down, not because
+  verification failed.
+- **Verification** is skeptical. Every candidate is traced through real code
+  before it may appear in the review, and severity is calibrated there.
+
+Keep the phases separate. Filtering during discovery is the main way reviews
+miss real issues; skipping verification is the main way they report false ones.
+
+## Reference Files
+
+- `references/discovery-checklists.md`: per-risk-area questions, required
+  traces, and mechanical lead generation. Read the sections matching the
+  risk-area map **before** line-by-line analysis, not at synthesis time — the
+  checklists only raise recall if they shape what you look for.
+- `references/verification-and-fixes.md`: how to verify candidate findings,
+  evaluate proposed fixes, and run the final synthesis pass. Read before
+  promoting candidates into the review or endorsing any fix.
+
+For a full non-trivial CL review both files end up loaded; the only question is
+when. Load discovery sections early, and the verification file once the
+candidate list is built.
+
+## Review Modes
+
+- **Full CL review:** inspect the latest patchset against its parent, gather
+  bug and design context, run the full procedure below, and produce
+  Gerrit-ready comments.
+- **Follow-up review:** run the full procedure including Pass 2
+  (prior-feedback reconciliation). Prior feedback is context, not the boundary
+  of the review: after resolving prior findings, discovery still covers the
+  whole changed surface.
+- **Targeted review:** focus on the requested subsystem, file, or risk area,
+  loading only the matching discovery sections, but still report any serious
+  blocker discovered nearby.
+- **Short summary:** honor the shorter format, but still pin the patchset and
+  disclose important unverified areas.
+
+## Fetch And Pin The Patchset
 
 - Fetch CL details from Chromium Gerrit with the REST API:
   `https://chromium-review.googlesource.com/changes/chromium%2Fsrc~<CL>/detail?o=CURRENT_REVISION&o=CURRENT_COMMIT&o=CURRENT_FILES&o=MESSAGES&o=DETAILED_ACCOUNTS`
@@ -17,408 +59,160 @@ review.
 - Record the current patchset number, revision SHA, parent SHA, subject, status,
   owner, files changed, and CL description.
 - Fetch the current revision ref and inspect the diff against its parent.
-- If the checkout is not already on the target patchset, avoid permanently
-  changing the user's workspace. If you temporarily check out the patchset for
-  building or inspection, restore the original checkout.
+- Avoid permanently changing the user's workspace. If you temporarily check out
+  the patchset for building or inspection, restore the original checkout.
 - Refresh Gerrit metadata before final output. If a newer patchset appeared
   during review, inspect the inter-patchset delta before finalizing.
 - State the exact patchset number and revision SHA in the review.
 
-## 2. Gather Relevant Context
+## Gather Context
 
 - Follow public Bug links and design docs referenced by the CL description when
-  they are needed to judge intent, scope, or bug alignment.
+  needed to judge intent, scope, or bug alignment.
 - Audit the CL description, commit message, and referenced design docs against
-  the current implementation; flag stale architectural claims when iterative
+  the current implementation. Flag stale architectural claims when iterative
   refactoring made the docs no longer match the code.
-- If the user provides prior review feedback, create an internal checklist:
-  prior issue, expected fix, evidence in the current patchset, and residual
-  risk. Explicitly report whether each prior issue is fixed, partially fixed, or
-  still open.
-- Compare the changed code to nearby Chromium patterns, ownership boundaries,
-  and existing tests. When local precedent is unclear, use repository search or
-  code search to find similar patterns in the module or wider tree.
+- Compare changed code to nearby Chromium patterns, ownership boundaries, and
+  existing tests. When local precedent is unclear, search the module and then
+  the wider tree.
 
-## 3. Review Method
+## Review Procedure
 
-Use an adversarial mindset, but calibrate severity carefully. The goal is LGTM
-with the smallest necessary set of blocking comments.
+Work through the passes in order. Every pass writes into the finding ledger.
+
+### The Finding Ledger
+
+Maintain one ledger across the whole review: every candidate issue, suspicion,
+mechanical-lead hit, subagent finding, and prior-review item gets an entry with
+a status (candidate, verified, refuted, fixed, partially fixed, still open,
+obsolete, superseded). Carry every entry to synthesis: promote it, downgrade
+it, or record in one line why it was dismissed. Never silently drop an entry —
+information lost at consolidation time is a common source of incomplete
+reviews.
+
+### Pass 1 — Inventory
+
+Build two artifacts from the diff before forming opinions:
+
+- **Changed-surface inventory:** every changed public API, wrapper/decorator,
+  factory, stateful helper, feature entrypoint, and production wiring point.
+  For each, record its contract source, primary callers, old behavior, new
+  behavior, mutable state, ownership/lifetime model, tests, and whether it is
+  production-reachable, test-only, or future-stack plumbing.
+- **Risk-area map:** classify changed files by risk area — API contract,
+  async/lifecycle, buffering/backpressure, persistence/cache state,
+  security/privacy, memory ownership, threading/sequencing, performance,
+  feature gating, integration wiring, tests. The map selects which discovery
+  sections to load in Pass 3.
+
+### Pass 2 — Prior-Feedback Reconciliation (follow-up reviews only)
+
+- Inspect both latest-vs-base and latest-vs-prior-reviewed-patchset.
+- Resolve every prior finding in the ledger as fixed, partially fixed, still
+  open, obsolete, or superseded, with evidence from the current patchset.
+- Reconcile minor nits, optional cleanup, requested macros, and unresolved
+  discussions too. Collapse or omit cosmetic items from the final review when
+  appropriate, but do not assume they were resolved just because larger issues
+  were fixed.
+
+### Pass 3 — Discovery
+
+Read the discovery-checklist sections selected by the risk map, then:
+
+- Run the mechanical leads (commands listed in the checklist file). Every hit
+  becomes a ledger candidate to explain or flag.
+- For each surface in the changed-surface inventory, answer the per-surface
+  invariant questions and record **at least three candidate hypotheses** about
+  how it could be wrong before declaring it clean. All three being refuted
+  later is a good outcome, not wasted work.
+- Walk the required traces for the matching risk areas; the checklist sections
+  state them.
+- Trace integration: each new behavior from its public/config entrypoint
+  through wiring to the concrete code that changes, and the disabled/default
+  path to confirm old behavior is preserved (details in the integration
+  checklist section).
+- Answer the holistic questions: Does the CL solve the bug it cites, at a
+  scope appropriate to the stated bug and follow-up stack? Is it cohesive, or
+  does it mix behavior changes with unrelated refactoring? Is it reviewable at
+  this size, or should it be split? Does it avoid unnecessary abstraction? Do
+  names, types, containers, callbacks, ownership, and error handling match
+  nearby Chromium idioms? Are performance and memory costs bounded or
+  documented? Is test coverage proportional to risk and blast radius?
+- Make at least one pass that is not anchored to the largest or most obvious
+  file class in the diff.
+
+Do not judge severity, likelihood, or fixability during this pass; that is
+verification's job.
+
+### Pass 4 — Verification
+
+Read `references/verification-and-fixes.md`, then verify every ledger
+candidate: build a minimal trace, challenge it, classify it, and calibrate
+severity. Candidates that survive become findings; the rest are recorded as
+refuted with a one-line reason. Evaluate any fix you intend to propose against
+the fix heuristics in the same file.
+
+### Pass 5 — Synthesis
+
+Run the final synthesis pass from the verification file: contradiction checks,
+ledger reconciliation, and the not-verified list. Refresh Gerrit metadata as
+described in Fetch And Pin, then produce output.
+
+## Finding Format
+
+Record and report every finding with:
+
+- **Claim:** one sentence describing concrete behavior, not vibes.
+- **Location:** repo-relative `path:line` against the reviewed patchset.
+- **Evidence:** the minimal state/call trace or citation that demonstrates it.
+- **Severity:** P1/P2/P3 per the calibration below.
+- **Fix status:** validated fix, option needing verification, or no fix
+  proposed.
+- For P1/P2 findings: the smallest regression test that would have caught it.
+
+## Severity Calibration
+
+- **P1:** Serious correctness, security, data loss, UAF, deadlock, or major
+  regression risk. Must fix before landing.
+- **P2:** Real correctness risk, missing coverage for core/default behavior,
+  likely production regression, or contract ambiguity that can mislead
+  callers. Normally fix before LGTM.
+- **P3:** Documentation clarity, non-blocking test polish, minor efficiency,
+  small consistency issues, or defensive improvements. Often optional or
+  follow-up-worthy.
+
+Calibration notes:
+
+- In stack or foundation CLs, API contract mistakes can be P1 even before a
+  production caller lands if follow-up CLs are likely to bake in the behavior.
+- Do not downgrade an API-shape, sentinel, or contract issue merely because it
+  is documented if the documented behavior remains a footgun for downstream
+  CLs.
+- A mock-time hang that can block CI is more severe than a comparable
+  real-time performance nuisance.
+- Avoid blocking on speculative problems, style preferences, or fixes whose
+  tradeoffs have not been validated.
+
+## Subagent Strategy
 
 If subagents are available, use them for non-trivial CLs where independent,
-parallel coverage is worth the overhead. For small CLs, unavailable tools, or
-cases where delegation is not appropriate, perform these passes yourself.
-Useful independent passes include:
+parallel coverage is worth the overhead. Useful passes include:
 
-- Clean-slate correctness / invariant / architecture review that is not anchored
-  to prior findings.
+- Clean-slate correctness / invariant / architecture review.
 - Async / lifecycle / cancellation review.
 - Tests-as-specifications review.
 - Fast style / consistency / common anti-pattern review.
 - Synthesis pass that challenges findings, severities, and proposed fixes.
 
-For non-trivial CLs, partition at least some deep-review work by subsystem or
-file group, not only by review lens, so coverage is complete rather than
-overlapping. Give each reviewer the same severity calibration and ask for
-pre-classified findings.
+For broad CLs, partition at least some deep-review work by subsystem or file
+group, not only by review lens. Give each reviewer the finding format, the
+severity calibration, and the phase discipline (discovery enumerates without
+filtering; verification prunes), and ask for pre-classified findings. Merge
+subagent output into the ledger rather than pasting it through to the review
+unverified. If subagents are unavailable or overkill, perform the passes
+yourself in the procedure order.
 
-If subagents are not permitted or available, perform these passes yourself.
-
-## 4. Required Internal Artifacts
-
-Before finalizing the review, create concise internal notes for these artifacts.
-Do not dump them verbatim unless useful to the user; use them to force coverage.
-
-**Changed surface inventory**
-- List every changed public API, wrapper/decorator, factory, stateful helper,
-  feature entrypoint, and production wiring point.
-- For each surface, record its contract source, primary callers, old behavior,
-  new behavior, mutable state, ownership/lifetime model, and tests.
-- Mark whether the surface is production-reachable, test-only, or future-stack
-  plumbing.
-
-**Patchset delta inventory**
-- For follow-up reviews, inspect both latest-vs-base and
-  latest-vs-prior-reviewed-patchset.
-- Resolve each prior finding as fixed, partially fixed, still open, obsolete, or
-  superseded by a new issue, with evidence from the current patchset.
-- After closing prior findings, run a clean-slate pass over the whole changed
-  surface; prior feedback must not define the review boundary.
-
-**Integration and disabled-path trace**
-- Trace each new behavior from public/config entrypoint through factories,
-  decorators, feature flags, Mojo/CDP/service plumbing, and runtime call sites to
-  the concrete code that changes behavior.
-- Verify the default/disabled path still uses the old behavior with minimal
-  changes, or identify the shared-path change explicitly.
-- Search for existing implementations of the same conceptual feature and check
-  whether old and new paths can both apply.
-- If new production behavior has broad blast radius, check for a `base::Feature`,
-  Finch/enterprise/runtime kill-switch, or an explicit reason it is unnecessary.
-
-**Risk-area map**
-- Classify changed files by risk area: API contract, async/lifecycle,
-  buffering/backpressure, persistence/cache state, security/privacy, memory
-  ownership, threading/sequencing, performance, feature gating, integration
-  wiring, and tests.
-- Make at least one pass that is not anchored to the largest or most obvious
-  class in the diff.
-
-**Finding ledger**
-- Account for every distinct finding from prior reports, subagents, and your own
-  passes. Carry it into the final review, downgrade it, mark it fixed, or state
-  why it is dismissed.
-- When prior review comments are available, reconcile minor nits, optional
-  cleanup, requested macros, and unresolved discussions too. Collapse or omit
-  cosmetic items from the final review when appropriate, but do not assume they
-  were resolved just because larger issues were fixed.
-- Do not silently drop a finding during synthesis. Information lost at
-  consolidation time is a common source of incomplete reviews.
-
-## 5. Fresh Invariant Pass
-
-After applying any prior-review checklist, do a clean-slate pass over each
-changed public API or stateful helper. Prior feedback is useful context, but it
-must not define the review boundary.
-
-For each changed API or helper, identify:
-
-- Public contract from headers, comments, tests, and nearby usage.
-- Mutable state and invariants.
-- State transitions across public calls.
-- Async work, timers, callbacks, cancellation, and reset/destruction behavior.
-- Invalid, default, and sentinel inputs.
-
-Walk concrete traces through the code before finalizing findings. Include at
-least one reset/destruction/cancellation trace for async code and one multi-item
-trace for code that queues, buffers, batches, or coalesces work. Useful trace
-shapes include: call A before event B, reset before a posted callback runs, a
-front item changing, a callback re-entering, and a timer firing without state
-change.
-
-For async or stateful code, include traces for synchronous completion, delayed
-completion, callback destroys owner, reset/disconnect/destructor before callback,
-multiple queued items, partial completion/backpressure, and zero/default/sentinel
-inputs when those states are meaningful.
-
-## 6. Correctness Protocol
-
-For each non-trivial correctness finding, verify it before presenting it:
-
-- Build a minimal state or call trace from the code.
-- Cite the exact code path and any relevant tests or comments.
-- Classify the issue as a correctness bug, contract mismatch, missing test,
-  performance risk, lifecycle risk, or polish.
-- Check whether existing tests intentionally codify the observed behavior.
-- Distinguish observation from proposed fix. Never recommend a concrete fix
-  until it has been traced through relevant edge cases.
-- Challenge the finding before presenting it: look for alternate caller paths,
-  wrappers, overrides, feature gates, or invariants that would make the issue
-  unreachable or lower severity.
-- For nullable callbacks, dependencies, sentinels, or optional handles, first
-  verify whether optionality is part of the public contract and whether tests or
-  callers rely on the absent-value path. Suggest making it mandatory only after
-  comparing that API-shape change against preserving the optional contract with
-  clearer tests or docs.
-- Review any proposed fix as carefully as the original bug. Trace it through
-  boundary inputs, all affected state transitions, existing tests, and likely
-  re-entrant/cancellation paths. If you cannot validate the fix, label it as an
-  option needing verification rather than endorsing it.
-
-Before proposing a fix, sanity-check it against common Chromium edge cases:
-
-- Zero, empty, immediate, max-size, overflow, and negative values.
-- Posted tasks, timers, delayed callbacks, and task ordering.
-- Reentrancy from callbacks.
-- Cancellation, reset, shutdown, and object destruction.
-- `WeakPtr`, ref-counting, ownership transfer, and RAII handles.
-- Sequence/thread affinity and destructor sequence requirements.
-- Boundary capacity and backpressure behavior.
-- Numeric conversion, truncation, overflow, sentinel agreement, and
-  representability across signed/unsigned, `size_t`, `int`, and floating-point
-  math.
-
-If the fix is plausible but not fully validated, phrase it as an option or ask
-for clarification instead of presenting it as the correct change.
-
-When a proposed fix changes API shape or caller obligations, compare plausible
-alternatives before recommending one. Examples: reject invalid input vs accept a
-sentinel, explicit cancellation handle vs weak callback pruning, edge-triggered
-vs level-triggered notifications, and owned task cancellation vs caller-managed
-weak callbacks.
-
-Apply the **Simplicity over Salvaging** principle when suggesting or evaluating
-fixes:
-
-- **Prefer State Invalidation over Partial Recovery:** For any component
-  managing ephemeral, transient, or reconstructible state (e.g., caches,
-  Mojo/IPC channels, page loading/rendering pipelines, media playback states),
-  prefer total state invalidation, reset, or destruction on error/abort over
-  complicating the control flow to salvage partial state. Correctness and code
-  simplicity take priority over absolute retention efficiency.
-- **Avoid Conditional Carve-outs for Errors:** Avoid introducing complex branch
-  logic or conditional carve-outs (e.g., special-casing specific cancellation
-  errors or sub-phases) if resetting the component or restarting from a
-  clean-slate state is a valid and much safer option.
-- **Trace Standard Scheme Registry Invariants Precisely:** When auditing
-  same-origin or security-origin caching optimizations, verify standard and
-  non-standard URL properties against registry constants in `url/url_util.cc`
-  (such as `kFileSystemScheme` or `kBlobScheme`) instead of relying on naive
-  grep searches for literal string schemes.
-- **Distinguish Test-only vs. Production Invalidation:** Verify whether cache
-  invalidation issues or mutations are reachable under the production lifecycle
-  model. If the invalidation problem is strictly test-time, prefer test-scoped
-  invalidation helpers over adding runtime overhead to production hot paths.
-
-## 7. Async And Lifecycle Checklist
-
-For changes involving callbacks, timers, `WeakPtr`, `SequenceChecker`,
-ref-counting, posted tasks, cancellation handles, Mojo pipes, sockets, or task
-runners, explicitly consider:
-
-- Edge-triggered vs level-triggered callback semantics.
-- Duplicate wakeups vs lost wakeups.
-- Callback coalescing and timer re-arming.
-- Timer resolution, zero-delay re-arming, and whether repeated timers can fire
-  without state progress.
-- Reset and destruction invalidating in-flight work.
-- Reentrant callbacks mutating or destroying the object.
-- Explicit cancellation handles vs weak no-op callbacks.
-- Whether canceled or destroyed work still consumes shared resources.
-- Cancellation of current and sibling operations.
-- Sequence-affine handles destroyed on a different sequence.
-- Object lifetime after invoking user-provided callbacks.
-- Whether a callback can run before the initiating API returns, and whether that
-  is allowed by the API contract.
-- Whether partial completion, backpressure, or cancellation can orphan a caller
-  callback or consume shared resources twice.
-- `TaskEnvironment::MOCK_TIME` behavior as well as wall-time behavior: zero or
-  sub-resolution delays, self-reposting tasks, and timers that can busy-loop or
-  hang under `FastForwardBy`.
-- Ref-counted objects whose final reference may drop on a different sequence,
-  especially when they own timers, `WeakPtrFactory`, queues, or sequence-bound
-  handles.
-
-## 8. Test Coverage Checklist
-
-For new or changed APIs, look for tests covering:
-
-- The default behavior path, not only alternate modes.
-- Each public option, mode, or flag.
-- Multi-item and multi-chunk behavior where applicable.
-- Boundary values: zero, empty, one, max, overflow, non-positive invalid input.
-- Async timing: immediate completion, delayed completion, posted dispatch, and
-  cancellation/reset before dispatch.
-- Reentrancy and destruction from callbacks when callbacks are introduced.
-- The original bug or prior-review issue, in a way that would fail without the
-  fix.
-
-When Gerrit or coverage tooling flags an uncovered changed line, treat that as a
-real lead until disproven. Trace the relevant tests to the exact branch or return
-statement rather than trusting the test name. Common misses include an early
-return that is distinct from a later "same value" return, a cap/clamp branch that
-requires prior state initialization before time advances, stale-generation
-callback drops for one callback family but not its sibling, and helper guards
-that appear unreachable because callers pre-check them. If a guard is reachable,
-ask for the smallest public-API test that hits it; if it is not reachable, ask
-whether the defensive branch should be removed or justified.
-
-Treat tests as executable specifications. For important tests, ask whether the
-test would fail without the claimed fix and whether it actually exercises the
-edge case named by its test or comment. For every P1/P2 finding, suggest the
-smallest regression test that would have caught it.
-
-If a test name or comment claims a behavior, trace the test control flow and
-assertions to confirm it proves that behavior rather than merely codifying the
-current implementation.
-
-Build a quick coverage map for changed public methods, enum/mode values, and
-notable branches. Explicitly flag untested default modes or core branches even
-when sibling modes are well covered.
-
-Missing coverage for a core/default behavior is usually more important than a
-minor implementation nit.
-
-## 9. Changed-Lines Polish Pass
-
-Before finalizing, do a quick pass over newly-added or modified lines for
-low-severity but legitimate review nits:
-
-- For changed comments and API docs, verify each behavioral clause is literally
-  supported by the implementation. Watch for misleading causal or exclusivity
-  words such as "only", "whenever", "until", "unless", "intervening",
-  "transition", and "edge". Ensure comments describe the right actor and signal
-  direction; for example, producer-side code should not be described as the
-  consumer notifying itself unless that is literally the API model.
-- For C++ comments, prefer backticks around identifiers and symbols instead of
-  old-style `|name|` markers. Also scan changed prose for typos and context-free
-  caller guidance: if a comment says callers should pass null, use a sentinel, or
-  choose a wrapper, it should name the concrete type/API where that choice exists.
-- For changed tests and implementation files, verify new or newly-relevant
-  symbols have direct includes in that file. Do not rely on transitive includes
-  for STL, base, or test helpers. For example, check that use of `std::fill` or
-  `std::move` has the corresponding standard library include.
-- For FIFO/LIFO containers, prefer Chromium's `base::queue` / `base::stack`
-  over `std::queue` / `std::stack` unless the code needs the standard
-  underlying container's pointer/iterator stability or another documented
-  property. `base::queue` uses `base::circular_deque` and is the usual
-  lower-overhead choice for simple `emplace` / `front` / `pop` queues.
-- For sequence-affinity checks, prefer `SEQUENCE_CHECKER()` with
-  `DCHECK_CALLED_ON_VALID_SEQUENCE()` for debug-only validation. If code uses
-  `base::SequenceCheckerImpl` directly, verify there is an intentional
-  release-build `CHECK()` requirement before suggesting the macro; the macro
-  compiles away outside DCHECK builds.
-- Run a cheap formatting sanity check when the patchset is materialized locally:
-  `git diff --check` plus a formatter diff for changed files where practical
-  (for example, `git clang-format --diff <parent>` for Chromium C++/Blink
-  changes). Remember that `git diff --check` catches trailing whitespace and
-  conflict markers, but not style artifacts such as extra blank lines.
-- In the manual changed-lines scan, look for artifacts left by deleted blocks:
-  double blank lines, orphaned comments, redundant braces, now-empty sections,
-  and stale TODO wording. Report these as optional P3 nits unless they affect
-  readability or generated formatting.
-- Check that removed statements or call sites did not leave unused locals,
-  stale test setup parameters, or unnecessary lambda captures.
-- Audit linkage and visibility constraints before suggesting test hooks or
-  toggles. Helpers and feature flags inside anonymous namespaces have internal
-  linkage and cannot be referenced directly from another translation unit.
-- Respect forward declarations in public headers. Avoid suggesting wrapper
-  types that require full definitions of heavy or highly transitive types unless
-  the API benefit clearly justifies the compile-time cost.
-- If providing a patch snippet, make it a valid unified diff with accurate
-  symbol names and non-overlapping per-file hunks.
-- If these are real but non-blocking, report them separately as optional P3 nits
-  instead of dropping them from an otherwise LGTM review.
-
-## 10. Review Criteria
-
-Evaluate the CL against these areas:
-
-**Bug Alignment**
-- Does the CL solve the issue described by the bug and CL description?
-- Is the scope appropriate for the stated bug and follow-up stack?
-
-**Chromium Style And Consistency**
-- Does the code follow Chromium style and nearby idioms?
-- Are names, types, containers, callbacks, ownership, and error handling
-  consistent with surrounding code?
-
-**Design And Scope**
-- Is the change appropriately sized and cohesive?
-- Does it separate behavior changes from unrelated refactoring?
-- Does it avoid unnecessary abstraction?
-- If the CL is large, identify whether it is still reviewable or should be
-  split.
-
-**Quality And Correctness**
-- Are edge cases and lifecycle transitions handled?
-- Are performance and memory costs bounded or documented?
-- Are CHECK/DCHECK/release behavior choices appropriate for the API contract?
-- Is test coverage proportional to risk and blast radius?
-
-**Contracts And Cross-Cutting Consistency**
-- Do header comments, method contracts, and documented invariants match the
-  implementation? Treat contradictions as defects, not cosmetic nits.
-- For every new predicate, gate, sentinel, or constant, find all uses and verify
-  collaborating classes interpret it consistently.
-- Is a `DCHECK` being used for a load-bearing invariant or for input crossing an
-  API boundary where release builds need explicit validation or `CHECK`?
-
-**Integration And Feature Control**
-- Is the new behavior actually wired into the intended production path?
-- Does disabled/default behavior preserve the old path?
-- Can existing and new implementations of the same feature both apply?
-- Is there an appropriate kill-switch for broad runtime behavior changes?
-
-## 11. Severity Calibration
-
-- **P1:** Serious correctness, security, data loss, UAF, deadlock, or major
-  regression risk. Must fix before landing.
-- **P2:** Real correctness risk, missing coverage for core/default behavior,
-  likely production regression, or contract ambiguity that can mislead callers.
-  Normally fix before LGTM.
-- **P3:** Documentation clarity, non-blocking test polish, minor efficiency,
-  small consistency issues, or defensive improvements. Often optional or
-  follow-up-worthy.
-- In stack or foundation CLs, API contract mistakes can be P1 even before a
-  production caller lands if follow-up CLs are likely to bake in the behavior.
-- Avoid blocking on speculative problems, style preferences, or fixes whose
-  tradeoffs have not been validated.
-- Do not downgrade an API-shape, sentinel, or contract issue merely because it is
-  documented if the documented behavior remains a footgun for downstream CLs.
-- A mock-time hang that can block CI is more severe than a comparable real-time
-  performance nuisance.
-
-## 12. Final Synthesis Pass
-
-Before final output, run a contradiction pass:
-
-- Are findings derived from actual code traces rather than assumptions?
-- Do proposed fixes preserve the documented contract and nearby Chromium idioms?
-- Have API-shaping fixes been weighed against reasonable alternatives?
-- Did the integration trace prove the code is wired into the intended runtime
-  path, and did the disabled/default-path trace prove old behavior is preserved?
-- Do tests prove the intended behavior, or merely compile/run nearby paths?
-- Are prior-review findings clearly separated from new findings?
-- Are any findings contradicted by another caller path, wrapper, override,
-  feature flag, or test-only restriction?
-- Are any issues only style preferences, and should they be P3 or omitted?
-- Are severities calibrated for this CL's position in any larger stack?
-- What did you not verify: tests not run, callers not traced, platform paths not
-  checked, or assumptions that still need confirmation?
-
-## 13. Communication And Tone
-
-Follow Chromium review norms:
-
-- Assume competence and goodwill.
-- Lead with concrete findings, not broad praise.
-- Explain why each requested change matters.
-- Ask "why" when intent is unclear and the answer affects the review.
-- Avoid bikeshedding; label optional polish as optional.
-- Make next steps explicit: what blocks LGTM, what is optional, and what can
-  land as follow-up.
-
-## 14. Output Format
+## Output Format
 
 Format the final review as:
 
@@ -436,6 +230,25 @@ Format the final review as:
    or not traced, and any important areas not verified.
 7. **Next Steps:** State what is required before `+1 LGTM` and what is optional.
 
-For Gerrit-ready review text, cite findings as repo-relative `path:line` against
-the reviewed patchset and re-check line numbers before sending. Avoid leaking
-local filesystem paths in comments meant for Gerrit.
+For full CL reviews, append compact **Gerrit-Ready Comments** unless the user
+asks for a short summary only:
+
+- **Main body:** brief landing-readiness summary, blockers, optional items,
+  prior review status, and verification notes.
+- **Replies to existing unresolved threads:** file and thread line, status, and
+  the exact response. Do not open duplicate new threads for an existing topic.
+- **New inline comments:** repo-relative file, exact line or range, verbatim line
+  text from the reviewed patchset, and concise comment text. Prefix optional
+  polish with `nit:`.
+
+For Gerrit-ready text, cite findings as repo-relative `path:line` against the
+reviewed patchset, extract quoted code verbatim, and re-check line numbers
+before sending. Avoid leaking local filesystem paths in comments meant for
+Gerrit.
+
+## Tone
+
+Follow Chromium review norms: assume competence and goodwill, lead with concrete
+findings, explain why each requested change matters, ask "why" when intent is
+unclear and affects correctness, label optional polish as optional, and make
+landing blockers explicit.
