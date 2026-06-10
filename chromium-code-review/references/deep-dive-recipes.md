@@ -42,9 +42,13 @@ the interaction between what changed and what did not.
 
 ## Desk-Check Simulation
 
-Execute code; do not read it. Names and comments describe intent — only
-simulation reveals behavior. For each changed function that touches sizes,
-offsets, indices, buffers, loops, or arithmetic:
+Execute the code on paper rather than just reading it: names and comments
+describe intent — only simulation reveals behavior. This is a hand
+simulation with a written value table, not an instruction to build or run
+anything (for when actually executing code is warranted, see
+Execution-Based Verification in `references/verification-and-fixes.md`).
+For each changed function that touches sizes, offsets, indices, buffers,
+loops, or arithmetic:
 
 1. Pick two or three concrete inputs from the table below, biased toward the
    boundary the code is least obviously prepared for.

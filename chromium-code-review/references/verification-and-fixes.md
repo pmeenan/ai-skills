@@ -9,6 +9,7 @@ in SKILL.md.
 ## Contents
 
 - Verifying Candidate Findings
+- Execution-Based Verification
 - Evaluating Fixes
 - Final Synthesis Pass
 
@@ -39,6 +40,29 @@ code, not from memory.
   deleting them; synthesis re-checks the ledger.
 - Distinguish observation from proposed fix. Never recommend a concrete fix
   until it has been traced through the relevant edge cases below.
+
+## Execution-Based Verification
+
+Code citations and paper traces are the default standard of evidence — cheap
+and almost always sufficient. Building the patchset or running tests is a
+bounded, last-resort tier, not a routine step:
+
+- Use it only in verification (never discovery), and only for a P1/P2
+  candidate whose paper trace is genuinely contested — where running the
+  smallest test would settle confirm-vs-refute.
+- Build only the narrowest target against an existing warm build directory
+  (`autoninja -C out/<existing> net_unittests` plus a tight
+  `--gtest_filter`). Never `gn gen` a fresh output directory in a temporary
+  worktree: a cold Chromium build costs an hour-plus and buys less than an
+  hour of tracing. If no warm build exists, skip execution and record the
+  candidate as "needs execution verification" in Verification Notes.
+- Budget it: if the build or run exceeds roughly ten minutes, stop and fall
+  back to the paper trace.
+- Record in Verification Notes exactly what was built or run, how long it
+  took, and which candidate it settled — so the next iteration can judge
+  whether the time was earned. The regression test named in a P1/P2 finding
+  is a description for the CL owner, not an obligation to implement and run
+  it.
 
 ## Evaluating Fixes
 
