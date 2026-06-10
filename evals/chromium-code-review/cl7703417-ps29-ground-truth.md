@@ -150,7 +150,7 @@ stretched both.
 
 ## Adjudicated additions (found by eval runs, verified post-hoc)
 
-Score these separately as "A recall (x/5)" so the historical P0/P1/P2
+Score these separately as "A recall (x/7)" so the historical P0/P1/P2
 denominators stay comparable across runs.
 
 - **A-1 Write hang on synchronous drain (P0-class)** —
@@ -193,6 +193,23 @@ denominators stay comparable across runs.
   whose buffers can never notify it: reads hang. Adjudicated via the PS51
   review's B3, which independently describes the same poisoning on later
   code; found blind at PS29 by a fourth eval model.
+- **A-6 Pending `Read()`/`Write()` retain raw `IOBuffer*` (P1-class)** —
+  `delayed_stream_socket.cc:~187-189, ~423-425` (members) with later
+  dereferences (~347-349, ~509-511). `Socket` requires holding a reference
+  to the caller's buffer until the callback runs (`socket.h:34-37, 67-71`);
+  the wrapper stores bare pointers, so a caller that releases its reference
+  during `ERR_IO_PENDING` leaves the wrapper writing through a dangling
+  pointer. Adjudicated via the PS51 review's B5 (same buffer-retention
+  contract violation on later code); found blind at PS29 by a fifth eval
+  model.
+- **A-7 Datagram `Write()` sends before applying the delay (P1-class)** —
+  `delayed_datagram_socket.cc` write path. Outbound packets reach the wire
+  immediately while only the completion callback is delayed — the peer
+  responds before the simulated latency elapses, and a write-blocked QUIC
+  writer serializes uploads to ~one packet per delayed completion.
+  Adjudicated via the PS44 review's finding B, which independently
+  describes the same wire-before-delay model on later code; found blind at
+  PS29 by the same eval model.
 
 ## Not graded
 

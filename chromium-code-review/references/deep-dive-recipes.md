@@ -95,6 +95,13 @@ disproportionate share of real P1s.
 - **Multiplication and shifts on sizes:** for `a * b` or `a << b` feeding an
   allocation or offset, compute the smallest inputs that overflow and ask
   what bounds them.
+- **Rate, token-bucket, and throughput types:** probe four named values
+  through every conversion and refill path — `0`, the smallest sub-unit
+  positive value (e.g. 0.4 kbps before a ×1024 cast), each "unlimited"
+  sentinel, and "accumulating while consumers are queued / while time
+  advances". The last probe is the one runs keep skipping: token caps that
+  only apply when the queue is empty quietly break the rate limit while
+  work is waiting.
 
 ## Data Lineage
 

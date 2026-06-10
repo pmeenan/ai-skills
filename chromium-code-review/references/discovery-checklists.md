@@ -372,6 +372,11 @@ changed surface.
   exercise the edge case named by its name or comment, or merely codify the
   current implementation? Trace the test's control flow and assertions
   rather than trusting its name.
+- A test-gap row must name the concrete missing scenarios — function plus
+  input class ("partial inner `Write`", "`ReadIfReady` over async mock
+  data") — or it is an unanswered row. Generic "needs more coverage"
+  buckets do not satisfy this section: a measured run emitted them, and
+  synthesis collapsed them into ledger-only language that named nothing.
 - Check mock/fixture fidelity for semantic variables production keeps
   distinct: wire bytes vs decoded bytes, headers vs synthetic flags, feature
   defaults, platform state, persisted metadata, and wrappers. A passing test
