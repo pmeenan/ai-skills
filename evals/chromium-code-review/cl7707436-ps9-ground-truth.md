@@ -59,9 +59,11 @@ P3 recall as separate numbers.
   `http_cache_writers.cc:105-120`. `StopCaching(keep_entry=true)` after
   compressed bytes were written is not accounted for in the compression
   state. Either observable consequence counts as this item: (a) a kept
-  unfinalized/partially compressed entry, or (b) a spurious doom via the
-  `expected_result = compressed_write_len_` mismatch once writes stop while
-  `compressing_for_cache_` remains true. Fix direction: on StopCaching with
+  unfinalized/partially compressed entry — e.g. `success == true` skips
+  `ShouldTruncate()`, finalize never runs, and the entry keeps a compressed
+  body with no `zstd_uncompressed_body_size` metadata — or (b) a spurious
+  doom via the `expected_result = compressed_write_len_` mismatch once
+  writes stop while `compressing_for_cache_` remains true. Fix direction: on StopCaching with
   compressed bytes written, force `keep_entry` to false and reset
   compression state.
 - **GT-7 `InitCompression` retried per chunk → mixed-format entry** —

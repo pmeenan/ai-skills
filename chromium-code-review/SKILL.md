@@ -178,11 +178,27 @@ acceptable only for trivial CLs, and every merge must reappear in
 Verification Notes.
 
 Spawn one subagent per planned thread with a self-contained brief (see
-Subagent Briefs); run threads in parallel where the harness allows. Overlap
-between threads is fine — redundant coverage is how disjoint blind spots get
-closed. If subagents are genuinely unavailable, execute the same plan
-yourself as serial sweeps in plan order, completing each thread's rows
-before starting the next.
+Subagent Briefs); run threads in parallel where the harness allows, and
+record each thread's subagent/task identifier in the plan. Overlap between
+threads is fine — redundant coverage is how disjoint blind spots get closed.
+Only if the harness cannot spawn subagents may you execute the plan yourself
+as serial sweeps in plan order, completing each thread's rows before
+starting the next — and Verification Notes must say so and name the
+limitation. Self-executing when subagents exist is a measured failure mode:
+one agent running eleven sweeps found three P1s in its first, fresh sweep,
+then starved the rest — shallow-wrong error-path answers, pencil-whipped
+matrices, and zero polish-tier findings.
+
+Discovery ends only when every planned thread has reported its deliverable.
+Outstanding threads are blocking dependencies, not background noise: wait
+for them. If running the whole plan concurrently strains the harness, run
+priority-order batches of three or four threads instead of abandoning slow
+ones. Expect the section threads to be slowest — they read the most — and
+to carry the most findings: in a measured run, an orchestrator that killed
+its two slowest threads before they reported lost four of its five
+remaining P1/P2 findings inside them. If the harness genuinely terminates a
+thread, record it in the plan and in Verification Notes as "terminated —
+scope unreviewed"; never mark an uncollected thread Completed.
 
 Merge every returned row into the ledger verbatim. Do not judge severity,
 likelihood, or fixability while merging; duplicates are collapsed and
@@ -276,7 +292,14 @@ briefs freehand:
 5. **Rules:** discovery enumerates without filtering — "probably fine" rows
    are still rows; an incomplete recipe step (a guard you cannot name, a
    test you cannot find) is itself a row; the CL description is a claim to
-   audit, not ground truth.
+   audit, not ground truth. A matrix or checklist row may be closed benign
+   only by citing the guard line or the safe trace, and any anomaly the
+   row's answer records — a success-shaped return after failure cleanup,
+   duplicated cleanup, a skipped check, an unawaited write — becomes a
+   candidate row even if it looks benign. Benignity is verification's call:
+   in a measured run, a thread's own row notes contained two P1 bugs
+   ("returns `write_len_` after `OnCacheWriteFailure()`"; "triggers cleanup
+   twice"), adjudicated them benign inline, and surfaced neither.
 
 Verification skeptics swap (3)–(5) for the candidate rows under test, the
 pinned patchset, and the instruction to read
@@ -293,14 +316,19 @@ Format the final review as:
    patchset and revision SHA, and summarize bug alignment.
 3. **Prior Review Follow-Up:** If prior issues were supplied, summarize their
    status with evidence.
-4. **Positives:** Briefly note important good decisions.
+4. **Positives:** Briefly note important good decisions. A praised safety
+   property is a claim like any other — name its guard line. (A measured run
+   praised "failures fail open safely" about the exact branch that treated a
+   failure as success.)
 5. **Questions:** Only questions whose answers affect correctness, API contract,
    or landing readiness.
 6. **Verification Notes:** State tests run or not run, production wiring traced
    or not traced, and any important areas not verified. Reproduce the full
    thread plan with each thread's outcome: rows returned, or merged (name
-   the absorbing thread), or skipped (with reason). A skipped or merged-away
-   thread is an unverified area by definition.
+   the absorbing thread), or skipped (with reason). Include each thread's
+   subagent/task identifier, or "self-executed" plus the harness limitation
+   that forced it. A skipped or merged-away thread is an unverified area by
+   definition.
 7. **Next Steps:** State what is required before `+1 LGTM` and what is optional.
 
 For full CL reviews, append compact **Gerrit-Ready Comments** unless the user
