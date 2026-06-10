@@ -20,6 +20,7 @@ proved tend to silently skip exactly the places where proof was hard.
 - Recipe: Container And View Invalidation
 - Recipe: Error-Path Walk
 - Recipe: State × Method Matrix
+- Recipe: Mode × Host-Capability Matrix
 - Recipe: Teardown Order
 
 ## Context Rules
@@ -156,6 +157,18 @@ questions and list each return point with its answers:
 3. What members or outputs are left half-initialized, and who can observe
    them afterwards?
 4. What resources (locks, slots, fds, cache entries, quota) are still held?
+5. Trace the exact return value one step into its consumer: what does the
+   enclosing loop, state machine, or caller do next with this value and the
+   state this branch just mutated? Walk one full iteration past the error —
+   error branches that read correctly in isolation fail at the hand-off.
+
+For `DoLoop`-style state machines (the net/ `next_state_` pattern): on every
+branch, check that the pair (return value, `next_state_`) leaves the machine
+in a defined configuration. An error return with a stale `next_state_`
+re-enters a state whose preconditions the cleanup just destroyed; a
+success-shaped return (a positive length, `OK`) emitted after failure cleanup
+makes the loop treat the failure as success. Both read locally like correct
+error handling.
 
 ## Recipe: State × Method Matrix
 
@@ -173,6 +186,34 @@ after Close/Abort/error, the same method called twice, and any entry point
 arriving while an async operation is in flight. Edge cases are cells of this
 matrix; enumerating them mechanically beats hoping to notice them.
 
+## Recipe: Mode × Host-Capability Matrix
+
+Trigger: the CL adds a mode, flag, or transform to an existing class — a new
+bool, enum, or member that changes how existing operations behave.
+
+The diff shows the new mode; the bugs live in the host's pre-existing
+capabilities, which the diff barely touches. A diff-anchored read structurally
+cannot see these cells, so enumerate them:
+
+1. Read the entire class header, not just the changed declarations. List
+   every public entry point, changed or not.
+2. List the host's pre-existing capabilities and special modes. Grep the
+   class for markers such as `parallel`, `Stop`, `cancel`, `abort`,
+   `truncat`, `resume`, `restart`, `retry`, `range`, `doom`, `join`, plus
+   any mode/pattern enums declared in the header.
+3. Build the matrix: new mode × each entry point and capability. Mark every
+   cell compatible, incompatible-but-guarded (name the guard line), or
+   incompatible-unguarded.
+4. Every incompatible-unguarded or unexplained cell is a ledger candidate.
+   The old entry points were written before the new mode existed; assume
+   they mishandle it until the guard is named.
+
+Example pattern: a CL adds on-disk compression to a cache writer. The matrix
+row "compressing" × {parallel writers catching up from disk, StopCaching
+mid-stream, truncation detection comparing disk size to Content-Length, a
+late transaction joining} contains four P1 bugs — none of which appear in
+the changed hunks.
+
 ## Recipe: Teardown Order
 
 Trigger: any touched stateful class.
@@ -186,3 +227,8 @@ Trigger: any touched stateful class.
 4. If the CL adds a member, check its declaration position relative to the
    members and callbacks that reference it — a new member declared after the
    timer that uses it is destroyed first.
+5. For operation-scoped heavy resources (codec contexts, large buffers,
+   scratch arenas) owned by a long-lived object: name the line that releases
+   the resource at the end of the operation — on success, failure, and
+   cancellation — not just in the owner's destructor. A request-scoped
+   resource held until a connection-scoped owner dies is a memory finding.

@@ -51,6 +51,13 @@ to miss by reading.
 - For each feature flag or build gate in the diff: grep the flag name across
   the tree, list every gate site, and check that the sites agree on polarity
   and default.
+- Scan hunks for pre-existing statements that became conditional: existing
+  checks newly wrapped in `if (!new_flag)`, new early returns or `continue`s
+  inserted above old logic, old branches short-circuited by new state. Each
+  bypassed guard is automatically a ledger candidate — "IF the new mode is
+  active THEN the property the old check enforced is unenforced UNLESS a
+  replacement exists." Finding the replacement (or its absence) is
+  verification's job; noticing the bypass is not optional.
 - Grep changed files for `PostTask`, `BindOnce`, `BindRepeating`,
   `base::Unretained`, and new timers. For each, name the object that owns the
   callback target and the line that guarantees the callback cannot outlive
@@ -76,6 +83,9 @@ For each entry in the changed-surface inventory, answer:
 - What async work, timers, callbacks, cancellation, and reset/destruction
   behavior does it have?
 - What happens on invalid, default, zero/empty, and sentinel inputs?
+- Which pre-existing guards or checks does this surface now bypass, weaken,
+  or make conditional in the new mode — and what enforces the old property
+  on the new path?
 
 Then record at least three concrete hypotheses about how the surface could be
 wrong, each in falsifiable form: "IF ⟨sequence or input⟩ THEN ⟨bad outcome⟩
@@ -168,6 +178,17 @@ loop as a wall-time nuisance.
 - Renumbering or reusing values of a persisted or serialized enum silently
   changes the meaning of data already on disk. Verify existing values stay
   stable and new values append.
+- For streaming/chunked transforms feeding persistence (compression,
+  encryption, encoding): is the transform decision made once per entry and
+  latched, or re-evaluated per chunk? If transform init or a transform step
+  fails mid-entry, is the whole entry doomed — or does the code fall back
+  for just the remaining chunks, persisting a mixed-format entry no reader
+  can parse? What marks the entry so readers know which format they are
+  reading?
+- Count the disk/IPC writes the CL adds per chunk and per entry/operation.
+  Two adjacent writes to the same target (for example, response info and
+  index metadata both updated at EOF) are a consolidation candidate;
+  metadata writes cost as much as data writes.
 
 Example pattern: the primary cache write succeeds, then a fire-and-forget
 metadata write fails silently. If that metadata later selects or validates

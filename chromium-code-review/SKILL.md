@@ -147,7 +147,9 @@ Read the discovery-checklist sections selected by the risk map and
   for. Vague candidates ("might have threading issues") are not ledger
   entries. All three being refuted later is a good outcome, not wasted work.
 - Walk the required traces for the matching risk areas; the checklist sections
-  state them.
+  state them. Record each walked trace in the ledger as
+  `scenario → lines visited → outcome`. A trace with no written outcome was
+  not walked; "checked cancellation, looks fine" does not count.
 - Trace integration: each new behavior from its public/config entrypoint
   through wiring to the concrete code that changes, and the disabled/default
   path to confirm old behavior is preserved (details in the integration
