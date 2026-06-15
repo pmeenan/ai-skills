@@ -56,6 +56,10 @@ to miss by reading.
   `git clang-format --diff <parent>` for Chromium C++/Blink changes). Neither
   catches extra or missing blank lines — scan those manually in the polish
   pass.
+- Scan added or modified lines for non-ASCII characters:
+  `git diff --color=never --unified=0 <parent> <revision> -- '*.cc' '*.h' '*.mm' '*.md' | LC_ALL=C rg -n '^[+][^+].*[^[:ascii:]]'`.
+  Each hit in comments, docs, or developer-facing test prose is a polish
+  candidate unless the character is intentional and justified.
 - For each changed or new function/method: `git grep -n '<Name>('` and visit
   each non-test caller. Changed semantics with unchanged callers is a classic
   miss.
@@ -431,6 +435,11 @@ dropping them from an otherwise-LGTM review.
   caller guidance: if a comment says callers should pass null, use a
   sentinel, or choose a wrapper, it should name the concrete type/API where
   that choice exists.
+- Flag newly introduced non-ASCII characters in comments, API docs, and
+  developer-facing test prose as optional polish unless they are intentional
+  names, protocol data, user-visible strings, or otherwise clearly required.
+  Prefer ASCII punctuation in Chromium code comments, especially replacing
+  smart quotes and em/en dashes with plain ASCII equivalents.
 - For FIFO/LIFO containers, prefer Chromium's `base::queue` / `base::stack`
   over `std::queue` / `std::stack` unless the code needs the standard
   underlying container's pointer/iterator stability or another documented
