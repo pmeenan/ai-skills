@@ -35,8 +35,9 @@ miss real issues; skipping verification is the main way they report false ones.
   checklists in Pass 3 for any CL touching arithmetic, buffers, lifetimes,
   state, persistence, or trust boundaries.
 - `references/verification-and-fixes.md`: how to verify candidate findings,
-  evaluate proposed fixes, and run the final synthesis pass. Read before
-  promoting candidates into the review or endorsing any fix.
+  evaluate proposed fixes, run the root-cause/layering pass, and run the
+  final synthesis pass. Read before promoting candidates into the review or
+  endorsing any fix.
 
 For a full non-trivial CL review all three files end up loaded; the only
 question is when. Load the discovery checklists and recipes early, and the
@@ -296,12 +297,51 @@ refute becomes a question for the CL owner in the review — never a silent
 drop. Evaluate any fix you intend to propose against the fix heuristics in
 the same file, and verify proposed fixes as carefully as bugs.
 
+### Pass 4.5 — Root-Cause, Layering, And Fix Optimality
+
+Run this after verification and before synthesis. This pass is adversarial to
+the review's own current explanation: it asks whether the CL fixes the real
+cause at the right layer, rather than just the first observed symptom.
+
+For every P1/P2 candidate, risky P3, proposed fix, performance optimization,
+flaky-test fix, async/lifecycle change, state-machine change, cache/throttle,
+or new state holder, follow the Root-Cause, Layering, And Fix Optimality
+section of `references/verification-and-fixes.md` and record the required
+artifacts in the ledger:
+
+- the causal chain from symptom to invariant owner;
+- the upstream/source layer, local layer, downstream/caller layer, and any
+  existing shared helper or canonical state owner checked;
+- whether the fix covers all callsites sharing the invariant, not only the
+  observed caller or failing test;
+- for duplicated or cached state, why this location is safer than fixing or
+  caching the canonical value;
+- for flaky tests, whether the underlying method/protocol is deterministic or
+  only the waiter/end condition was made deterministic;
+- for async and state machines, the reachable interleaving or state transition
+  that confirms or refutes the risk.
+
+If the pass identifies a better owner, a missing caller family, duplicated
+state, an unverified state-machine cell, or a new affected surface, add new
+ledger rows and return to the relevant Discovery and Verification recipes
+before final output. Synthesis may not start until reopened rows are verified,
+refuted, or converted into owner questions.
+
+Where subagents are available, spawn one root-cause challenger after
+verification. Brief it with the pinned patchset, the verified candidates and
+proposed fixes, and the instruction to read `references/verification-and-fixes.md`
+and execute only the Root-Cause, Layering, And Fix Optimality section. Its
+deliverable is ledger rows: better-owner hypotheses, callsite gaps,
+duplicated-state risks, stale-fix risks, and refutations with `path:line`
+evidence. If the challenger returns new rows, verify them before synthesis.
+
 ### Pass 5 — Synthesis
 
 Run the final synthesis pass from the verification file: contradiction checks,
-ledger reconciliation, and the not-verified list. Synthesis produces a
-**reconciliation table** as a required artifact: every **thread-emitted**
-ledger row ID mapped to its disposition — promoted (to finding N), refuted
+root-cause/layering closure, ledger reconciliation, and the not-verified list.
+Synthesis produces a **reconciliation table** as a required artifact: every
+**thread-emitted** ledger row ID mapped to its disposition — promoted (to
+finding N), refuted
 (with the citation), converted to a question, or merged (into row M). The
 table enumerates the rows as the threads returned them, not an
 orchestrator's summary of them. Output is blocked until every row has a
@@ -424,7 +464,10 @@ Format the final review as:
    definition. On large CLs the full compliance matrices may live in the
    saved ledger artifact with Verification Notes pointing at it — but every
    per-row answer must exist somewhere retrievable; a "combined audit
-   summary" that discards rows defeats the accounting.
+   summary" that discards rows defeats the accounting. Also state the
+   root-cause/layering pass outcome: candidate count checked, any better
+   owner or broader invariant found, and any discovery/verification rows
+   reopened because of it.
 7. **Next Steps:** State what is required before `+1 LGTM` and what is optional.
 
 For full CL reviews, append compact **Gerrit-Ready Comments** unless the user
