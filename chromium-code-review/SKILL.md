@@ -94,6 +94,13 @@ verification file once the candidate list is built.
 - Audit the CL description, commit message, and referenced design docs against
   the current implementation. Flag stale architectural claims when iterative
   refactoring made the docs no longer match the code.
+- Run a scope-relevance pass over the diff: every changed function, declaration,
+  new member, test hook, defensive guard, and refactor must be either directly
+  part of the CL's stated goal, a necessary consequence of that goal, required
+  test/support plumbing, or explicitly called out in the CL description. Side
+  hardening and opportunistic cleanup that do not meet one of those bars are
+  polish findings: suggest reverting them, splitting them out, or documenting
+  the extra scope in the description.
 - Compare changed code to nearby Chromium patterns, ownership boundaries, and
   existing tests. When local precedent is unclear, search the module and then
   the wider tree.
@@ -125,7 +132,10 @@ Build two artifacts from the diff before forming opinions:
   factory, stateful helper, feature entrypoint, and production wiring point.
   For each, record its contract source, primary callers, old behavior, new
   behavior, mutable state, ownership/lifetime model, tests, and whether it is
-  production-reachable, test-only, or future-stack plumbing.
+  production-reachable, test-only, or future-stack plumbing. Also label its
+  scope relationship as `core`, `necessary consequence`, `test/support`,
+  `defensive hardening`, or `opportunistic cleanup`; anything outside the first
+  three needs either a correctness justification or a CL-description mention.
 - **Risk-area map:** classify changed files by risk area — API contract,
   async/lifecycle, buffering/backpressure, persistence/cache state,
   security/privacy, memory ownership, threading/sequencing, performance,
@@ -170,9 +180,11 @@ orchestrator's grasp of what each thread is for.
 - One mechanical-leads thread: run the commands, return every hit as a row.
 - One holistic-and-polish thread: bug alignment and scope (does the CL solve
   the bug it cites, cohesively, at a reviewable size, without unnecessary
-  abstraction?), idiom consistency (names, types, containers, callbacks,
-  ownership, error handling vs nearby code), performance and memory cost,
-  test-coverage proportionality, and the Changed-Lines Polish scan.
+  abstraction or unrelated hardening?), diff-to-description coverage (does the
+  CL description mention every non-core behavior change and notable defensive
+  cleanup?), idiom consistency (names, declaration placement, types, containers,
+  callbacks, ownership, error handling vs nearby code), performance and memory
+  cost, test-coverage proportionality, and the Changed-Lines Polish scan.
   "Holistic" names its lens, not a license: like every thread, its
   deliverable is ledger rows — a coverage gap is reported as a row naming
   the missing test, never remediated by writing it.

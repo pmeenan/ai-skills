@@ -60,6 +60,12 @@ to miss by reading.
   `git diff --color=never --unified=0 <parent> <revision> -- '*.cc' '*.h' '*.mm' '*.md' | LC_ALL=C rg -n '^[+][^+].*[^[:ascii:]]'`.
   Each hit in comments, docs, or developer-facing test prose is a polish
   candidate unless the character is intentional and justified.
+- Scan added or modified `bool` declarations for predicate-style names:
+  `git diff --color=never --unified=0 <parent> <revision> -- '*.cc' '*.h' | rg -n '^[+][^+].*\bbool\s+[A-Za-z0-9_]+_'`.
+  Blink/Chromium booleans should usually read like predicates (`is_`, `has_`,
+  `should_`, `did_`, `can_`, etc.). Flags that enable an optimization must not
+  be named like the current cached/result state; record ambiguous names as
+  optional polish.
 - For each changed or new function/method: `git grep -n '<Name>('` and visit
   each non-test caller. Changed semantics with unchanged callers is a classic
   miss.
@@ -200,6 +206,12 @@ loop as a wall-time nuisance.
   who receives it: a cache-write error surfacing in the consumer's
   completion path (e.g. failing a fetch whose network transfer succeeded) is
   a candidate by default.
+- For every new cache or derived-value holder, especially a pair like
+  "enable caching" plus "cached value is present", verify that names and nearby
+  comments distinguish policy from state, identify the source value, and name
+  the invalidation/mutation hook. If a reviewer could plausibly mistake an
+  enable flag for a "has cached value" bit, record a contracts/polish
+  candidate.
 - Is each piece of metadata optional telemetry/timing, or load-bearing —
   needed to parse, select, or validate persisted data? Load-bearing metadata
   writes must be awaited or covered by a proven atomic/journaled invalidation
@@ -424,6 +436,28 @@ dropping them from an otherwise-LGTM review.
 - Limit style, formatting, and consistency nits to lines modified by the CL.
   If a correctness issue depends on unchanged code, explain how the CL made
   that code relevant to the review.
+- Re-run the scope-relevance check on each hunk: is this changed line part of
+  the stated fix, a necessary consequence, or test/support plumbing? If it is
+  defensive hardening, null-checking, refactoring, renaming, or cleanup that is
+  merely adjacent to the fix, ask whether it should be reverted, split out, or
+  called out in the CL description. Do not silently endorse unrelated cleanup
+  just because it is harmless.
+- Check declaration placement in headers and class bodies. New methods should
+  preserve existing local grouping and should not split obvious pairs such as
+  getter/setter, start/stop, create/destroy, or URL/getter mutation methods
+  unless the new declaration logically belongs between them. New data members
+  should sit with the state they derive from or invalidate, not simply at the
+  first compiling location.
+- For newly added private members, caches, optional state, feature latches, and
+  test-only introspection helpers, ask whether the name alone explains the
+  invariant. If not, request a brief comment naming what the field means and
+  what invalidates or owns it. Prefer a comment on the state group over
+  scattered comments when several fields form one invariant.
+- Check boolean names for Chromium/Blink predicate style and semantic
+  precision: use names that read as true/false facts or policy decisions
+  (`is_`, `has_`, `should_`, `did_`, `can_`, `needs_`, etc.), and distinguish
+  "should cache" from "is cached" or "has cached value". Ambiguous booleans are
+  optional polish even when the code is otherwise correct.
 - For changed comments and API docs, verify each behavioral clause is
   literally supported by the implementation. Watch for misleading causal or
   exclusivity words such as "only", "whenever", "until", "unless",
