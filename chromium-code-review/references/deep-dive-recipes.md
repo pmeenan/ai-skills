@@ -202,6 +202,16 @@ combinations (bools, optionals, null-vs-set pointers, pending callbacks).
    destructor).
 3. For each cell: is the call legal in that state, what enforces that, and
    what actually happens if it occurs?
+4. **Trace Telemetry & Cancellation:** If the class records UMA
+   metrics/telemetry:
+   - Identify cells in the matrix where an operation is cancelled or aborted
+     while a background task, I/O, or asynchronous operation is pending
+     (e.g., in-flight network, disk, IPC, or task runner wait).
+   - If the async completion callback/method still runs later (even to perform
+     no-op or cleanup), verify that success-only metrics (e.g., duration,
+     success count, size/ratio metrics) are *not* logged. Ensure logging is
+     gated so aborted attempts do not pollute success statistics.
+
 
 Spend extra attention on the cells inspiration never visits: a method called
 after Close/Abort/error, the same method called twice, and any entry point
@@ -209,6 +219,7 @@ arriving while an async operation is in flight. Edge cases are cells of this
 matrix; enumerating them mechanically beats hoping to notice them. Return
 the rendered table with every cell marked (legal/enforced/what-happens or
 not-checked); unvisited cells are candidates, not omissions.
+
 
 ## Recipe: Mode × Host-Capability Matrix
 

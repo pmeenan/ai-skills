@@ -248,3 +248,33 @@ review:
 - What did you not verify — tests not run, callers not traced, platform paths
   not checked, assumptions that still need confirmation? State these in the
   review's Verification Notes.
+
+## Verdict Alignment And Gerrit Output Rules
+
+### Verdict Formatting
+
+Avoid contradictory verdicts. If there is a blocking defect (P1 or P2),
+the verdict must explicitly state that the change is blocked. Do not combine
+approvals with blocking conditions.
+*   *Incorrect:* "LGTM with optional Polish (P3) after resolving one blocking
+    P2 defect"
+*   *Correct:* "Not LGTM until the P2 telemetry bug is fixed; remaining items
+    are optional P3."
+
+### Gerrit-Ready Comments Constraints
+
+When formatting comments meant to be copy-pasted directly to Gerrit:
+*   **No Local Paths:** Gerrit comments must *never* contain local absolute
+    file paths (e.g. `/usr/local/...`) or local `file:///` URLs. Use
+    repo-relative references only (e.g. `net/http/http_cache_writers.cc:1010`).
+*   **No Placeholder/Fake Inlines:** Do not output generic placeholder inline
+    comments (e.g., `L16500 (General Nit) // General Nit`). General feedback
+    belongs in the main comment body. Inline comments must target real,
+    modified lines of code.
+*   **Concise, Query-Based Inlines:** Frame inline feedback as questions or
+    concise queries (e.g., *"Can we gate these success-only metrics...?"*)
+    rather than writing out large diff blocks, unless a specific, simple
+    replacement is optimal. Avoid repeating the same suggestion across
+    multiple files/declarations; place a single comment at the most
+    relevant site.
+

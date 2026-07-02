@@ -467,19 +467,29 @@ Format the final review as:
 6. **Questions:** Only questions whose answers affect correctness, API contract,
    or landing readiness.
 7. **Verification Notes:** State tests run or not run, production wiring traced
-   or not traced, and any important areas not verified. Reproduce the full
-   thread plan with each thread's outcome: rows returned, or merged (name
-   the absorbing thread), or not-triggered (with reason). Include each thread's
-   subagent/task identifier, or "self-executed" plus the harness limitation
-   that forced it. A not-triggered or merged-away thread is an unverified area by
-   definition. On large CLs the full compliance matrices may live in the
-   saved ledger artifact with Verification Notes pointing at it — but every
-   per-row answer must exist somewhere retrievable; a "combined audit
-   summary" that discards rows defeats the accounting. Also state the
-   root-cause/layering pass outcome: candidate count checked, any better
-   owner or broader invariant found, and any discovery/verification rows
-   reopened because of it.
+   or not traced, and any important areas not verified.
+   - **Simplify Subagent References:** Avoid listing internal agent
+     conversation IDs or background task UUIDs in the final summary report.
+     Group and describe them logically using human-readable names (e.g.,
+     *"Subagent A (Arithmetic/Lifetime) ran..."*).
+   - **Honest Test Execution:** Only claim that tests were run and passed if
+     the exact execution commands were successfully run against the target
+     patchset. If no tests were run, explicitly state: *"No local test
+     execution was performed during this review."*
+   Reproduce the full thread plan with each thread's outcome: rows returned, or
+   merged (name the absorbing thread), or not-triggered (with reason). Include
+   each thread's subagent/task identifier (using human-readable names), or
+   "self-executed" plus the harness limitation that forced it. A not-triggered
+   or merged-away thread is an unverified area by definition. On large CLs the
+   full compliance matrices may live in the saved ledger artifact with
+   Verification Notes pointing at it — but every per-row answer must exist
+   somewhere retrievable; a "combined audit summary" that discards rows defeats
+   the accounting. Also state the root-cause/layering pass outcome: candidate
+   count checked, any better owner or broader invariant found, and any
+   discovery/verification rows reopened because of it.
+
 8. **Next Steps:** State what is required before `+1 LGTM` and what is optional.
+
 
 For full CL reviews, append compact **Gerrit-Ready Comments** unless the user
 asks for a short summary only:

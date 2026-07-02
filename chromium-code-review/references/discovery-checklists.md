@@ -298,8 +298,19 @@ unobservable.
   buffer-full retry path, so every write that fit the buffer went
   unthrottled — three of four models missed it even after enumerating the
   consultation sites.)
+- **Histogram/Telemetry Description Accuracy:** For every new or modified
+  histogram:
+  Audit the summary description in `histograms.xml` against the actual
+  implementation's logging conditions. Verify the description accurately covers
+  all cases where the histogram is emitted. If a "skipped" or default bucket
+  records standard non-feature cases (e.g., non-feature-eligible runs, or runs
+  rejected due to unsupported standard protocol features like unsupported
+  `Content-Encoding` values), the summary must not misrepresent the metric as
+  being restricted only to feature-active cohorts.
+
 
 Example pattern: `#if !defined(FEATURE_X)` guarding the *enabled*
+
 implementation compiles the feature out exactly where it should exist. The
 default build silently ships the old path, and every bot stays green.
 
