@@ -196,8 +196,8 @@ owns the smallest and least obvious files — the per-file ledger floor
 depends on it.
 
 Write the complete plan into the ledger before spawning anything: one line
-per thread — name, scope, status (spawn / merged-into-⟨thread⟩ / skipped) —
-with a reason for every merge and skip. The plan enumerates the **full
+per thread — name, scope, status (spawn / merged-into-⟨thread⟩ / "not triggered: ⟨reason⟩") —
+with a reason for every merge or not-triggered status. The plan enumerates the **full
 roster**, copied verbatim into the plan with one line each — do not derive
 the roster from memory:
 
@@ -235,18 +235,13 @@ threads into recipe threads: in measured runs, an orchestrator that merged
 the plan down to a few recipe threads skipped the section rules entirely,
 and the skipped sections accounted for the missed bugs (fire-and-forget
 metadata and redundant writes live in the State section; production-value
-gates in Integration; guard-bypass scans in mechanical leads). Merging is
-acceptable only for a trivial CL — under ~8 changed files and no file the
-risk map flags async/lifecycle, state, security, or buffering. At or above
-that bar (this is most real CLs), every section gets its own subagent; do
-not merge to fit a thread budget. And never merge away the Mechanical Leads
-or Arithmetic-Drills work even on a small CL: their leads are cheap greps
-(discarded `Push`/`Write` counts, sentinel values side by side, sub-unit
-rate probes) that an absorbing thread predictably skips — a measured
-mid-model run preserved the merged-into rows but its overloaded
-mechanical-leads thread ran none of the greps, and the discarded-count,
-sentinel-mismatch, and fitting-write-bypass P0s were exactly those unrun
-leads. Every merge must reappear in Verification Notes.
+gates in Integration; guard-bypass scans in mechanical leads). Merging or
+skipping threads is never acceptable, regardless of CL size or complexity.
+Every CL review, even for minor, mechanical, or tiny changes, must spawn one
+subagent per planned thread to execute its dedicated procedure and checklist.
+Never fold checklist-section threads or recipe threads together to fit a thread
+budget, and never run discovery as a single agent. Every merge or skip is a
+failure of review integrity. Every thread must reappear in Verification Notes.
 
 Spawn one subagent per planned thread with a self-contained brief (see
 Subagent Briefs); run threads in parallel where the harness allows, and
@@ -470,9 +465,9 @@ Format the final review as:
 6. **Verification Notes:** State tests run or not run, production wiring traced
    or not traced, and any important areas not verified. Reproduce the full
    thread plan with each thread's outcome: rows returned, or merged (name
-   the absorbing thread), or skipped (with reason). Include each thread's
+   the absorbing thread), or not-triggered (with reason). Include each thread's
    subagent/task identifier, or "self-executed" plus the harness limitation
-   that forced it. A skipped or merged-away thread is an unverified area by
+   that forced it. A not-triggered or merged-away thread is an unverified area by
    definition. On large CLs the full compliance matrices may live in the
    saved ledger artifact with Verification Notes pointing at it — but every
    per-row answer must exist somewhere retrievable; a "combined audit
