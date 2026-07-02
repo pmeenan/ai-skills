@@ -1,0 +1,52 @@
+# Skill Eval Corpus
+
+Regression evals for the chromium-code-review skill. Every measured run that
+produced a miss, a false positive, or a process failure becomes an
+expectation file here; before landing a prose change to the skill, re-run the
+affected evals and confirm the expected findings still surface.
+
+The war stories embedded in the skill prose ("a measured run…") ARE this
+corpus in informal form — each should eventually correspond to a scored row
+in one of these files, so that a wording change can be tested with "did this
+edit lose the discarded-`Push`-return P0?" instead of being discovered on the
+next live review.
+
+## Files
+
+- `TEMPLATE.md` — copy for each new eval CL.
+- `cl-<number>.md` — one file per measured CL, with must-find findings and
+  known traps.
+- `corpus-from-skill-prose.md` — the backlog: every measured failure
+  currently cited in the skill prose, awaiting its CL number and promotion
+  into a per-CL file.
+
+## Running an eval
+
+1. Fresh session (no conversation carry-over), model under test, subagents
+   available unless the eval says otherwise.
+2. Invoke the skill exactly as a user would: "review CL <number>", pinned to
+   the patchset the eval file names — reviews of later patchsets are not
+   comparable.
+3. Score the final review against the eval file:
+   - **found** — the finding appears with correct location and severity
+     within one level.
+   - **found-miscalibrated** — appears, but severity is off by more than one
+     level or the blocking/non-blocking call is wrong.
+   - **missed** — absent from findings, questions, and verification notes.
+   - **false positive** — asserts a listed trap, or any new claim a code
+     trace refutes.
+   Also score process compliance: roster complete in `plan.md`, one subagent
+   per triggered entry, ledger files collected, reconciliation table
+   complete, pre-output gate filled.
+4. Append a dated results block to the eval file (model, scores, notes).
+
+Never edit expected findings to match a run. If a run disagrees with an
+expectation, either the skill regressed or the expectation was wrong —
+decide by re-tracing the code, not by majority vote of runs.
+
+## Adding a CL
+
+Copy `TEMPLATE.md` to `cl-<number>.md`, pin the patchset (number + revision
+SHA), list the must-find findings — each with the roster thread that owns it,
+so a miss also names the thread that failed — and the known traps (false
+positives and severity inflations prior runs produced).

@@ -51,6 +51,19 @@ Run these against the materialized patchset where practical; each hit becomes
 a ledger candidate to explain or flag. Commands enumerate leads that are easy
 to miss by reading.
 
+Start with `scripts/mechanical-leads.sh <parent-sha> <revision-sha>
+[worktree]` (absolute path; run inside the pinned worktree) and save its
+output as `mechanical-leads.md` in the review directory: it executes the
+deterministic scans below and emits every hit as a ledger-ready candidate
+row. A grep that lives in a script cannot be silently skipped: a measured
+mid-model run kept its plan rows intact but its overloaded mechanical-leads
+thread ran none of the greps — and the discarded-count, sentinel-mismatch,
+and fitting-write-bypass P0s were exactly those unrun leads. The remaining
+leads in this section — visiting the callers of changed functions, reading
+feature-flag polarity, the guard-bypass scan, direct-include checks, and
+coverage-tool flags — are judgment calls the script cannot make; they stay
+manual thread work, and the script's output says which is which.
+
 - `git diff --check` for trailing whitespace and conflict markers, and a
   formatter diff for changed files (for example,
   `git clang-format --diff <parent>` for Chromium C++/Blink changes). Neither
@@ -100,6 +113,12 @@ to miss by reading.
 - For each new symbol used in a changed file (`std::move`, `std::fill`,
   containers, base helpers, test utilities), confirm the file has the direct
   include. Do not rely on transitive includes for STL, base, or test helpers.
+- For each added `#include` that crosses a top-level component boundary
+  (e.g. a file in `net/` newly including from `components/` or
+  `third_party/`), check that the including target's `BUILD.gn`
+  `deps`/`public_deps` actually lists the dependency. A dep that only works
+  transitively compiles today and breaks tomorrow, and `gn check` coverage
+  is not universal.
 - Find the tests exercising changed code:
   `git grep -l '<ClassName>' -- '*test*'`. An empty result for a changed
   public behavior is itself a finding.
@@ -159,6 +178,17 @@ Answer per changed callback, timer, posted task, or async operation:
   configured bandwidth. If a sibling class in the same CL has read-ahead and
   this one does not, the asymmetry itself is the candidate. (Four measured
   runs missed the same per-packet-delay throughput collapse.)
+- If the CL meters or charges work in chunk- or window-sized units: trace
+  one read/`Pull`/`Write` that spans a chunk boundary and compare the amount
+  charged against the amount delivered. Charging for the front chunk while
+  delivery crosses into later chunks silently over-delivers past the
+  configured rate — a recurring class in throttling code.
+- For code taking or holding locks (`base::AutoLock`, `GUARDED_BY` members):
+  can any callback, observer, or virtual method run while the lock is held
+  (reentrancy/deadlock lead)? Is every read and write of a `GUARDED_BY`
+  member actually under its lock — the annotation is only enforced where
+  thread-safety analysis is enabled? Does anything block, post-and-wait, or
+  perform I/O under the lock?
 - Can partial completion, backpressure, or cancellation orphan a caller
   callback or consume a shared resource twice?
 - What is the object's lifetime obligation after invoking a user-provided
@@ -298,19 +328,15 @@ unobservable.
   buffer-full retry path, so every write that fit the buffer went
   unthrottled — three of four models missed it even after enumerating the
   consultation sites.)
-- **Histogram/Telemetry Description Accuracy:** For every new or modified
-  histogram:
-  Audit the summary description in `histograms.xml` against the actual
-  implementation's logging conditions. Verify the description accurately covers
-  all cases where the histogram is emitted. If a "skipped" or default bucket
-  records standard non-feature cases (e.g., non-feature-eligible runs, or runs
-  rejected due to unsupported standard protocol features like unsupported
-  `Content-Encoding` values), the summary must not misrepresent the metric as
-  being restricted only to feature-active cohorts.
-
+- For every new or modified histogram, audit its `histograms.xml` summary
+  against the implementation's actual logging conditions: the description
+  must cover every case where the histogram is emitted. If a "skipped" or
+  default bucket records standard non-feature cases (non-eligible runs, or
+  runs rejected for unsupported standard protocol features such as an
+  unsupported `Content-Encoding` value), the summary must not present the
+  metric as restricted to feature-active cohorts.
 
 Example pattern: `#if !defined(FEATURE_X)` guarding the *enabled*
-
 implementation compiles the feature out exactly where it should exist. The
 default build silently ships the old path, and every bot stays green.
 
@@ -332,6 +358,13 @@ renderer-, network-, or extension-supplied data:
   checks) rather than `static_cast` from an integer?
 - Are handles, mailboxes, and tokens validated before use rather than trusted
   to be well-formed because the sender constructed them?
+- When validation of renderer- or other-process-supplied data fails, does the
+  code call `mojo::ReportBadMessage` (or the receiver's `ReportBadMessage`)
+  so the compromised sender is killed, rather than silently ignoring the
+  message or gracefully degrading? Silent tolerance of malformed IPC hides
+  exploitation attempts; graceful handling is for well-formed-but-unexpected
+  states, not for input the sender could only produce by violating the
+  protocol.
 - Can message reordering, duplication, or early pipe disconnect drive the
   trusted side into an unexpected state? Feed these sequences into the
   State × Method matrix recipe.
@@ -389,7 +422,11 @@ changed surface.
   notable branches versus the tests that exercise them. Explicitly flag
   untested default modes or core branches even when sibling modes are well
   covered — missing coverage for core/default behavior usually outranks a
-  minor implementation nit.
+  minor implementation nit. Calibrate flag-gap severity by consequence, not
+  reflex: an untested kill-switch OFF branch whose OFF behavior differs from
+  pre-CL behavior is a P2 coverage gap; one that only gates memoization of
+  an invalidation-free value is P3 test polish (see the anchor table in
+  SKILL.md).
 - Look for tests covering: the default behavior path, not only alternate
   modes; each public option, mode, or flag; multi-item and multi-chunk
   behavior where applicable; boundary values (zero, empty, one, max,

@@ -9,10 +9,12 @@ in SKILL.md.
 ## Contents
 
 - Verifying Candidate Findings
+- Skeptic Verdicts
 - Execution-Based Verification
 - Evaluating Fixes
 - Root-Cause, Layering, And Fix Optimality
 - Final Synthesis Pass
+- Verdict Alignment And Gerrit Output Rules
 
 ## Verifying Candidate Findings
 
@@ -46,6 +48,30 @@ code, not from memory.
   on the failure path, and the success path skipped it entirely.
 - Distinguish observation from proposed fix. Never recommend a concrete fix
   until it has been traced through the relevant edge cases below.
+
+## Skeptic Verdicts
+
+Every candidate examined in verification gets exactly one verdict row in
+`verification.md` (shape in `references/templates.md`), with ID `V-⟨n⟩` and
+a reference to the candidate row under test. Three verdicts exist, each with
+mandatory evidence fields — a verdict missing its fields is not a verdict:
+
+- **CONFIRMED** requires: the completing trace
+  (`scenario → lines visited → bad outcome`), a severity proposal matched to
+  the anchor table in SKILL.md (name the anchor and argue any delta), and an
+  origin label (`CL-introduced`, `introduced-in-PS⟨N⟩`, or `pre-existing`).
+- **REFUTED** requires: the guard's `path:line`, or the concrete safe trace
+  that completes without the bad outcome. For IF/THEN/UNLESS hypotheses,
+  refutation means filling the UNLESS with a citation. "Looks handled",
+  "the caller probably checks", and "by design" are not refutations.
+- **UNPROVEN** requires: what was traced, what remains unproven, and a
+  drafted question for the CL owner. UNPROVEN rows go to the review's
+  Questions section — never to the bin.
+
+A skeptic that cannot produce REFUTED's required fields has confirmed the
+finding, not dismissed it. When verification runs without subagents, the
+orchestrator holds itself to the same schema — one verdict row per
+candidate, same mandatory fields.
 
 ## Execution-Based Verification
 
@@ -256,25 +282,27 @@ review:
 Avoid contradictory verdicts. If there is a blocking defect (P1 or P2),
 the verdict must explicitly state that the change is blocked. Do not combine
 approvals with blocking conditions.
-*   *Incorrect:* "LGTM with optional Polish (P3) after resolving one blocking
-    P2 defect"
-*   *Correct:* "Not LGTM until the P2 telemetry bug is fixed; remaining items
-    are optional P3."
+
+- *Incorrect:* "LGTM with optional Polish (P3) after resolving one blocking
+  P2 defect"
+- *Correct:* "Not LGTM until the P2 telemetry bug is fixed; remaining items
+  are optional P3."
 
 ### Gerrit-Ready Comments Constraints
 
 When formatting comments meant to be copy-pasted directly to Gerrit:
-*   **No Local Paths:** Gerrit comments must *never* contain local absolute
-    file paths (e.g. `/usr/local/...`) or local `file:///` URLs. Use
-    repo-relative references only (e.g. `net/http/http_cache_writers.cc:1010`).
-*   **No Placeholder/Fake Inlines:** Do not output generic placeholder inline
-    comments (e.g., `L16500 (General Nit) // General Nit`). General feedback
-    belongs in the main comment body. Inline comments must target real,
-    modified lines of code.
-*   **Concise, Query-Based Inlines:** Frame inline feedback as questions or
-    concise queries (e.g., *"Can we gate these success-only metrics...?"*)
-    rather than writing out large diff blocks, unless a specific, simple
-    replacement is optimal. Avoid repeating the same suggestion across
-    multiple files/declarations; place a single comment at the most
-    relevant site.
+
+- **No local paths:** Gerrit comments must never contain local absolute
+  file paths (e.g. `/usr/local/...`) or local `file:///` URLs. Use
+  repo-relative references only (e.g. `net/http/http_cache_writers.cc:1010`).
+- **No placeholder or fake inlines:** do not output generic placeholder
+  inline comments (e.g., `L16500 (General Nit) // General Nit`). General
+  feedback belongs in the main comment body; inline comments must target
+  real, modified lines of code.
+- **Concise, query-based inlines:** frame inline feedback as questions or
+  concise queries (e.g., "Can we gate these success-only metrics...?")
+  rather than writing out large diff blocks, unless a specific, simple
+  replacement is optimal. Avoid repeating the same suggestion across
+  multiple files/declarations; place a single comment at the most relevant
+  site.
 
