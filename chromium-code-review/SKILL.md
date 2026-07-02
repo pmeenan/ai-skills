@@ -370,6 +370,7 @@ Record and report every finding with:
 - **Location:** repo-relative `path:line` against the reviewed patchset.
 - **Evidence:** the minimal state/call trace or citation that demonstrates it.
 - **Severity:** P1/P2/P3 per the calibration below.
+- **Origin:** whether this issue is CL-introduced or pre-existing in the codebase.
 - **Fix status:** validated fix, option needing verification, or no fix
   proposed.
 - For P1/P2 findings: the smallest regression test that would have caught it.
@@ -449,20 +450,23 @@ pinned patchset, and the instruction to read
 
 Format the final review as:
 
-1. **Issues & Suggestions:** Findings first, ordered by severity, with
-   file/line references and actionable guidance. Separate blocking issues from
-   optional polish.
-2. **High-Level Summary:** State whether the CL accomplishes its goal, name the
+1. **CL-Introduced Issues & Suggestions:** Findings introduced by the CL, ordered
+   by severity, with file/line references and actionable guidance. Separate blocking
+   issues from optional polish.
+2. **Pre-Existing Codebase Issues (For Reference/Follow-up):** Issues observed
+   in the surrounding codebase but not introduced by the CL. These must be clearly
+   labeled as pre-existing and do not block landing of this CL.
+3. **High-Level Summary:** State whether the CL accomplishes its goal, name the
    patchset and revision SHA, and summarize bug alignment.
-3. **Prior Review Follow-Up:** If prior issues were supplied, summarize their
+4. **Prior Review Follow-Up:** If prior issues were supplied, summarize their
    status with evidence.
-4. **Positives:** Briefly note important good decisions. A praised safety
+5. **Positives:** Briefly note important good decisions. A praised safety
    property is a claim like any other — name its guard line. (A measured run
    praised "failures fail open safely" about the exact branch that treated a
    failure as success.)
-5. **Questions:** Only questions whose answers affect correctness, API contract,
+6. **Questions:** Only questions whose answers affect correctness, API contract,
    or landing readiness.
-6. **Verification Notes:** State tests run or not run, production wiring traced
+7. **Verification Notes:** State tests run or not run, production wiring traced
    or not traced, and any important areas not verified. Reproduce the full
    thread plan with each thread's outcome: rows returned, or merged (name
    the absorbing thread), or not-triggered (with reason). Include each thread's
@@ -475,7 +479,7 @@ Format the final review as:
    root-cause/layering pass outcome: candidate count checked, any better
    owner or broader invariant found, and any discovery/verification rows
    reopened because of it.
-7. **Next Steps:** State what is required before `+1 LGTM` and what is optional.
+8. **Next Steps:** State what is required before `+1 LGTM` and what is optional.
 
 For full CL reviews, append compact **Gerrit-Ready Comments** unless the user
 asks for a short summary only:
