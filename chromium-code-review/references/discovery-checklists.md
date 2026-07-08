@@ -159,6 +159,13 @@ Answer per changed callback, timer, posted task, or async operation:
   timer fire without state progress (zero or sub-resolution delays)? Under
   `TaskEnvironment::MOCK_TIME`, can a self-reposting task busy-loop or hang
   `FastForwardBy`?
+- If the CL adds artificial delay before completing an operation, what is the
+  delay measured from: API entry, underlying operation completion, item
+  enqueue time, or some other event? Decide whether the configured delay means
+  total observed latency or extra latency after the wrapped operation, then
+  trace both synchronous and asynchronous wrapped completions. If total latency
+  is intended, the timer must be scheduled from operation start or subtract
+  elapsed time already spent in the wrapped operation.
 - What invalidates in-flight work on reset and on destruction? Name the
   member that owns the in-flight state and the line that invalidates it.
 - What happens if a callback re-enters the object, mutates it, or destroys
@@ -198,6 +205,10 @@ Required traces — walk each that applies through the real code before leaving
 this section:
 
 - Synchronous completion and delayed completion of the same operation.
+- For delayed-completion wrappers: wrapped completion that is synchronous,
+  wrapped completion that finishes before the intended delay budget, and
+  wrapped completion that finishes after the intended delay budget is already
+  exhausted.
 - Reset, disconnect, or destructor running before a posted callback runs.
 - A callback that destroys its owner.
 - Out-of-order use of the public API: call A arriving before expected event B.
@@ -242,6 +253,10 @@ loop as a wall-time nuisance.
   the invalidation/mutation hook. If a reviewer could plausibly mistake an
   enable flag for a "has cached value" bit, record a contracts/polish
   candidate.
+- If a constructor or method accepts both a config value and an object derived
+  from that config, identify the canonical source of truth. Check whether the
+  copied config and the live object can diverge; prefer querying the canonical
+  object, or require an invariant check if both must exist.
 - Is each piece of metadata optional telemetry/timing, or load-bearing —
   needed to parse, select, or validate persisted data? Load-bearing metadata
   writes must be awaited or covered by a proven atomic/journaled invalidation
@@ -392,6 +407,22 @@ trusted; the candidate stands unless the browser-side range check exists.
   optional handle: is optionality part of the public contract, and do tests
   or callers rely on the absent-value path? Log a candidate either way; the
   fix-side tradeoff is evaluated during verification.
+- When a public config or API uses a magic sentinel (`0` means unlimited,
+  `-1` means unset, empty means default, max means infinite, null means
+  special behavior): ask whether `std::optional`, a scoped enum, or a small
+  domain type would express absence or special behavior more safely. Keep a
+  sentinel only when default construction, wire format, persistence, or
+  interoperability makes it clearly preferable.
+- For time, rate, and size fields, verify that the name communicates the
+  semantic unit: total vs additional, round-trip vs one-way, per-item vs
+  aggregate, budget vs elapsed, and configured vs observed. If the comment
+  has to rescue a likely misread, the name may be too vague.
+- For operations whose base contract includes terminal or one-shot sentinel
+  results (EOF, end-of-iteration, closed, cancelled, no more data), check
+  whether the implementation adds a liveness/status pre-check before doing or
+  forwarding the operation. A predicate such as `IsReady()`, `IsOpen()`, or
+  `IsConnected()` may be a lossy observation; prove it cannot mask the
+  operation's required terminal result.
 - Does the CL route a new path through a shared completion/cleanup helper?
   Trace every existing caller at the moment the helper is entered, and the
   helper's side effects (forced success, cleanup, callback state) on the new
@@ -435,6 +466,15 @@ changed surface.
   reentrancy and destruction from callbacks when callbacks are introduced;
   and the original bug or prior-review issue, in a way that would fail
   without the fix.
+- For delayed async behavior, tests should cover underlying completion after
+  nonzero elapsed time, not only synchronous completion and immediately-async
+  completion. A total-latency wrapper needs a test where the wrapped operation
+  consumes part or all of the configured delay budget before the wrapper's
+  callback fires.
+- For terminal or one-shot sentinel values, tests should cover the terminal
+  state being observable through a status predicate before the operation runs,
+  not only the case where a previous operation already latched the terminal
+  result internally.
 - For each important test: would it fail without the claimed fix? Does it
   exercise the edge case named by its name or comment, or merely codify the
   current implementation? Trace the test's control flow and assertions
@@ -509,9 +549,12 @@ dropping them from an otherwise-LGTM review.
 - For changed comments and API docs, verify each behavioral clause is
   literally supported by the implementation. Watch for misleading causal or
   exclusivity words such as "only", "whenever", "until", "unless",
-  "intervening", "transition", and "edge". Ensure comments describe the right
-  actor and signal direction; producer-side code should not be described as
-  the consumer notifying itself unless that is literally the API model.
+  "intervening", "transition", and "edge"; also re-check relative-location
+  words such as "above", "below", "previous", "next", "earlier", "later",
+  "first", "last", and "now" after code is moved. Ensure comments describe
+  the right actor and signal direction; producer-side code should not be
+  described as the consumer notifying itself unless that is literally the API
+  model.
 - In C++ comments, prefer backticks around identifiers and symbols instead of
   old-style `|name|` markers. Scan changed prose for typos and context-free
   caller guidance: if a comment says callers should pass null, use a

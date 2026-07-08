@@ -76,6 +76,15 @@ Adversarial value table:
 | collection | empty, one item, duplicate items, front item removed mid-iteration |
 | delay/timestamp | zero delay, identical timestamps, delay shorter than timer resolution |
 
+For functions that delay or schedule completion, also write a timeline table:
+`API entry time | wrapped operation completion time | timer start time |
+callback fire time`. Run at least three cases: wrapped operation completes
+synchronously, wrapped operation completes before the configured delay budget
+expires, and wrapped operation completes after that budget has already expired.
+Any case where "total latency" silently becomes "wrapped latency plus extra
+latency" is a candidate unless the API contract explicitly says the delay is
+additive.
+
 ## Arithmetic Drills
 
 Mechanical sweeps over the diff; each takes minutes and catches a

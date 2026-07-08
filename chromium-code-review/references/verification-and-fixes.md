@@ -112,6 +112,10 @@ Sanity-check fixes against common Chromium edge cases:
 
 - Zero, empty, immediate, max-size, overflow, and negative values.
 - Posted tasks, timers, delayed callbacks, and task ordering.
+- Completion-delay clock origin: total observed latency vs extra latency after
+  a wrapped operation completes. Verify synchronous wrapped completion, wrapped
+  completion before the budget expires, and wrapped completion after the budget
+  is already exhausted.
 - Reentrancy from callbacks.
 - Cancellation, reset, shutdown, and object destruction.
 - `WeakPtr`, ref-counting, ownership transfer, and RAII handles.
@@ -120,6 +124,8 @@ Sanity-check fixes against common Chromium edge cases:
 - Numeric conversion, truncation, overflow, sentinel agreement, and
   representability across signed/unsigned, `size_t`, `int`, and floating-point
   math.
+- Terminal or one-shot sentinel results (EOF, closed, cancelled, no more data)
+  must not be masked by status predicates added before the operation runs.
 - Compile-time gate polarity: when a fix adds or edits `#if`,
   `#if defined(...)`, or `#if !defined(...)` gates — especially snippets
   suggested in review — re-verify branch polarity against the feature name,
@@ -305,4 +311,3 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   replacement is optimal. Avoid repeating the same suggestion across
   multiple files/declarations; place a single comment at the most relevant
   site.
-
