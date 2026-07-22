@@ -91,6 +91,33 @@ output goes to
   scope relationship as `core`, `necessary consequence`, `test/support`,
   `defensive hardening`, or `opportunistic cleanup`; anything outside the first
   three needs either a correctness justification or a CL-description mention.
+
+  **Aggregate homogeneous surfaces into group rows.** The detailed per-surface
+  schema above is for production/contract surfaces. Four surface classes are
+  inventoried as one group row per file (per fixture for tests) with a count,
+  a name list or stable name pattern, and the owned hunks — never one
+  detailed row per member: test bodies (`TEST`, `TEST_F`, `TEST_P`,
+  `TYPED_TEST`, browser/web tests, fuzz-target bodies), pure generated
+  blocks, mechanical accessor/forwarding blocks, and data-only
+  tables/constants. Group-row fields that are meaningless by class (callers,
+  ownership/lifetime for test bodies) are `N/A (class)` with no per-member
+  lookup — **never run a caller grep for a test-only surface**. Members of a
+  test file still get individual rows when they are fixtures/base classes,
+  mocks/fakes or helpers with state or nontrivial logic, or surfaces a
+  trigger row must cite. This preserves review truth: the inventory is a
+  routing artifact, per-test adequacy is owned by the Tests As Specifications
+  thread (which reads the test file itself), and the per-file floor is
+  unaffected. A measured run spent 90+ minutes emitting boilerplate rows for
+  every `TEST_F` in one 1,700-line unittest file — cost with no routing value.
+  The mechanical boundary reconciliation below accounts each boundary to a
+  group row or an individual row; both count.
+
+  Two effort bounds apply to the whole inventory: the `callers` field for a
+  production surface is what one symbol search shows — deep caller-graph
+  tracing belongs to discovery threads, not inventory. And write the
+  deliverable incrementally, appending rows as each file or hunk range is
+  processed, so a partial return preserves completed rows instead of losing
+  one giant end-of-run table.
 - **Risk-area map:** classify changed files by risk area — API contract,
   async/lifecycle, buffering/backpressure, persistence/cache state,
   security/privacy/telemetry, memory ownership/Blink GC,

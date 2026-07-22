@@ -153,7 +153,13 @@ Inputs also include ⟨review-dir⟩/profile.json and profile.md.
 Procedure: read ⟨skill-dir⟩/references/inventory-and-planning.md — "Pass 1" —
 and execute it. Inventory every changed/new/removed function, method,
 constructor, destructor, stateful lambda, and helper, including private,
-anonymous-namespace, test-only, and generated surfaces. Evaluate every recipe,
+anonymous-namespace, test-only, and generated surfaces — but aggregate
+homogeneous classes per the Pass 1 aggregation rule: test bodies, generated
+blocks, mechanical accessors, and data-only tables get one `group:` row per
+file/fixture with a count and name list, never one detailed row per member,
+and never a caller grep for a test-only surface. Individual rows are for
+production/contract surfaces, fixtures, and stateful helpers/mocks.
+Evaluate every recipe,
 base-checklist, and specialist trigger, including the deterministic path,
 symbol, and surface signals under "Specialist Trigger Decisions"; emit one
 trigger-inventory row per recipe/checklist roster entry, including proved
@@ -186,8 +192,12 @@ only that range/pathspec and the hunk ownership map in
 Procedure: read ⟨skill-dir⟩/references/inventory-and-planning.md — "Pass 1" —
 and execute it for every scoped file. Inventory every changed/new/removed
 function, method, constructor, destructor, stateful lambda, and helper,
-including private, anonymous-namespace, test-only, and generated surfaces,
-plus every recipe, base-checklist, and specialist trigger under "Specialist
+including private, anonymous-namespace, test-only, and generated surfaces —
+aggregated per the Pass 1 aggregation rule: test bodies, generated blocks,
+mechanical accessors, and data-only tables get one `group:` row per
+file/fixture with a count and name list, never one detailed row per member,
+and never a caller grep for a test-only surface. Also evaluate every recipe,
+base-checklist, and specialist trigger under "Specialist
 Trigger Decisions." Emit one trigger row per recipe/checklist roster entry for
 this shard, including complete negative evidence. The deterministic collector
 checks the union of file-group

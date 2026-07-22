@@ -454,6 +454,15 @@ a stable path/root; those threads are disclosed rather than silently dropped.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | S0001 | DelayBuffer::Push (delay_buffer.h:41) | H0001 / delay_buffer.h:41 | header comment | DelayStream::DoWrite | new API | owns buffer_, pending_ | delay_buffer_unittest.cc | production | core |
 | S0002 | DelayBuffer::Flush (delay_buffer.h:48) | H0001,H0004 / delay_buffer.h:48 | header comment | DelayStream teardown | new API | drains buffer_ | none found | production | core |
+| S0003 | group: DelayBufferTest fixture (delay_buffer_unittest.cc:28) | H0005 / :28 | test fixture | N/A (class) | new fixture: mock socket + mock time | owns mock_socket_, task_env_ | self | test-only | test/support |
+| S0004 | group: 23 TEST_F(DelayBufferTest, Push*/Flush*/Abort*) | H0006-H0014 / :62 | N/A (class) | N/A (class) | new coverage: push/flush/abort paths incl. error and teardown | N/A (class) | self | test-only | test/support |
+
+Homogeneous surface classes — test bodies, generated blocks, mechanical
+accessor blocks, data-only tables — appear as one `group:` row per file (per
+fixture for tests) with a member count and name list/pattern, per the
+aggregation rule in `references/inventory-and-planning.md`. Fixtures and
+stateful helpers/mocks keep individual rows. Class-meaningless fields are
+`N/A (class)`; no per-member caller lookups.
 
 ## Risk-area map
 
