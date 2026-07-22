@@ -457,7 +457,7 @@ changed surface.
   reflex: an untested kill-switch OFF branch whose OFF behavior differs from
   pre-CL behavior is a P2 coverage gap; one that only gates memoization of
   an invalidation-free value is P3 test polish (see the anchor table in
-  SKILL.md).
+  `references/synthesis-and-output.md`).
 - Look for tests covering: the default behavior path, not only alternate
   modes; each public option, mode, or flag; multi-item and multi-chunk
   behavior where applicable; boundary values (zero, empty, one, max,

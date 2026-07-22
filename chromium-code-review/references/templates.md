@@ -12,13 +12,15 @@ verdicts into a real review.
 - Row IDs
 - The Review Directory
 - pin.md
+- directives.md And progress.md
+- inventory.md — Changed-Surface Inventory And Risk-Area Map
 - plan.md — Thread-Plan Roster
 - Subagent Brief — Discovery Thread
 - ledger/⟨THREAD⟩.md — Compliance Matrix And Candidate Rows
 - Per-File Floor Rows
 - Subagent Brief — Verification Skeptic
-- verification.md — Skeptic Verdict Rows
-- root-cause.md — Root-Cause Rows
+- verification/ — Batches And Skeptic Verdict Rows
+- root-cause/ — Root-Cause Rows
 - reconciliation.md — Reconciliation Table And Pre-Output Gate
 - Final-Review Finding
 
@@ -50,31 +52,53 @@ renumbers or re-keys another thread's rows.
 | Changed-Lines Polish | CLP |
 | Holistic-and-polish thread | HOL |
 | Prior-review reconciliation (Pass 2) | PR |
-| Orchestrator rows (inventory, per-file floor) | ORC |
-| Verification skeptic verdicts | V |
-| Root-cause challenger rows | RC |
+| Collection-audit rows (per-file floor) | ORC |
+| Verification skeptic verdicts | V⟨batch⟩ (e.g. V1, V2, VRC1) |
+| Root-cause challenger rows | RC⟨batch⟩ (e.g. RC1, RC2) |
+
+A sharded roster entry appends its shard number to the prefix: shard 2 of
+Error-Path Walk is thread `EPW2`, rows `EPW2-⟨n⟩`, ledger file
+`ledger/EPW2.md`, and its own row in `plan.md`. Skeptic verdicts are keyed
+by batch: batch 1 writes `verification/V1.md` with IDs `V1-⟨n⟩`, so
+concurrent skeptics never collide on a file or an ID.
 
 ## The Review Directory
 
 ```
 <scratchpad>/cl-9999999-ps3/
-  pin.md               # patchset pin block (scripts/fetch-cl.sh writes this)
-  detail.json          # Gerrit change detail (ALL_REVISIONS)
-  comments.json        # published comments; unresolved threads live here
-  worktree/            # detached read-only checkout at the pinned SHA
-  plan.md              # thread-plan roster with statuses
-  mechanical-leads.md  # output of scripts/mechanical-leads.sh
-  ledger/EPW.md        # one file per spawned thread
+  pin.md                  # patchset pin block (scripts/fetch-cl.sh writes this)
+  detail.json             # Gerrit change detail (ALL_REVISIONS)
+  comments.json           # published comments; unresolved threads live here
+  worktree/               # detached read-only checkout at the pinned SHA
+  directives.md           # review mode + user directives (orchestrator)
+  progress.md             # orchestrator phase log; the resume point
+  context.md              # Phase 1: bug/design context, scope-relevance notes
+  inventory.md            # Phase 1: inventory + risk map (inventory/<shard>.md when sharded)
+  prior-feedback-input.md # Phase 2 input (follow-up reviews only)
+  plan.md                 # Phase 3: thread-plan roster with statuses
+  briefs/EPW.md           # Phase 3: one brief per spawned thread
+  briefs/V1.md            # Phase 5: one brief per skeptic batch
+  mechanical-leads.md     # output of scripts/mechanical-leads.sh
+  ledger/EPW.md           # one file per spawned thread
   ledger/AL.md
   ledger/...
-  verification.md      # skeptic verdict rows
-  root-cause.md        # root-cause/layering rows
-  reconciliation.md    # reconciliation table + filled pre-output gate
+  collection.md           # Phase 4.5: collection audit + ORC per-file floor rows
+  verification/batches.md # Phase 5: candidate→batch map + merge proposals
+  verification/V1.md      # skeptic verdict rows, one file per batch
+  root-cause/RC1.md       # root-cause/layering rows, one file per batch
+  reconciliation.md       # reconciliation table + filled pre-output gate
+  draft-review.md         # Phase 7: full review text
+  gerrit-comments.md      # Phase 7: Gerrit-ready comments
+  challenge.md            # Phase 8: synthesis-challenger findings
 ```
 
 Thread ledger files are append-only records of discovery: later passes never
-rewrite them. A row's life-cycle state advances in `verification.md`
+rewrite them. A row's life-cycle state advances in `verification/V⟨batch⟩.md`
 (verdicts) and `reconciliation.md` (dispositions), not by editing the row.
+A row, once written, is never deleted or edited, and every row is carried to
+synthesis: promoted, downgraded, merged, or dismissed with a one-line recorded
+reason. Information silently lost at consolidation time is a common source of
+incomplete reviews.
 
 ## pin.md
 
@@ -98,36 +122,85 @@ rewrite them. A row's life-cycle state advances in `verification.md`
   - net/streams/delay_buffer_unittest.cc
 ```
 
+## directives.md And progress.md
+
+Both are orchestrator-written and deliberately tiny. `directives.md` (echoed
+into every brief):
+
+```markdown
+# Directives — CL 9999999 PS3
+
+- Mode: follow-up review (prior review text saved to prior-feedback-input.md)
+- User directives: focus requested on net/streams; short-summary format NOT
+  requested; no other constraints.
+```
+
+`progress.md` is an append-only phase log — the orchestrator's resume point
+after context loss. One line per event:
+
+```markdown
+# Progress — CL 9999999 PS3
+
+- Phase 0 done: pinned PS3 4f2a09c1; worktree verified.
+- Phase 1 done: context.md + inventory.md; risk areas: async, buffering, tests.
+- Phase 3 done: plan.md; 15 spawn / 3 not-triggered; batches 1-4.
+- Batch 1 spawned: DCS(task-a1) DL(task-a2) CTL(task-a3) CVI(task-a4).
+- DCS collected: 9 rows.
+...
+```
+
+## inventory.md — Changed-Surface Inventory And Risk-Area Map
+
+```markdown
+# Inventory — CL 9999999 PS3
+
+## Changed surfaces
+
+| surface | contract source | callers | old → new behavior | state / lifetime | tests | reachability | scope label |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| DelayBuffer::Push (delay_buffer.h:41) | header comment | DelayStream::DoWrite | new API | owns buffer_, pending_ | delay_buffer_unittest.cc | production | core |
+| DelayBuffer::Flush (delay_buffer.h:48) | header comment | DelayStream teardown | new API | drains buffer_ | none found | production | core |
+
+## Risk-area map
+
+| file | risk areas |
+| --- | --- |
+| net/streams/delay_buffer.cc | async/lifecycle, buffering/backpressure, memory ownership |
+| net/streams/delay_buffer_unittest.cc | tests |
+```
+
 ## plan.md — Thread-Plan Roster
 
-Every roster entry appears, one line each, copied verbatim from SKILL.md —
-never derived from memory. Statuses are `spawn` or
-`not triggered: ⟨reason⟩`; there is no "merged" status. Record the
+Every roster entry appears, one line each, copied verbatim from
+`references/inventory-and-planning.md` (The Roster) — never derived from
+memory. Statuses are `spawn` or `not triggered: ⟨reason⟩`; there is no
+"merged" status. Sharded entries get one row per shard (`EPW1`, `EPW2`).
+The planner assigns priority batches; the orchestrator records the
 subagent/task identifier when spawned, and the outcome when collected.
 
 ```markdown
 # Thread plan — CL 9999999 PS3
 
-| roster entry | scope | status | subagent | outcome |
-| --- | --- | --- | --- | --- |
-| Desk-Check Simulation + Arithmetic Drills | Push/Flush size math, delay_buffer.cc | spawn | task-a1 | 9 rows |
-| Data Lineage | bytes: caller → buffer → socket | spawn | task-a2 | 4 rows |
-| Callback And Task Lifetime | timer_ + flush callback | spawn | task-a3 | 6 rows |
-| Container And View Invalidation | spans into buffer_ | spawn | task-a4 | 3 rows |
-| Error-Path Walk | Push/Flush/OnTimer error branches | spawn | task-a5 | 7 rows |
-| State × Method Matrix | DelayBuffer implicit states | spawn | task-a6 | matrix + 5 rows |
-| Mode × Host-Capability Matrix | — | not triggered: CL adds a new class; no new mode/flag/container on an existing host | — | — |
-| Teardown Order | ~DelayBuffer, Abort() | spawn | task-a7 | 4 rows |
-| Mechanical Leads | script + manual leads, whole diff | spawn | task-b1 | 11 rows |
-| Per-Surface Invariants | DelayBuffer public API | spawn | task-b2 | 6 rows |
-| Async And Lifecycle | timer, posted flush, cancellation | spawn | task-b3 | 8 rows |
-| State/Persistence/Cache | — | not triggered: no persisted data, cache, or doom/reset of stored state in diff | — | — |
-| Integration And Feature Control | kDelayBufferFeature wiring | spawn | task-b4 | 5 rows |
-| Security And Trust Boundaries | — | not triggered: no IPC/Mojo surface; delay params come from browser-side config, not renderer | — | — |
-| Contracts And API Shape | delay_buffer.h contracts, Socket base clauses | spawn | task-b5 | 6 rows |
-| Tests As Specifications | delay_buffer_unittest.cc coverage map | spawn | task-b6 | 7 rows |
-| Changed-Lines Polish | all changed lines | spawn | task-b7 | 5 rows |
-| Holistic-and-polish thread | bug alignment, scope, description coverage | spawn | task-b8 | 4 rows |
+| roster entry | scope | status | batch | subagent | outcome |
+| --- | --- | --- | --- | --- | --- |
+| Desk-Check Simulation + Arithmetic Drills | Push/Flush size math, delay_buffer.cc | spawn | 1 | task-a1 | 9 rows |
+| Data Lineage | bytes: caller → buffer → socket | spawn | 1 | task-a2 | 4 rows |
+| Callback And Task Lifetime | timer_ + flush callback | spawn | 1 | task-a3 | 6 rows |
+| Container And View Invalidation | spans into buffer_ | spawn | 2 | task-a4 | 3 rows |
+| Error-Path Walk | Push/Flush/OnTimer error branches | spawn | 1 | task-a5 | 7 rows |
+| State × Method Matrix | DelayBuffer implicit states | spawn | 2 | task-a6 | matrix + 5 rows |
+| Mode × Host-Capability Matrix | — | not triggered: CL adds a new class; no new mode/flag/container on an existing host | — | — | — |
+| Teardown Order | ~DelayBuffer, Abort() | spawn | 2 | task-a7 | 4 rows |
+| Mechanical Leads | script + manual leads, whole diff | spawn | 2 | task-b1 | 11 rows |
+| Per-Surface Invariants | DelayBuffer public API | spawn | 3 | task-b2 | 6 rows |
+| Async And Lifecycle | timer, posted flush, cancellation | spawn | 3 | task-b3 | 8 rows |
+| State/Persistence/Cache | — | not triggered: no persisted data, cache, or doom/reset of stored state in diff | — | — | — |
+| Integration And Feature Control | kDelayBufferFeature wiring | spawn | 3 | task-b4 | 5 rows |
+| Security And Trust Boundaries | — | not triggered: no IPC/Mojo surface; delay params come from browser-side config, not renderer | — | — | — |
+| Contracts And API Shape | delay_buffer.h contracts, Socket base clauses | spawn | 3 | task-b5 | 6 rows |
+| Tests As Specifications | delay_buffer_unittest.cc coverage map | spawn | 4 | task-b6 | 7 rows |
+| Changed-Lines Polish | all changed lines | spawn | 4 | task-b7 | 5 rows |
+| Holistic-and-polish thread | bug alignment, scope, description coverage | spawn | 4 | task-b8 | 4 rows |
 ```
 
 ## Subagent Brief — Discovery Thread
@@ -181,13 +254,22 @@ not fixes.
    unawaited write — becomes a candidate row even if it looks benign;
    benignity is verification's call, not yours. You are read-only outside
    your own ledger file: never edit a repository file, even when the
-   harness invites it.
+   harness invites it. If your scope will not fit in your context, do not
+   thin out the tracing to finish: complete what you can at full rigor,
+   write it to your ledger file, and end with "partial — remaining:
+   ⟨unprocessed functions/files/cells⟩" so the orchestrator can spawn a
+   continuation.
 ```
 
 If the harness denies subagents file access, item 4 changes to: return the
 full matrix and all rows in the final message — never summarized.
 
 ## ledger/⟨THREAD⟩.md — Compliance Matrix And Candidate Rows
+
+The exact section headings `## Compliance matrix` and `## Candidate rows`
+are load-bearing: late-phase agents extract the row sections mechanically
+(`sed`/`grep`) instead of reading whole ledgers, so a renamed heading makes
+a thread's rows invisible to verification and reconciliation.
 
 ```markdown
 # EPW — Error-Path Walk — CL 9999999 PS3
@@ -218,9 +300,11 @@ in-thread.
 
 ## Per-File Floor Rows
 
-Every changed file must have at least one ledger row. When no thread emitted
-one for a file, the orchestrator adds an explicit clean row (never a silent
-omission):
+Every changed file must have at least one ledger row — attention collapses
+onto the first and largest files, and the per-file floor keeps coverage even
+across the tail of the diff. When no thread emitted a row for a file, the
+collection-audit agent reads that file's diff and adds an explicit
+clean-or-candidate `ORC` row to `collection.md` (never a silent omission):
 
 ```markdown
 | id | claim | location | evidence / hypothesis | origin | severity | status |
@@ -239,7 +323,7 @@ confirmation, not a dismissal.
    revision 4f2a09c1d8e7b6a5f4e3d2c1b0a9f8e7d6c5b4c9; read-only worktree at
    /tmp/scratch/cl-9999999-ps3/worktree (verify rev-parse HEAD first).
 
-2. Candidates under test (full rows inline):
+2. Candidates under test (full rows inline — this is skeptic batch 1):
    EPW-2 | Success-shaped return after failure cleanup |
    net/streams/delay_buffer.cc:203 | trace: OnTimer → OnWriteFailure() at
    :199 clears buffer_ → returns write_len_ > 0.
@@ -249,41 +333,70 @@ confirmation, not a dismissal.
    — the "Verifying Candidate Findings" and "Skeptic Verdicts" sections —
    and refute under that standard.
 
-4. Deliverable: append one verdict row per candidate to
-   /tmp/scratch/cl-9999999-ps3/verification.md, IDs V-1, V-2, ..., in the
-   shape from templates.md. CONFIRMED requires the completing trace plus a
-   severity proposal matched to the SKILL.md anchor table plus an origin
-   label. REFUTED requires the guard `path:line` or the concrete safe
-   trace. UNPROVEN requires what you traced, what remains unproven, and a
-   drafted question for the CL owner. Your final message is only: verdict
-   per row ID and the file path.
+4. Deliverable: write one verdict row per candidate to
+   /tmp/scratch/cl-9999999-ps3/verification/V1.md, IDs V1-1, V1-2, ...,
+   in the shape from templates.md. CONFIRMED requires the completing trace
+   plus a severity proposal matched to the anchor table in
+   /home/user/src/ai-skills/chromium-code-review/references/synthesis-and-output.md
+   plus an origin label. REFUTED requires the guard `path:line` or the
+   concrete safe trace. UNPROVEN requires what you traced, what remains
+   unproven, and a drafted question for the CL owner. Your final message
+   is only: verdict per row ID and the file path.
 
 5. Rules: refute with code, not memory. "Looks handled", "the caller
    probably checks", and "by design" are not refutations. You are read-only
-   outside verification.md.
+   outside your own verdict file.
 ```
 
-## verification.md — Skeptic Verdict Rows
+## verification/ — Batches And Skeptic Verdict Rows
+
+The verification planner writes `verification/batches.md` — the
+candidate→batch map plus merge proposals — and one skeptic brief per batch:
 
 ```markdown
-# Verification verdicts — CL 9999999 PS3
+# Verification batches — CL 9999999 PS3
+
+## Merge proposals (dispositions for reconciliation; rows are never edited)
+
+| row | proposal |
+| --- | --- |
+| AL-1 | merge-into EPW-2: same return-path defect, duplicate evidence |
+
+## Batches
+
+| batch | brief | candidates | verdict file |
+| --- | --- | --- | --- |
+| V1 | briefs/V1.md | EPW-2 | verification/V1.md |
+| V2 | briefs/V2.md | EPW-1, AL-2, AL-3 | verification/V2.md |
+| V3 | briefs/V3.md | ML-1, ML-2, CLP-1..CLP-5 | verification/V3.md |
+```
+
+Each skeptic writes its own `verification/V⟨batch⟩.md`:
+
+```markdown
+# Verification verdicts — batch V1 — CL 9999999 PS3
 
 | id | candidate | verdict | evidence | severity (anchor) | origin |
 | --- | --- | --- | --- | --- | --- |
-| V-1 | EPW-2 | CONFIRMED | trace: timer fires after write failure; delay_buffer.cc:199 clears buffer_, :203 returns write_len_=1024; consumer delay_stream.cc:88 advances its offset → bytes silently lost | P1 (anchor: success-shaped return after failure cleanup) | CL-introduced |
-| V-2 | EPW-1 | REFUTED | guard: delay_buffer.cc:96 — Abort() resets pending_ before any caller can re-enter Push; safe trace: Push → ERR_ABORTED → Abort → Push completes | — | — |
-| V-3 | AL-3 | UNPROVEN | traced both orderings; could not establish whether OnDisconnect can run before OnTimer on the IO sequence → Question Q2 for owner: "Can the disconnect handler run before a queued OnTimer on the same sequence?" | — | — |
+| V1-1 | EPW-2 | CONFIRMED | trace: timer fires after write failure; delay_buffer.cc:199 clears buffer_, :203 returns write_len_=1024; consumer delay_stream.cc:88 advances its offset → bytes silently lost | P1 (anchor: success-shaped return after failure cleanup) | CL-introduced |
+| V2-1 | EPW-1 | REFUTED | guard: delay_buffer.cc:96 — Abort() resets pending_ before any caller can re-enter Push; safe trace: Push → ERR_ABORTED → Abort → Push completes | — | — |
+| V2-3 | AL-3 | UNPROVEN | traced both orderings; could not establish whether OnDisconnect can run before OnTimer on the IO sequence → Question Q2 for owner: "Can the disconnect handler run before a queued OnTimer on the same sequence?" | — | — |
 ```
 
-## root-cause.md — Root-Cause Rows
+(The V2 rows above belong in `verification/V2.md`; they are shown here only
+to illustrate all three verdict shapes.)
+
+## root-cause/ — Root-Cause Rows
 
 One row per P1/P2 candidate, risky P3, or proposed fix, with the fields from
-the Root-Cause, Layering, And Fix Optimality section:
+the Root-Cause, Layering, And Fix Optimality section. Each root-cause
+challenger owns one batch and writes its own file (`root-cause/RC1.md`,
+rows `RC1-⟨n⟩`), so concurrent challengers never collide:
 
 ```markdown
-# Root-cause rows — CL 9999999 PS3
+# Root-cause rows — batch RC1 — CL 9999999 PS3
 
-## RC-1 (for EPW-2 / V-1)
+## RC1-1 (for EPW-2 / V1-1)
 
 - Symptom: consumer advances past bytes the socket never accepted.
 - Direct trigger: write failure while a flush timer is armed.
@@ -306,27 +419,29 @@ the Root-Cause, Layering, And Fix Optimality section:
 ## reconciliation.md — Reconciliation Table And Pre-Output Gate
 
 One line per row ID, enumerated from the files (`ledger/*.md`,
-`verification.md`, `root-cause.md`) — never from a summary of them. No
-ranges, no "rest dismissed": a row without its own line blocks output.
+`collection.md`, `verification/*.md`, `root-cause/*.md`) — never from a
+summary of them. No ranges, no "rest dismissed": a row without its own line
+blocks output.
 
 ```markdown
 # Reconciliation — CL 9999999 PS3
 
 | row | thread | disposition |
 | --- | --- | --- |
-| EPW-1 | Error-Path Walk | refuted (V-2: guard delay_buffer.cc:96) |
-| EPW-2 | Error-Path Walk | promoted → Finding 1 (P1, V-1, RC-1) |
+| EPW-1 | Error-Path Walk | refuted (V2-1: guard delay_buffer.cc:96) |
+| EPW-2 | Error-Path Walk | promoted → Finding 1 (P1, V1-1, RC1-1) |
 | AL-1 | Async And Lifecycle | merged → EPW-2 (same return-path defect, duplicate evidence) |
-| AL-2 | Async And Lifecycle | refuted (V-4: timer stopped in Abort, delay_buffer.cc:97) |
-| AL-3 | Async And Lifecycle | question → Q2 (V-3: UNPROVEN) |
+| AL-2 | Async And Lifecycle | refuted (V2-2: timer stopped in Abort, delay_buffer.cc:97) |
+| AL-3 | Async And Lifecycle | question → Q2 (V2-3: UNPROVEN) |
 | ML-1 | Mechanical Leads | promoted → Finding 3 (P3 non-ASCII em dash in comment) |
-| ML-2 | Mechanical Leads | dismissed: intentional sentinel, values agree (V-5 citation) |
-| ORC-1 | Orchestrator | clean (cited) |
-| RC-1 | Root-cause challenger | supports Finding 1; no new rows opened |
+| ML-2 | Mechanical Leads | dismissed: intentional sentinel, values agree (V3-2 citation) |
+| ORC-1 | Collection audit | clean (cited) |
+| RC1-1 | Root-cause challenger | supports Finding 1; no new rows opened |
 ```
 
 The gate is filled at the bottom of the same file; the canonical checklist
-lives in SKILL.md (Pre-Output Gate). Filled lines look like:
+lives in `references/synthesis-and-output.md` (Pre-Output Gate). Filled
+lines look like:
 
 ```markdown
 ## Pre-output gate
@@ -360,6 +475,6 @@ lives in SKILL.md (Pre-Output Gate). Filled lines look like:
   write with ERR_CONNECTION_RESET while a flush is pending and assert the
   flush completion reports the error and the consumer offset does not
   advance.
-- **Rows:** EPW-2 / V-1 / RC-1 (internal trail — omit from Gerrit-ready
+- **Rows:** EPW-2 / V1-1 / RC1-1 (internal trail — omit from Gerrit-ready
   text).
 ```

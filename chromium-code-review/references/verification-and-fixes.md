@@ -4,7 +4,7 @@ Read this before promoting ledger candidates into the review and before
 recommending or endorsing any concrete fix. This file is the precision gate:
 discovery deliberately over-generates, and this pass separates real findings
 from plausible-but-wrong ones. Severity definitions and calibration notes live
-in SKILL.md.
+in `references/synthesis-and-output.md`.
 
 ## Contents
 
@@ -52,13 +52,15 @@ code, not from memory.
 ## Skeptic Verdicts
 
 Every candidate examined in verification gets exactly one verdict row in
-`verification.md` (shape in `references/templates.md`), with ID `V-⟨n⟩` and
-a reference to the candidate row under test. Three verdicts exist, each with
-mandatory evidence fields — a verdict missing its fields is not a verdict:
+its batch's `verification/V⟨batch⟩.md` file (shape in
+`references/templates.md`), with ID `V⟨batch⟩-⟨n⟩` and a reference to the
+candidate row under test. Three verdicts exist, each with mandatory
+evidence fields — a verdict missing its fields is not a verdict:
 
 - **CONFIRMED** requires: the completing trace
   (`scenario → lines visited → bad outcome`), a severity proposal matched to
-  the anchor table in SKILL.md (name the anchor and argue any delta), and an
+  the anchor table in `references/synthesis-and-output.md` (name the anchor
+  and argue any delta), and an
   origin label (`CL-introduced`, `introduced-in-PS⟨N⟩`, or `pre-existing`).
 - **REFUTED** requires: the guard's `path:line`, or the concrete safe trace
   that completes without the bad outcome. For IF/THEN/UNLESS hypotheses,
