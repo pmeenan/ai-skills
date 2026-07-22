@@ -1,0 +1,54 @@
+{
+  "base/a.cc": [
+    {
+      "id": "resolved-reply",
+      "in_reply_to": "resolved-root",
+      "line": 10,
+      "message": "done",
+      "patch_set": 2,
+      "side": "REVISION",
+      "unresolved": false,
+      "updated": "2026-01-03 00:00:00"
+    },
+    {
+      "id": "open-root",
+      "line": 20,
+      "message": "root text that must be treated as untrusted",
+      "patch_set": 2,
+      "side": "REVISION",
+      "unresolved": false,
+      "updated": "2026-01-01 00:00:00"
+    },
+    {
+      "id": "resolved-root",
+      "line": 10,
+      "message": "please fix",
+      "patch_set": 2,
+      "side": "REVISION",
+      "unresolved": true,
+      "updated": "2026-01-01 00:00:00"
+    },
+    {
+      "id": "open-reply",
+      "in_reply_to": "open-root",
+      "line": 20,
+      "message": "still open",
+      "patch_set": 3,
+      "side": "REVISION",
+      "unresolved": true,
+      "updated": "2026-01-04 00:00:00"
+    }
+  ],
+  "base/b.cc": [
+    {
+      "id": "orphan",
+      "in_reply_to": "not-returned-by-gerrit",
+      "line": 7,
+      "message": "ancestor is missing",
+      "patch_set": 3,
+      "side": "REVISION",
+      "unresolved": true,
+      "updated": "2026-01-02 00:00:00"
+    }
+  ]
+}

@@ -1,40 +1,57 @@
 #!/usr/bin/env bash
 # mechanical-leads.sh — deterministic mechanical-lead scans for a pinned CL.
 #
-# Usage: mechanical-leads.sh <parent-sha> <revision-sha> [worktree-dir]
+# Usage:
+#   mechanical-leads.sh <parent> <revision> [worktree] [-- <pathspec>...]
 #
-# Run inside (or point at) the pinned review worktree. Markdown is written to
-# stdout; save it as <review-dir>/mechanical-leads.md.
-#
-# Every hit below is a ledger candidate: the Mechanical Leads thread copies
-# each into ledger/ML.md with a row ID and either explains it clean (with a
-# path:line citation) or leaves it as a candidate for verification.
-#
-# This script covers only the deterministic scans. The manual leads in
-# references/discovery-checklists.md "Mechanical Leads" — visiting the
-# callers of changed functions, reading feature-flag polarity, the
-# guard-bypass scan, direct-include checks, and coverage-tool flags — remain
-# the thread's job (see the checklist reminder at the bottom of the output).
+# Pathspecs restrict changed-file/changed-line scanning for a Mechanical Leads
+# shard. Tree-wide definition/reference lookups intentionally remain global.
+# Output is authoritative and uncapped; consumers may derive a separate short
+# human summary, but ledger candidates must be created from this full output.
 
-set -u
+set -euo pipefail
 export LC_ALL=C
 
-PARENT="${1:?usage: mechanical-leads.sh <parent-sha> <revision-sha> [worktree-dir]}"
-REV="${2:?usage: mechanical-leads.sh <parent-sha> <revision-sha> [worktree-dir]}"
-REPO="${3:-$(pwd)}"
+die() { echo "mechanical-leads.sh: ERROR: $*" >&2; exit 1; }
+
+(( $# >= 2 )) || die "usage: mechanical-leads.sh <parent-sha> <revision-sha> [worktree-dir] [-- <pathspec>...]"
+PARENT="$1"
+REV="$2"
+shift 2
+
+REPO="$(pwd)"
+if (( $# > 0 )) && [[ "$1" != "--" ]]; then
+  REPO="$1"
+  shift
+fi
+if (( $# > 0 )) && [[ "$1" == "--" ]]; then
+  shift
+fi
+PATHS=("$@")
 
 G() { git -C "$REPO" "$@"; }
+G rev-parse --git-dir >/dev/null 2>&1 || die "$REPO is not a git checkout"
+G cat-file -e "$PARENT^{commit}" 2>/dev/null || die "parent $PARENT not found in $REPO"
+G cat-file -e "$REV^{commit}" 2>/dev/null || die "revision $REV not found in $REPO"
 
-G rev-parse --git-dir >/dev/null 2>&1 || { echo "ERROR: $REPO is not a git checkout" >&2; exit 1; }
-G cat-file -e "$PARENT^{commit}" 2>/dev/null || { echo "ERROR: parent $PARENT not found in $REPO" >&2; exit 1; }
-G cat-file -e "$REV^{commit}" 2>/dev/null || { echo "ERROR: revision $REV not found in $REPO" >&2; exit 1; }
+TMP_SCAN="$(mktemp -d "${TMPDIR:-/tmp}/mechanical-leads.XXXXXXXX")" || die "mktemp failed"
+trap 'rm -rf -- "$TMP_SCAN"' EXIT
+ADDED_CC="$TMP_SCAN/added-cc"
+ADDED_ALL="$TMP_SCAN/added-all"
+SCAN_OUT="$TMP_SCAN/scan-out"
+SCAN_ERR="$TMP_SCAN/scan-err"
+SCANNER_ERRORS=0
 
-# --- helpers ---------------------------------------------------------------
-
-# Added lines of the diff as "file:line:content" (line numbers in the new
-# file). Args: pathspecs.
-added_lines() {
-  G diff --color=never --unified=0 "$PARENT" "$REV" -- "$@" 2>/dev/null | awk '
+diff_to_file() {
+  local output=$1
+  shift
+  local raw_diff="$TMP_SCAN/added-lines.diff"
+  if ! G diff --color=never --unified=0 "$PARENT" "$REV" -- "$@" \
+      > "$raw_diff" 2> "$SCAN_ERR"; then
+    cat "$SCAN_ERR" >&2
+    die "git diff failed while extracting added lines"
+  fi
+  awk '
     /^\+\+\+ / {
       file = $0
       sub(/^\+\+\+ b\//, "", file)
@@ -44,67 +61,83 @@ added_lines() {
     /^@@/ {
       match($0, /\+[0-9]+/)
       line = substr($0, RSTART + 1, RLENGTH - 1) + 0
-      n = 0
+      offset = 0
       next
     }
     /^\+/ {
-      printf "%s:%d:%s\n", file, line + n, substr($0, 2)
-      n++
-      next
+      printf "%s:%d:%s\n", file, line + offset, substr($0, 2)
+      offset++
     }
-  '
+  ' "$raw_diff" > "$output"
 }
 
-# Print stdin as capped bullet rows; announce the cap instead of hiding it.
-emit_capped() {
-  local cap="$1"
-  local buf total
-  buf="$(cat)"
-  if [[ -z "$buf" ]]; then
-    echo "(no hits)"
-    return
-  fi
-  total=$(printf '%s\n' "$buf" | wc -l)
-  printf '%s\n' "$buf" | head -n "$cap" | sed 's/^/- `/; s/$/`/'
-  if (( total > cap )); then
-    printf -- '- … and %d more hits (CAPPED — note this cap in the ML rows; do not treat the list as complete)\n' $((total - cap))
-  fi
-}
+# Extract every text-like added line in the requested scope; language-neutral
+# specialist scans consume this stream. Derive the C-family subset separately
+# for checks whose syntax is C++-specific.
+if (( ${#PATHS[@]} == 0 )); then
+  diff_to_file "$ADDED_ALL"
+else
+  diff_to_file "$ADDED_ALL" "${PATHS[@]}"
+fi
+awk -F: '$1 ~ /\.(cc|h|mm)$/ { print }' "$ADDED_ALL" > "$ADDED_CC"
 
 section() { printf '\n## %s\n\n' "$1"; }
 
-# Pick a scanner for the one PCRE-ish pattern (non-ASCII).
-NONASCII_CMD=""
-if command -v rg >/dev/null 2>&1; then
-  NONASCII_CMD="rg [^[:ascii:]]"
-elif printf 'x' | grep -qP 'x' 2>/dev/null; then
-  NONASCII_CMD="grep -P [^\x00-\x7F]"
-fi
+emit_file() {
+  local source=$1
+  if [[ ! -s "$source" ]]; then
+    echo "(no hits)"
+    return
+  fi
+  sed 's/^/- `/; s/$/`/' "$source"
+}
 
-ADDED_CC="$(mktemp)"
-ADDED_ALL="$(mktemp)"
-trap 'rm -f "$ADDED_CC" "$ADDED_ALL"' EXIT
-added_lines '*.cc' '*.h' '*.mm' > "$ADDED_CC"
-added_lines '*.cc' '*.h' '*.mm' '*.md' > "$ADDED_ALL"
-
-# --- output ----------------------------------------------------------------
+# grep, rg, and git grep use status 1 for "no matches". Any other status is
+# a scanner failure and is reported distinctly instead of becoming no-hits.
+optional_scan() {
+  : > "$SCAN_OUT"
+  : > "$SCAN_ERR"
+  local status=0
+  "$@" > "$SCAN_OUT" 2> "$SCAN_ERR" || status=$?
+  if (( status == 0 )); then
+    emit_file "$SCAN_OUT"
+  elif (( status == 1 )); then
+    echo "(no hits)"
+  else
+    printf 'SCANNER ERROR (exit %d): `%s`\n' "$status" "$(tr '\n' ' ' < "$SCAN_ERR")"
+    SCANNER_ERRORS=$((SCANNER_ERRORS + 1))
+  fi
+}
 
 cat <<EOF
 # Mechanical leads — $PARENT..$REV
 
-Generated by scripts/mechanical-leads.sh. Every hit is a ledger candidate:
-copy each into ledger/ML.md with a row ID (ML-1, ML-2, ...) and either
-explain it clean with a \`path:line\` citation or leave it as a candidate
-for verification. A capped list is an incomplete list — say so in the rows.
+Generated by scripts/mechanical-leads.sh. This is the authoritative, uncapped
+scan output. Every hit is a ledger candidate: copy each into ledger/ML.md with
+a row ID and either explain it clean with a path:line citation or leave it as
+a candidate for verification.
 EOF
+if (( ${#PATHS[@]} > 0 )); then
+  printf '\nShard pathspecs (changed-line scans only):\n'
+  printf -- '- `%s`\n' "${PATHS[@]}"
+fi
 
 section "Changed files (per-file ledger floor input)"
-G diff --name-status "$PARENT" "$REV" | sed 's/^/- `/; s/$/`/'
+if ! G diff --name-status "$PARENT" "$REV" -- "${PATHS[@]}" > "$SCAN_OUT" 2> "$SCAN_ERR"; then
+  cat "$SCAN_ERR" >&2
+  die "changed-file enumeration failed"
+fi
+emit_file "$SCAN_OUT"
 
 section "Whitespace and conflict markers (git diff --check)"
-CHECK_OUT="$(G diff --check "$PARENT" "$REV" 2>&1 || true)"
-if [[ -n "$CHECK_OUT" ]]; then
-  printf '%s\n' "$CHECK_OUT" | emit_capped 40
+status=0
+G diff --check "$PARENT" "$REV" -- "${PATHS[@]}" > "$SCAN_OUT" 2> "$SCAN_ERR" || status=$?
+if [[ -s "$SCAN_OUT" || -s "$SCAN_ERR" ]]; then
+  cat "$SCAN_OUT" "$SCAN_ERR" > "$TMP_SCAN/diff-check"
+  emit_file "$TMP_SCAN/diff-check"
+elif (( status != 0 )); then
+  echo "SCANNER ERROR: git diff --check exited $status without diagnostics"
+  SCANNER_ERRORS=$((SCANNER_ERRORS + 1))
 else
   echo "(clean)"
 fi
@@ -112,125 +145,184 @@ fi
 section "Formatter diff (git clang-format)"
 HEAD_NOW="$(G rev-parse HEAD 2>/dev/null || true)"
 if [[ "$HEAD_NOW" != "$REV" ]]; then
-  echo "SKIPPED: worktree HEAD is not the pinned revision — run inside the pinned worktree. Record as unrun in Verification Notes."
+  echo "SKIPPED: worktree HEAD is not the pinned revision. Record as unrun in Verification Notes."
 elif ! G clang-format -h >/dev/null 2>&1; then
   echo "UNAVAILABLE: git clang-format not found (depot_tools not on PATH?). Record as unrun in Verification Notes."
 else
   CF_ARGS=()
-  for c in "$REPO/buildtools/linux64/clang-format" \
-           "$REPO/buildtools/mac/clang-format" \
-           "$REPO/buildtools/mac_arm64/clang-format"; do
-    if [[ -x "$c" ]]; then CF_ARGS=(--binary "$c"); break; fi
+  for candidate in "$REPO/buildtools/linux64/clang-format" \
+                   "$REPO/buildtools/mac/clang-format" \
+                   "$REPO/buildtools/mac_arm64/clang-format"; do
+    if [[ -x "$candidate" ]]; then
+      CF_ARGS=(--binary "$candidate")
+      break
+    fi
   done
-  CF_OUT="$(G clang-format ${CF_ARGS[@]+"${CF_ARGS[@]}"} --diff "$PARENT" 2>&1 || true)"
-  if [[ -z "$CF_OUT" ]] || printf '%s' "$CF_OUT" | grep -qiE 'no modified files|did not modify'; then
-    echo "(clean — note: clang-format neither adds nor removes blank lines; scan those manually in the polish pass)"
+  status=0
+  G clang-format "${CF_ARGS[@]}" --diff "$PARENT" -- "${PATHS[@]}" > "$SCAN_OUT" 2> "$SCAN_ERR" || status=$?
+  if (( status != 0 )); then
+    printf 'SCANNER ERROR (git clang-format exit %d):\n' "$status"
+    cat "$SCAN_ERR" "$SCAN_OUT"
+    SCANNER_ERRORS=$((SCANNER_ERRORS + 1))
+  elif [[ ! -s "$SCAN_OUT" ]] || grep -qiE 'no modified files|did not modify' "$SCAN_OUT"; then
+    echo "(clean — clang-format neither adds nor removes blank lines; scan those manually in the polish pass)"
   else
     echo '```diff'
-    printf '%s\n' "$CF_OUT" | head -n 120
+    cat "$SCAN_OUT"
     echo '```'
   fi
 fi
 
-section "Non-ASCII characters in added lines (.cc/.h/.mm/.md)"
-if [[ -n "$NONASCII_CMD" ]]; then
-  # shellcheck disable=SC2086
-  $NONASCII_CMD < "$ADDED_ALL" 2>/dev/null | emit_capped 30
+section "Non-ASCII characters in added lines (all text-like changed files)"
+if command -v rg >/dev/null 2>&1; then
+  optional_scan rg --no-heading --no-line-number --color never '[^[:ascii:]]' "$ADDED_ALL"
+elif grep -qP 'x' <<<x 2>/dev/null; then
+  optional_scan grep -P '[^\x00-\x7F]' "$ADDED_ALL"
 else
-  echo "UNAVAILABLE: neither rg nor grep -P present. Run the checklist's non-ASCII scan manually."
+  echo "UNAVAILABLE: neither rg nor grep -P is present. Run the non-ASCII scan manually."
 fi
 
 section "Added bool declarations (predicate-name check: is_/has_/should_/did_/can_/needs_...)"
-grep -E '(^|[^A-Za-z0-9_])bool[[:space:]]+[A-Za-z0-9_]+_[[:space:]]*[;={]' "$ADDED_CC" | emit_capped 25
+optional_scan grep -E '(^|[^A-Za-z0-9_])bool[[:space:]]+[A-Za-z0-9_]+_[[:space:]]*[;={]' "$ADDED_CC"
 
 section "Count-returning calls with possibly discarded results (Push/Pull/Write/Send/Read)"
 echo "Partial acceptance is the contract for these APIs; verify each result is consumed."
 echo
-grep -E '^[^:]*:[0-9]+:[[:space:]]*([A-Za-z0-9_]+(\.|->))*(Push|Write|Send|Pull|Read)[A-Za-z0-9_]*\(' "$ADDED_CC" \
-  | grep -vE '=|return|if[[:space:]]*\(|while[[:space:]]*\(|for[[:space:]]*\(|EXPECT_|ASSERT_|DCHECK|CHECK\(|<<' \
-  | emit_capped 25
+awk '
+  /(^|:)[[:space:]]*([A-Za-z0-9_]+(\.|->))*(Push|Write|Send|Pull|Read)[A-Za-z0-9_]*\(/ &&
+  $0 !~ /=|return|if[[:space:]]*\(|while[[:space:]]*\(|for[[:space:]]*\(|EXPECT_|ASSERT_|DCHECK|CHECK\(|<</ { print }
+' "$ADDED_CC" > "$SCAN_OUT"
+emit_file "$SCAN_OUT"
 
 section "Callback/task/lifetime tokens in added lines"
 echo "For each: name the object that owns the callback target and the line guaranteeing the callback cannot outlive it."
 echo
-grep -E 'PostTask|PostDelayedTask|BindOnce|BindRepeating|base::Unretained|OneShotTimer|RepeatingTimer|RetainingOneShotTimer|DeadlineTimer' "$ADDED_CC" | emit_capped 30
+optional_scan grep -E 'PostTask|PostDelayedTask|BindOnce|BindRepeating|base::Unretained|OneShotTimer|RepeatingTimer|RetainingOneShotTimer|DeadlineTimer' "$ADDED_CC"
 
 section "Named sentinels in added lines (definitions listed side by side)"
-SENTINELS="$(grep -oE 'k(Unlimited|Invalid|No[A-Z]|None|Null|Max|Min|Infinite)[A-Za-z0-9_]*' "$ADDED_CC" | sort -u | head -10)"
-if [[ -z "$SENTINELS" ]]; then
+status=0
+grep -oE 'k(Unlimited|Invalid|No[A-Z]|None|Null|Max|Min|Infinite)[A-Za-z0-9_]*' "$ADDED_CC" > "$TMP_SCAN/sentinels-raw" 2> "$SCAN_ERR" || status=$?
+if (( status > 1 )); then
+  printf 'SCANNER ERROR (sentinel extraction exit %d): %s\n' "$status" "$(tr '\n' ' ' < "$SCAN_ERR")"
+  SCANNER_ERRORS=$((SCANNER_ERRORS + 1))
+elif (( status == 1 )); then
   echo "(no hits)"
 else
+  sort -u "$TMP_SCAN/sentinels-raw" > "$TMP_SCAN/sentinels"
   echo "Two modules encoding the same concept with different values is a candidate by default."
-  while IFS= read -r s; do
-    printf '\n### `%s`\n\n' "$s"
-    G grep -n -w "$s" -- '*.cc' '*.h' 2>/dev/null | emit_capped 12
-  done <<< "$SENTINELS"
+  while IFS= read -r sentinel; do
+    printf '\n### `%s`\n\n' "$sentinel"
+    optional_scan G grep -n -w "$sentinel" -- '*.cc' '*.h'
+  done < "$TMP_SCAN/sentinels"
 fi
 
 section "Preprocessor gates in added lines (verify polarity vs feature name and default build)"
-grep -E '^[^:]*:[0-9]+:[[:space:]]*#[[:space:]]*(if|ifdef|ifndef|elif)' "$ADDED_ALL" | emit_capped 20
+optional_scan grep -E '^[^:]*:[0-9]+:[[:space:]]*#[[:space:]]*(if|ifdef|ifndef|elif)' "$ADDED_ALL"
 
 section "Feature flags referenced in added lines (grep every gate site; check polarity and default agreement)"
-FEATURES="$(grep -oE '(BASE_FEATURE\([[:space:]]*k[A-Za-z0-9_]+|features::k[A-Za-z0-9_]+)' "$ADDED_CC" \
-  | grep -oE 'k[A-Za-z0-9_]+' | sort -u | head -10)"
-if [[ -z "$FEATURES" ]]; then
+python3 - "$ADDED_CC" > "$TMP_SCAN/features" <<'PYEOF'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8", errors="surrogateescape").read()
+names = set(re.findall(r"BASE_FEATURE\(\s*(k[A-Za-z0-9_]+)", text))
+names.update(re.findall(r"features::(k[A-Za-z0-9_]+)", text))
+if names:
+    print("\n".join(sorted(names)))
+PYEOF
+if [[ ! -s "$TMP_SCAN/features" ]]; then
   echo "(no hits)"
 else
-  while IFS= read -r f; do
-    printf '\n### `%s`\n\n' "$f"
-    G grep -n -w "$f" -- '*.cc' '*.h' '*.mm' '*.gn' '*.gni' 2>/dev/null | emit_capped 12
-  done <<< "$FEATURES"
+  while IFS= read -r feature; do
+    printf '\n### `%s`\n\n' "$feature"
+    optional_scan G grep -n -w "$feature" -- '*.cc' '*.h' '*.mm' '*.gn' '*.gni'
+  done < "$TMP_SCAN/features"
 fi
 
 section "Changed-function inventory (reference counts; visit non-test callers manually)"
 echo "Changed semantics with unchanged callers is a classic miss. Counts are tree-wide git-grep line counts."
 echo
-FUNCS="$(G diff --color=never "$PARENT" "$REV" -- '*.cc' '*.h' '*.mm' 2>/dev/null \
-  | grep -E '^@@' | sed -E 's/^@@[^@]*@@[[:space:]]*//' \
-  | sed -E 's/\(.*$//; s/[[:space:]]+$//; s/.*[[:space:]:~*&]//' \
-  | grep -E '^[A-Za-z_][A-Za-z0-9_]{3,}$' \
-  | grep -vE '^(if|for|while|switch|else|return|namespace|class|struct|enum|TEST|TEST_F|TEST_P|public|private|protected|final|override|const)$' \
-  | grep -vE '^[A-Z0-9_]+$' \
-  | sort -u | head -20)"
-if [[ -z "$FUNCS" ]]; then
+if ! G diff --color=never "$PARENT" "$REV" -- "${PATHS[@]}" > "$TMP_SCAN/full-diff" 2> "$SCAN_ERR"; then
+  cat "$SCAN_ERR" >&2
+  die "diff failed while extracting changed functions"
+fi
+python3 - "$TMP_SCAN/full-diff" > "$TMP_SCAN/functions" <<'PYEOF'
+import re
+import sys
+
+excluded = {"if", "for", "while", "switch", "else", "return", "namespace",
+            "class", "struct", "enum", "TEST", "TEST_F", "TEST_P", "public",
+            "private", "protected", "final", "override", "const"}
+names = set()
+for line in open(sys.argv[1], encoding="utf-8", errors="surrogateescape"):
+    if not line.startswith("@@"):
+        continue
+    match = re.match(r"^@@[^@]*@@\s*(.*)$", line)
+    context = match.group(1) if match else ""
+    before_paren = context.split("(", 1)[0].rstrip()
+    match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)$", before_paren)
+    if match:
+        name = match.group(1)
+        if len(name) >= 4 and name not in excluded and not re.fullmatch(r"[A-Z0-9_]+", name):
+            names.add(name)
+if names:
+    print("\n".join(sorted(names)))
+PYEOF
+if [[ ! -s "$TMP_SCAN/functions" ]]; then
   echo "(no enclosing functions detected in hunk headers)"
 else
-  while IFS= read -r fn; do
-    CNT="$(G grep -n -E "(^|[^A-Za-z0-9_])$fn\(" -- '*.cc' '*.h' '*.mm' 2>/dev/null | wc -l)"
-    printf -- '- `%s` — %s reference line(s) across the tree\n' "$fn" "$CNT"
-  done <<< "$FUNCS"
-  echo
-  echo "(enclosing-function names parsed from hunk headers; capped at 20 — enumerate the rest from the diff if truncated)"
+  while IFS= read -r function_name; do
+    status=0
+    G grep -n -E "(^|[^A-Za-z0-9_])${function_name}\\(" -- '*.cc' '*.h' '*.mm' > "$SCAN_OUT" 2> "$SCAN_ERR" || status=$?
+    if (( status > 1 )); then
+      printf -- '- `%s` — SCANNER ERROR (git grep exit %d): %s\n' "$function_name" "$status" "$(tr '\n' ' ' < "$SCAN_ERR")"
+      SCANNER_ERRORS=$((SCANNER_ERRORS + 1))
+    else
+      count="$(wc -l < "$SCAN_OUT")"
+      printf -- '- `%s` — %s reference line(s) across the tree\n' "$function_name" "$count"
+    fi
+  done < "$TMP_SCAN/functions"
 fi
 
 section "Cross-component includes added (verify BUILD.gn deps)"
-grep -E '^[^:]*:[0-9]+:[[:space:]]*#include "' "$ADDED_CC" | awk '
-{
-  line = $0
-  file = line; sub(/:.*/, "", file)
-  split(file, fp, "/"); ftop = fp[1]
-  content = line; sub(/^[^:]*:[0-9]+:/, "", content)
-  inc = content; sub(/^[[:space:]]*#include "/, "", inc); sub(/".*/, "", inc)
-  if (inc !~ /\//) next
-  split(inc, ip, "/"); itop = ip[1]
-  if (itop != ftop && itop != "base" && itop != "build" && itop != "testing")
-    printf "%s includes \"%s\" — verify the target'\''s BUILD.gn deps\n", file, inc
-}' | emit_capped 20
+awk '
+  /^[^:]*:[0-9]+:[[:space:]]*#include "/ {
+    line = $0
+    file = line; sub(/:.*/, "", file)
+    split(file, fp, "/"); ftop = fp[1]
+    content = line; sub(/^[^:]*:[0-9]+:/, "", content)
+    inc = content; sub(/^[[:space:]]*#include "/, "", inc); sub(/".*/, "", inc)
+    if (inc !~ /\//) next
+    split(inc, ip, "/"); itop = ip[1]
+    if (itop != ftop && itop != "base" && itop != "build" && itop != "testing")
+      printf "%s includes \"%s\" — verify the target\047s BUILD.gn deps\n", file, inc
+  }
+' "$ADDED_CC" > "$SCAN_OUT"
+emit_file "$SCAN_OUT"
 
 section "Test-reference map (changed files vs '*test*' files that mention their stem)"
-FILES="$(G diff --name-only "$PARENT" "$REV" -- '*.cc' '*.h' '*.mm' | grep -viE 'test|mock|fake' | head -40)"
-if [[ -z "$FILES" ]]; then
+if ! G diff --name-only "$PARENT" "$REV" -- "${PATHS[@]}" > "$TMP_SCAN/changed-files" 2> "$SCAN_ERR"; then
+  cat "$SCAN_ERR" >&2
+  die "changed-file scan failed"
+fi
+awk 'tolower($0) !~ /(test|mock|fake)/ && $0 ~ /\.(c|cc|cpp|h|hpp|m|mm|rs|java|kt|js|mjs|ts|tsx|py|mojom|proto)$/ { print }' "$TMP_SCAN/changed-files" > "$TMP_SCAN/non-test-files"
+if [[ ! -s "$TMP_SCAN/non-test-files" ]]; then
   echo "(no non-test source files changed)"
 else
-  while IFS= read -r f; do
-    stem="$(basename "$f")"; stem="${stem%.*}"
-    HITS="$(G grep -l -F "$stem" -- '*test*' 2>/dev/null | head -3)"
-    if [[ -z "$HITS" ]]; then
-      printf -- '- `%s`: NO test file references `%s` — coverage candidate by default\n' "$f" "$stem"
+  while IFS= read -r file; do
+    stem="$(basename "$file")"
+    stem="${stem%.*}"
+    status=0
+    G grep -l -F "$stem" -- '*test*' > "$SCAN_OUT" 2> "$SCAN_ERR" || status=$?
+    if (( status > 1 )); then
+      printf -- '- `%s`: SCANNER ERROR (git grep exit %d): %s\n' "$file" "$status" "$(tr '\n' ' ' < "$SCAN_ERR")"
+      SCANNER_ERRORS=$((SCANNER_ERRORS + 1))
+    elif [[ ! -s "$SCAN_OUT" ]]; then
+      printf -- '- `%s`: NO test file references `%s` — coverage candidate by default\n' "$file" "$stem"
     else
-      printf -- '- `%s`: referenced by %s\n' "$f" "$(printf '%s' "$HITS" | tr '\n' ' ')"
+      printf -- '- `%s`: referenced by %s\n' "$file" "$(tr '\n' ' ' < "$SCAN_OUT")"
     fi
-  done <<< "$FILES"
+  done < "$TMP_SCAN/non-test-files"
 fi
 
 section "Manual leads still owed by the Mechanical Leads thread"
@@ -247,3 +339,8 @@ Leads" and record each as a row:
 - Direct-include check for new symbols (std::, base::, test helpers).
 - Coverage-tooling flags on changed lines, if Gerrit shows them.
 EOF
+
+if (( SCANNER_ERRORS > 0 )); then
+  printf '\nERROR: %d scanner failure(s) occurred; this output is incomplete.\n' "$SCANNER_ERRORS" >&2
+  exit 2
+fi

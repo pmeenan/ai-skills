@@ -61,11 +61,10 @@ expectations**; trap rows become **known traps**.
 | T3 | Restriction-feature fallback dismissed as graceful degradation | inversion: silent unrestricted degradation is the finding | verification-and-fixes Evaluating Fixes | TODO |
 | T4 | Blocking P2 combined with "LGTM" in one verdict | "Not LGTM until …" phrasing | verification-and-fixes Verdict Alignment | TODO |
 
-## Known follow-up-review eval
+## Promoted follow-up-review eval
 
-- CL 8020646 (DelayedStreamSocket) PS4: all 16 prior comments were fixed and
-  correct; remaining legitimate findings were P3-only (annotation-crossing
-  fix untested; `SetBeforeConnectCallback` NOTREACHED question). A good
-  follow-up run must (a) verify all 16 as fixed with evidence, (b) not
-  re-report them as new issues, (c) not inflate the P3s into blockers.
-  Promote into `cl-8020646.md` with the exact patchset SHAs.
+- CL 8020646 (DelayedStreamSocket) PS4 is now pinned and scored in
+  `cl-8020646.md`: all 16 prior comments were fixed; the remaining legitimate
+  findings were P3-only (annotation-crossing fix untested;
+  `SetBeforeConnectCallback` forwarding question). Keep this note only as the
+  provenance pointer; the per-CL file is authoritative.

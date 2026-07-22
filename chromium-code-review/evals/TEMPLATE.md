@@ -5,6 +5,9 @@
 - Domain: <net/http cache, socket throttling, blink loader, …>
 - Why in corpus: <one line — what runs got wrong here>
 - Mode: <full review | follow-up review against PS<m> feedback>
+- Expected profile: <micro | standard | high-risk | large>; proof/signals: <...>
+- Expected topology: <single/sharded inventory, collection, reconciliation,
+  draft, and challenge; name required fast paths or shard boundaries>
 
 ## Must-find findings
 
@@ -23,8 +26,20 @@
 ## Process expectations
 
 - Roster entries that must trigger: <…>
-- Roster entries legitimately not-triggered: <…>
+- Deterministic specialist routes expected from `profile.json` (prefix → exact
+  roster entry → representative path/symbol evidence): <…>
+- Effort calibration: <which signals genuinely escalate effort, and which
+  trigger-only routes must not escalate solely from file type>
+- Roster entries legitimately `not applicable — trigger absence proved by
+  <T IDs>`: <…>
+- Intentionally unreviewed scope: <none, or explicit reason that must be
+  disclosed and block any gate that requires it>
 - <e.g. "the Mode × Host matrix must contain cells X, Y, Z">
+- Pin/manifest requirement: selected PS/SHA matches above;
+  `orchestration.tsv` has no orphaned or overlapping attempts.
+- Reconciliation/delivery requirement: every canonical/reopened row has a
+  disposition; the latest draft has a complete later challenge and an honest
+  post-synthesis freshness gate.
 
 ## Results
 

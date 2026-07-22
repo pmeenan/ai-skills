@@ -12,6 +12,7 @@ in `references/synthesis-and-output.md`.
 - Skeptic Verdicts
 - Execution-Based Verification
 - Evaluating Fixes
+- Root-Cause Trigger Planning
 - Root-Cause, Layering, And Fix Optimality
 - Final Synthesis Pass
 - Verdict Alignment And Gerrit Output Rules
@@ -39,8 +40,10 @@ code, not from memory.
   it: convert it into a question for the CL owner in the review's Questions
   section, stating what you traced and what remains unproven. Uncertainty
   rounded down to "probably fine" is how reviews miss real bugs.
-- Record refuted candidates in the ledger with a one-line reason instead of
-  deleting them; synthesis re-checks the ledger.
+- Never edit a discovery ledger to record a verdict. Record refutation in the
+  skeptic verdict file and reconciliation; discovery rows remain append-only.
+  If a worker must correct its own earlier row, use the normative Amendments
+  section from templates.md, preserving the original row and ID.
 - Matrix cells marked incompatible-but-guarded are verification inputs too:
   confirm that the named guard actually guards the cell's scenario, on the
   path the scenario takes. In a measured run a cell cited `ShouldTruncate()`
@@ -74,6 +77,12 @@ A skeptic that cannot produce REFUTED's required fields has confirmed the
 finding, not dismissed it. When verification runs without subagents, the
 orchestrator holds itself to the same schema — one verdict row per
 candidate, same mandatory fields.
+
+A candidate with a proposed duplicate merge is the sole exception to the
+one-verdict-per-candidate rule. It may share the surviving candidate's verdict
+only after reconciliation verifies equal trigger, violated invariant, and bad
+outcome, with citations. Similar location or fix is insufficient. A rejected
+merge returns to verification; it is never silently dismissed.
 
 ## Execution-Based Verification
 
@@ -182,6 +191,31 @@ When a fix changes API shape or caller obligations:
   callback pruning; edge-triggered vs level-triggered notifications; owned
   task cancellation vs caller-managed weak callbacks.
 
+## Root-Cause Trigger Planning
+
+The Root-Cause Planner reads the actual candidate and verdict files; the
+orchestrator must not infer triggers from terse status messages. It writes one
+Trigger Accounting row for every CONFIRMED or UNPROVEN verdict, every
+candidate with a proposed fix, and every inventory scope marked `root-cause
+required`. Inventory scopes ensure risky changes receive a layering pass even
+when discovery found no defect candidate. Schedule root-cause work when any of
+these is true:
+
+- proposed P1 or P2;
+- risky P3 whose severity depends on reachability or invariant ownership;
+- any concrete fix recommendation, regardless of severity;
+- performance optimization, flaky-test fix, async/lifecycle change,
+  state-machine change, cache/throttle, persisted format, or new state holder;
+- a candidate whose local symptom may be shared across caller families.
+
+Rows that meet no trigger remain in the plan as `not applicable — trigger
+absence proved by <T IDs>`. Batch scheduled work by related invariant and trace cost; serious
+candidates normally stand alone or in very small groups, and no fixed quota
+may combine unrelated traces. Keep every generated brief bounded. Assign
+distinct zero-padded `RC001`, `RC002`, ... IDs. Generated root-cause briefs inherit the
+common directives, authority boundary, append/retry, and partial-return
+contract from templates.md.
+
 ## Root-Cause, Layering, And Fix Optimality
 
 Run this after candidate verification and before final synthesis. The goal is
@@ -241,9 +275,17 @@ Use these drills to fill the row:
 
 If this pass changes the likely invariant owner, exposes a missing caller
 family, reveals duplicated canonical state, or opens a new state-machine or
-async scenario, add new ledger rows and return to the matching discovery recipe
-before synthesis. Do not bury the result as a caveat; either verify it,
-refute it, or ask the owner a concrete question.
+async scenario, first write each issue as a canonical row in
+`ledger/reopened/round-<N>-RC<batch>.md`, with ID
+`R<N>-RC<batch>-<n>`, full evidence, origin, requested recipe (if any), and
+parent candidate/verdict/RC links. A row that exists only in a brief or status
+message does not exist. Run any requested narrow discovery recipe first; it
+appends evidence/amendments or additional canonical reopened rows. Then rerun
+the Verification Planner in delta mode over exactly that round, execute its
+skeptics, and rerun the Root-Cause Planner in delta mode. Challengers do not
+create skeptic briefs directly. Increment rounds until no open/triggered row
+remains. Do not bury the result as a caveat: either verify it, refute it,
+merge it with proven equivalence, or ask the owner before synthesis.
 
 Examples of the intended reasoning pattern:
 
@@ -283,6 +325,28 @@ review:
   not checked, assumptions that still need confirmation? State these in the
   review's Verification Notes.
 
+Scale this pass by evidence cards rather than by ingesting the entire record.
+The Challenge Planner assigns no more than six finding/question cards to a
+content shard and no more than 200 reconciliation rows to a structural shard,
+reducing either count whenever the assigned artifacts would exceed 35% of a
+known context window or the 128 KiB unknown-capacity fallback. Every item/row
+appears in exactly one shard.
+
+For a large draft, challengers consume immutable indexed draft/Gerrit sections,
+not the whole assembled output. Content shards read only assigned sections,
+their bounded cards, and the global frame. Structural shards read assigned row
+ranges, the gate, and frame. One global shard checks section order, hashes,
+headings, verdict/finding consistency, and Gerrit target coverage from compact
+indexes. Each challenge row records the section hashes audited. A collector
+verifies exact card/row/section coverage and exactly one `global:consistency`
+token, then writes the compact challenge index.
+
+Any draft change after challenge creates a new draft revision and requires a
+new full challenge generation: fresh plan, fresh shard IDs/artifacts, and a
+fresh collected index. Rechecking only the previously reported problems is not
+a contradiction pass and cannot satisfy the gate. Gerrit freshness is checked
+only after the last collected challenge and is rechecked after every revision.
+
 ## Verdict Alignment And Gerrit Output Rules
 
 ### Verdict Formatting
@@ -313,3 +377,9 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   replacement is optimal. Avoid repeating the same suggestion across
   multiple files/declarations; place a single comment at the most relevant
   site.
+- **Normalize threads before replying:** `comments.json` is keyed by file and
+  contains CommentInfo arrays. Flatten with paths retained, group replies by
+  transitive `in_reply_to` root, order within each thread by `updated` (stable
+  ID tie-break), and take unresolved state from that thread's latest comment.
+  Target the normalized root/latest IDs. Never use the last file-array element
+  or the change's latest message as unresolved-thread state.
