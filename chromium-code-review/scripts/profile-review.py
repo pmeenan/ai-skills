@@ -558,6 +558,11 @@ def main() -> int:
     parser.add_argument("--stdout", action="store_true", help="print JSON instead of writing profile files")
     parser.add_argument("--check", action="store_true", help="fail if profile.json/profile.md are absent or stale")
     parser.add_argument(
+        "--tier-context-window-tokens", action="append", default=[],
+        metavar="TIER:TOKENS",
+        help="context window for a resolved tier's model, e.g. standard:200000; "
+             "repeatable; derives per-tier worker budgets")
+    parser.add_argument(
         "--context-window-tokens", type=int,
         help="known worker context capacity; budget 35%% using a conservative 4 UTF-8 bytes/token estimate",
     )
@@ -565,12 +570,22 @@ def main() -> int:
     if args.stdout and args.check:
         fail("--stdout and --check are mutually exclusive")
     review_dir = args.review_dir.resolve()
-    if args.check and args.context_window_tokens is None and (review_dir / "profile.json").is_file():
+    if args.check and (review_dir / "profile.json").is_file():
         try:
             existing = json.loads((review_dir / "profile.json").read_text(encoding="utf-8"))
-            saved_tokens = existing["context_budget"]["estimation"]["context_window_tokens"]
-            if isinstance(saved_tokens, int) and saved_tokens > 0:
-                args.context_window_tokens = saved_tokens
+            if args.context_window_tokens is None:
+                saved_tokens = existing["context_budget"]["estimation"]["context_window_tokens"]
+                if isinstance(saved_tokens, int) and saved_tokens > 0:
+                    args.context_window_tokens = saved_tokens
+            if not args.tier_context_window_tokens:
+                saved_tiers = existing["context_budget"].get(
+                    "reported_tier_context_tokens", {})
+                if isinstance(saved_tiers, dict):
+                    args.tier_context_window_tokens = [
+                        f"{tier}:{tokens}"
+                        for tier, tokens in sorted(saved_tiers.items())
+                        if isinstance(tokens, int) and tokens > 0
+                    ]
         except (OSError, KeyError, TypeError, json.JSONDecodeError):
             pass
     if args.context_window_tokens is not None and args.context_window_tokens <= 0:
@@ -658,11 +673,21 @@ def main() -> int:
             and context["external_context"]["count"] == 0
         ),
     }
+    tier_budgets = {}
+    tier_tokens = {}
+    for item in args.tier_context_window_tokens:
+        tier, _, tokens = item.partition(":")
+        if tier not in {"mechanical", "standard", "frontier"} or not tokens.isdigit() or int(tokens) <= 0:
+            fail(f"--tier-context-window-tokens must be tier:positive-tokens, got '{item}'")
+        tier_tokens[tier] = int(tokens)
+        tier_budgets[tier] = int(int(tokens) * 4 * 0.35)
     profile["context_budget"] = {
         "source": "fallback" if args.context_window_tokens is None else "reported",
         "reported_context_tokens": args.context_window_tokens,
         "input_fraction": 0.35,
         "worker_input_budget_bytes": worker_budget,
+        "tier_worker_input_budget_bytes": tier_budgets,
+        "reported_tier_context_tokens": tier_tokens,
         "candidate_packet_budget_bytes": min(worker_budget, 16384, max(4096, worker_budget // 8)),
         "evidence_card_budget_bytes": min(worker_budget, 32768, max(8192, worker_budget // 4)),
         "estimation": estimation,

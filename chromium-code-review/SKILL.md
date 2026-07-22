@@ -79,7 +79,7 @@ Modes is only for harnesses with no such tool at all.
 4. **Append a one-line outcome to `progress.md` after every phase and every
    collected thread, and update `orchestration.tsv` after every task state
    change.** The TSV is the authoritative machine-readable queue, with one
-   row per attempt and fixed columns `phase`, `work_id`, `attempt`, `state`,
+   row per attempt and fixed columns `phase`, `work_id`, `attempt`, `state`, `tier`,
    `task_id`, `brief`, `artifact`, `remaining_scope`, and `depends_on`.
    States are `queued`, `running`, `partial`, `retryable`, `needs-repair`,
    `complete`, or `terminated`. Paths are absolute; tabs/newlines in values
@@ -100,7 +100,10 @@ Modes is only for harnesses with no such tool at all.
    numbered continuation brief containing only the explicit remaining scope.
    The continuation preserves the existing canonical artifact and IDs and
    appends only new rows or normative amendment rows; it never overwrites or
-   repeats completed scope. When a worker dies without an exact remainder, a
+   repeats completed scope. Its orchestration row records `depends_on
+   ⟨work-id⟩:⟨prior attempt⟩` and its own attempt-specific brief (never the
+   original broad brief), and its manifest lists the canonical artifact as
+   role `prestate` (pre-attempt size and prefix hash) so appends validate. When a worker dies without an exact remainder, a
    recovery worker first inspects the brief and artifact and writes a bounded
    repair brief naming the exact missing matrix rows, IDs, files, or trace
    units. Retry that repair brief, never the whole original scope. Collection
@@ -341,6 +344,28 @@ exhausted record it in `plan.md` and `progress.md` as
 "terminated — scope unreviewed". Never mark an uncollected thread
 Completed. If you interrupt a thread deliberately, collect its partial
 ledger file before killing it and record it as "interrupted — partial".
+
+**TER gate (only when the plan contains deferred rows).** A plan with
+`deferred — pending TER gate (round two)` rows runs discovery in two rounds:
+after the Transformation Equivalence And Residue thread collects, spawn the
+**TER Gate-Brief Builder** (phase brief; `mechanical`, work unit `VTERB`,
+`depends_on` TER) — the orchestrator cannot read TER ledgers, so the
+builder enumerates the exact gate inputs, writes `briefs/VTER.md`, and
+emits a manifest fragment. Merge the fragment atomically, record the
+`VTER` work unit (`frontier`, `depends_on` VTERB, artifact
+`verification/VTER.md`), and spawn the gate skeptic. Its verdict file uses
+the dedicated PROVEN/REJECTED/UNPROVEN schema, is excluded from the
+ordinary verdict pipeline, and counts only with this execution provenance —
+the validator rejects a gate file with no VTER work unit behind it, a VTER
+that does not depend on VTERB, or a VTERB that does not depend on every
+spawned TER shard. When it
+collects, respawn the Planner in residue mode to convert every deferred row
+to a concrete `spawn` row whose scope cites its PROVEN classes
+(`residue(TC…): `) and whose orchestration attempts record `depends_on`
+VTER or the round-two Planner; the validator rejects residue scoping
+without a PROVEN verdict, without that dependency, and any malformed
+residue-like scope. Deferred is transient: no
+deferred row may survive to the collection audit.
 
 **Collect ledger files; never transcribe or compress them.** Collection is:
 confirm the thread's `ledger/<THREAD>.md` exists and is non-trivial

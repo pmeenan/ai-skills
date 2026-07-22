@@ -105,10 +105,21 @@ output goes to
   for the sites that deviate from the class pattern, which are residue and
   reviewed as ordinary surfaces. Group-row fields that are meaningless by class (callers,
   ownership/lifetime for test bodies) are `N/A (class)` with no per-member
-  lookup — **never run a caller grep for a test-only surface**. Members of a
+  lookup — **never run a caller grep for an aggregated group member**; a
+  surface that keeps its individual row (a fixture, a stateful mock/fake or
+  helper, a production-reachable test utility) gets its normal fields,
+  including a caller search where the schema asks for one. Members of a
   test file still get individual rows when they are fixtures/base classes,
   mocks/fakes or helpers with state or nontrivial logic, or surfaces a
-  trigger row must cite. This preserves review truth: the inventory is a
+  trigger row must cite. **In sharded inventory, groups are per
+  (shard × file × fixture/class):** each shard groups only the members whose
+  hunks it owns, states its member count and owned hunks, and never claims
+  members from another shard's hunks — the earliest-changed-line ownership
+  rule applies to individual surfaces, not to groups. The index builder
+  mechanically rejects any hunk claimed by two inventory shards; per-shard
+  member counts are recorded in the index tags, and their cross-shard union
+  is a process-evaluator check (member identity is not text-derivable), not
+  an indexer proof. This preserves review truth: the inventory is a
   routing artifact, per-test adequacy is owned by the Tests As Specifications
   thread (which reads the test file itself), and the per-file floor is
   unaffected. A measured run spent 90+ minutes emitting boilerplate rows for
@@ -241,26 +252,65 @@ From the risk map and the changed-surface inventory, list:
 
 Assign each `spawn` row a model tier per the Model Tiers contract in
 `references/scaling-and-indexes.md`: default `frontier` for every
-trace-reasoning thread; downgrade to `standard` only for threads whose checks
-are predominantly enumeration or metadata audit — Mechanical Leads, Tests As
-Specifications, Changed-Lines Polish, Build API And Generated Assets,
-Accessibility And Internationalization, and the holistic thread. No discovery
-thread is ever `mechanical`. When in doubt, `frontier`.
+trace-reasoning thread; downgrade to `standard` only for Mechanical Leads and
+Changed-Lines Polish, whose checks are predominantly enumeration. Tests As
+Specifications (does the test fail against parent behavior for the intended
+reason), Build API And Generated Assets (ABI, lifetime, and downstream
+migration reasoning), Accessibility And Internationalization (dynamic
+behavior), and the holistic thread (bug alignment and performance judgment)
+all carry semantic analysis and stay `frontier`. No discovery thread is ever
+`mechanical`. When in doubt, `frontier`.
 
-**Residue-scoped planning for proven-mechanical bulk changes.** When
-Transformation Equivalence And Residue triggers, plan it as the
-highest-priority `frontier` thread, and plan the roster threads whose scope
-would otherwise be the bulk-transformed sites in **residue mode**: their
-briefs scope to the residue hunks, difference-observing sites, and collateral
-files named under the `## Residue` heading of the TER ledger (the brief cites
-that artifact path as its scope source), with `depends_on` the TER thread in
-`orchestration.tsv`. The per-file floor over conforming files is satisfied by
-TER's class-membership rows. Threads whose scope is independent of the bulk
-sites (e.g. Build API And Generated Assets over the collateral, the holistic
-thread) are planned normally. If TER's return reports a failed proof or a
-dirty re-derivation, the orchestrator respawns the Planner in re-plan mode
-for the affected scope as an ordinary full review — bulk treatment is earned
-by proof, never by the diff's shape or the CL's claim.
+**Residue-scoped planning for proven-mechanical bulk changes is two planning
+rounds, gated by an adversarial verdict.** Briefs must name exact,
+already-existing, manifest-hashable inputs, so a brief cannot scope itself to
+a ledger that does not exist yet. When Transformation Equivalence And Residue
+triggers:
+
+1. **Round one** plans TER as the highest-priority `frontier` thread plus
+   every thread whose scope is independent of the bulk-transformed sites
+   (collateral threads such as Build API And Generated Assets, the holistic
+   thread, and any thread scoped to non-bulk files). Threads whose scope
+   would be the bulk sites are planned as
+   `deferred — pending TER gate (round two)` rows; they get no briefs yet.
+2. **TER gate.** After TER's ledger is collected, the orchestrator generates
+   the **TER Gate Skeptic** from its phase brief — only then, so its inputs
+   exist and are hashable — and spawns it at `frontier`. Its verdict file
+   `verification/VTER.md` uses the dedicated gate schema
+   `PROVEN / REJECTED / UNPROVEN` over the ledger's `TC<n>` class rows
+   (equivalence is a gate result, never a defect finding, so the ordinary
+   CONFIRMED/REFUTED pipeline and indexes exclude this file). It re-checks
+   the difference table against both implementations, spot-checks the
+   re-derivation, and actively hunts a difference-observing site missing
+   from the residue. Only a PROVEN verdict per class unlocks residue mode
+   for that class.
+3. **Round two** respawns the Planner in residue mode. It reads the now
+   existing TER ledger and `verification/VTER.md`, converts each deferred row
+   to `spawn` with an exact scope — the residue hunks, difference-observing
+   sites, and collateral files, copied concretely into the brief, never "see
+   the TER ledger" — beginning each residue-scoped row's scope cell with
+   `residue(TC<ids>): ` so the validator can join class → gate verdict →
+   scope, and registers the briefs with their now-hashable inputs in the
+   manifest. For any class the gate REJECTED or left UNPROVEN, the deferred
+   rows are planned as an ordinary full review of that class's sites. `deferred` is a transient status: every deferred row is converted
+   before the collection audit, and the validator rejects a collected plan
+   that still contains one.
+
+**Cross-site closure recipes never shrink to residue.** Field Propagation
+Matrix, Associative Container Semantics, and any thread whose procedure must
+visit *unchanged* code to prove closure (copy/clone/serialize/reset/trace
+sites, container key policies, per-surface invariants over unchanged callers)
+keep their full semantic scope even when every TER class is proven: an
+omitted propagation update is neither a transformed member nor a residue
+hunk, so residue scoping cannot see it. Residue mode narrows only threads
+whose subject is the transformed sites themselves.
+
+The per-file floor over conforming files is satisfied by TER's per-file
+membership rows — one clean `Candidate rows` entry per class × file, per the
+TER ledger shape in `references/templates.md`. If TER's return reports a failed proof or dirty
+re-derivation, round two plans the affected scope as an ordinary full
+review — bulk treatment is earned by proof and survives an adversarial
+gate, never the diff's shape or the CL's claim.
 
 Assign a priority by where P1s live, not by line count: teardown and error
 paths, boundary arithmetic, cross-sequence handoffs, persisted-format

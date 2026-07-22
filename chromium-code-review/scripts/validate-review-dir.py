@@ -28,7 +28,7 @@ PHASES = {"pin": 0, "collection": 1, "verification": 2,
           "reconciliation": 3, "final": 4}
 ROW_ID_TEXT = r"(?:[A-Z][A-Z0-9]*-\d+|R\d+-RC\d+-\d+)"
 ROW_ID = re.compile(rf"^{ROW_ID_TEXT}$")
-CITATION = re.compile(r"(?:^|\s|`)([A-Za-z0-9_.+@{}\-/]+):\d+")
+CITATION = re.compile(r"(?:^|[\s`(\[])([A-Za-z0-9_.+@{}\-/]+):\d+")
 ARTIFACT_POINTER = re.compile(
     r"(?:^|\s|`)([A-Za-z0-9_.+@{}\-/]+\.(?:json|md):/"
     r"[A-Za-z0-9_./~-]+)"
@@ -102,19 +102,26 @@ ROSTER_PREFIX = {
 TRIGGER_ID_TEXT = r"(?:T\d+|I[A-Z0-9]+-T\d+)"
 TRIGGER_ID = re.compile(rf"^{TRIGGER_ID_TEXT}$", re.IGNORECASE)
 MANIFEST_COLUMNS = (
-    "phase", "work_id", "attempt", "state", "task_id", "brief",
+    "phase", "work_id", "attempt", "state", "tier", "task_id", "brief",
     "artifact", "remaining_scope", "depends_on",
 )
+MANIFEST_TIERS = {"mechanical", "standard", "frontier", "inherit"}
+TIER_ORDER = {"mechanical": 0, "standard": 1, "frontier": 2}
+TIER_FLOOR_STANDARD = {"Mechanical Leads", "Changed-Lines Polish"}
+EVIDENCE_EXCEPTION = re.compile(r"evidence-exception:\s*\S+")
+GATE_VERDICTS = {"PROVEN", "REJECTED", "UNPROVEN"}
+RESIDUE_SCOPE = re.compile(r"^residue\((TC\d+(?:\s*,\s*TC\d+)*)\):\s+\S")
 MANIFEST_STATES = {
     "queued", "running", "partial", "retryable", "needs-repair",
     "complete", "terminated",
 }
 INPUT_MANIFEST_COLUMNS = (
-    "work_id", "phase", "brief", "input_path", "role", "bytes", "sha256",
+    "work_id", "attempt", "phase", "brief", "input_path", "role", "bytes",
+    "sha256",
 )
 INPUT_MANIFEST_ROLES = {
     "brief", "control", "reference", "assigned", "candidate-packet", "card",
-    "frame", "section",
+    "frame", "section", "prestate",
 }
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROFILE_SCRIPT = SCRIPT_DIR / "profile-review.py"
@@ -245,6 +252,16 @@ def validate_scaling_outputs(root: Path, report: Report) -> dict[str, int]:
             report.error(f"profile.json context_budget has invalid {name}")
         else:
             budgets[name] = value
+    tier_budgets = context.get("tier_worker_input_budget_bytes")
+    if isinstance(tier_budgets, dict):
+        for tier, value in tier_budgets.items():
+            if tier in TIER_ORDER and isinstance(value, int) \
+                    and not isinstance(value, bool) and value > 0:
+                budgets[f"tier:{tier}"] = value
+            else:
+                report.error(
+                    f"profile.json tier_worker_input_budget_bytes has invalid "
+                    f"entry {tier!r}")
     worker = budgets.get("worker_input_budget_bytes")
     for name in ("candidate_packet_budget_bytes", "evidence_card_budget_bytes"):
         if worker is not None and budgets.get(name, 0) > worker:
@@ -436,23 +453,56 @@ def trigger_positively_activates_roster(
     ) is not None
 
 
+def tier_override(root: Path) -> bool:
+    directives = root / "directives.md"
+    if not directives.is_file():
+        return False
+    return bool(re.search(r"(?m)^[-*]?\s*tier-override:\s*\S+",
+                          directives.read_text(encoding="utf-8")))
+
+
 def validate_plan(
     root: Path, trigger_rows: dict[str, dict[str, str]], report: Report
 ) -> None:
     text = read_text(root / "plan.md", report)
     roster_rows: list[dict[str, str]] = []
+    tier_column_seen = False
     for _, header, rows in table_dicts(text):
         if "roster entry" in header and "status" in header:
+            if "tier" in header:
+                tier_column_seen = True
             roster_rows.extend(rows)
     if not roster_rows:
         report.error("plan.md has no roster table")
         return
+    if not tier_column_seen:
+        report.error("plan.md roster table lacks a tier column")
     counts: Counter[str] = Counter()
     for row in roster_rows:
         name = re.sub(r"\s+(?:\(shard[^)]*\)|—\s*shard.*)$", "", row["roster entry"], flags=re.I)
         counts[name] += 1
         status = row.get("status", "")
         if status == "spawn":
+            tier = row.get("tier", "").strip()
+            if tier_column_seen and tier not in {"mechanical", "standard", "frontier"}:
+                report.error(
+                    f"plan row '{row['roster entry']}' has invalid tier '{tier}'")
+            elif tier == "mechanical" and name in ROSTER:
+                report.error(
+                    f"plan row '{row['roster entry']}' assigns mechanical tier "
+                    "to a discovery thread")
+            elif name in ROSTER and tier in TIER_ORDER:
+                floor = "standard" if name in TIER_FLOOR_STANDARD else "frontier"
+                if TIER_ORDER[tier] < TIER_ORDER[floor]:
+                    if tier_override(root):
+                        report.warn(
+                            f"plan row '{row['roster entry']}' runs below its "
+                            f"{floor} floor under a user tier-override")
+                    else:
+                        report.error(
+                            f"plan row '{row['roster entry']}' tier '{tier}' is "
+                            f"below its {floor} floor and directives.md records "
+                            "no tier-override")
             continue
         not_applicable = re.fullmatch(
             r"not applicable\s+—\s+trigger absence proved by\s+"
@@ -640,14 +690,22 @@ def validate_input_manifest(root: Path, budgets: dict[str, int],
         report.error(f"cannot parse input-manifest.tsv: {error}")
         return {}
 
-    grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
-    covered_briefs: Counter[Path] = Counter()
+    grouped: dict[tuple[str, int], list[dict[str, str]]] = defaultdict(list)
     for line_number, row in enumerate(rows, 2):
         work_id = row["work_id"]
         if not work_id or re.search(r"[\t\r\n]", work_id):
             report.error(f"input-manifest.tsv:{line_number}: invalid work_id")
             continue
-        grouped[work_id].append(row)
+        try:
+            attempt = int(row.get("attempt", ""))
+            if attempt < 1:
+                raise ValueError
+        except ValueError:
+            report.error(
+                f"input-manifest.tsv:{line_number}: invalid attempt "
+                f"'{row.get('attempt', '')}'")
+            continue
+        grouped[(work_id, attempt)].append(row)
         if not row["phase"]:
             report.error(f"input-manifest.tsv:{line_number}: blank phase")
         if row["role"] not in INPUT_MANIFEST_ROLES:
@@ -669,31 +727,85 @@ def validate_input_manifest(root: Path, budgets: dict[str, int],
         payload = input_path.read_bytes()
         try:
             declared = int(row["bytes"])
-            if declared != len(payload):
+        except ValueError:
+            declared = None
+            report.error(f"input-manifest.tsv:{line_number}: invalid bytes value")
+        if row["role"] == "prestate":
+            # A canonical artifact the attempt appends to: the declared bytes
+            # and hash cover the immutable pre-attempt prefix.
+            if declared is not None:
+                if declared > len(payload):
+                    report.error(
+                        f"input-manifest.tsv:{line_number}: prestate prefix "
+                        f"{declared} exceeds current size of {input_path}")
+                elif row["sha256"] != hashlib.sha256(
+                        payload[:declared]).hexdigest():
+                    report.error(
+                        f"input-manifest.tsv:{line_number}: prestate prefix "
+                        f"hash mismatch for {input_path} — prior content was "
+                        "rewritten, not appended")
+        else:
+            if declared is not None and declared != len(payload):
                 report.error(
                     f"input-manifest.tsv:{line_number}: byte count mismatch for "
                     f"{input_path}: {declared} != {len(payload)}"
                 )
-        except ValueError:
-            report.error(f"input-manifest.tsv:{line_number}: invalid bytes value")
-        actual_hash = hashlib.sha256(payload).hexdigest()
-        if row["sha256"] != actual_hash:
-            report.error(
-                f"input-manifest.tsv:{line_number}: sha256 mismatch for {input_path}"
-            )
-        if row["role"] == "brief" and input_path == brief:
-            covered_briefs[brief.resolve()] += 1
+            actual_hash = hashlib.sha256(payload).hexdigest()
+            if row["sha256"] != actual_hash:
+                report.error(
+                    f"input-manifest.tsv:{line_number}: sha256 mismatch for {input_path}"
+                )
+
 
     worker_budget = budgets.get("worker_input_budget_bytes")
     candidate_budget = budgets.get("candidate_packet_budget_bytes")
     evidence_budget = budgets.get("evidence_card_budget_bytes")
-    for work_id, work_rows in grouped.items():
+    resolved_tiers: dict[tuple[str, int], str] = {}
+    orch_briefs: dict[tuple[str, int], str] = {}
+    orchestration = root / "orchestration.tsv"
+    orchestration_readable = False
+    if orchestration.is_file():
+        try:
+            with orchestration.open(encoding="utf-8", newline="") as stream:
+                for row in csv.DictReader(stream, delimiter="\t"):
+                    try:
+                        attempt_number = int(row.get("attempt", ""))
+                    except ValueError:
+                        continue
+                    key = (row.get("work_id", ""), attempt_number)
+                    if row.get("tier") in TIER_ORDER:
+                        resolved_tiers[key] = row["tier"]
+                    orch_briefs[key] = row.get("brief", "")
+            orchestration_readable = True
+        except OSError:
+            pass
+    if orchestration_readable:
+        for key, orch_brief in sorted(orch_briefs.items()):
+            if orch_brief in {"", "—", "-"}:
+                continue
+            if key not in grouped:
+                report.error(
+                    f"work unit {key[0]} attempt {key[1]} has a brief but no "
+                    "input-manifest rows")
+        for key in sorted(grouped):
+            if key not in orch_briefs:
+                report.error(
+                    f"input manifest work {key[0]} attempt {key[1]} has no "
+                    "orchestration.tsv attempt")
+    for (work_id, attempt), work_rows in grouped.items():
         briefs = {row["brief"] for row in work_rows}
         phases = {row["phase"] for row in work_rows}
         if len(briefs) != 1:
             report.error(f"input manifest work {work_id} names multiple briefs")
         if len(phases) != 1:
             report.error(f"input manifest work {work_id} names multiple phases")
+        orch_brief = orch_briefs.get((work_id, attempt), "")
+        if len(briefs) == 1 and orch_brief not in {"", "—", "-"} and \
+                Path(next(iter(briefs))).resolve() != Path(orch_brief).resolve():
+            report.error(
+                f"input manifest work {work_id} attempt {attempt} names brief "
+                f"{next(iter(briefs))} but orchestration.tsv records "
+                f"{orch_brief}")
         unique: dict[Path, int] = {}
         candidate_paths: dict[Path, int] = {}
         self_rows = 0
@@ -715,10 +827,23 @@ def validate_input_manifest(root: Path, budgets: dict[str, int],
             if row["role"] == "brief" and row["input_path"] == row["brief"]:
                 self_rows += 1
         total = sum(unique.values())
-        if worker_budget is not None and total > worker_budget:
+        effective_budget = worker_budget
+        tier = resolved_tiers.get((work_id, attempt))
+        tier_budget = budgets.get(f"tier:{tier}") if tier else None
+        if tier_budget is None and tier is not None:
+            # A concrete resolved tier means model selection is in use; an
+            # unreported capacity gets the documented 128 KiB fallback.
+            # Only `inherit` keeps the session budget.
+            tier_budget = 131072
+        if tier_budget is not None:
+            effective_budget = (tier_budget if effective_budget is None
+                                else min(effective_budget, tier_budget))
+        if effective_budget is not None and total > effective_budget:
             report.error(
-                f"input manifest work {work_id} exceeds profile worker-input "
-                f"budget ({total} > {worker_budget} bytes)"
+                f"input manifest work {work_id} exceeds its worker-input "
+                f"budget ({total} > {effective_budget} bytes"
+                + (f", {tier} tier" if tier_budget is not None else "")
+                + ")"
             )
         candidate_total = sum(candidate_paths.values())
         if candidate_budget is not None and candidate_total > candidate_budget:
@@ -728,31 +853,26 @@ def validate_input_manifest(root: Path, budgets: dict[str, int],
             )
         if self_rows != 1:
             report.error(
-                f"input manifest work {work_id} has {self_rows} brief self rows, "
-                "expected 1"
+                f"input manifest work {work_id} attempt {attempt} has "
+                f"{self_rows} input-manifest self rows, expected 1"
             )
 
     expected_briefs = {
         item.resolve() for item in (root / "briefs").glob("**/*.md")
         if item.is_file()
     }
-    orchestration = root / "orchestration.tsv"
-    if orchestration.is_file():
-        try:
-            with orchestration.open(encoding="utf-8", newline="") as stream:
-                for row in csv.DictReader(stream, delimiter="\t"):
-                    value = row.get("brief", "")
-                    if value not in {"", "—", "-"}:
-                        expected_briefs.add(Path(value).resolve())
-        except (OSError, csv.Error) as error:
-            report.error(f"cannot inspect orchestration briefs: {error}")
-    for brief in sorted(expected_briefs):
-        if covered_briefs[brief] != 1:
-            report.error(
-                f"generated analytical brief {brief} has {covered_briefs[brief]} "
-                "input-manifest self rows"
-            )
-    for brief in sorted(set(covered_briefs) - expected_briefs):
+    for orch_brief in orch_briefs.values():
+        if orch_brief not in {"", "—", "-"}:
+            expected_briefs.add(Path(orch_brief).resolve())
+    manifest_briefs = {
+        Path(row["brief"]).resolve() for row in rows
+        if Path(row["brief"]).is_absolute()
+    }
+    for brief in sorted(expected_briefs - manifest_briefs):
+        report.error(
+            f"generated analytical brief {brief} has 0 input-manifest self "
+            "rows")
+    for brief in sorted(manifest_briefs - expected_briefs):
         report.error(f"input-manifest self row references unknown brief {brief}")
 
     manifest_inputs_by_brief: dict[Path, set[Path]] = defaultdict(set)
@@ -776,16 +896,30 @@ def validate_input_manifest(root: Path, budgets: dict[str, int],
                 active = False
             if not active:
                 continue
-            for match in absolute_path.finditer(line):
-                candidate = Path(match.group(1).rstrip(".,;:)]}"))
-                if candidate.is_file():
+            for quoted in re.findall(r"`(/[^`]+)`", line):
+                if quoted.endswith("/"):
+                    continue
+                candidate = Path(quoted)
+                if not candidate.is_dir():
                     named_inputs.add(candidate.resolve())
+            bare_line = re.sub(r"`[^`]*`", " ", line)
+            for match in absolute_path.finditer(bare_line):
+                raw = match.group(1)
+                if raw.endswith("/"):
+                    continue  # an explicit directory reference
+                candidate = Path(raw.rstrip(".,;:)]}"))
+                if candidate.is_dir():
+                    continue
+                named_inputs.add(candidate.resolve())
         for omitted in sorted(named_inputs - manifest_inputs_by_brief[brief]):
             report.error(
                 f"generated analytical brief {brief} names input {omitted} in "
                 "Inputs/Procedure but input-manifest.tsv omits it"
             )
-    return dict(grouped)
+    merged: dict[str, list[dict[str, str]]] = {}
+    for (work_id, attempt) in sorted(grouped, key=lambda key: key[1]):
+        merged[work_id] = grouped[(work_id, attempt)]  # latest attempt wins
+    return merged
 
 
 def validate_manifest(root: Path, report: Report, final: bool) -> None:
@@ -824,6 +958,9 @@ def validate_manifest(root: Path, report: Report, final: bool) -> None:
         rows_by_key[(row["work_id"], attempt)] = row
         if row["state"] not in MANIFEST_STATES:
             report.error(f"orchestration.tsv:{line_number}: invalid state '{row['state']}'")
+        if row.get("tier", "") not in MANIFEST_TIERS:
+            report.error(
+                f"orchestration.tsv:{line_number}: invalid tier '{row.get('tier', '')}'")
         if row["state"] in {"partial", "retryable", "needs-repair", "terminated"} \
                 and row["remaining_scope"] in {"", "—", "-"}:
             report.error(f"orchestration.tsv:{line_number}: {row['state']} requires remaining_scope")
@@ -835,10 +972,16 @@ def validate_manifest(root: Path, report: Report, final: bool) -> None:
             brief = Path(row["brief"])
             if not brief.is_file() or brief.stat().st_size == 0:
                 report.error(f"work unit {row['work_id']} has missing/empty brief {brief}")
-        if row["state"] == "complete" and row["artifact"] not in {"", "—", "-"}:
-            artifact = Path(row["artifact"])
-            if not artifact.is_file() or artifact.stat().st_size == 0:
-                report.error(f"completed unit {row['work_id']} has missing/empty artifact {artifact}")
+        if row["state"] == "complete":
+            if row["artifact"] in {"", "—", "-"}:
+                if row["brief"] not in {"", "—", "-"}:
+                    report.error(
+                        f"completed analytical unit {row['work_id']} records "
+                        "no artifact")
+            else:
+                artifact = Path(row["artifact"])
+                if not artifact.is_file() or artifact.stat().st_size == 0:
+                    report.error(f"completed unit {row['work_id']} has missing/empty artifact {artifact}")
         if row["state"] == "running" and row["artifact"] not in {"", "—", "-"}:
             writer = f"{row['work_id']}:{attempt}"
             previous = running_artifacts.setdefault(row["artifact"], writer)
@@ -850,6 +993,62 @@ def validate_manifest(root: Path, report: Report, final: bool) -> None:
     for work_id, values in attempts.items():
         if values != sorted(values) or len(values) != len(set(values)):
             report.error(f"manifest attempts for {work_id} are not unique and increasing")
+    override = tier_override(root)
+    frontier_kinds = re.compile(r"^(?:V\d+|VTER|RC\d+|CH\w*|VPLAN\w*|RCPLAN\w*|PLAN|PR)$")
+    for work_id, values in attempts.items():
+        ordered = [rows_by_key[(work_id, attempt)] for attempt in sorted(values)
+                   if (work_id, attempt) in rows_by_key]
+        recorded = [row.get("tier", "") for row in ordered
+                    if row.get("tier", "") in TIER_ORDER]
+        if frontier_kinds.match(work_id):
+            for tier in recorded:
+                if TIER_ORDER[tier] < TIER_ORDER["frontier"]:
+                    message = (
+                        f"work unit {work_id} is a frontier-contract kind but "
+                        f"an attempt recorded tier '{tier}'")
+                    report.warn(message + " under a user tier-override") \
+                        if override else report.error(message)
+                    break
+        if recorded:
+            first = recorded[0]
+            for tier in recorded[1:]:
+                if TIER_ORDER[tier] < TIER_ORDER[first]:
+                    message = (
+                        f"work unit {work_id} continuation dropped from tier "
+                        f"'{first}' to '{tier}'")
+                    report.warn(message + " under a user tier-override") \
+                        if override else report.error(message)
+                    break
+        for attempt in sorted(values):
+            if attempt == min(values):
+                continue
+            row = rows_by_key.get((work_id, attempt))
+            if row is None:
+                continue
+            tokens = [item.strip() for item in
+                      row.get("depends_on", "").split(",") if item.strip()
+                      and item.strip() not in {"—", "-"}]
+            prior_refs = [token for token in tokens
+                          if re.fullmatch(rf"{re.escape(work_id)}:\d+", token)
+                          and int(token.split(":")[1]) < attempt]
+            if not prior_refs:
+                report.error(
+                    f"work unit {work_id} attempt {attempt} does not depend "
+                    "on a prior attempt of the same unit")
+            prior_attempts = [int(token.split(":")[1]) for token in prior_refs]
+            for prior in prior_attempts:
+                prior_row = rows_by_key.get((work_id, prior))
+                if prior_row is None:
+                    continue
+                brief_now = row.get("brief", "")
+                brief_prior = prior_row.get("brief", "")
+                if brief_now not in {"", "—", "-"} and \
+                        brief_now == brief_prior:
+                    report.error(
+                        f"work unit {work_id} attempt {attempt} reuses "
+                        "attempt "
+                        f"{prior}'s brief; continuations need an "
+                        "attempt-specific brief with the explicit remainder")
     for row in rows:
         if row["state"] not in {"running", "complete"}:
             continue
@@ -879,6 +1078,563 @@ def validate_manifest(root: Path, report: Report, final: bool) -> None:
         for work_id, row in latest.items():
             if row["state"] not in {"complete", "terminated"}:
                 report.error(f"work unit {work_id} is non-terminal at final validation: {row['state']}")
+
+
+def validate_collection_coverage(root: Path, report: Report, level: int) -> None:
+    """Prove spawn -> terminal attempt -> ledger -> collection disposition,
+    joined at exact work-unit granularity, plus recorded-tier consistency."""
+    plan_path = root / "plan.md"
+    if not plan_path.is_file():
+        return
+    text = plan_path.read_text(encoding="utf-8")
+    spawned: list[tuple[str, str, str]] = []  # (display name, work_id, tier)
+    unreviewed: list[tuple[str, str]] = []  # (display name, work_id)
+    for _, header, rows in table_dicts(text):
+        if "roster entry" not in header or "status" not in header:
+            continue
+        for row in rows:
+            status = row.get("status", "")
+            if status.startswith("unreviewed"):
+                entry = row["roster entry"]
+                name = re.sub(r"\s+(?:\(shard[^)]*\)|—\s*shard.*)$", "",
+                              entry, flags=re.I)
+                prefix = ROSTER_PREFIX.get(name)
+                if prefix:
+                    shard = re.search(
+                        r"(?:\((?:shard\s*)?|—\s*shard\s*)(\d+)", entry,
+                        re.I)
+                    unreviewed.append(
+                        (entry, f"{prefix}{shard.group(1)}" if shard
+                         else prefix))
+                continue
+            if status != "spawn":
+                continue
+            entry = row["roster entry"]
+            name = re.sub(r"\s+(?:\(shard[^)]*\)|—\s*shard.*)$", "", entry,
+                          flags=re.I)
+            prefix = ROSTER_PREFIX.get(name)
+            if not prefix:
+                continue
+            shard = re.search(
+                r"(?:\((?:shard\s*)?|—\s*shard\s*)(\d+)", entry, re.I)
+            shard_like = re.search(r"\(shard\b|—\s*shard\b", entry, re.I)
+            if shard_like and not shard:
+                report.error(
+                    f"plan row '{entry}' has a shard-like label with no "
+                    "shard number; it must not alias the unsharded work unit")
+                continue
+            work_id = f"{prefix}{shard.group(1)}" if shard else prefix
+            spawned.append((entry, work_id, row.get("tier", "").strip()))
+    if not spawned and not unreviewed:
+        return
+    work_ids = [work_id for _, work_id, _ in spawned]
+    for duplicate in {w for w in work_ids if work_ids.count(w) > 1}:
+        report.error(f"plan.md has duplicate spawn work unit {duplicate}")
+
+    latest_row: dict[str, dict[str, str]] = {}
+    tiers_by_work: dict[str, list[str]] = {}
+    orchestration = root / "orchestration.tsv"
+    if orchestration.is_file():
+        try:
+            with orchestration.open(encoding="utf-8", newline="") as stream:
+                best: dict[str, int] = {}
+                for row in csv.DictReader(stream, delimiter="\t"):
+                    work_id = row.get("work_id", "")
+                    try:
+                        attempt = int(row.get("attempt", "0"))
+                    except ValueError:
+                        continue
+                    tiers_by_work.setdefault(work_id, []).append(
+                        row.get("tier", ""))
+                    if attempt >= best.get(work_id, 0):
+                        best[work_id] = attempt
+                        latest_row[work_id] = row
+        except OSError:
+            pass
+
+    audit_rows: dict[str, dict[str, str]] = {}
+    audit_table_seen = False
+    gap_units: dict[str, dict[str, str]] = {}
+    audit_complete = False
+    collection = root / "collection.md"
+    if collection.is_file():
+        collection_text = collection.read_text(encoding="utf-8")
+        for heading, header, rows in table_dicts(collection_text):
+            if heading == "Thread audit" and "thread" in header:
+                audit_table_seen = True
+                if list(header) != ["thread", "expected artifact", "matrix",
+                                    "anomaly-to-candidate",
+                                    "append/amendments", "verdict"]:
+                    report.error(
+                        "collection.md Thread audit table must have exactly "
+                        "the ordered columns thread | expected artifact | "
+                        "matrix | anomaly-to-candidate | append/amendments | "
+                        "verdict")
+                for row in rows:
+                    thread = row.get("thread", "").strip()
+                    if thread in audit_rows:
+                        report.error(
+                            f"collection.md Thread audit has duplicate rows "
+                            f"for '{thread}'")
+                    audit_rows[thread] = row
+                    verdict = row.get("verdict", "").strip()
+                    if verdict and verdict != "pass" and \
+                            not verdict.startswith("gap"):
+                        report.error(
+                            f"collection.md Thread audit verdict for "
+                            f"'{thread}' must be 'pass' or 'gap: ...', got "
+                            f"'{verdict}'")
+                    if verdict == "pass":
+                        matrix = row.get("matrix", "").strip().lower()
+                        anomaly = row.get(
+                            "anomaly-to-candidate", "").strip().lower()
+                        amendments = row.get(
+                            "append/amendments", "").strip().lower()
+                        if not matrix.startswith("complete") or \
+                                not anomaly.startswith("complete") or \
+                                not amendments.startswith("valid"):
+                            report.error(
+                                f"collection.md Thread audit row for "
+                                f"'{thread}' is verdict pass but its cells "
+                                "do not read complete/complete/valid")
+            if heading == "Gaps" and "unit" in header:
+                for row in rows:
+                    unit = row.get("unit", "").strip()
+                    if unit:
+                        gap_units[unit] = row
+        if not audit_table_seen:
+            report.error("collection.md lacks a Thread audit table")
+        if "## Audit result" not in collection_text:
+            report.error("collection.md lacks an Audit result section")
+        else:
+            section = collection_text.split("## Audit result", 1)[1]
+            section = section.split("\n## ", 1)[0]
+            values = [line.strip().strip("`")
+                      for line in section.splitlines() if line.strip()]
+            if len(values) != 1 or values[0].lower() != "complete":
+                report.error(
+                    "collection.md Audit result section must contain exactly "
+                    "one value line, the normalized token 'complete'; finish "
+                    "repairs or record gaps as terminated — unreviewed before "
+                    "this gate")
+            else:
+                audit_complete = True
+
+    override = tier_override(root)
+    for entry, work_id, plan_tier in spawned:
+        expected_ledger = (root / "ledger" / f"{work_id}.md").resolve()
+        if not expected_ledger.is_file():
+            report.error(
+                f"spawned work unit '{entry}' has no ledger/{work_id}.md "
+                "artifact")
+        if work_id not in latest_row:
+            report.error(
+                f"spawned work unit '{entry}' has no orchestration.tsv attempt")
+        else:
+            row = latest_row[work_id]
+            if row.get("state", "") not in {"complete", "terminated"}:
+                report.error(
+                    f"spawned work unit '{entry}' has no terminal "
+                    "orchestration attempt (complete/terminated)")
+            artifact = row.get("artifact", "")
+            if row.get("state", "") == "complete" and (
+                    artifact in {"", "—", "-"}
+                    or Path(artifact).resolve() != expected_ledger):
+                report.error(
+                    f"work unit {work_id}'s completed attempt artifact "
+                    f"'{artifact}' is not ledger/{work_id}.md")
+        if audit_table_seen:
+            row = audit_rows.get(work_id)
+            if row is None:
+                report.error(
+                    f"collection.md Thread audit has no row for spawned work "
+                    f"unit '{work_id}'")
+            else:
+                if not row.get("verdict", "").strip():
+                    report.error(
+                        f"collection.md Thread audit row for '{work_id}' has "
+                        "an empty verdict")
+                expected_cell = f"ledger/{work_id}.md"
+                if row.get("expected artifact", "").strip() != expected_cell:
+                    report.error(
+                        f"collection.md Thread audit row for '{work_id}' "
+                        f"names expected artifact "
+                        f"'{row.get('expected artifact', '').strip()}', not "
+                        f"{expected_cell}")
+        if plan_tier in TIER_ORDER:
+            for attempt_tier in tiers_by_work.get(work_id, []):
+                if attempt_tier == "inherit" or attempt_tier not in TIER_ORDER:
+                    continue
+                if TIER_ORDER[attempt_tier] < TIER_ORDER[plan_tier]:
+                    if override:
+                        report.warn(
+                            f"work unit {work_id} attempt ran at "
+                            f"{attempt_tier}, below its planned {plan_tier} "
+                            "tier, under a user tier-override")
+                    else:
+                        report.error(
+                            f"work unit {work_id} attempt ran at "
+                            f"{attempt_tier}, below its planned {plan_tier} "
+                            "tier, with no tier-override in directives.md")
+
+    for thread, row in sorted(audit_rows.items()):
+        verdict = row.get("verdict", "").strip()
+        if verdict.startswith("gap") and thread not in gap_units:
+            report.error(
+                f"collection.md Thread audit records a gap for '{thread}' "
+                "with no matching Gaps row")
+        if verdict == "pass" and thread in gap_units:
+            report.error(
+                f"collection.md Thread audit row '{thread}' is verdict pass "
+                "but a Gaps row exists for it")
+    unreviewed_units = {work_id for _, work_id in unreviewed}
+    for unit in sorted(gap_units):
+        row = audit_rows.get(unit)
+        has_gap_verdict = bool(row) and \
+            row.get("verdict", "").strip().startswith("gap")
+        if not has_gap_verdict and unit not in unreviewed_units:
+            report.error(
+                f"collection.md Gaps row '{unit}' matches neither a "
+                "gap-verdict audit row nor an unreviewed plan row")
+    if audit_complete:
+        for unit in sorted(gap_units):
+            row = latest_row.get(unit, {})
+            state = row.get("state", "")
+            if state != "terminated":
+                report.error(
+                    f"collection.md Audit result is complete while gap unit "
+                    f"'{unit}' is not terminated in orchestration.tsv "
+                    f"(state '{state or 'absent'}')")
+            else:
+                gap_scope = gap_units[unit].get(
+                    "exact remaining scope", "").strip()
+                remaining = row.get("remaining_scope", "").strip()
+                if gap_scope and remaining and gap_scope != remaining:
+                    report.error(
+                        f"gap unit '{unit}' scope '{gap_scope}' does not "
+                        f"equal its terminated attempt's remaining_scope "
+                        f"'{remaining}'")
+    for entry, work_id in unreviewed:
+        state = latest_row.get(work_id, {}).get("state", "")
+        if state != "terminated":
+            report.error(
+                f"unreviewed plan row '{entry}' has no terminated "
+                f"orchestration attempt for {work_id} (state "
+                f"'{state or 'absent'}')")
+        if audit_table_seen and work_id not in gap_units:
+            report.error(
+                f"unreviewed plan row '{entry}' has no matching collection "
+                f"Gaps row for {work_id}")
+
+
+def validate_ter_gate(root: Path, report: Report) -> None:
+    """TER completeness: spawned TER must produce its gate tables; classes
+    need PROVEN/REJECTED/UNPROVEN VTER verdicts with execution provenance;
+    class x file membership is reconciled; residue scoping is fail-closed."""
+    plan_path = root / "plan.md"
+    plan_text = plan_path.read_text(encoding="utf-8") if plan_path.is_file() else ""
+    ter_spawned = False
+    plan_rows: list[dict[str, str]] = []
+    for _, header, rows in table_dicts(plan_text):
+        if "roster entry" not in header or "status" not in header:
+            continue
+        for row in rows:
+            plan_rows.append(row)
+            name = re.sub(r"\s+(?:\(shard[^)]*\)|—\s*shard.*)$", "",
+                          row.get("roster entry", ""), flags=re.I)
+            if ROSTER_PREFIX.get(name) == "TER" and row.get("status") == "spawn":
+                ter_spawned = True
+
+    class_files: dict[str, list[str]] = {}
+    sentinel_seen = False
+    membership: dict[tuple[str, str], int] = {}
+    ledger = root / "ledger"
+    ter_paths = sorted(ledger.glob("TER*.md")) if ledger.exists() else []
+    per_shard_ok: dict[Path, dict[str, bool]] = {}
+    for path in ter_paths:
+        text = read_text(path, report)
+        shard_state = per_shard_ok.setdefault(
+            path, {"classes_heading": False, "residue_heading": False,
+                   "content": False})
+        if "## Transformation classes" in text:
+            shard_state["classes_heading"] = True
+        if "## Residue" in text:
+            shard_state["residue_heading"] = True
+        for heading, header, rows in table_dicts(text):
+            if heading == "Transformation classes" and "class id" in header:
+                for row in rows:
+                    identifier = row.get("class id", "").strip()
+                    if identifier in {"—", "-", "none"}:
+                        if shard_state["content"]:
+                            report.error(
+                                f"{path}: sentinel row coexists with other "
+                                "class rows in this shard")
+                        sentinel_seen = True
+                        shard_state["content"] = True
+                        if row.get("members", "").strip() != "0":
+                            report.error(
+                                f"{path}: no-classes sentinel row must have "
+                                "member count 0")
+                        if row.get("files", "").strip() not in {"—", "-", ""}:
+                            report.error(
+                                f"{path}: no-classes sentinel row must not "
+                                "name files")
+                        if row.get("proof", "").strip().strip("—-") == "":
+                            report.error(
+                                f"{path}: no-classes sentinel row needs "
+                                "concrete scan evidence in its proof cell, "
+                                "not a placeholder")
+                        continue
+                    if not re.fullmatch(r"TC\d+", identifier):
+                        if identifier:
+                            report.error(
+                                f"{path}: invalid transformation class ID "
+                                f"'{identifier}'")
+                        continue
+                    if identifier in class_files:
+                        report.error(f"{path}: duplicate class {identifier}")
+                    shard_state["content"] = True
+                    files = [item.strip() for item in
+                             re.split(r"[;,]", row.get("files", ""))
+                             if item.strip() and item.strip() not in {"—", "-"}]
+                    if len(files) != len(set(files)):
+                        report.error(
+                            f"{path}: class {identifier} lists duplicate "
+                            "files")
+                    class_files[identifier] = files
+                    if not files:
+                        report.error(
+                            f"{path}: class {identifier} lists no files; the "
+                            "files cell must be an explicit path list")
+                    members = row.get("members", "").strip()
+                    if not members.isdigit() or int(members) < len(files):
+                        report.error(
+                            f"{path}: class {identifier} member count "
+                            f"'{members}' is missing or below its file count")
+            if "id" in header and "status" in header:
+                for row in rows:
+                    status = row.get("status", "")
+                    match = re.match(
+                        r"(?:clean|mixed)\s*\(class (TC\d+)", status)
+                    if not match:
+                        continue
+                    location = row.get("location", "")
+                    file_path = location.split(":", 1)[0].strip()
+                    key = (match.group(1), file_path)
+                    membership[key] = membership.get(key, 0) + 1
+
+    if ter_spawned:
+        if not ter_paths:
+            report.error("TER is spawned but no ledger/TER*.md exists")
+        for path, shard_state in sorted(per_shard_ok.items()):
+            if not shard_state["classes_heading"]:
+                report.error(
+                    f"{path} lacks a Transformation classes table")
+            if not shard_state["residue_heading"]:
+                report.error(f"{path} lacks a Residue section")
+            if shard_state["classes_heading"] and not shard_state["content"]:
+                report.error(
+                    f"{path}: Transformation classes table has neither a "
+                    "valid TC class nor the explicit no-classes sentinel row")
+    if sentinel_seen and class_files:
+        report.error(
+            "a no-classes sentinel row coexists with real transformation "
+            "classes")
+
+    for class_id, files in sorted(class_files.items()):
+        for file_path in files:
+            count = membership.get((class_id, file_path), 0)
+            if count == 0:
+                report.error(
+                    f"class {class_id} lists {file_path} but has no "
+                    "clean/mixed membership row for it")
+            elif count > 1:
+                report.error(
+                    f"class {class_id} has {count} membership rows for "
+                    f"{file_path}")
+    for (class_id, file_path) in sorted(membership):
+        if class_id in class_files and file_path not in class_files[class_id]:
+            report.error(
+                f"membership row cites {file_path} which class {class_id} "
+                "does not list")
+        if class_id not in class_files:
+            report.error(
+                f"membership row cites unknown class {class_id}")
+
+    gate = root / "verification" / "VTER.md"
+    gate_verdicts: dict[str, str] = {}
+    if class_files and not gate.is_file():
+        report.error(
+            "TER produced transformation classes but verification/VTER.md "
+            "is missing")
+    if gate.is_file():
+        gate_table_seen = False
+        seen_gate_ids: set[str] = set()
+        for _, header, rows in table_dicts(read_text(gate, report)):
+            if not {"id", "class", "verdict", "evidence"}.issubset(header):
+                continue
+            if list(header) != ["id", "class", "verdict", "evidence"]:
+                report.error(
+                    "VTER.md gate table must have exactly the ordered "
+                    "columns id | class | verdict | evidence")
+            gate_table_seen = True
+            for row in rows:
+                row_id = row.get("id", "").strip()
+                if not re.fullmatch(r"VTER-\d+", row_id):
+                    report.error(f"VTER.md row ID '{row_id}' is not VTER-<n>")
+                elif row_id in seen_gate_ids:
+                    report.error(f"VTER.md duplicates row ID {row_id}")
+                seen_gate_ids.add(row_id)
+                identifier = row.get("class", "").strip()
+                verdict = row.get("verdict", "").strip()
+                evidence = row.get("evidence", "")
+                if identifier in gate_verdicts:
+                    report.error(
+                        f"VTER.md has duplicate verdict for {identifier}")
+                gate_verdicts[identifier] = verdict
+                if verdict not in GATE_VERDICTS:
+                    report.error(
+                        f"VTER.md verdict '{verdict}' for {identifier} is "
+                        "not PROVEN/REJECTED/UNPROVEN")
+                if verdict in {"PROVEN", "REJECTED"} and not CITATION.search(
+                        evidence):
+                    report.error(
+                        f"VTER.md {verdict} verdict for {identifier} has no "
+                        "path:line citation — the gate accepts no "
+                        "evidence-exception")
+                if identifier not in class_files:
+                    report.error(
+                        f"VTER.md verdict targets unknown transformation "
+                        f"class {identifier}")
+        if not gate_table_seen:
+            report.error(
+                "VTER.md lacks the id | class | verdict | evidence gate table")
+        for class_id in sorted(set(class_files) - set(gate_verdicts)):
+            report.error(
+                f"transformation class {class_id} has no VTER gate verdict")
+
+        # Execution provenance: a hand-written gate file must not count.
+        vter_row = None
+        orchestration = root / "orchestration.tsv"
+        if orchestration.is_file():
+            try:
+                with orchestration.open(encoding="utf-8", newline="") as stream:
+                    best = -1
+                    for row in csv.DictReader(stream, delimiter="\t"):
+                        if row.get("work_id") != "VTER":
+                            continue
+                        try:
+                            attempt = int(row.get("attempt", "0"))
+                        except ValueError:
+                            continue
+                        if attempt > best:
+                            best = attempt
+                            vter_row = row
+            except OSError:
+                pass
+        if vter_row is None:
+            report.error(
+                "verification/VTER.md exists without a VTER orchestration "
+                "work unit — the gate has no execution provenance")
+        else:
+            if vter_row.get("state") != "complete":
+                report.error("VTER work unit is not complete")
+            if vter_row.get("tier") not in {"frontier", "inherit"}:
+                report.error(
+                    f"VTER work unit recorded tier "
+                    f"'{vter_row.get('tier')}'; the gate is frontier-only")
+            artifact = vter_row.get("artifact", "")
+            if artifact in {"", "—", "-"} or \
+                    Path(artifact).resolve() != gate.resolve():
+                report.error(
+                    "VTER work unit's artifact is not verification/VTER.md")
+            if vter_row.get("brief", "") in {"", "—", "-"}:
+                report.error("VTER work unit has no brief")
+            dependencies = vter_row.get("depends_on", "")
+            tokens = [item.strip().split(":", 1)[0]
+                      for item in dependencies.split(",") if item.strip()]
+            if "VTERB" not in tokens:
+                report.error(
+                    "VTER work unit does not depend on the gate-brief "
+                    "builder (VTERB)")
+
+        ter_units = set()
+        vterb_row = None
+        if orchestration.is_file():
+            try:
+                with orchestration.open(encoding="utf-8", newline="") as stream:
+                    for row in csv.DictReader(stream, delimiter="\t"):
+                        work = row.get("work_id", "")
+                        if re.fullmatch(r"TER\d*", work):
+                            ter_units.add(work)
+                        if work == "VTERB":
+                            vterb_row = row
+            except OSError:
+                pass
+        if vterb_row is None:
+            report.error(
+                "verification/VTER.md exists without a VTERB gate-brief "
+                "builder work unit")
+        else:
+            if vterb_row.get("state") != "complete":
+                report.error("VTERB work unit is not complete")
+            builder_tokens = {
+                item.strip().split(":", 1)[0]
+                for item in vterb_row.get("depends_on", "").split(",")
+                if item.strip() and item.strip() not in {"—", "-"}}
+            for missing in sorted(ter_units - builder_tokens):
+                report.error(
+                    f"VTERB does not depend on spawned TER work unit "
+                    f"{missing}; the builder must consume every TER shard")
+
+    for row in plan_rows:
+        if row.get("status", "") != "spawn":
+            continue
+        scope = row.get("scope", "").strip()
+        match = RESIDUE_SCOPE.match(scope)
+        if match:
+            for class_id in (item.strip() for item in
+                             match.group(1).split(",")):
+                if gate_verdicts.get(class_id) != "PROVEN":
+                    report.error(
+                        f"plan row '{row['roster entry']}' is residue-scoped "
+                        f"to {class_id} without a PROVEN VTER gate verdict")
+            entry = row["roster entry"]
+            name = re.sub(r"\s+(?:\(shard[^)]*\)|—\s*shard.*)$", "",
+                          entry, flags=re.I)
+            prefix = ROSTER_PREFIX.get(name)
+            if prefix:
+                shard = re.search(
+                    r"(?:\((?:shard\s*)?|—\s*shard\s*)(\d+)", entry, re.I)
+                residue_unit = f"{prefix}{shard.group(1)}" if shard else prefix
+                dependent = False
+                orchestration = root / "orchestration.tsv"
+                if orchestration.is_file():
+                    try:
+                        with orchestration.open(
+                                encoding="utf-8", newline="") as stream:
+                            for orow in csv.DictReader(stream, delimiter="\t"):
+                                if orow.get("work_id") != residue_unit:
+                                    continue
+                                bases = {
+                                    item.strip().split(":", 1)[0]
+                                    for item in
+                                    orow.get("depends_on", "").split(",")
+                                    if item.strip()}
+                                if bases & {"VTER", "PLAN"}:
+                                    dependent = True
+                    except OSError:
+                        pass
+                if not dependent:
+                    report.error(
+                        f"residue-scoped work unit {residue_unit} has no "
+                        "orchestration attempt depending on VTER or the "
+                        "round-two Planner")
+        elif re.match(r"residue", scope, re.I):
+            report.error(
+                f"plan row '{row['roster entry']}' has a malformed "
+                f"residue scope '{scope}'; the required form is "
+                "'residue(TC<ids>): <exact scope>'")
 
 
 def ledger_data(root: Path, report: Report) -> tuple[dict[str, Path], set[str], set[str]]:
@@ -965,7 +1721,12 @@ def ledger_data(root: Path, report: Report) -> tuple[dict[str, Path], set[str], 
         report.error("missing required artifact: collection.md")
 
     verification = root / "verification"
-    for path in sorted(verification.glob("V*.md")) if verification.exists() else []:
+    verification_paths = [
+        path for path in (sorted(verification.glob("V*.md"))
+                          if verification.exists() else [])
+        if path.name != "VTER.md"
+    ]
+    for path in verification_paths:
         text = read_text(path, report)
         for _, header, rows in table_dicts(text):
             if not {"id", "candidate", "verdict"}.issubset(header):
@@ -996,6 +1757,8 @@ def ledger_data(root: Path, report: Report) -> tuple[dict[str, Path], set[str], 
 def validate_verdicts(root: Path, candidates: set[str], report: Report) -> None:
     verdicts: Counter[str] = Counter()
     for path in sorted((root / "verification").glob("V*.md")):
+        if path.name == "VTER.md":
+            continue
         for _, header, rows in table_dicts(read_text(path, report)):
             if {"candidate", "verdict"}.issubset(header):
                 for row in rows:
@@ -1005,7 +1768,13 @@ def validate_verdicts(root: Path, candidates: set[str], report: Report) -> None:
                         verdicts[candidate] += 1
                     if verdict not in {"CONFIRMED", "REFUTED", "UNPROVEN"}:
                         report.error(f"{path}: invalid verdict '{verdict}' for {candidate}")
-                    if not row.get("evidence") or not CITATION.search(row.get("evidence", "")):
+                    evidence = row.get("evidence", "")
+                    if verdict in {"CONFIRMED", "REFUTED"}:
+                        if not CITATION.search(evidence) and not EVIDENCE_EXCEPTION.search(evidence):
+                            report.error(
+                                f"{path}: {verdict} verdict for {candidate} has no "
+                                "path:line citation or evidence-exception")
+                    elif not evidence or not CITATION.search(evidence):
                         report.warn(f"{path}: verdict for {candidate} has no path:line detectable by validator")
 
     merged: dict[str, str] = {}
@@ -1661,7 +2430,7 @@ def infer_phase(root: Path) -> str:
         return "final"
     if (root / "reconciliation.md").exists():
         return "reconciliation"
-    if any((root / "verification").glob("V*.md")) if (root / "verification").exists() else False:
+    if any(p.name != "VTER.md" for p in (root / "verification").glob("V*.md")) if (root / "verification").exists() else False:
         return "verification"
     if (root / "collection.md").exists() or (root / "plan.md").exists():
         return "collection"
@@ -1699,6 +2468,8 @@ def main() -> int:
         input_assignments = validate_input_manifest(root, budgets, report)
         validate_manifest(root, report, final=level >= PHASES["final"])
         source_ids, candidates, covered = ledger_data(root, report)
+        validate_collection_coverage(root, report, level)
+        validate_ter_gate(root, report)
         for changed in sorted(set(changed_files) - covered):
             report.error(f"per-file floor missing ledger/ORC row for {changed}")
     if level >= PHASES["verification"]:

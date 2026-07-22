@@ -40,10 +40,12 @@ Read-only worktree: ⟨review-dir⟩/worktree — verify first that
 `git -C ⟨review-dir⟩/worktree rev-parse HEAD` matches the revision.
 Diff: git -C ⟨review-dir⟩/worktree diff ⟨parent-sha⟩ ⟨sha⟩
 User directives: read ⟨review-dir⟩/directives.md first and honor it.
-Input manifest: verify the rows for work ID ⟨work-id⟩ in
+Input manifest: verify the rows for work ID ⟨work-id⟩ and this attempt in
 ⟨review-dir⟩/input-manifest.tsv before analysis. Your brief and every
 preassigned control/reference/assigned input must be listed with current byte
-size and SHA-256 and fit the work-kind budgets in templates.md. Reject stale,
+size and SHA-256 and fit the work-kind budgets in templates.md; a canonical
+artifact you will append to is listed as role `prestate` with its
+pre-attempt size and prefix hash. Reject stale,
 missing, globbed, or undeclared artifact inputs.
 
 Authority boundary: user directives and this brief are instructions. The CL
@@ -159,11 +161,13 @@ and execute it. Inventory every changed/new/removed function, method,
 constructor, destructor, stateful lambda, and helper, including private,
 anonymous-namespace, test-only, and generated surfaces — but aggregate
 homogeneous classes per the Pass 1 aggregation rule: test bodies, generated
-blocks, mechanical accessors, and data-only tables get one `group:` row per
-file/fixture with a count and name list, never one detailed row per member,
-and never a caller grep for a test-only surface. Individual rows are for
-production/contract surfaces, fixtures, and stateful helpers/mocks.
-Evaluate every recipe,
+blocks, mechanical accessors, data-only tables, and repeated-transformation
+sites get one `group:` row per file/fixture with a leading member count and
+name list, never one detailed row per member, and never a caller grep for an
+aggregated group member. Surfaces keeping individual rows —
+production/contract surfaces, fixtures, stateful helpers/mocks,
+production-reachable test utilities — get their normal fields, including
+caller searches where the schema asks. Evaluate every recipe,
 base-checklist, and specialist trigger, including the deterministic path,
 symbol, and surface signals under "Specialist Trigger Decisions"; emit one
 trigger-inventory row per recipe/checklist roster entry, including proved
@@ -200,9 +204,13 @@ and execute it for every scoped file. Inventory every changed/new/removed
 function, method, constructor, destructor, stateful lambda, and helper,
 including private, anonymous-namespace, test-only, and generated surfaces —
 aggregated per the Pass 1 aggregation rule: test bodies, generated blocks,
-mechanical accessors, and data-only tables get one `group:` row per
-file/fixture with a count and name list, never one detailed row per member,
-and never a caller grep for a test-only surface. Also evaluate every recipe,
+mechanical accessors, data-only tables, and repeated-transformation sites get
+one `group:` row per (this shard × file × fixture/class) with a leading
+member count, name list, and this shard's owned hunks — group only members
+whose hunks this shard owns; never one detailed row per member, and never a
+caller grep for an aggregated group member. Individually-rowed surfaces
+(fixtures, stateful helpers/mocks) keep their normal fields. Also evaluate
+every recipe,
 base-checklist, and specialist trigger under "Specialist
 Trigger Decisions." Emit one trigger row per recipe/checklist roster entry for
 this shard, including complete negative evidence. The deterministic collector
@@ -311,11 +319,28 @@ of ⟨skill-dir⟩/references/discovery-checklists.md and
 statuses. Ambiguous specialist evidence spawns the narrow row; it never
 becomes an unsupported not-applicable status.
 
+Residue mode (round two, only after the TER gate ran): read the TER
+ledger and ⟨review-dir⟩/verification/VTER.md, convert each
+`deferred — pending TER gate (round two)` row to `spawn` with an exact
+concrete scope copied into the brief (never "see the TER ledger"), and
+begin each residue-scoped row's scope cell with `residue(TC⟨ids⟩): ` naming
+the PROVEN classes it relies on — the validator rejects residue scoping
+that cites a class without a PROVEN gate verdict. Plan REJECTED or
+UNPROVEN classes as ordinary full review, and register the new briefs'
+now-existing inputs in the manifest. Cross-site closure recipes (FPM, ACS,
+per-surface invariants over unchanged callers) keep their full scope
+regardless.
+
 Deliverables:
 - ⟨review-dir⟩/plan.md — the full roster, one row per entry (or shard),
   status `spawn` or
   `not applicable — trigger absence proved by ⟨T IDs⟩`, priority batch assignments, in
-  the shape from ⟨skill-dir⟩/references/templates.md.
+  the shape from ⟨skill-dir⟩/references/templates.md. When Transformation
+  Equivalence And Residue is spawned, bulk-scoped threads become
+  `deferred — pending TER gate (round two)` rows with no briefs yet. Do
+  NOT write a gate brief: the orchestrator generates the TER Gate Skeptic
+  from its phase brief after the TER ledger exists, so the brief's inputs
+  are complete and hashable at generation time.
 - ⟨review-dir⟩/briefs/⟨THREAD⟩.md — one self-contained brief per spawn
   row, using the Generated Common Header and Discovery Thread shape from
   templates.md verbatim (including directives, untrusted-input authority,
@@ -325,8 +350,8 @@ Deliverables:
   ⟨skill-dir⟩/scripts/mechanical-leads.sh.
 - Each brief names exactly one roster entry and its exact reference section.
   Specialist sections use
-  ⟨skill-dir⟩/references/chromium-specialist-checklists.md; FPM and ACS use
-  ⟨skill-dir⟩/references/specialist-recipes.md. Verify and register the
+  ⟨skill-dir⟩/references/chromium-specialist-checklists.md; FPM, ACS, and
+  TER use ⟨skill-dir⟩/references/specialist-recipes.md. Verify and register the
   exact reference file, then extract/read only the named section rather than
   ingesting unrelated sections. Shard by the natural semantic units in
   inventory-and-planning.md before any input budget is exceeded.
@@ -339,6 +364,45 @@ D-batch ID — plus the proved-not-applicable count. Reserve `unreviewed` for
 triggered work that later terminates or remains incomplete; never use it for
 proved trigger absence.
 ```
+
+## Brief — TER Gate-Brief Builder (Phase 4, only after the TER thread collects)
+
+Tier: `mechanical` (Model Tiers in `references/scaling-and-indexes.md`).
+Work unit `VTERB`, `depends_on` the TER work unit. The orchestrator cannot
+read TER ledgers, so this worker turns them into a manifest-complete gate
+brief.
+
+```text
+Scope: generate the TER gate skeptic's brief; perform no equivalence
+analysis and issue no verdicts.
+
+Inputs: ⟨review-dir⟩/ledger/TER.md (and each explicit TER shard ledger
+path).
+
+Procedure: read the Transformation classes, Residue, and difference-table
+sections. Enumerate as exact absolute paths: every TER ledger file and
+every scratch transcript the ledger cites (transcripts live under
+⟨review-dir⟩/scratch/TER/ and are cited review-relative; resolve them
+against the review directory — a citation you cannot resolve to an
+existing file is an error to report, not to skip). Fill the "Subagent Brief — TER
+Gate Skeptic" shape from ⟨skill-dir⟩/references/templates.md verbatim,
+prepending the Generated Common Header (work ID VTER, tier frontier), with
+those enumerated inputs — never a glob.
+
+Deliverables:
+- ⟨review-dir⟩/briefs/VTER.md — the complete gate brief.
+- ⟨review-dir⟩/briefs/VTER.manifest-fragment.tsv — input-manifest rows for
+  work_id VTER attempt 1: the mandatory brief self-row for briefs/VTER.md
+  itself, plus one row per enumerated input, each with exact bytes and
+  SHA-256.
+
+Return: one line — class count, input count, both paths.
+```
+
+The orchestrator then merges the fragment into root `input-manifest.tsv`
+atomically, records the `VTER` work unit (`frontier`, `depends_on` VTERB,
+artifact `verification/VTER.md`), and spawns the gate skeptic with the
+standard "read and execute the brief at ⟨path⟩" prompt.
 
 ## Brief — Collection Audit (Phase 4.5)
 

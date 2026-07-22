@@ -365,10 +365,11 @@ class ReviewDirectoryValidatorTest(unittest.TestCase):
             status = ("spawn" if name == "Error-Path Walk" else
                       "not applicable — trigger absence proved by " +
                       self.trigger_proofs[name])
-            plan_rows.append(f"| {name} | fixture | {status} | D01 | — | — |")
+            tier = "frontier" if status == "spawn" else "—"
+            plan_rows.append(f"| {name} | fixture | {status} | {tier} | D01 | — | — |")
         (self.review / "plan.md").write_text(
-            "# Plan\n\n| roster entry | scope | status | batch | subagent | outcome |\n"
-            "| --- | --- | --- | --- | --- | --- |\n" + "\n".join(plan_rows) + "\n",
+            "# Plan\n\n| roster entry | scope | status | tier | batch | subagent | outcome |\n"
+            "| --- | --- | --- | --- | --- | --- | --- |\n" + "\n".join(plan_rows) + "\n",
             encoding="utf-8")
         (self.review / "ledger").mkdir()
         (self.review / "briefs").mkdir()
@@ -404,10 +405,22 @@ Return partial with explicit remaining scope when needed.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | R1-RC001-1 | EPW-1 | clean: no additional issue | a.cc:1 | cited fixture statement | — | CL-introduced | clean (cited) |
 """, encoding="utf-8")
-        (self.review / "collection.md").write_text("# Collection\n", encoding="utf-8")
+        (self.review / "collection.md").write_text(
+            """# Collection audit
+
+## Thread audit
+
+| thread | expected artifact | matrix | anomaly-to-candidate | append/amendments | verdict |
+| --- | --- | --- | --- | --- | --- |
+| EPW | ledger/EPW.md | complete | complete | valid | pass |
+
+## Audit result
+
+complete
+""", encoding="utf-8")
         manifest = (
-            "phase\twork_id\tattempt\tstate\ttask_id\tbrief\tartifact\tremaining_scope\tdepends_on\n"
-            f"4\tEPW\t1\tcomplete\ttask-1\t{self.review / 'briefs/EPW.md'}\t{ledger}\t—\t—\n"
+            "phase\twork_id\tattempt\tstate\ttier\ttask_id\tbrief\tartifact\tremaining_scope\tdepends_on\n"
+            f"4\tEPW\t1\tcomplete\tfrontier\ttask-1\t{self.review / 'briefs/EPW.md'}\t{ledger}\t—\t—\n"
         )
         (self.review / "orchestration.tsv").write_text(manifest, encoding="utf-8")
         subprocess.run(
@@ -430,20 +443,37 @@ Return partial with explicit remaining scope when needed.
             work_id = brief.stem
             payload = brief.read_bytes()
             rows.append((
-                work_id, "8" if work_id.startswith("CH") else "4", str(brief),
-                str(brief), "brief", str(len(payload)),
+                work_id, "1", "8" if work_id.startswith("CH") else "4",
+                str(brief), str(brief), "brief", str(len(payload)),
                 hashlib.sha256(payload).hexdigest(),
             ))
             for input_path, role in (extra or {}).get(work_id, []):
                 input_payload = input_path.read_bytes()
                 rows.append((
-                    work_id, "8" if work_id.startswith("CH") else "4", str(brief),
-                    str(input_path), role, str(len(input_payload)),
+                    work_id, "1", "8" if work_id.startswith("CH") else "4",
+                    str(brief), str(input_path), role, str(len(input_payload)),
                     hashlib.sha256(input_payload).hexdigest(),
                 ))
         (self.review / "input-manifest.tsv").write_text(
-            "work_id\tphase\tbrief\tinput_path\trole\tbytes\tsha256\n" +
+            "work_id\tattempt\tphase\tbrief\tinput_path\trole\tbytes\tsha256\n" +
             "".join("\t".join(row) + "\n" for row in rows), encoding="utf-8")
+        manifest = self.review / "orchestration.tsv"
+        if manifest.is_file():
+            lines = manifest.read_text(encoding="utf-8").splitlines()
+            known = {line.split("\t")[1] for line in lines[1:] if "\t" in line}
+            artifacts = self.review / "artifacts"
+            for brief in sorted((self.review / "briefs").glob("**/*.md")):
+                if brief.stem not in known:
+                    artifacts.mkdir(exist_ok=True)
+                    artifact = artifacts / f"{brief.stem}.out.md"
+                    if not artifact.is_file():
+                        artifact.write_text(
+                            f"# {brief.stem} fixture artifact\n",
+                            encoding="utf-8")
+                    lines.append(
+                        f"4\t{brief.stem}\t1\tcomplete\tfrontier\ttask-x\t"
+                        f"{brief}\t{artifact}\t—\t—")
+            manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def test_collection_fixture_passes(self) -> None:
         run = subprocess.run(
@@ -506,7 +536,7 @@ Return partial with explicit remaining scope when needed.
             [str(VALIDATE), str(self.review), "--phase", "collection"],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(run.returncode, 1)
-        self.assertIn("exceeds profile worker-input budget", run.stdout)
+        self.assertIn("exceeds its worker-input budget", run.stdout)
 
     def test_duplicate_input_roles_count_one_unique_path(self) -> None:
         assigned = self.review / "shared-input.txt"
@@ -538,10 +568,34 @@ Return partial with explicit remaining scope when needed.
         plan.write_text(plan.read_text(encoding="utf-8").replace(
             "not applicable — trigger absence proved by T002",
             "unreviewed — worker capacity exhausted", 1), encoding="utf-8")
+        manifest = self.review / "orchestration.tsv"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8")
+            + "4\tDCS\t1\tterminated\tfrontier\ttask-d\t—\t—\t"
+            "whole DCS scope\t—\n", encoding="utf-8")
+        collection = self.review / "collection.md"
+        collection.write_text(collection.read_text(encoding="utf-8").replace(
+            "## Audit result",
+            "## Gaps\n\n| unit | exact remaining scope | required action |\n"
+            "| --- | --- | --- |\n"
+            "| DCS | whole DCS scope | terminated — unreviewed |\n\n"
+            "## Audit result", 1), encoding="utf-8")
+        self.refresh_indexes()
         run = subprocess.run(
             [str(VALIDATE), str(self.review), "--phase", "collection"],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
+    def test_unreviewed_row_without_terminated_attempt_is_rejected(self) -> None:
+        plan = self.review / "plan.md"
+        plan.write_text(plan.read_text(encoding="utf-8").replace(
+            "not applicable — trigger absence proved by T002",
+            "unreviewed — worker capacity exhausted", 1), encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("has no terminated orchestration attempt", run.stdout)
 
     def test_plan_rejects_legacy_not_triggered_status(self) -> None:
         plan = self.review / "plan.md"
@@ -693,15 +747,377 @@ Return partial with explicit remaining scope when needed.
         self.assertEqual(run.returncode, 1)
         self.assertIn("duplicate work_id/attempt", run.stdout)
 
+    def test_plan_without_tier_column_is_rejected(self) -> None:
+        plan = self.review / "plan.md"
+        lines = []
+        for line in plan.read_text(encoding="utf-8").splitlines():
+            if line.startswith("|"):
+                cells = line.split("|")
+                del cells[4]  # the tier column
+                line = "|".join(cells)
+            lines.append(line)
+        plan.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("lacks a tier column", run.stdout)
+
+    def test_mechanical_discovery_tier_is_rejected(self) -> None:
+        plan = self.review / "plan.md"
+        plan.write_text(plan.read_text(encoding="utf-8").replace(
+            "| Error-Path Walk | fixture | spawn | frontier |",
+            "| Error-Path Walk | fixture | spawn | mechanical |", 1),
+            encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("assigns mechanical tier", run.stdout)
+
+    def test_spawned_thread_missing_from_collection_audit_is_rejected(self) -> None:
+        collection = self.review / "collection.md"
+        collection.write_text(collection.read_text(encoding="utf-8").replace(
+            "| EPW | ledger/EPW.md | complete | complete | valid | pass |\n", ""),
+            encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("Thread audit has no row for spawned work unit", run.stdout)
+
+    def test_refuted_verdict_without_citation_is_rejected(self) -> None:
+        verification = self.review / "verification"
+        verification.mkdir(exist_ok=True)
+        (verification / "V001.md").write_text(
+            """# Verification verdicts — batch V001
+
+| id | candidate | verdict | evidence | severity (anchor) | origin |
+| --- | --- | --- | --- | --- | --- |
+| V001-1 | EPW-1 | REFUTED | looks handled by design | — | — |
+""", encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "verification"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("no path:line citation or evidence-exception", run.stdout)
+
+    def test_non_complete_audit_result_fails_collection_gate(self) -> None:
+        collection = self.review / "collection.md"
+        collection.write_text(collection.read_text(encoding="utf-8").replace(
+            "## Audit result\n\ncomplete", "## Audit result\n\nnot complete", 1),
+            encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("Audit result section must contain exactly one value line", run.stdout)
+
+    def test_below_floor_tier_needs_directives_override(self) -> None:
+        plan = self.review / "plan.md"
+        plan.write_text(plan.read_text(encoding="utf-8").replace(
+            "| Error-Path Walk | fixture | spawn | frontier |",
+            "| Error-Path Walk | fixture | spawn | standard |", 1),
+            encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("below its frontier floor", run.stdout)
+        directives = self.review / "directives.md"
+        existing = directives.read_text(encoding="utf-8") if directives.is_file() else "# Directives\n"
+        directives.write_text(
+            existing + "\n- tier-override: user requested flash-level run\n",
+            encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("under a user tier-override", run.stdout)
+
+    def test_attempt_tier_below_plan_tier_is_rejected(self) -> None:
+        manifest = self.review / "orchestration.tsv"
+        manifest.write_text(manifest.read_text(encoding="utf-8").replace(
+            "\tcomplete\tfrontier\t", "\tcomplete\tstandard\t", 1),
+            encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("below its planned frontier tier", run.stdout)
+
+    def test_ter_class_requires_gate_verdict(self) -> None:
+        (self.review / "ledger" / "TER.md").write_text(
+            """# TER
+
+## Compliance matrix
+
+| # | step / question | answer | evidence | candidate |
+| --- | --- | --- | --- | --- |
+| 1 | classes identified? | yes | a.cc:1 | — |
+
+## Transformation classes
+
+| class id | old → new | members | files | proof |
+| --- | --- | --- | --- | --- |
+| TC1 | Old(x) → New(x) | 3 | a.cc | diff rows 1-4 |
+
+## Candidate rows
+
+| id | claim | location | evidence / hypothesis | origin | severity | status |
+| --- | --- | --- | --- | --- | --- | --- |
+| TER-1 | clean: class TC1 conforming; re-derivation empty | a.cc:1 | rederive diff empty | CL-introduced | | clean (class TC1 conforming) |
+""", encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("verification/VTER.md is missing", run.stdout)
+
+    def _write_ter_ledger(self) -> None:
+        (self.review / "ledger" / "TER.md").write_text(
+            """# TER
+
+## Compliance matrix
+
+| # | step / question | answer | evidence | candidate |
+| --- | --- | --- | --- | --- |
+| 1 | classes identified? | yes | a.cc:1 | — |
+
+## Transformation classes
+
+| class id | old → new | members | files | proof |
+| --- | --- | --- | --- | --- |
+| TC1 | Old(x) → New(x) | 3 | a.cc | diff rows 1-4 |
+
+## Candidate rows
+
+| id | claim | location | evidence / hypothesis | origin | severity | status |
+| --- | --- | --- | --- | --- | --- | --- |
+| TER-1 | clean: class TC1 conforming | a.cc:1 | rederive diff empty | CL-introduced | | clean (class TC1 conforming) |
+
+## Residue
+
+none
+""", encoding="utf-8")
+
+    def test_handwritten_vter_without_provenance_is_rejected(self) -> None:
+        self._write_ter_ledger()
+        verification = self.review / "verification"
+        verification.mkdir(exist_ok=True)
+        (verification / "VTER.md").write_text(
+            """# TER gate verdicts
+
+| id | class | verdict | evidence |
+| --- | --- | --- | --- |
+| VTER-1 | TC1 | PROVEN | re-derived table; sampled a.cc:12 |
+""", encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("no execution provenance", run.stdout)
+
+    def test_spawned_ter_without_gate_tables_is_rejected(self) -> None:
+        plan = self.review / "plan.md"
+        ter_proof = self.trigger_proofs["Transformation Equivalence And Residue"]
+        plan.write_text(plan.read_text(encoding="utf-8").replace(
+            "| Transformation Equivalence And Residue | fixture | "
+            f"not applicable — trigger absence proved by {ter_proof} | — | D01 | — | — |",
+            "| Transformation Equivalence And Residue | fixture | spawn | "
+            "frontier | D01 | — | — |", 1), encoding="utf-8")
+        ledger = self.review / "ledger" / "TER.md"
+        ledger.write_text("""# TER
+
+## Compliance matrix
+
+| # | step / question | answer | evidence | candidate |
+| --- | --- | --- | --- | --- |
+| 1 | scanned? | yes | a.cc:1 | — |
+
+## Candidate rows
+
+| id | claim | location | evidence / hypothesis | origin | severity | status |
+| --- | --- | --- | --- | --- | --- | --- |
+| TER-1 | clean: no repeated pattern | a.cc:1 | scan output | CL-introduced | | clean (cited) |
+""", encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("lacks a Transformation classes table", run.stdout)
+        self.assertIn("lacks a Residue section", run.stdout)
+
+    def test_malformed_residue_scope_is_rejected(self) -> None:
+        self._write_ter_ledger()
+        plan = self.review / "plan.md"
+        plan.write_text(plan.read_text(encoding="utf-8").replace(
+            "| Error-Path Walk | fixture | spawn | frontier |",
+            "| Error-Path Walk | residue(TC1, BAD): leftover hunks | spawn | frontier |",
+            1), encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("malformed", run.stdout)
+        self.assertIn("residue", run.stdout)
+
+    def test_membership_missing_class_file_is_rejected(self) -> None:
+        self._write_ter_ledger()
+        ledger = self.review / "ledger" / "TER.md"
+        ledger.write_text(ledger.read_text(encoding="utf-8").replace(
+            "| TC1 | Old(x) → New(x) | 3 | a.cc |",
+            "| TC1 | Old(x) → New(x) | 3 | a.cc; b.cc |", 1), encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("no clean/mixed membership row", run.stdout)
+
+    def test_header_only_orchestration_fails_coverage(self) -> None:
+        (self.review / "orchestration.tsv").write_text(
+            "phase\twork_id\tattempt\tstate\ttier\ttask_id\tbrief\tartifact\t"
+            "remaining_scope\tdepends_on\n", encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("has no orchestration.tsv attempt", run.stdout)
+
+    def test_skeptic_attempt_below_frontier_contract_is_rejected(self) -> None:
+        manifest = self.review / "orchestration.tsv"
+        brief = self.review / "briefs" / "EPW.md"
+        verdict = self.review / "verification" / "V001.md"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8")
+            + f"5\tV001\t1\tcomplete\tstandard\ttask-9\t{brief}\t{verdict}\t—\t—\n",
+            encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("frontier-contract kind", run.stdout)
+
+    def test_prose_tier_override_mention_does_not_activate(self) -> None:
+        plan = self.review / "plan.md"
+        plan.write_text(plan.read_text(encoding="utf-8").replace(
+            "| Error-Path Walk | fixture | spawn | frontier |",
+            "| Error-Path Walk | fixture | spawn | standard |", 1),
+            encoding="utf-8")
+        (self.review / "directives.md").write_text(
+            "# Directives\n\nThe user made no tier-override: requested "
+            "nothing cheaper.\n", encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("below its frontier floor", run.stdout)
+
+    def test_complete_after_later_heading_fails_gate(self) -> None:
+        collection = self.review / "collection.md"
+        collection.write_text(collection.read_text(encoding="utf-8").replace(
+            "## Audit result\n\ncomplete",
+            "## Audit result\n\nnot complete\n\n## Notes\n\ncomplete", 1),
+            encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("exactly one value line", run.stdout)
+
+    def test_em_dash_shard_naming_requires_sharded_artifacts(self) -> None:
+        plan = self.review / "plan.md"
+        plan.write_text(plan.read_text(encoding="utf-8").replace(
+            "| Error-Path Walk | fixture | spawn | frontier |",
+            "| Error-Path Walk — shard 2 | fixture | spawn | frontier |", 1),
+            encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("no ledger/EPW2.md artifact", run.stdout)
+
+    def test_vter_must_cover_every_class(self) -> None:
+        self._write_ter_ledger()
+        ledger = self.review / "ledger" / "TER.md"
+        ledger.write_text(ledger.read_text(encoding="utf-8").replace(
+            "| TC1 | Old(x) → New(x) | 3 | a.cc | diff rows 1-4 |",
+            "| TC1 | Old(x) → New(x) | 3 | a.cc | diff rows 1-4 |\n"
+            "| TC2 | Old2(x) → New2(x) | 2 | a.cc | diff rows 5-6 |", 1),
+            encoding="utf-8")
+        ledger.write_text(ledger.read_text(encoding="utf-8").replace(
+            "| TER-1 | clean: class TC1 conforming | a.cc:1 | rederive diff empty | CL-introduced | | clean (class TC1 conforming) |",
+            "| TER-1 | clean: class TC1 conforming | a.cc:1 | rederive diff empty | CL-introduced | | clean (class TC1 conforming) |\n"
+            "| TER-2 | clean: class TC2 conforming | a.cc:1 | rederive diff empty | CL-introduced | | clean (class TC2 conforming) |", 1),
+            encoding="utf-8")
+        verification = self.review / "verification"
+        verification.mkdir(exist_ok=True)
+        (verification / "VTER.md").write_text(
+            """# TER gate verdicts
+
+| id | class | verdict | evidence |
+| --- | --- | --- | --- |
+| VTER-1 | TC1 | PROVEN | re-derived table; sampled a.cc:12 |
+""", encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("transformation class TC2 has no VTER gate verdict",
+                      run.stdout)
+
+    def test_complete_audit_with_open_gap_is_rejected(self) -> None:
+        collection = self.review / "collection.md"
+        collection.write_text(collection.read_text(encoding="utf-8").replace(
+            "| EPW | ledger/EPW.md | complete | complete | valid | pass |",
+            "| EPW | ledger/EPW.md | cell 2 missing | complete | valid | "
+            "gap: amend cell 2 |", 1).replace(
+            "## Audit result",
+            "## Gaps\n\n| unit | exact remaining scope | required action |\n"
+            "| --- | --- | --- |\n"
+            "| EPW | matrix cell 2 | continuation |\n\n## Audit result", 1),
+            encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("complete while gap unit 'EPW' is not terminated",
+                      run.stdout)
+
+    def test_residue_scope_without_exact_scope_text_is_rejected(self) -> None:
+        self._write_ter_ledger()
+        plan = self.review / "plan.md"
+        plan.write_text(plan.read_text(encoding="utf-8").replace(
+            "| Error-Path Walk | fixture | spawn | frontier |",
+            "| Error-Path Walk | residue(TC1) garbage | spawn | frontier |",
+            1), encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("malformed", run.stdout)
+
+    def test_shard_label_without_number_is_rejected(self) -> None:
+        plan = self.review / "plan.md"
+        plan.write_text(plan.read_text(encoding="utf-8").replace(
+            "| Error-Path Walk | fixture | spawn | frontier |",
+            "| Error-Path Walk (shard nope) | fixture | spawn | frontier |", 1),
+            encoding="utf-8")
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("shard-like label with no", run.stdout)
+
     def test_two_running_attempts_cannot_share_a_canonical_artifact(self) -> None:
         manifest = self.review / "orchestration.tsv"
         artifact = self.review / "ledger" / "EPW.md"
         brief = self.review / "briefs" / "EPW.md"
         manifest.write_text(
-            "phase\twork_id\tattempt\tstate\ttask_id\tbrief\tartifact\t"
+            "phase\twork_id\tattempt\tstate\ttier\ttask_id\tbrief\tartifact\t"
             "remaining_scope\tdepends_on\n"
-            f"4\tEPW\t1\trunning\ttask-1\t{brief}\t{artifact}\t—\t—\n"
-            f"4\tEPW\t2\trunning\ttask-2\t{brief}\t{artifact}\t—\t—\n",
+            f"4\tEPW\t1\trunning\tfrontier\ttask-1\t{brief}\t{artifact}\t—\t—\n"
+            f"4\tEPW\t2\trunning\tfrontier\ttask-2\t{brief}\t{artifact}\t—\t—\n",
             encoding="utf-8")
         run = subprocess.run(
             [str(VALIDATE), str(self.review), "--phase", "collection"],

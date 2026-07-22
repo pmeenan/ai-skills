@@ -290,6 +290,12 @@ into every brief):
   requested; no other constraints.
 ```
 
+Only when the user actually requested a cheaper run, add a line-anchored
+`tier-override: <the user's exact request>` entry; its presence downgrades
+the validator's below-floor tier errors to disclosed warnings, so never
+include it by default — prose that merely mentions the term mid-line does
+not activate it.
+
 `progress.md` is an append-only phase log — the orchestrator's resume point
 after context loss. One line per event:
 
@@ -311,13 +317,16 @@ and newlines inside values are escaped; paths are absolute. `remaining_scope`
 is mandatory for `partial`, `retryable`, `needs-repair`, and `terminated`.
 
 ```tsv
-phase	work_id	attempt	state	task_id	brief	artifact	remaining_scope	depends_on
-4	EPW	1	partial	task-a5	/tmp/scratch/cl-9999999-ps3/briefs/EPW.md	/tmp/scratch/cl-9999999-ps3/ledger/EPW.md	OnTimer cancellation cells	PLAN
-4	EPW	2	complete	task-b9	/tmp/scratch/cl-9999999-ps3/briefs/EPW-attempt-2.md	/tmp/scratch/cl-9999999-ps3/ledger/EPW.md	-	EPW:1
+phase	work_id	attempt	state	tier	task_id	brief	artifact	remaining_scope	depends_on
+4	EPW	1	partial	frontier	task-a5	/tmp/scratch/cl-9999999-ps3/briefs/EPW.md	/tmp/scratch/cl-9999999-ps3/ledger/EPW.md	OnTimer cancellation cells	PLAN
+4	EPW	2	complete	frontier	task-b9	/tmp/scratch/cl-9999999-ps3/briefs/EPW-attempt-2.md	/tmp/scratch/cl-9999999-ps3/ledger/EPW.md	-	EPW:1
 ```
 
 Allowed states are `queued`, `running`, `partial`, `retryable`, `needs-repair`,
-`complete`, and `terminated`. Only one attempt may write a canonical artifact
+`complete`, and `terminated`. `tier` records the resolved model tier the
+attempt actually ran at (`mechanical`, `standard`, `frontier`, or `inherit`
+when the harness cannot select models); a resolved tier below the plan's
+recommendation requires a user directive or disclosed harness limitation. Only one attempt may write a canonical artifact
 at a time. `progress.md` remains the compact human audit log;
 `orchestration.tsv` is the mechanically queryable authority.
 
@@ -329,14 +338,28 @@ continuation, repair, assembly, and challenge brief has rows; direct
 deterministic helper invocations have no worker and are exempt.
 
 ```tsv
-work_id	phase	brief	input_path	role	bytes	sha256
-VPLAN001	5	/tmp/scratch/cl-9999999-ps3/briefs/planning/VPLAN001.md	/tmp/scratch/cl-9999999-ps3/briefs/planning/VPLAN001.md	brief	6210	⟨sha256⟩
-VPLAN001	5	/tmp/scratch/cl-9999999-ps3/briefs/planning/VPLAN001.md	/tmp/scratch/cl-9999999-ps3/indexes/candidates.tsv	control	18842	⟨sha256⟩
-VPLAN001	5	/tmp/scratch/cl-9999999-ps3/briefs/planning/VPLAN001.md	/tmp/scratch/cl-9999999-ps3/packets/VPLAN001-candidates.md	candidate-packet	9201	⟨sha256⟩
+work_id	attempt	phase	brief	input_path	role	bytes	sha256
+VPLAN001	1	5	/tmp/scratch/cl-9999999-ps3/briefs/planning/VPLAN001.md	/tmp/scratch/cl-9999999-ps3/briefs/planning/VPLAN001.md	brief	6210	⟨sha256⟩
+VPLAN001	1	5	/tmp/scratch/cl-9999999-ps3/briefs/planning/VPLAN001.md	/tmp/scratch/cl-9999999-ps3/indexes/candidates.tsv	control	18842	⟨sha256⟩
+VPLAN001	1	5	/tmp/scratch/cl-9999999-ps3/briefs/planning/VPLAN001.md	/tmp/scratch/cl-9999999-ps3/packets/VPLAN001-candidates.md	candidate-packet	9201	⟨sha256⟩
 ```
 
+Rows are addressed by `(work_id, attempt)` and joined exactly to
+`orchestration.tsv`: every orchestration attempt with a brief must have
+manifest rows for that exact `(work_id, attempt)` — including the mandatory
+brief self-row — and the manifest's brief must equal the orchestration
+row's brief. A continuation attempt therefore gets its own manifest rows
+for its own attempt-numbered brief; relabeling a group's `work_id` breaks
+the join instead of borrowing another unit's tier budget.
+
 Columns and roles are exact. `role` is one of `brief`, `control`, `reference`,
-`assigned`, `candidate-packet`, `card`, `frame`, or `section`. Each work ID
+`assigned`, `candidate-packet`, `card`, `frame`, `section`, or `prestate`.
+`prestate` is for the one canonical artifact a continuation attempt appends
+to: its bytes/SHA-256 cover the immutable pre-attempt prefix, and the
+validator verifies the current file still begins with exactly that prefix —
+append-only growth, never a rewrite. Every other role's hash must match the
+file exactly. A path containing spaces is written backtick-quoted in briefs
+so the validator can parse it. Each work ID
 includes its brief as a `brief` row and every control, reference, or assigned
 file the worker must load. Use the whole reference file when a subsection
 cannot be measured as its own immutable packet. `brief` and `input_path` are
@@ -455,7 +478,7 @@ a stable path/root; those threads are disclosed rather than silently dropped.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | S0001 | DelayBuffer::Push (delay_buffer.h:41) | H0001 / delay_buffer.h:41 | header comment | DelayStream::DoWrite | new API | owns buffer_, pending_ | delay_buffer_unittest.cc | production | core |
 | S0002 | DelayBuffer::Flush (delay_buffer.h:48) | H0001,H0004 / delay_buffer.h:48 | header comment | DelayStream teardown | new API | drains buffer_ | none found | production | core |
-| S0003 | group: DelayBufferTest fixture (delay_buffer_unittest.cc:28) | H0005 / :28 | test fixture | N/A (class) | new fixture: mock socket + mock time | owns mock_socket_, task_env_ | self | test-only | test/support |
+| S0003 | DelayBufferTest fixture (delay_buffer_unittest.cc:28) | H0005 / :28 | test fixture | TEST_F members (S0004) | new fixture: mock socket + mock time | owns mock_socket_, task_env_ | self | test-only | test/support |
 | S0004 | group: 23 TEST_F(DelayBufferTest, Push*/Flush*/Abort*) | H0006-H0014 / :62 | N/A (class) | N/A (class) | new coverage: push/flush/abort paths incl. error and teardown | N/A (class) | self | test-only | test/support |
 
 Homogeneous surface classes — test bodies, generated blocks, mechanical
@@ -534,9 +557,16 @@ block every planner and fast path that depends on that index.
 
 Every roster entry appears, one line each, copied verbatim from
 `references/inventory-and-planning.md` (The Roster) — never derived from
-memory. Statuses are `spawn` or
-`not applicable — trigger absence proved by ⟨T IDs⟩`; there is no
-"merged" status. Sharded entries get one row per shard (`EPW1`, `EPW2`).
+memory. Statuses are `spawn`,
+`not applicable — trigger absence proved by ⟨T IDs⟩`,
+`unreviewed — ⟨reason⟩`, or — during round one of a TER review only, never
+in a collected plan — the transient
+`deferred — pending TER gate (round two)`; there is no "merged" status. A
+round-two residue-scoped spawn row begins its scope cell with
+`residue(TC⟨ids⟩): `, citing only PROVEN gate classes. Sharded entries get one row per shard, named
+`⟨roster entry⟩ (shard ⟨N⟩: ⟨scope⟩)` — the parenthesized form is canonical
+(the validator also accepts `— shard ⟨N⟩`), and shard N's work unit, ledger
+file, and audit row are all `⟨PREFIX⟩⟨N⟩`.
 The planner assigns a model tier and priority batch per the Model Tiers
 contract in `references/scaling-and-indexes.md`; the orchestrator records the
 subagent/task identifier when spawned, and the outcome when collected.
@@ -564,19 +594,19 @@ subagent/task identifier when spawned, and the outcome when collected.
 | Integration And Feature Control | kDelayBufferFeature wiring | spawn | frontier | D03 | task-b4 | 5 rows |
 | Security And Trust Boundaries | — | not applicable — trigger absence proved by T014 | — | — | — | — |
 | Contracts And API Shape | delay_buffer.h contracts, Socket base clauses | spawn | frontier | D03 | task-b5 | 6 rows |
-| Tests As Specifications | delay_buffer_unittest.cc coverage map | spawn | standard | D04 | task-b6 | 7 rows |
+| Tests As Specifications | delay_buffer_unittest.cc coverage map | spawn | frontier | D04 | task-b6 | 7 rows |
 | Changed-Lines Polish | all changed lines | spawn | standard | D04 | task-b7 | 5 rows |
 | Threading And Synchronization | timer/task-runner shared state and sequence use | spawn | frontier | D01 | task-c1 | 6 rows |
 | Ownership And Blink Lifecycle | — | not applicable — trigger absence proved by T020 | — | — | — | — |
 | Mojo IPC Authorization And Sandbox | — | not applicable — trigger absence proved by T021 | — | — | — | — |
 | Performance And Resource Scaling | queued bytes, wakeups, per-stream multiplication | spawn | frontier | D02 | task-c2 | 5 rows |
 | Platform And Language Semantics | — | not applicable — trigger absence proved by T023 | — | — | — | — |
-| Build API And Generated Assets | delay_buffer target source/dependency wiring | spawn | standard | D03 | task-c3 | 3 rows |
+| Build API And Generated Assets | delay_buffer target source/dependency wiring | spawn | frontier | D03 | task-c3 | 3 rows |
 | Privacy And Telemetry | — | not applicable — trigger absence proved by T025 | — | — | — | — |
 | Accessibility And Internationalization | — | not applicable — trigger absence proved by T026 | — | — | — | — |
 | Network Semantics | socket error/retry and request-boundary behavior | spawn | frontier | D02 | task-c4 | 5 rows |
 | Fuzzing And Test Strategy | stateful network input; unit/fuzz target decision | spawn | frontier | D04 | task-c5 | 4 rows |
-| Holistic-and-polish thread | bug alignment, scope, description coverage | spawn | standard | D04 | task-b8 | 4 rows |
+| Holistic-and-polish thread | bug alignment, scope, description coverage | spawn | frontier | D04 | task-b8 | 4 rows |
 ```
 
 For each spawned specialist row, the generated brief's Procedure names
@@ -724,6 +754,91 @@ anomaly AND emits the candidate. Row 4 is the mandatory-candidate class
 (success-shaped return after failure cleanup) — recorded, never adjudicated
 in-thread.
 
+## ledger/TER.md And verification/VTER.md — Transformation Classes And Gate
+
+The TER ledger adds a `## Transformation classes` table (classes are gate
+targets, not candidate rows) and satisfies the per-file floor with one clean
+membership row per class × file in its ordinary `## Candidate rows` table:
+
+```markdown
+## Transformation classes
+
+| class id | old → new | members | files | proof |
+| --- | --- | --- | --- | --- |
+| TC1 | base::LegacyFmt(x) → std::format(x) | 214 | net/foo/a.cc; net/foo/b.cc | diff table rows 1-11; scratch/TER/rederive-TC1.log |
+
+The `files` cell is an explicit `;`-separated repo-relative list — never a
+count or a pointer; the validator reconciles it one-to-one against
+membership rows. A file whose class sites all conform gets a
+`clean (class TC⟨n⟩ conforming)` membership row; a file that also carries
+residue gets a `mixed (class TC⟨n⟩ + residue)` membership row plus its
+residue candidate rows. A TER thread that finds no stable class writes the
+explicit sentinel row `| — | no stable transformation class found | 0 | — |
+⟨scan evidence⟩ |`; a spawned TER ledger with neither a class nor the
+sentinel — or missing the `## Transformation classes` or `## Residue`
+headings — fails validation.
+
+## Candidate rows
+
+| id | claim | location | evidence / hypothesis | origin | severity | status |
+| --- | --- | --- | --- | --- | --- | --- |
+| TER-1 | clean: class TC1 conforming; re-derivation empty | net/foo/a.cc:1 | rederive diff empty | CL-introduced | | clean (class TC1 conforming) |
+| TER-2 | class TC1 conforming sites plus residue below | net/foo/b.cc:1 | rederive diff empty except hunk H0412 | CL-introduced | | mixed (class TC1 + residue) |
+| TER-3 | residue: hand-edited callsite deviates from TC1 | net/foo/b.cc:88 | rederive diff nonempty (3 lines) | CL-introduced | | candidate |
+```
+
+The gate skeptic writes `verification/VTER.md` with the dedicated schema —
+`PROVEN / REJECTED / UNPROVEN`, never the defect verdicts; the file is
+excluded from ordinary verdict pipelines and indexes:
+
+```markdown
+# TER gate verdicts — CL 9999999 PS3
+
+| id | class | verdict | evidence |
+| --- | --- | --- | --- |
+| VTER-1 | TC1 | PROVEN | independently re-derived difference table; sampled 6/214 sites (a.cc:12, c.cc:40, ...); no unlisted observing site found |
+```
+
+The gate table has exactly these four columns and `VTER-⟨n⟩` IDs. PROVEN
+and REJECTED verdicts require a real `path:line` citation — the gate
+accepts no `evidence-exception`, because it authorizes bulk residue
+scoping. The file counts only with execution provenance: a `VTER`
+orchestration work unit, complete, frontier tier, artifact
+`verification/VTER.md`, a registered brief, and a dependency on the
+gate-brief builder (`VTERB`), which itself must depend on **every** spawned
+TER shard.
+
+## Subagent Brief — TER Gate Skeptic
+
+Generated by the TER Gate-Brief Builder after TER collection, with every
+input an exact existing path (never a glob). Starts with the Generated
+Common Header (work ID VTER, tier frontier), then:
+
+```text
+Scope: adversarially audit the Transformation Equivalence And Residue
+proof. You are a gate, not a defect skeptic: your verdicts use the
+dedicated schema PROVEN / REJECTED / UNPROVEN — never CONFIRMED/REFUTED —
+and a proven equivalence is not a finding.
+
+Inputs (exact files): ⟨enumerated TER ledger path(s)⟩; the pinned worktree
+for both implementations; ⟨enumerated scratch transcript paths cited by
+the ledger⟩.
+
+Procedure: for every class row TC⟨n⟩, attempt to REJECT it: re-derive the
+difference table yourself from both implementations (not from TER's
+prose); spot-check the re-derivation or classification at the recipe's
+sample size; actively hunt one difference-observing site absent from the
+residue list. PROVEN requires your own confirming trace plus citations;
+REJECTED requires the concrete counterexample; UNPROVEN states exactly
+what could not be established. A gate you cannot complete is UNPROVEN,
+never PROVEN.
+
+Deliverable: ⟨review-dir⟩/verification/VTER.md — exactly the columns
+`| id | class | verdict | evidence |`, IDs VTER-⟨n⟩.
+
+Return: one line — verdict per class ID and the file path.
+```
+
 ## ledger/PR.md — Prior-Feedback Reconciliation
 
 The exact `## Prior-feedback rows` and `## Candidate rows` headings are
@@ -822,7 +937,7 @@ produces a targeted repair, not a best-effort merge.
 | thread | expected artifact | matrix | anomaly-to-candidate | append/amendments | verdict |
 | --- | --- | --- | --- | --- | --- |
 | EPW | ledger/EPW.md | complete; all cells cited or N/A-with-reason | complete | valid | pass |
-| AL | ledger/AL.md | cell 7 lacks citation | AL-4 exists | valid | gap: amend cell 7 |
+| AL | ledger/AL.md | complete; cell 7 closed by amendment A1 | complete | valid | pass |
 
 ## Per-file floor
 
@@ -834,13 +949,24 @@ produces a targeted repair, not a best-effort merge.
 
 | unit | exact remaining scope | required action |
 | --- | --- | --- |
-| AL | compliance matrix cell 7 | continuation attempt; append amendment |
+
+A `gap: ...` verdict requires a matching Gaps row, and the Audit result may
+read `complete` only when the Gaps table is empty or every remaining gap's
+work unit is `terminated` in orchestration.tsv (the AL example above was
+closed by a continuation amendment before this audit was finalized). The
+validator enforces the exact ordered audit columns, rejects duplicate
+thread rows, and reconciles gaps against orchestration state.
 
 ## Audit result
 
-`incomplete` until Gaps is empty or every remaining scope is explicitly marked
-`terminated — unreviewed` in orchestration.tsv and Verification Notes.
+complete
 ```
+
+The Audit result section's value line must be the exact normalized token
+`complete` — written only when Gaps is empty or every remaining scope is
+explicitly marked `terminated — unreviewed` in orchestration.tsv and
+Verification Notes. The collection gate fails on anything else; prose like
+"not complete"/"incomplete" never passes by substring accident.
 
 After collection is complete, regenerate `indexes/candidates.tsv`
 deterministically by
@@ -1125,6 +1251,8 @@ challenger RC001 owns `ledger/reopened/round-1-RC001.md`:
 
 ```markdown
 # Reopened candidates — round 1 / RC001
+
+## Candidate rows
 
 | id | parent rows | claim | location | evidence / hypothesis | requested recipe | origin | status |
 | --- | --- | --- | --- | --- | --- | --- | --- |

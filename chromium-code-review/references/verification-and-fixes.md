@@ -74,7 +74,13 @@ evidence fields — a verdict missing its fields is not a verdict:
   Questions section — never to the bin.
 
 A skeptic that cannot produce REFUTED's required fields has confirmed the
-finding, not dismissed it. When verification runs without subagents, the
+finding, not dismissed it. When the decisive evidence legitimately has no
+`path:line` — an absence proof ("no other caller exists": cite the search
+run), tool output, or a spec/standard citation — write
+`evidence-exception: <nonempty reason and the actual evidence>` in the
+evidence field; the validator rejects CONFIRMED/REFUTED rows that have
+neither a citation nor a nonempty exception, and an exception is itself a
+claim the synthesis challenger may re-check. When verification runs without subagents, the
 orchestrator holds itself to the same schema — one verdict row per
 candidate, same mandatory fields.
 

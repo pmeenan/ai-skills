@@ -91,12 +91,25 @@ equivalence proof with a difference table, a re-derivation or
 classification transcript, the residue list, and class-membership counts
 per file.
 
-1. **Identify transformation classes mechanically.** Normalize the diff's
-   changed-line pairs (strip filenames, context, and whitespace;
-   e.g. `git diff <parent> <rev> | grep '^[+-]' | sed 's/[[:space:]]\+/ /g'
-   | sort | uniq -c | sort -rn`) and cluster the repeats. Record each class
-   as `old pattern → new pattern`, its member count, and its file list.
-   Sites matching no class are residue immediately.
+1. **Identify transformation classes mechanically, as old→new pairs.** A
+   raw `sort | uniq -c` over diff lines counts additions and removals
+   independently and cannot prove pairing — use it only as a first glance.
+   The classifier must construct explicit pairs: parse `git diff -U0
+   <parent> <rev>` hunk by hunk (a short Python/awk script in your scratch
+   directory is fine). Auto-pair only the unambiguous case — a hunk with
+   exactly one removed and one added line. Balanced multi-line hunks can
+   hide insertions, deletions, or reorderings that positional pairing
+   mispairs: align them explicitly (unique-token or difflib alignment you
+   then verify) or classify the whole hunk as residue. Normalize whitespace
+   within each verified pair and cluster the normalized `old → new` pairs. Give every site a stable ID
+   (file + hunk + pair index). Record each class as `old pattern → new
+   pattern`, its member count, and its file list. Unpaired lines, unbalanced
+   hunks, and sites matching no class are residue immediately.
+   **Generated files are never members of a textual class:** a regex can
+   match a generated output while its source of truth went stale. A
+   generated file conforms only by regenerating it from its canonical
+   generator/inputs in the scratch directory and diffing, or it stays in
+   the residue/collateral owned by Build API And Generated Assets.
 2. **Prove equivalence once per class, at full rigor.** Read the old and
    the new implementation — not their comments — and fill a difference
    table over: null/empty/zero inputs, boundary and overflow values,
@@ -113,11 +126,16 @@ per file.
    non-ASCII literal). Every observing site leaves the conforming class
    and joins the residue; an observing site the CL left unaccounted is a
    candidate row, not a footnote.
-4. **Re-derive the bulk change.** In a scratch directory outside the
-   repository — never the pinned worktree — copy the parent versions of
+4. **Re-derive the bulk change.** Under `⟨review-dir⟩/scratch/TER/` —
+   outside the repository, never the pinned worktree — copy the parent
+   versions of
    the class's files, apply the spec's transformation (the sed/regex plus
    the formatter the CL claims), and diff the result against the CL's
-   version per file. An empty diff proves the file conforming; any
+   version per file. Save the transcript as
+   `⟨review-dir⟩/scratch/TER/rederive-TC⟨n⟩.log` and cite that exact
+   review-relative path in the class row's proof cell — the mechanical
+   gate-brief builder must be able to resolve every cited transcript
+   deterministically. An empty diff proves the file conforming; any
    nonempty remainder is residue hunks. When exact re-derivation is not
    achievable, classify every hunk against the class pattern instead —
    this classification may be sharded to `standard`-tier workers; the
@@ -135,18 +153,38 @@ per file.
    verify a random sample of conforming sites (at least 5 sites or 2% of
    members, whichever is larger) end-to-end against the spec — defense
    against a wrong spec proving itself.
-7. **Ledger rows:** one row per class (spec, member count, proof
-   citations); one row per difference-table row; one candidate per
-   residue hunk family; one candidate per unaccounted observing site.
-   Return the residue list (exact files/hunks) in your ledger under a
-   `## Residue` heading — downstream threads scope to it.
+7. **Ledger artifacts.** Classes are not candidate rows — they get their
+   own `## Transformation classes` table with stable IDs (`TC1`, `TC2`,
+   ...), the `old → new` spec, member count, proof citations, and an
+   explicit `;`-separated file list (never a count or pointer — the
+   validator reconciles it one-to-one against membership rows); the TER
+   gate verdicts target these IDs. If no stable class exists, write the
+   explicit no-classes sentinel row — a spawned TER ledger without either
+   fails validation, as does one missing the `## Transformation classes`
+   or `## Residue` headings. Then, in the ordinary `## Candidate rows`
+   table: one **membership row per class × file** — status
+   `clean (class TC⟨n⟩ conforming)` for fully conforming files,
+   `mixed (class TC⟨n⟩ + residue)` for files that also carry residue,
+   location `⟨file⟩:1` — these satisfy the per-file floor over conforming
+   files — plus one candidate per residue hunk family and one candidate
+   per unaccounted observing site. Record the difference table under the
+   compliance matrix. Return the residue list (exact files/hunks) in your
+   ledger under a `## Residue` heading — round-two planning scopes to it.
 
-**Effect on the rest of the plan:** when this recipe proves its classes
-and the re-derivation/classification is clean, the other roster threads
-are planned in residue mode — scoped to the residue hunks, the collateral
-files (BUILD/DEPS/headers/tests), and the difference-observing sites —
-with the per-file floor satisfied by class-membership rows. If any class
-fails its proof or the re-derivation is dirty beyond the recorded residue,
-say so in your return; the orchestrator re-plans the affected scope as an
-ordinary full review. Never let the bulk shape of a CL argue for bulk
-treatment the proof did not earn.
+**Effect on the rest of the plan:** your proof does not act on its own —
+it is a claim under adversarial review. The orchestrator spawns a
+`frontier` TER-gate skeptic over your class rows (its brief lives in
+`phase-briefs.md`; verdict file `verification/VTER.md`, dedicated schema
+`PROVEN / REJECTED / UNPROVEN` — deliberately not the defect-verdict
+schema, because "the equivalence holds" is not a finding); only classes
+the gate marks PROVEN unlock residue-mode planning (round two), which
+scopes the deferred roster
+threads to the residue hunks, difference-observing sites, and collateral
+files. Cross-site closure recipes (Field Propagation Matrix, Associative
+Container Semantics, per-surface invariants over unchanged callers) keep
+their full scope regardless — an omitted propagation update at an
+unchanged site is invisible to residue scoping by construction. If any
+class fails its proof or the re-derivation is dirty beyond the recorded
+residue, say so in your return; that scope is planned as an ordinary full
+review. Never let the bulk shape of a CL argue for bulk treatment the
+proof did not earn.

@@ -107,6 +107,17 @@ def inventory_rows(root: Path) -> list[list[str]]:
             )
         seen_ids[identifier] = relative(source, root)
 
+    hunk_owners: dict[str, Path] = {}
+    profile_hunk_paths: dict[str, str] = {}
+    profile_path = root / "profile.json"
+    if profile_path.is_file():
+        try:
+            profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            for item in profile.get("hunks", []):
+                if isinstance(item, dict) and item.get("id"):
+                    profile_hunk_paths[item["id"]] = item.get("path", "")
+        except (OSError, ValueError):
+            profile_hunk_paths = {}
     for path in paths:
         surface_number = 0
         shard = re.sub(r"[^A-Za-z0-9]+", "-", path.stem).strip("-").upper()
@@ -120,9 +131,75 @@ def inventory_rows(root: Path) -> list[list[str]]:
                         else f"S{shard}-{surface_number:04d}"
                     )
                     claim(surface_id, path)
+                    hunk_cell = row.get(
+                        "owned hunks / earliest changed line", "")
+                    claimed: list[str] = []
+                    for match_ in re.finditer(
+                            r"\bH(\d+)(?:\s*-\s*H?(\d+))?\b", hunk_cell):
+                        width = len(match_.group(1))
+                        first = int(match_.group(1))
+                        last = int(match_.group(2) or match_.group(1))
+                        if last < first:
+                            fail(
+                                f"{relative(path, root)}: descending hunk "
+                                f"range '{match_.group(0)}'")
+                        if profile_hunk_paths:
+                            for endpoint in (
+                                    f"H{first:0{width}d}",
+                                    f"H{last:0{width}d}"):
+                                if endpoint not in profile_hunk_paths:
+                                    fail(
+                                        f"{relative(path, root)}: hunk range "
+                                        f"endpoint {endpoint} is not in "
+                                        "profile.json")
+                        elif last - first + 1 > 5000:
+                            fail(
+                                f"{relative(path, root)}: implausible hunk "
+                                f"range '{match_.group(0)}'")
+                        claimed.extend(
+                            f"H{value:0{width}d}"
+                            for value in range(first, last + 1))
+                    cell_file = None
+                    location = re.search(
+                        r"/\s*([A-Za-z0-9_.+@{}\-/]+):\d+", hunk_cell)
+                    if location:
+                        cell_file = location.group(1).lstrip(":")
+                    for hunk_id in claimed:
+                        owner = hunk_owners.setdefault(hunk_id, path)
+                        if owner != path:
+                            fail(
+                                f"hunk {hunk_id} is claimed by both "
+                                f"{relative(owner, root)} and "
+                                f"{relative(path, root)}; shard hunk "
+                                "ownership must be disjoint")
+                        expected_file = profile_hunk_paths.get(hunk_id)
+                        if expected_file and cell_file and \
+                                not expected_file.endswith(cell_file) and \
+                                not cell_file.endswith(expected_file):
+                            fail(
+                                f"{relative(path, root)}: hunk {hunk_id} "
+                                f"belongs to {expected_file} but the surface "
+                                f"row cites {cell_file}")
+                    subject = clean(row.get("surface", ""))
+                    tags = clean(row.get("reachability", ""))
+                    if subject.lower().startswith("group:"):
+                        count = re.match(r"group:\s*(\d+)\b", subject,
+                                         re.IGNORECASE)
+                        if not count:
+                            fail(
+                                f"{relative(path, root)}: group surface "
+                                f"'{subject}' lacks a leading member count "
+                                "(shape: 'group: <N> ...')")
+                        hunks = clean(row.get(
+                            "owned hunks / earliest changed line", ""))
+                        extra = ";".join(part for part in (
+                            f"members={count.group(1)}",
+                            f"hunks={hunks}" if hunks else "",
+                        ) if part)
+                        tags = f"{tags};{extra}" if tags else extra
                     output.append([
-                        "surface", surface_id, clean(row.get("surface", "")), clean(row.get("scope label", "")),
-                        clean(row.get("reachability", "")), citations(row.get("surface", "") + " " + row.get("contract source", "")),
+                        "surface", surface_id, subject, clean(row.get("scope label", "")),
+                        tags, citations(row.get("surface", "") + " " + row.get("contract source", "")),
                         relative(path, root),
                     ])
                 elif heading == "Risk-area map" and "file" in header:
@@ -144,6 +221,15 @@ def inventory_rows(root: Path) -> list[list[str]]:
                         clean(row.get("discovery triggers", "")) + f",root-cause-required={required}",
                         citations(row.get("evidence", "")), relative(path, root),
                     ])
+    if profile_hunk_paths:
+        for hunk_id in sorted(set(hunk_owners) - set(profile_hunk_paths)):
+            fail(f"inventory claims unknown hunk {hunk_id} absent from "
+                 "profile.json")
+        sharded = [item for item in paths if item.parent.name == "inventory"]
+        if len(sharded) > 1:
+            for hunk_id in sorted(set(profile_hunk_paths) - set(hunk_owners)):
+                fail(f"sharded inventory leaves hunk {hunk_id} with no "
+                     "owning surface row")
     return sorted(output, key=lambda row: (row[0], row[1], row[2], row[-1]))
 
 
@@ -201,7 +287,7 @@ def candidate_rows(root: Path) -> list[list[str]]:
 
 
 def verdict_rows(root: Path) -> list[list[str]]:
-    paths = sorted((root / "verification").glob("V*.md")) if (root / "verification").is_dir() else []
+    paths = [p for p in (sorted((root / "verification").glob("V*.md")) if (root / "verification").is_dir() else []) if p.name != "VTER.md"]
     output: list[list[str]] = []
     seen: dict[str, str] = {}
     for path in paths:
@@ -267,7 +353,7 @@ def reconciliation_rows(root: Path) -> list[list[str]]:
                 add(identifier, kind, path, parent_links)
 
     verification = root / "verification"
-    for path in sorted(verification.glob("V*.md")) if verification.is_dir() else []:
+    for path in [p for p in (sorted(verification.glob("V*.md")) if verification.is_dir() else []) if p.name != "VTER.md"]:
         for heading, header, rows in tables(read(path), relative(path, root)):
             if heading == "Amendments" and {"amendment", "target", "operation"}.issubset(header):
                 for row in rows:
@@ -399,7 +485,7 @@ def source_paths(root: Path) -> dict[str, list[Path]]:
     candidates = sorted((root / "ledger").glob("**/*.md")) if (root / "ledger").is_dir() else []
     if (root / "collection.md").is_file():
         candidates.append(root / "collection.md")
-    verdicts = sorted((root / "verification").glob("V*.md")) if (root / "verification").is_dir() else []
+    verdicts = [p for p in (sorted((root / "verification").glob("V*.md")) if (root / "verification").is_dir() else []) if p.name != "VTER.md"]
     reconciliation = sorted({*candidates, *verdicts})
     reconciliation += sorted((root / "root-cause").glob("RC*.md")) if (root / "root-cause").is_dir() else []
     batches = root / "verification" / "batches.md"
