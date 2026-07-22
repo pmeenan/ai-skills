@@ -55,6 +55,7 @@ renumbers or re-keys another thread's rows.
 | Teardown Order | TDO |
 | Field Propagation Matrix | FPM |
 | Associative Container Semantics | ACS |
+| Transformation Equivalence And Residue | TER |
 | Mechanical Leads | ML |
 | Per-Surface Invariants | PSI |
 | Async And Lifecycle | AL |
@@ -555,6 +556,7 @@ subagent/task identifier when spawned, and the outcome when collected.
 | Teardown Order | ~DelayBuffer, Abort() | spawn | frontier | D02 | task-a7 | 4 rows |
 | Field Propagation Matrix | pending_ and buffer_ propagation/reset sites | spawn | frontier | D02 | task-a8 | matrix + 2 rows |
 | Associative Container Semantics | — | not applicable — trigger absence proved by T009 | — | — | — | — |
+| Transformation Equivalence And Residue | — | not applicable — trigger absence proved by T010 | — | — | — | — |
 | Mechanical Leads | script + manual leads, whole diff | spawn | standard | D02 | task-b1 | 11 rows |
 | Per-Surface Invariants | DelayBuffer public API | spawn | frontier | D03 | task-b2 | 6 rows |
 | Async And Lifecycle | timer, posted flush, cancellation | spawn | frontier | D03 | task-b3 | 8 rows |
@@ -579,8 +581,8 @@ subagent/task identifier when spawned, and the outcome when collected.
 
 For each spawned specialist row, the generated brief's Procedure names
 `references/chromium-specialist-checklists.md` and that row's exact section.
-For FPM or ACS, it names `references/specialist-recipes.md` and the exact
-recipe. A brief names one roster entry even when another lens covers the same
+For FPM, ACS, or TER, it names `references/specialist-recipes.md` and the
+exact recipe. A brief names one roster entry even when another lens covers the same
 surface; shared evidence does not authorize folding rows together.
 
 ## Generated Common Header

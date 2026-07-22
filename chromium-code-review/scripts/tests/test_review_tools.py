@@ -30,6 +30,7 @@ ROSTER = (
     "Teardown Order",
     "Field Propagation Matrix",
     "Associative Container Semantics",
+    "Transformation Equivalence And Residue",
     "Mechanical Leads",
     "Per-Surface Invariants",
     "Async And Lifecycle",
@@ -54,7 +55,7 @@ ROSTER = (
 ROSTER_PREFIX = {
     name: prefix for name, prefix in zip(ROSTER, (
         "DCS", "DL", "CTL", "CVI", "EPW", "SMM", "MHM", "TDO", "FPM",
-        "ACS", "ML", "PSI", "AL", "SPC", "IFC", "STB", "CAS", "TAS",
+        "ACS", "TER", "ML", "PSI", "AL", "SPC", "IFC", "STB", "CAS", "TAS",
         "CLP", "TSY", "OBL", "MIS", "PRS", "PLS", "BAG", "PAT", "AXI",
         "NET", "FTS", "HOL",
     ))

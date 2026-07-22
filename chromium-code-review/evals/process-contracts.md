@@ -47,8 +47,9 @@ snapshot-observable defect:
     profile budgets. For sectioned challenges, exact assigned section/frame/
     card paths must be manifested and fit the worker budget.
 11. `plan.md` omits or renames any fixed or trigger-only roster entry. The
-    exact specialist additions are FPM, ACS, TSY, OBL, MIS, PRS, PLS, BAG,
-    PAT, AXI, NET, and FTS with the canonical names in the skill roster; each
+    exact specialist additions are FPM, ACS, TER, TSY, OBL, MIS, PRS, PLS,
+    BAG, PAT, AXI, NET, and FTS with the canonical names in the skill roster;
+    each
     must be `spawn`, explicitly `unreviewed — <reason>`, or `not applicable —
     trigger absence proved by <T IDs>`.
 12. A not-applicable row cites an unrelated/positive trigger row, omits an

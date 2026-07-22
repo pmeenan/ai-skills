@@ -93,13 +93,17 @@ output goes to
   three needs either a correctness justification or a CL-description mention.
 
   **Aggregate homogeneous surfaces into group rows.** The detailed per-surface
-  schema above is for production/contract surfaces. Four surface classes are
+  schema above is for production/contract surfaces. Five surface classes are
   inventoried as one group row per file (per fixture for tests) with a count,
   a name list or stable name pattern, and the owned hunks — never one
   detailed row per member: test bodies (`TEST`, `TEST_F`, `TEST_P`,
   `TYPED_TEST`, browser/web tests, fuzz-target bodies), pure generated
-  blocks, mechanical accessor/forwarding blocks, and data-only
-  tables/constants. Group-row fields that are meaningless by class (callers,
+  blocks, mechanical accessor/forwarding blocks, data-only
+  tables/constants, and sites of a repeated transformation class (the
+  Transformation Equivalence And Residue trigger): for those, one group row
+  per class covering its file list and member count — individual rows only
+  for the sites that deviate from the class pattern, which are residue and
+  reviewed as ordinary surfaces. Group-row fields that are meaningless by class (callers,
   ownership/lifetime for test bodies) are `N/A (class)` with no per-member
   lookup — **never run a caller grep for a test-only surface**. Members of a
   test file still get individual rows when they are fixtures/base classes,
@@ -243,6 +247,21 @@ Specifications, Changed-Lines Polish, Build API And Generated Assets,
 Accessibility And Internationalization, and the holistic thread. No discovery
 thread is ever `mechanical`. When in doubt, `frontier`.
 
+**Residue-scoped planning for proven-mechanical bulk changes.** When
+Transformation Equivalence And Residue triggers, plan it as the
+highest-priority `frontier` thread, and plan the roster threads whose scope
+would otherwise be the bulk-transformed sites in **residue mode**: their
+briefs scope to the residue hunks, difference-observing sites, and collateral
+files named under the `## Residue` heading of the TER ledger (the brief cites
+that artifact path as its scope source), with `depends_on` the TER thread in
+`orchestration.tsv`. The per-file floor over conforming files is satisfied by
+TER's class-membership rows. Threads whose scope is independent of the bulk
+sites (e.g. Build API And Generated Assets over the collateral, the holistic
+thread) are planned normally. If TER's return reports a failed proof or a
+dirty re-derivation, the orchestrator respawns the Planner in re-plan mode
+for the affected scope as an ordinary full review — bulk treatment is earned
+by proof, never by the diff's shape or the CL's claim.
+
 Assign a priority by where P1s live, not by line count: teardown and error
 paths, boundary arithmetic, cross-sequence handoffs, persisted-format
 changes, and reentrancy first; renames and plumbing last. Do not encode a
@@ -265,7 +284,8 @@ never derived from memory:
 - Recipes: Desk-Check Simulation + Arithmetic Drills, Data Lineage,
   Callback And Task Lifetime, Container And View Invalidation,
   Error-Path Walk, State × Method Matrix, Mode × Host-Capability Matrix,
-  Teardown Order, Field Propagation Matrix, Associative Container Semantics.
+  Teardown Order, Field Propagation Matrix, Associative Container Semantics,
+  Transformation Equivalence And Residue.
 - Sections: Mechanical Leads, Per-Surface Invariants, Async And Lifecycle,
   State/Persistence/Cache, Integration And Feature Control, Security And
   Trust Boundaries, Contracts And API Shape, Tests As Specifications,
@@ -317,6 +337,14 @@ key/comparator/hash/equality/canonicalization/duplicate policy can affect
 lookup, insertion, replacement, or iteration behavior. Inventory those
 operations explicitly; do not mark the recipe N/A merely because the
 container's declaration is unchanged.
+`Transformation Equivalence And Residue` triggers when normalized changed-line
+pairs show one or a few patterns repeated across many sites/files (helper/API
+migration, rename, include/format churn), when the diff is dominated by
+moved-not-modified code, or when the CL description claims a mechanical or
+no-functional-change edit — the claim is untrusted and selects the recipe;
+only the recipe's proof unlocks bulk treatment. Inventory detects repetition
+mechanically (normalize, `sort | uniq -c`) and records the top patterns with
+member counts as the trigger evidence.
 
 ## Plan-Construction Rules
 
@@ -457,9 +485,10 @@ the block.
    rather than paraphrasing the recipe into the brief; paraphrases drop the
    steps that matter.
    Specialist briefs point to `references/chromium-specialist-checklists.md`;
-   Field Propagation and Associative Container briefs point to
-   `references/specialist-recipes.md`. Name exactly one roster section or
-   recipe per brief; sharding creates more rows, never a multi-lens brief.
+   Field Propagation, Associative Container, and Transformation Equivalence
+   And Residue briefs point to `references/specialist-recipes.md`. Name
+   exactly one roster section or recipe per brief; sharding creates more
+   rows, never a multi-lens brief.
 4. **Deliverable:** the absolute path of the thread's own ledger file
    (`<review-dir>/ledger/<THREAD>.md`) to write in the shapes from
    `references/templates.md`, plus a final message consisting only of the

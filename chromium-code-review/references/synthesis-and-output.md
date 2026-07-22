@@ -191,6 +191,8 @@ explicitly. Anchors beat intuition, especially for test-gap severity:
 | Untrusted-side (renderer/network)-controlled growth of a privileged-process queue, map, or buffer with no cap or eviction | P2 until proven bounded |
 | User-identifying data (PII, credentials, stable identifiers, private URLs) emitted to logs, crash keys, traces, or telemetry | P1 |
 | Histogram emission disagreeing with its metadata (unit, bucket range, enum coverage, expiry) — silent misrecording | P2 |
+| Bulk-migration call site that can observe a proven old-vs-new behavioral difference (null/error/encoding/lifetime), unaccounted by the CL | P1 |
+| Residue hunk in a claimed-mechanical change that alters behavior beyond the proven transformation spec | P1; P3 when provably cosmetic |
 | Ambiguous boolean name (policy vs state, `should_` vs `is_`) | P3 |
 | Non-ASCII punctuation in comments or developer-facing prose | P3 |
 | Defensive hardening or opportunistic cleanup absent from the CL description | P3 (suggest split or description mention) |
