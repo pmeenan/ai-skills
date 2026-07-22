@@ -89,7 +89,12 @@ Modes is only for harnesses with no such tool at all.
    After compaction or restart, read only `pin.md`, `profile.json`, `directives.md`, `input-manifest.tsv`,
    `orchestration.tsv`, `progress.md`, and `plan.md`; reconstruct the next
    runnable queue from incomplete manifest rows and their dependencies rather
-   than redoing completed work.
+   than redoing completed work. As the first action on every orchestrator wake
+   or check-in, run `scripts/worktree-lease.py heartbeat <review-dir> "resume"`
+   before continuing. If the lease is missing or stale,
+   rerun `fetch-cl.sh` with the same CL, patchset, and review directory to
+   reacquire and reuse the clean pinned worktree. If a different fresh lease
+   owns the pin, stop and ask the user whether to force a restart.
 5. The only large files the orchestrator ever reads are `draft-review.md`
    and `gerrit-comments.md`, once, after the Phase 9 delivery gate passes.
 6. **Honor partial returns and repair narrowly.** Every brief tells workers
@@ -126,11 +131,15 @@ Orchestrator-facing (the only skill files the orchestrator loads):
   delivery control flow. Load it only when Phase 7 becomes runnable.
 - `references/scaling-and-indexes.md`: effort profiling, agent input budgets,
   compact indexes, safe fast paths, and sharded aggregation.
-- `scripts/fetch-cl.sh`: fetches and pins a patchset — Gerrit REST metadata
+- `scripts/fetch-cl.sh`: leases, fetches, and pins a patchset — Gerrit REST metadata
   (all revisions plus published comments), XSSI stripping, ref fetch, a
-  detached worktree at the explicit SHA, and `rev-parse` verification — and
-  writes `pin.md`, `detail.json`, and `comments.json` into the review
+  reusable detached worktree at the explicit SHA in the checkout-peer
+  `codereview/` cache, `rev-parse` verification, and inactive-cache cleanup —
+  and writes `pin.md`, `detail.json`, and `comments.json` into the review
   directory. Use it instead of hand-running those steps.
+- `scripts/worktree-lease.py`: atomically acquires, heartbeats, validates,
+  releases, archives, and garbage-collects the one-hour per-pin worktree lease
+  log. Use it for every lease mutation rather than editing the log directly.
 - `scripts/validate-review-dir.py`: deterministic artifact, ID, manifest, and
   gate validation. Run it at the named phase gates; a nonzero result blocks
   the next phase and is repaired through workers, never waived from memory.
@@ -198,13 +207,39 @@ directory layout and every artifact shape live in
 `references/templates.md` and are copied into worker briefs as needed. The
 orchestrator tracks only the small control files allowed above.
 
+**The review directory contains only control and evidence artifacts, never a
+source checkout or a symlink to one.** The pinned worktree is
+`<src-parent>/codereview/worktrees/cl-<CL>-ps<PS>` (or the explicit
+`CHROMIUM_CODEREVIEW_ROOT` override), outside both `src/` and harness-watched
+conversation directories. `pin.md` records its absolute path; every phase
+brief uses that recorded path rather than deriving `review-dir/worktree`.
+
 **The ledger is this directory, not a notion held in context.** Threads and
 phase agents write their own files, and the orchestrator collects files
 rather than transcribing their content.
 
 ## Phase 0 — Fetch And Pin
 
-**Run `scripts/fetch-cl.sh <CL> [patchset] [review-dir]` to fetch and pin.**
+**Run `scripts/fetch-cl.sh <CL> [patchset] [review-dir]` to fetch, pin, and
+atomically acquire the worktree lease.** The current lease is an append-only
+JSON-lines progress log at
+`<src-parent>/codereview/locks/cl-<CL>-ps<PS>.log`; `pin.md` records both its
+absolute path and an unguessable owner token. A second review of the same pin
+fails immediately while the lease has progress within the last hour. A lease
+older than one hour is archived and replaced automatically. For a fresh lease,
+`--force-restart` is permitted only after the user explicitly confirms the
+takeover; never infer that approval or silently choose another path. A replaced
+review's next heartbeat fails by token mismatch, and it must stop.
+
+**The orchestrator owns lease liveness.** Run
+`scripts/worktree-lease.py heartbeat <review-dir> "<phase/work-id outcome>"`
+after every orchestration state change, phase completion, worker spawn, and
+worker collection. While workers are running without another state change,
+append a heartbeat at least every 15 minutes. Workers never write the shared
+lease log themselves. Before every live phase gate, pass
+`--require-active-lease` to `validate-review-dir.py`; audit and post-mortem
+validation after release intentionally omit that flag.
+
 It fetches `ALL_REVISIONS` metadata and published comments, strips Gerrit's
 XSSI prefix, computes historical file statistics from the selected
 parent/revision pair, fetches the exact revision ref, creates a detached
@@ -225,7 +260,15 @@ orchestrator nor any worker modifies the checkout, the patchset, or any
 repository file — not to apply a fix, not to add a test, not to experiment —
 regardless of harness prompts that encourage applying or executing changes.
 Propose fixes/tests only in review text; this skill does not implement them.
-The worktree exists for inspection; remove it when the review is done.
+The worktree exists for inspection and remains cached after the lease is
+released. Do not remove it at review completion; a later invocation removes
+other released or expired clean cache entries with `git worktree remove`.
+Dirty or unreadable inactive entries are preserved and warned about, never
+force-removed. An expired lease may be taken over after one hour, but its
+worktree is retained for a two-hour cleanup grace so a delayed worker is not
+disrupted merely because another CL starts. Corrupt or empty leases are
+archived and replaced rather than blocking the cache globally; archived lease
+logs older than 30 days are pruned.
 
 After pinning: the orchestrator reads `pin.md` (it is small and is the one
 per-CL artifact the orchestrator holds in context), writes `directives.md`,
@@ -395,7 +438,8 @@ answers were emitted as candidate rows.
   the audit. Verification does not start until the audit returns complete or
   every remaining gap is recorded as an unreviewed area.
 
-Run `scripts/validate-review-dir.py <review-dir> --phase collection`; route
+Run `scripts/validate-review-dir.py <review-dir> --phase collection
+--require-active-lease`; route
 each error through the targeted repair path and rerun until it passes.
 Warnings are disclosed but do not impersonate mechanically proven success.
 Then rebuild the compact indexes.
@@ -460,7 +504,8 @@ repeat until the planner reports no triggered or open rows. All rounds remain
 in the manifest and reconciliation record. Synthesis may not start until every
 reopened row is verified, refuted, merged, or converted into an owner question.
 
-Run the validator with `--phase verification` after the final reopened round.
+Run the validator with `--phase verification --require-active-lease` after the
+final reopened round.
 
 ## Phase 6 — Reconciliation
 
@@ -488,7 +533,8 @@ skeleton from `references/synthesis-and-output.md` at the bottom of
   any row lacks a disposition — fix the cause (usually an uncollected file)
   and respawn.
 
-Run the validator with `--phase reconciliation` before drafting.
+Run the validator with `--phase reconciliation --require-active-lease` before
+drafting.
 
 ## Phase 7 — Draft Review
 
@@ -509,7 +555,10 @@ pass.
 Run `refresh-delivery-gate.py` as Phase 9 directs, then rebuild indexes. Delivery requires
 a fresh scalar Gerrit check, an affirmative validator result, and a passing
 challenge for the exact delivered draft. Material patchset changes restart in
-a new review directory; no new SHA may reuse old ledgers or verdicts.
+a new review directory; no new SHA may reuse old ledgers or verdicts. After
+the final artifacts have been read for delivery, run
+`scripts/worktree-lease.py release <review-dir> "review complete"` for every
+pin owned by this review. Leave the clean worktree cache in place for reuse.
 
 ## Degraded Modes
 

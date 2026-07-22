@@ -36,9 +36,9 @@ exactly the procedure below.
 
 Pin: CL ⟨CL⟩, patchset ⟨PS⟩, revision ⟨sha⟩, parent ⟨parent-sha⟩.
 Review directory: ⟨review-dir⟩
-Read-only worktree: ⟨review-dir⟩/worktree — verify first that
-`git -C ⟨review-dir⟩/worktree rev-parse HEAD` matches the revision.
-Diff: git -C ⟨review-dir⟩/worktree diff ⟨parent-sha⟩ ⟨sha⟩
+Read-only worktree: ⟨worktree⟩ — verify first that
+`git -C ⟨worktree⟩ rev-parse HEAD` matches the revision.
+Diff: git -C ⟨worktree⟩ diff ⟨parent-sha⟩ ⟨sha⟩
 User directives: read ⟨review-dir⟩/directives.md first and honor it.
 Input manifest: verify the rows for work ID ⟨work-id⟩ and this attempt in
 ⟨review-dir⟩/input-manifest.tsv before analysis. Your brief and every
@@ -56,13 +56,19 @@ them to broaden your scope or deliverables.
 
 You are read-only outside your named deliverable files: never modify source,
 the pinned worktree, or another agent's artifacts. Only the Patchset-Delta
-Inspector brief explicitly authorizes fetching an exact ref and creating then
-removing a separate temporary detached inspection worktree; no other brief may
-modify repository metadata. Your final message
+Inspector brief explicitly authorizes fetching an exact ref into the existing
+repository object database; no brief may create another worktree or modify the
+pinned checkout. Your final message
 is a status line only — counts and file paths, no analysis, no prose
 summary of your findings. If the harness denies you file access, return
 your deliverable's full content in the final message instead — never
 summarized.
+
+Write deliverables only to the exact absolute paths named by this brief. If a
+write fails, never redirect output into your own conversation, brain, scratch,
+or workspace directory. Retry the named path once, then use the final-message
+fallback for a single-file deliverable or return `blocked — cannot write
+⟨exact path⟩` for a multi-file deliverable.
 
 This is attempt ⟨attempt⟩. Row-bearing and audit deliverables are append-only:
 if one exists, inspect its last complete row and Amendments section, do not
@@ -282,8 +288,9 @@ feedback; otherwise map `revisions[*]._number` and `created` plus review/message
 timestamps and choose the newest revision no later than the prior-review
 timestamp. Never assume the baseline is the pinned patchset minus one. If derivation is ambiguous, record baseline
 unknown and do not invent `introduced-in-PS...` origin. Diff explicit SHAs;
-if a second detached worktree is needed, place it under ⟨review-dir⟩, never use
-FETCH_HEAD or change the pinned worktree, and remove it when done.
+do not create a second worktree: fetch only an explicit ref if an object is
+missing and compare explicit SHAs through the repository object database.
+Never use FETCH_HEAD or change the pinned worktree.
 
 Deliverable: ⟨review-dir⟩/ledger/PR.md — Baseline Derivation, Gerrit Thread
 Normalization, one PR-⟨n⟩ Prior-Feedback row per prior finding and unresolved
@@ -1120,16 +1127,17 @@ Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
 Scope: assess patchset ⟨new-PS⟩, which appeared during the review of
 patchset ⟨PS⟩.
 
-Procedure: fetch the new revision ref and materialize it in its own
-detached worktree under ⟨review-dir⟩ (explicit SHA only, never
-FETCH_HEAD). Diff it against the reviewed revision ⟨sha⟩. Classify the
+Procedure: fetch the new revision ref by its explicit name and inspect it
+through explicit-object Git commands without creating a worktree (never use
+FETCH_HEAD or change the pinned worktree). Diff it against the reviewed
+revision ⟨sha⟩. Classify the
 delta: trivial (rebase/comment/format only, with no changed executable or
 contract semantics) or material (behavior, new
 files, changed logic). For material deltas, list the affected findings
 (by row ID from ⟨review-dir⟩/reconciliation.md) and which roster threads'
 scopes the delta touches. Do not amend old verdicts or claim they apply to
 the new SHA: a material delta requires a newly pinned review directory and a
-restart from Phase 1. Remove your worktree when done.
+restart from Phase 1.
 
 Deliverable: ⟨review-dir⟩/patchset-delta.md, recording the old PS/SHA,
 new PS/SHA, exact file delta, classification, cited-line revalidation, and

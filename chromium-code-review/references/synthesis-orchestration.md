@@ -111,8 +111,9 @@ pre-delivery reconciliation fingerprint.
   Writer, or Frame Writer plus root reassembly) and a fresh Phase 8 challenge.
   A repeated refresh may record `trivial delta verified` only if Gerrit still
   equals the inspected new PS/SHA.
-- Material delta: stop without delivering. Run `fetch-cl.sh` into a new sibling
-  directory for the new patchset, copy only user-authored directives, reference
+- Material delta: stop without delivering. Release the superseded pin's lease,
+  then run `fetch-cl.sh` with a new sibling review directory for the new
+  patchset, copy only user-authored directives, reference
   the immutable old review and delta as prior-feedback input, initialize a new
   manifest, and restart at Phase 1. Never mutate the old pin or reuse its
   ledgers or verdicts for a new SHA.
@@ -120,11 +121,14 @@ pre-delivery reconciliation fingerprint.
 Repeat freshness after every revision or restart. State the exact reviewed base
 PS/SHA and any separately inspected trivial-delta PS/SHA in the draft.
 
-Run `scripts/validate-review-dir.py <review-dir> --phase final`. Only after it
+Run `scripts/validate-review-dir.py <review-dir> --phase final
+--require-active-lease`. Only after it
 passes, the latest draft has a passing challenge, and `delivery-gate.md` is
 affirmative may the orchestrator read `draft-review.md`, `gerrit-comments.md`,
 and `delivery-gate.md` for delivery. Limit the final check to formatting and
 verdict/finding consistency; route content changes back through Phase 8.
 
-Remove every detached worktree created by completed runs. Preserve review
-directories and manifests as the audit trail.
+After final artifacts are read, run `scripts/worktree-lease.py release
+<review-dir> "review complete"` for every pin owned by the review. Leave clean
+cached worktrees in place; later invocations remove released or expired
+entries. Preserve review directories and manifests as the audit trail.

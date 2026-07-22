@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ FETCH = SCRIPTS / "fetch-cl.sh"
 MECHANICAL = SCRIPTS / "mechanical-leads.sh"
 PROFILE = SCRIPTS / "profile-review.py"
 INDEXES = SCRIPTS / "build-review-indexes.py"
+LEASE = SCRIPTS / "worktree-lease.py"
 ROSTER = (
     "Desk-Check Simulation + Arithmetic Drills",
     "Data Lineage",
@@ -104,8 +106,8 @@ class FetchClTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.base = Path(self.temporary.name)
-        self.repo = self.base / "source"
-        self.repo.mkdir()
+        self.repo = self.base / "checkout" / "src"
+        self.repo.mkdir(parents=True)
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Fixture"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "fixture@example.test"], check=True)
@@ -124,6 +126,9 @@ class FetchClTest(unittest.TestCase):
         subprocess.run(
             ["git", "-C", str(self.repo), "push", "-q", str(bare),
              f"{self.sha}:refs/changes/01/1/2"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "push", "-q", str(bare),
+             f"{self.sha}:refs/changes/02/2/2"], check=True)
 
         detail = {
             "current_revision": self.sha,
@@ -185,6 +190,17 @@ output.write_bytes(pathlib.Path(source).read_bytes())
             "CURL_RETRIES": "0",
         }
 
+    def pinned_worktree(self, review: Path) -> Path:
+        for line in (review / "pin.md").read_text(encoding="utf-8").splitlines():
+            if line.startswith("- Worktree: "):
+                return Path(line.removeprefix("- Worktree: ").split(" (", 1)[0])
+        self.fail("pin.md has no Worktree field")
+
+    def release_lease(self, review: Path, message: str = "test complete") -> None:
+        subprocess.run(
+            [str(LEASE), "release", str(review), message], check=True,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
     def test_normalizes_json_and_pins_exact_historical_diff(self) -> None:
         review = self.base / "review"
         run = subprocess.run(
@@ -199,9 +215,266 @@ output.write_bytes(pathlib.Path(source).read_bytes())
         self.assertIn("- Is current at fetch: yes", pin)
         self.assertIn("- Files changed (1; +1/-1 lines):", pin)
         self.assertIn("````\nUntrusted description with ``` fence\n````", pin)
+        worktree = self.pinned_worktree(review)
+        self.assertEqual(
+            self.base / "checkout" / "codereview" / "worktrees" / "cl-1-ps2",
+            worktree)
+        self.release_lease(review)
         subprocess.run(
-            ["git", "-C", str(self.repo), "worktree", "remove", str(review / "worktree")],
+            ["git", "-C", str(self.repo), "worktree", "remove", str(worktree)],
             check=True)
+
+    def test_rejects_fresh_lease_and_release_allows_audit(self) -> None:
+        first_review = self.base / "first-review"
+        first = subprocess.run(
+            [str(FETCH), "1", "2", str(first_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        validation = subprocess.run(
+            [str(VALIDATE), str(first_review), "--phase", "pin",
+             "--require-active-lease"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(validation.returncode, 0, validation.stdout + validation.stderr)
+
+        subprocess.run(
+            [str(LEASE), "heartbeat", str(first_review), "planner complete"],
+            check=True)
+        lease = self.base / "checkout" / "codereview" / "locks" / "cl-1-ps2.log"
+        events = [json.loads(line) for line in lease.read_text().splitlines()]
+        self.assertEqual("heartbeat", events[-1]["event"])
+        self.assertEqual("planner complete", events[-1]["message"])
+
+        second_review = self.base / "second-review"
+        contender = subprocess.run(
+            [str(FETCH), "1", "2", str(second_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(contender.returncode, 0)
+        self.assertIn("worktree lease is active", contender.stderr)
+        self.assertFalse(second_review.exists())
+
+        self.release_lease(first_review)
+        inactive = subprocess.run(
+            [str(VALIDATE), str(first_review), "--phase", "pin",
+             "--require-active-lease"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(inactive.returncode, 0)
+        self.assertIn("active worktree lease validation failed",
+                      inactive.stdout + inactive.stderr)
+        audit = subprocess.run(
+            [str(VALIDATE), str(first_review), "--phase", "pin"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(audit.returncode, 0, audit.stdout + audit.stderr)
+
+    def test_force_restart_replaces_fresh_lease(self) -> None:
+        first_review = self.base / "first-review"
+        first = subprocess.run(
+            [str(FETCH), "1", "2", str(first_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+
+        second_review = self.base / "second-review"
+        second = subprocess.run(
+            [str(FETCH), "--force-restart", "1", "2", str(second_review)],
+            env=self.environment(), text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        stale_owner = subprocess.run(
+            [str(LEASE), "heartbeat", str(first_review), "late progress"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(stale_owner.returncode, 0)
+        self.assertIn("replaced by another review", stale_owner.stderr)
+        self.release_lease(second_review)
+
+    def test_stale_lease_is_replaced_without_force(self) -> None:
+        first_review = self.base / "first-review"
+        first = subprocess.run(
+            [str(FETCH), "1", "2", str(first_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        lease = self.base / "checkout" / "codereview" / "locks" / "cl-1-ps2.log"
+        old = int(lease.stat().st_mtime) - 3700
+        os.utime(lease, (old, old))
+
+        second_review = self.base / "second-review"
+        second = subprocess.run(
+            [str(FETCH), "1", "2", str(second_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertIn("Reusing clean registered worktree", second.stderr)
+        self.release_lease(second_review)
+
+    def test_empty_same_pin_lease_is_archived_and_replaced(self) -> None:
+        lock_root = self.base / "checkout" / "codereview" / "locks"
+        lock_root.mkdir(parents=True)
+        lease = lock_root / "cl-1-ps2.log"
+        lease.write_bytes(b"")
+
+        review = self.base / "review"
+        run = subprocess.run(
+            [str(FETCH), "1", "2", str(review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("archived corrupt lease", run.stderr)
+        self.assertEqual(len(list(lock_root.glob("cl-1-ps2.corrupt-*.log"))), 1)
+        self.assertEqual("acquired", json.loads(lease.read_text())["event"])
+        self.release_lease(review)
+
+    def test_corrupt_other_pin_lease_does_not_block_gc(self) -> None:
+        first_review = self.base / "first-review"
+        first = subprocess.run(
+            [str(FETCH), "1", "2", str(first_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        first_worktree = self.pinned_worktree(first_review)
+        lock_root = self.base / "checkout" / "codereview" / "locks"
+        (lock_root / "cl-1-ps2.log").write_text("not-json\n", encoding="utf-8")
+
+        second_review = self.base / "second-review"
+        second = subprocess.run(
+            [str(FETCH), "2", "2", str(second_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertIn("archived corrupt lease", second.stderr)
+        self.assertIn("takeover cleanup grace", second.stderr)
+        self.assertTrue(first_worktree.exists())
+        self.assertEqual(len(list(lock_root.glob("cl-1-ps2.corrupt-*.log"))), 1)
+        self.release_lease(second_review)
+
+    def test_stale_takeover_has_double_timeout_cleanup_grace(self) -> None:
+        environment = self.environment()
+        environment["CHROMIUM_REVIEW_LEASE_SECONDS"] = "60"
+        first_review = self.base / "first-review"
+        first = subprocess.run(
+            [str(FETCH), "1", "2", str(first_review)], env=environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        first_worktree = self.pinned_worktree(first_review)
+        lock_root = self.base / "checkout" / "codereview" / "locks"
+        lease = lock_root / "cl-1-ps2.log"
+        old = int(lease.stat().st_mtime) - 70
+        os.utime(lease, (old, old))
+
+        second_review = self.base / "second-review"
+        second = subprocess.run(
+            [str(FETCH), "2", "2", str(second_review)], env=environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertTrue(first_worktree.exists())
+        self.assertIn("takeover cleanup grace", second.stderr)
+        self.release_lease(second_review)
+
+        stale_archive = next(lock_root.glob("cl-1-ps2.stale-*.log"))
+        expired = int(stale_archive.stat().st_mtime) - 60
+        os.utime(stale_archive, (expired, expired))
+        cleanup = subprocess.run(
+            [str(LEASE), "gc", "--repo", str(self.repo), "--worktree-root",
+             str(first_worktree.parent), "--exclude",
+             str(self.pinned_worktree(second_review)), "--stale-seconds", "60"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(cleanup.returncode, 0, cleanup.stdout + cleanup.stderr)
+        self.assertFalse(first_worktree.exists())
+
+    def test_environment_timeout_is_shared_by_helper_and_validator(self) -> None:
+        environment = self.environment()
+        environment["CHROMIUM_REVIEW_LEASE_SECONDS"] = "60"
+        review = self.base / "review"
+        fetched = subprocess.run(
+            [str(FETCH), "1", "2", str(review)], env=environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(fetched.returncode, 0, fetched.stdout + fetched.stderr)
+
+        lease = self.base / "checkout" / "codereview" / "locks" / "cl-1-ps2.log"
+        old = int(lease.stat().st_mtime) - 61
+        os.utime(lease, (old, old))
+        heartbeat = subprocess.run(
+            [str(LEASE), "heartbeat", str(review), "late"], env=environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(heartbeat.returncode, 0)
+        self.assertIn("lease expired", heartbeat.stderr)
+        validation = subprocess.run(
+            [str(VALIDATE), str(review), "--phase", "pin",
+             "--require-active-lease"], env=environment, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(validation.returncode, 0)
+        self.assertIn("lease is stale", validation.stdout + validation.stderr)
+        self.release_lease(review)
+
+    def test_removes_other_inactive_cached_worktree(self) -> None:
+        first_review = self.base / "first-review"
+        first = subprocess.run(
+            [str(FETCH), "1", "2", str(first_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        first_worktree = self.pinned_worktree(first_review)
+        self.assertTrue(first_worktree.is_dir())
+        self.release_lease(first_review)
+
+        second_review = self.base / "second-review"
+        second = subprocess.run(
+            [str(FETCH), "2", "2", str(second_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertFalse(first_worktree.exists())
+        self.assertTrue(self.pinned_worktree(second_review).is_dir())
+        self.release_lease(second_review)
+
+    def test_prunes_archived_lease_logs_after_thirty_days(self) -> None:
+        first_review = self.base / "first-review"
+        first = subprocess.run(
+            [str(FETCH), "1", "2", str(first_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.release_lease(first_review)
+        lock_root = self.base / "checkout" / "codereview" / "locks"
+        archive = next(lock_root.glob("cl-1-ps2.released-*.log"))
+        old = int(archive.stat().st_mtime) - 31 * 24 * 60 * 60
+        os.utime(archive, (old, old))
+
+        second_review = self.base / "second-review"
+        second = subprocess.run(
+            [str(FETCH), "2", "2", str(second_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertFalse(archive.exists())
+        self.release_lease(second_review)
+
+    def test_reuses_matching_inactive_cached_worktree(self) -> None:
+        first_review = self.base / "first-review"
+        first = subprocess.run(
+            [str(FETCH), "1", "2", str(first_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        worktree = self.pinned_worktree(first_review)
+        self.release_lease(first_review)
+
+        second_review = self.base / "second-review"
+        second = subprocess.run(
+            [str(FETCH), "1", "2", str(second_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertEqual(worktree, self.pinned_worktree(second_review))
+        self.assertIn("Reusing clean registered worktree", second.stderr)
+        self.release_lease(second_review)
+
+    def test_preserves_dirty_inactive_cached_worktree(self) -> None:
+        first_review = self.base / "first-review"
+        first = subprocess.run(
+            [str(FETCH), "1", "2", str(first_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        first_worktree = self.pinned_worktree(first_review)
+        self.release_lease(first_review)
+        (first_worktree / "untracked.txt").write_text("preserve me\n", encoding="utf-8")
+
+        second_review = self.base / "second-review"
+        second = subprocess.run(
+            [str(FETCH), "2", "2", str(second_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertTrue(first_worktree.is_dir())
+        self.assertIn("preserving dirty inactive worktree", second.stderr)
+        self.assertIn("worktree remove --force", second.stderr)
+        self.release_lease(second_review)
 
     def test_comment_fetch_failure_is_fatal_and_removes_new_directory(self) -> None:
         review = self.base / "failed-review"
@@ -229,7 +502,8 @@ output.write_bytes(pathlib.Path(source).read_bytes())
         worktrees = subprocess.run(
             ["git", "-C", str(self.repo), "worktree", "list", "--porcelain"],
             check=True, text=True, stdout=subprocess.PIPE).stdout
-        self.assertNotIn(str(review / "worktree"), worktrees)
+        expected = self.base / "checkout" / "codereview" / "worktrees" / "cl-1-ps2"
+        self.assertNotIn(str(expected), worktrees)
 
 
 class MechanicalLeadsTest(unittest.TestCase):
@@ -309,6 +583,28 @@ class ReviewDirectoryValidatorTest(unittest.TestCase):
         return subprocess.run(
             ["git", "-C", str(self.repo), *arguments], check=True,
             text=True, stdout=subprocess.PIPE).stdout.strip()
+
+    def test_non_executable_lease_helper_reports_validation_error(self) -> None:
+        tools = self.review.parent / "validator-tools"
+        tools.mkdir()
+        validator = tools / "validate-review-dir.py"
+        shutil.copy2(VALIDATE, validator)
+        helper = tools / "worktree-lease.py"
+        helper.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        helper.chmod(0o644)
+        with (self.review / "pin.md").open("a", encoding="utf-8") as stream:
+            stream.write(
+                f"- Worktree lease: {self.review / 'lease.log'}\n"
+                "- Worktree lease token: fixture-token\n")
+
+        run = subprocess.run(
+            ["python3", str(validator), str(self.review), "--phase", "pin",
+             "--require-active-lease"], text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertNotIn("Traceback", run.stdout + run.stderr)
+        self.assertIn("cannot run active worktree lease validator",
+                      run.stdout + run.stderr)
 
     def make_review(self) -> None:
         detail = {

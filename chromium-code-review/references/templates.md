@@ -98,14 +98,13 @@ write an unqualified "batch 1": it is ambiguous after handoff.
 ## The Review Directory
 
 ```
-<scratchpad>/cl-9999999-ps3/
+<scratchpad>/cl-9999999-ps3/       # small control/evidence artifacts only
   pin.md                  # patchset pin block (scripts/fetch-cl.sh writes this)
   detail.json             # Gerrit change detail (ALL_REVISIONS)
   comments.json           # published comments; unresolved threads live here
   gerrit/unresolved-threads.json # normalized root/latest thread records
   profile.json            # deterministic effort class, signals, hunk map, budgets
   profile.md              # compact human-readable profile summary
-  worktree/               # detached read-only checkout at the pinned SHA
   directives.md           # review mode + user directives (orchestrator)
   progress.md             # orchestrator phase log; the resume point
   orchestration.tsv       # structured attempt manifest + resumable queue
@@ -154,6 +153,11 @@ write an unqualified "batch 1": it is ambiguous after handoff.
   challenge.md            # pointer/summary for current challenge round
   delivery-gate.md        # Phase 9: post-challenge freshness/delta result
 ```
+
+The detached checkout is external and reusable at
+`<src-parent>/codereview/worktrees/cl-9999999-ps3/`. It is never nested in,
+or symlinked from, the review directory. `pin.md` is the authority for its
+absolute path.
 
 Thread ledger files are append-only records of discovery: later passes never
 rewrite them. A row's life-cycle state advances in `verification/V⟨batch⟩.md`
@@ -221,7 +225,9 @@ explicit revision name in their artifact contract.
 - Is current at fetch: yes
 - Metadata fetched at: 2026-07-01T18:24:11Z
 - Ref: refs/changes/99/9999999/3
-- Worktree: /tmp/scratch/cl-9999999-ps3/worktree (rev-parse verified)
+- Worktree: /checkout/chromium/codereview/worktrees/cl-9999999-ps3 (rev-parse verified; clean; active lease required)
+- Worktree lease: /checkout/chromium/codereview/locks/cl-9999999-ps3.log
+- Worktree lease token: 4bf91f071cc24bd3960362c5ef57251a
 - Messages: 12; comment threads: 9 (2 unresolved)
 - Files changed (3):
   - net/streams/delay_buffer.cc
@@ -651,6 +657,12 @@ IDs/counts, artifact paths, and, for partial, an explicit remaining scope. If
 file access is denied, return the complete artifact payload instead of a
 summary. If remaining work will not fit, preserve full rigor, append completed
 work, and return `partial — remaining: ...`; never thin the analysis to finish.
+
+Write only to the exact absolute deliverable paths named below. If a write
+fails, never redirect output into your own conversation, brain, scratch, or
+workspace directory. Retry the named path once, then use the full-payload
+fallback for one file or return `blocked — cannot write <exact path>` for a
+multi-file deliverable.
 ```
 
 The planner substitutes this header verbatim; a generated brief that omits
@@ -670,7 +682,7 @@ not fixes.
 1. Pin: CL 9999999, patchset 3,
    revision 4f2a09c1d8e7b6a5f4e3d2c1b0a9f8e7d6c5b4c9,
    parent 8b1d77e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b177.
-   Read-only worktree: /tmp/scratch/cl-9999999-ps3/worktree
+   Read-only worktree: /checkout/chromium/codereview/worktrees/cl-9999999-ps3
    (verify first: git -C <worktree> rev-parse HEAD matches the revision).
    Diff: git -C <worktree> diff 8b1d77e6f5a4 4f2a09c1d8e7
    Directives: read /tmp/scratch/cl-9999999-ps3/directives.md first.
@@ -1000,7 +1012,8 @@ confirmation, not a dismissal.
 
 1. Pin: CL 9999999, patchset 3,
    revision 4f2a09c1d8e7b6a5f4e3d2c1b0a9f8e7d6c5b4c9; read-only worktree at
-   /tmp/scratch/cl-9999999-ps3/worktree (verify rev-parse HEAD first).
+   /checkout/chromium/codereview/worktrees/cl-9999999-ps3
+   (verify rev-parse HEAD first).
 
 2. Candidates under test (full rows inline — this is skeptic batch V001):
    EPW-2 | Success-shaped return after failure cleanup |

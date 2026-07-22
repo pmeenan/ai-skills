@@ -1,21 +1,32 @@
 #!/usr/bin/env bash
 # fetch-cl.sh — fetch and pin a Chromium CL patchset for review.
 #
-# Usage: fetch-cl.sh <cl-number> [patchset] [review-dir]
+# Usage: fetch-cl.sh [--force-restart] <cl-number> [patchset] [review-dir]
 #
 # The default review directory is collision-safe:
 #   ${TMPDIR:-/tmp}/cl-<cl>-ps<ps>.<random>/
 # Pass an explicit directory to choose a new review location or refresh the
-# same immutable pin. An existing worktree is reused only when it is
-# registered, clean, and at the exact SHA.
+# same immutable pin. The detached checkout lives outside the review directory
+# in a cache beside the depot_tools-managed src directory:
+#   <src-parent>/codereview/worktrees/cl-<cl>-ps<ps>/
+# An existing worktree is reused only when it is registered, clean, and at the
+# exact SHA. A one-hour append-only lease log rejects overlapping reviews while
+# allowing automatic recovery after an abandoned review. --force-restart may
+# replace a fresh lease only after explicit user confirmation.
 
 set -euo pipefail
 export LC_ALL=C
 
 die() { echo "fetch-cl.sh: ERROR: $*" >&2; exit 1; }
 
+FORCE_RESTART=0
+if [[ "${1:-}" == "--force-restart" ]]; then
+  FORCE_RESTART=1
+  shift
+fi
+
 CL="${1:-}"
-[[ "$CL" =~ ^[0-9]+$ ]] || die "usage: fetch-cl.sh <cl-number> [patchset] [review-dir]"
+[[ "$CL" =~ ^[0-9]+$ ]] || die "usage: fetch-cl.sh [--force-restart] <cl-number> [patchset] [review-dir]"
 REQ_PS="${2:-current}"
 [[ "$REQ_PS" == "current" || "$REQ_PS" =~ ^[0-9]+$ ]] || die "patchset must be a number or 'current'"
 REQUESTED_REVIEW_DIR="${3:-}"
@@ -25,11 +36,13 @@ GERRIT_PROJECT="${GERRIT_PROJECT:-chromium/src}"
 CURL_CONNECT_TIMEOUT="${CURL_CONNECT_TIMEOUT:-15}"
 CURL_MAX_TIME="${CURL_MAX_TIME:-90}"
 CURL_RETRIES="${CURL_RETRIES:-3}"
+LEASE_STALE_SECONDS="${CHROMIUM_REVIEW_LEASE_SECONDS:-3600}"
 PROJECT_ENC="${GERRIT_PROJECT//\//%2F}"
 
 [[ "$CURL_CONNECT_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "CURL_CONNECT_TIMEOUT must be a positive integer"
 [[ "$CURL_MAX_TIME" =~ ^[1-9][0-9]*$ ]] || die "CURL_MAX_TIME must be a positive integer"
 [[ "$CURL_RETRIES" =~ ^[0-9]+$ ]] || die "CURL_RETRIES must be a non-negative integer"
+[[ "$LEASE_STALE_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "CHROMIUM_REVIEW_LEASE_SECONDS must be a positive integer"
 
 for command_name in curl python3 git mktemp; do
   command -v "$command_name" >/dev/null 2>&1 || die "$command_name is required"
@@ -39,16 +52,38 @@ REPO="${CHROMIUM_SRC:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
 [[ -n "$REPO" ]] || die "not inside a git checkout and CHROMIUM_SRC is not set"
 git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "$REPO is not a git checkout"
 REPO="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$REPO")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LEASE_HELPER="$SCRIPT_DIR/worktree-lease.py"
+[[ -x "$LEASE_HELPER" ]] || die "lease helper is missing or not executable: $LEASE_HELPER"
+
+if [[ -n "${CHROMIUM_CODEREVIEW_ROOT:-}" ]]; then
+  CODEREVIEW_ROOT="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CHROMIUM_CODEREVIEW_ROOT")"
+else
+  [[ "$(basename "$REPO")" == "src" ]] \
+    || die "checkout root is not a depot_tools src directory; set CHROMIUM_CODEREVIEW_ROOT explicitly"
+  CODEREVIEW_ROOT="$(dirname "$REPO")/codereview"
+fi
+WORKTREE_ROOT="$CODEREVIEW_ROOT/worktrees"
+LOCK_ROOT="$CODEREVIEW_ROOT/locks"
+mkdir -p -- "$WORKTREE_ROOT" "$LOCK_ROOT" \
+  || die "cannot create worktree cache at $CODEREVIEW_ROOT"
 
 RAW_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/fetch-cl.$CL.XXXXXXXX")" || die "mktemp failed"
 REVIEW_STAGE=""
 REVIEW_DIR=""
 WT=""
+WT_LEASE=""
+WT_LEASE_TOKEN=""
+LEASE_ACQUIRED=0
 CREATED_WT=0
 REMOVE_REVIEW_DIR_ON_FAILURE=0
 
 cleanup() {
   local status=$?
+  if (( status != 0 && LEASE_ACQUIRED == 1 )) && [[ -n "$WT_LEASE" && -n "$WT_LEASE_TOKEN" ]]; then
+    "$LEASE_HELPER" release-token "$WT_LEASE" "$WT_LEASE_TOKEN" "fetch/setup failed" \
+      >/dev/null 2>&1 || true
+  fi
   if (( status != 0 && CREATED_WT == 1 )) && [[ -n "$WT" ]]; then
     git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1 || true
   fi
@@ -199,8 +234,26 @@ cp -- "$RAW_STAGE/comments.json" "$REVIEW_STAGE/comments.json"
 
 LAST2="$(printf '%02d' $((10#$CL % 100)))"
 REF="refs/changes/$LAST2/$CL/$PS"
-WT="$REVIEW_DIR/worktree"
+WT="$WORKTREE_ROOT/cl-$CL-ps$PS"
+WT_LEASE="$LOCK_ROOT/cl-$CL-ps$PS.log"
 WT_CANON="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$WT")"
+
+LEASE_ARGS=(
+  acquire "$WT_LEASE"
+  --review-dir "$REVIEW_DIR"
+  --stale-seconds "$LEASE_STALE_SECONDS"
+)
+(( FORCE_RESTART == 0 )) || LEASE_ARGS+=(--force)
+WT_LEASE_TOKEN="$("$LEASE_HELPER" "${LEASE_ARGS[@]}")" \
+  || die "could not acquire the CL $CL patchset $PS worktree lease"
+LEASE_ACQUIRED=1
+
+"$LEASE_HELPER" gc \
+  --repo "$REPO" \
+  --worktree-root "$WORKTREE_ROOT" \
+  --exclude "$WT" \
+  --stale-seconds "$LEASE_STALE_SECONDS" \
+  || die "worktree cache cleanup failed"
 
 registered_worktree() {
   local listed
@@ -218,7 +271,7 @@ if [[ -e "$WT" ]]; then
   EXISTING="$(git -C "$WT" rev-parse HEAD 2>/dev/null || true)"
   [[ "$EXISTING" == "$SHA" ]] || die "$WT is at $EXISTING, not pinned SHA $SHA; use a fresh review directory"
   [[ -z "$(git -C "$WT" status --porcelain --untracked-files=all)" ]] \
-    || die "$WT has local or untracked changes; refusing to reuse it"
+    || die "$WT has local or untracked changes; inspect it, then run git -C '$REPO' worktree remove --force '$WT' only if safe"
   echo "Reusing clean registered worktree at $WT (HEAD matches pin)." >&2
 else
   registered_worktree && die "$WT is registered but absent; run 'git -C "$REPO" worktree prune' after checking the path"
@@ -245,7 +298,7 @@ git -C "$REPO" cat-file -e "$PARENT^{commit}" 2>/dev/null \
 # Generate pin.md using git for the changed-file list and line statistics so
 # historical (non-current) patchsets are represented just as accurately as
 # the current patchset.
-python3 - "$REVIEW_STAGE" "$CL" "$PS" "$CURRENT_PS" "$SHA" "$PARENT" "$REF" "$WT" "$REPO" <<'PYEOF'
+python3 - "$REVIEW_STAGE" "$CL" "$PS" "$CURRENT_PS" "$SHA" "$PARENT" "$REF" "$WT" "$WT_LEASE" "$WT_LEASE_TOKEN" "$REPO" <<'PYEOF'
 import json
 from datetime import datetime, timezone
 import pathlib
@@ -253,7 +306,7 @@ import re
 import subprocess
 import sys
 
-stage, cl, ps, current_ps, sha, parent, ref, worktree, repo = sys.argv[1:10]
+stage, cl, ps, current_ps, sha, parent, ref, worktree, worktree_lease, lease_token, repo = sys.argv[1:12]
 with open(pathlib.Path(stage) / "detail.json", encoding="utf-8") as stream:
     detail = json.load(stream)
 with open(pathlib.Path(stage) / "comments.json", encoding="utf-8") as stream:
@@ -328,7 +381,9 @@ lines.extend([
     f"- Is current at fetch: {is_current}",
     f"- Metadata fetched at: {fetched_at}",
     f"- Ref: {ref}",
-    f"- Worktree: {worktree} (rev-parse verified; clean)",
+    f"- Worktree: {worktree} (rev-parse verified; clean; active lease required)",
+    f"- Worktree lease: {worktree_lease}",
+    f"- Worktree lease token: {lease_token}",
     f"- Messages: {len(detail.get('messages', []))}; published comments: "
     f"{len(all_comments)} ({unresolved} unresolved threads by latest reply)",
 ])
@@ -369,6 +424,7 @@ cat <<EOF
 Pinned CL $CL patchset $PS
   review dir : $REVIEW_DIR
   worktree   : $WT
+  lease log  : $WT_LEASE
   revision   : $SHA
   parent     : $PARENT
   diff       : git -C "$WT" diff $PARENT $SHA
@@ -379,8 +435,12 @@ if [[ "$PS" != "$CURRENT_PS" ]]; then
 fi
 
 cat <<EOF
-  validation : scripts/validate-review-dir.py "$REVIEW_DIR" --phase pin
+  validation : scripts/validate-review-dir.py "$REVIEW_DIR" --phase pin --require-active-lease
 
-The worktree is read-only for review purposes. Remove it when the review is
-done:  git -C "$REPO" worktree remove "$WT"
+The worktree is read-only and cached for reuse. Append review progress with:
+  "$LEASE_HELPER" heartbeat "$REVIEW_DIR" "<progress>"
+Release it after delivery with:
+  "$LEASE_HELPER" release "$REVIEW_DIR" "review complete"
 EOF
+
+LEASE_ACQUIRED=0

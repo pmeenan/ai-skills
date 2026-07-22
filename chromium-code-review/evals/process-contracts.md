@@ -105,7 +105,7 @@ expected code finding is independently recorded.
 ```sh
 bash -n scripts/fetch-cl.sh
 bash -n scripts/mechanical-leads.sh
-python3 -m py_compile scripts/extract-unresolved-comments.py
+python3 -m py_compile scripts/extract-unresolved-comments.py scripts/worktree-lease.py
 python3 -m py_compile scripts/profile-review.py scripts/build-review-indexes.py
 python3 -m py_compile scripts/refresh-delivery-gate.py
 python3 -m py_compile scripts/validate-review-dir.py
@@ -122,7 +122,16 @@ be piped through `head` or otherwise capped.
 For `fetch-cl.sh`, use a recorded XSSI-prefixed Gerrit response fixture and
 assert that `detail.json` and `comments.json` are valid plain JSON under
 `jq -e .`; malformed/missing comment data and a missing parent must fail
-instead of producing `{}` or an unusable pin.
+instead of producing `{}` or an unusable pin. Also assert that the worktree is
+created in the checkout-peer `codereview/worktrees/cl-<CL>-ps<PS>` cache, a
+second review of a fresh CL/patchset lease fails immediately, a one-hour-stale
+lease is replaced, explicit forced takeover invalidates the old owner token,
+corrupt/empty leases are archived without blocking same-pin acquisition or
+unrelated cache cleanup, takeover worktrees receive a two-hour removal grace,
+a released matching worktree is reused, other released clean cache entries are
+removed, dirty inactive entries are preserved, environment timeout overrides
+stay synchronized, archived lease logs older than 30 days are pruned, live
+validation fails after release, and ordinary audit validation still passes.
 
 ## Resume drill
 

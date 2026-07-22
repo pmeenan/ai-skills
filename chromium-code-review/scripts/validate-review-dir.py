@@ -2,7 +2,7 @@
 """Deterministically validate a chromium-code-review working directory.
 
 Usage:
-  validate-review-dir.py REVIEW_DIR [--phase PHASE]
+  validate-review-dir.py REVIEW_DIR [--phase PHASE] [--require-active-lease]
 
 Phases are pin, collection, verification, reconciliation, final, or auto.
 The default infers the latest phase from existing artifacts. Validation is
@@ -17,6 +17,7 @@ from collections import Counter, defaultdict
 import csv
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -269,7 +270,8 @@ def validate_scaling_outputs(root: Path, report: Report) -> dict[str, int]:
     return budgets
 
 
-def validate_pin(root: Path, report: Report) -> tuple[str | None, list[str]]:
+def validate_pin(root: Path, report: Report, require_active_lease: bool = False,
+                 lease_stale_seconds: int = 3600) -> tuple[str | None, list[str]]:
     detail = read_json(root / "detail.json", report)
     comments = read_json(root / "comments.json", report)
     pin = read_text(root / "pin.md", report)
@@ -347,6 +349,29 @@ def validate_pin(root: Path, report: Report) -> tuple[str | None, list[str]]:
                 report.error(f"cannot verify pinned worktree: {error.stderr.strip()}")
     else:
         report.error("pin.md is missing '- Worktree:'")
+
+    worktree_lease = field(pin, "Worktree lease")
+    worktree_lease_token = field(pin, "Worktree lease token")
+    if bool(worktree_lease) != bool(worktree_lease_token):
+        report.error("pin.md must contain both Worktree lease and Worktree lease token")
+    if require_active_lease:
+        if not worktree_lease or not worktree_lease_token:
+            report.error("active worktree lease is required but absent from pin.md")
+        else:
+            helper = Path(__file__).with_name("worktree-lease.py")
+            try:
+                checked = subprocess.run(
+                    [str(helper), "check", str(root), "--stale-seconds",
+                     str(lease_stale_seconds)], text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except OSError as error:
+                report.error(
+                    f"cannot run active worktree lease validator {helper}: {error}")
+            else:
+                if checked.returncode != 0:
+                    detail = checked.stderr.strip() or checked.stdout.strip()
+                    report.error(
+                        f"active worktree lease validation failed: {detail}")
 
     changed: list[str] = []
     in_files = False
@@ -2441,6 +2466,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("review_dir", type=Path)
     parser.add_argument("--phase", choices=("auto", *PHASES), default="auto")
+    parser.add_argument("--require-active-lease", action="store_true")
+    parser.add_argument(
+        "--lease-stale-seconds", type=int,
+        default=os.environ.get("CHROMIUM_REVIEW_LEASE_SECONDS", "3600"))
     arguments = parser.parse_args()
     root = arguments.review_dir.resolve()
     if not root.is_dir():
@@ -2449,7 +2478,9 @@ def main() -> int:
     phase = infer_phase(root) if arguments.phase == "auto" else arguments.phase
     level = PHASES[phase]
     report = Report()
-    sha, changed_files = validate_pin(root, report)
+    sha, changed_files = validate_pin(
+        root, report, arguments.require_active_lease,
+        arguments.lease_stale_seconds)
     validate_unresolved(root, report, required=level >= PHASES["collection"])
     source_ids: dict[str, Path] = {}
     candidates: set[str] = set()
