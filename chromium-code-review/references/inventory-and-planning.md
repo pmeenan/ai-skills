@@ -235,6 +235,14 @@ From the risk map and the changed-surface inventory, list:
   deliverable is ledger rows — a coverage gap is reported as a row naming
   the missing test, never remediated by writing it.
 
+Assign each `spawn` row a model tier per the Model Tiers contract in
+`references/scaling-and-indexes.md`: default `frontier` for every
+trace-reasoning thread; downgrade to `standard` only for threads whose checks
+are predominantly enumeration or metadata audit — Mechanical Leads, Tests As
+Specifications, Changed-Lines Polish, Build API And Generated Assets,
+Accessibility And Internationalization, and the holistic thread. No discovery
+thread is ever `mechanical`. When in doubt, `frontier`.
+
 Assign a priority by where P1s live, not by line count: teardown and error
 paths, boundary arithmetic, cross-sequence handoffs, persisted-format
 changes, and reentrancy first; renames and plumbing last. Do not encode a

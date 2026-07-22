@@ -180,9 +180,12 @@ orchestrator never loads these):
   disclose important unverified areas.
 
 Record the mode and any user directives (scope limits, format requests,
-prior-review text location) in `directives.md` at the start; every phase
-brief echoes it so workers see the user's constraints without the
-orchestrator restating them.
+prior-review text location, model-tier/cost preference such as "flash-level"
+or "pro-level only for verification") in `directives.md` at the start; every
+phase brief echoes it so workers see the user's constraints without the
+orchestrator restating them. A user tier preference overrides the annotated
+tiers, and Verification Notes disclose every phase run below its recommended
+tier.
 
 ## The Review Directory
 
@@ -310,6 +313,13 @@ defines your pin, scope, procedure, deliverable, and rules." Never run
 discovery as a single agent, and never inline a brief's body into the spawn
 prompt.** Run threads in parallel where the harness allows, and record each
 thread's subagent/task identifier in `plan.md`.
+
+**Spawn every worker at its annotated model tier** — phase briefs carry a
+`Tier:` line, `plan.md` rows carry a `tier` column, and skeptics, root-cause
+challengers, and synthesis challengers are always `frontier` — per the Model
+Tiers contract in `references/scaling-and-indexes.md`. Tiers are a floor;
+when the harness cannot select per-subagent models or thinking levels,
+inherit the session model and continue.
 
 **Derive each wave from live harness capacity, never a hard-coded batch
 size.** Reserve one slot for the orchestrator; launch at most

@@ -7,6 +7,7 @@ still make semantic review decisions.
 ## Contents
 
 - [Agent Input Budget](#agent-input-budget)
+- [Model Tiers](#model-tiers)
 - [Review Profile](#review-profile)
 - [Compact Indexes](#compact-indexes)
 - [Safe Fast Paths](#safe-fast-paths)
@@ -27,6 +28,43 @@ If a unit exceeds the budget, shard it by a named natural unit before spawn.
 If an already-running worker discovers deeper-than-profiled work, it writes a
 full-quality partial artifact plus exact remaining scope and yields to a fresh
 continuation. Never compress evidence or reduce the checklist to fit.
+
+## Model Tiers
+
+Every phase brief in `phase-briefs.md` carries a `Tier:` annotation, and every
+`spawn` row in `plan.md` carries a `tier` column. The tier names the least
+capable model class the task tolerates. Tiers are capability descriptions,
+never model names — the orchestrator resolves them inside whatever family the
+harness offers:
+
+| tier | capability semantics | resolve to (illustrative, non-normative) | thinking/reasoning setting |
+| --- | --- | --- | --- |
+| `mechanical` | exact rule-following over small structured inputs: union/uniqueness checks, ordered concatenation, single-line mutations, schema-shaped extraction. No open-ended code reasoning. | the smallest/fastest model offered alongside the session model (Haiku-class, Flash-Lite/Flash-class, mini-class) | minimal or none |
+| `standard` | structured enumeration and classification, summarization/distillation, prose rendered from an already-verified evidence record, audits against deterministic checklists | the session's default model or a mid-tier family member (Sonnet-class, Flash-class) | harness default |
+| `frontier` | adversarial code tracing, interleaving/lifetime/ownership reasoning, invariant-owner and layering judgment, refutation, contradiction hunting, roster/scoping judgment | the strongest model the harness offers (Opus/Fable-class, Pro-class, high-reasoning-class), with the highest available thinking or reasoning setting | maximum available |
+
+Rules:
+
+- **A tier is a floor, not a target.** Running a task above its tier wastes
+  money but never correctness; running a `frontier` task below its tier is a
+  measured quality failure — the eval corpus records weak-model runs whose
+  collapsed rosters and citation-free matrices missed exactly the P0s the
+  deep-trace threads own.
+- Generated analytical workers have contract tiers the orchestrator applies
+  without reading their briefs: discovery threads take the tier from their
+  `plan.md` row; verification skeptics, root-cause challengers, and synthesis
+  challengers are always `frontier`; continuations and repairs inherit the
+  tier of the work they continue.
+- The orchestrator itself is `standard` or higher — never delegate
+  orchestration to a `mechanical`-class model.
+- **If the harness cannot select per-subagent models or thinking levels,
+  every worker inherits the session model and the annotations are a no-op.**
+  Never block or degrade a review because tier selection is unavailable.
+- The user may set a cost preference in `directives.md` (e.g. "run this at
+  flash-level", "pro-level only for verification"). Honor it, but record the
+  deviation, and Verification Notes must disclose every phase that ran below
+  its recommended tier. Deep-dive recipe threads, specialist trace threads,
+  and verification skeptics are the last to downgrade.
 
 ## Review Profile
 

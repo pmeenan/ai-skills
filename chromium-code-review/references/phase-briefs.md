@@ -109,6 +109,8 @@ of approaching the limit.
 
 ## Brief — Context (Phase 1, always separate from inventory when spawned)
 
+Tier: `standard` (Model Tiers in `references/scaling-and-indexes.md`).
+
 Only when `profile.json` sets `context_fast_path_eligible: true`, render the
 empty-source `context.md` skeleton mechanically and skip this worker. Inventory
 and the always-run holistic lens still audit description alignment and scope.
@@ -139,6 +141,8 @@ count, and the deliverable path.
 ```
 
 ## Brief — Inventory (Phase 1, unsharded)
+
+Tier: `standard` (Model Tiers in `references/scaling-and-indexes.md`).
 
 ```text
 Scope: every changed file in the pinned diff. Build inventory only; context.md
@@ -175,6 +179,8 @@ Return: one line — risk areas, changed-file count, surface count, path.
 ```
 
 ## Brief — Inventory Shard (Phase 1, one per file group or dense hunk range)
+
+Tier: `standard` (Model Tiers in `references/scaling-and-indexes.md`).
 
 ```text
 Scope: only inventory shard ⟨SHARD⟩. File-group scope: ⟨explicit file list or
@@ -215,6 +221,8 @@ path, and `complete` or explicit remaining files.
 
 ## Brief — Gerrit Thread Normalizer (after Phase 0, all review modes)
 
+Tier: `mechanical` (Model Tiers in `references/scaling-and-indexes.md`).
+
 This is a deterministic helper invocation, not an analytical task. Run it
 directly whenever the harness permits scripts; do not spend a subagent merely
 to execute it. Use the brief only in a degraded harness that requires a worker
@@ -247,6 +255,8 @@ Return: one line — the three summary counts plus the path.
 
 ## Brief — Prior Feedback (Phase 2, follow-up reviews only)
 
+Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
+
 ```text
 Scope: reconcile prior review feedback against the pinned patchset.
 
@@ -277,6 +287,8 @@ Return: one line — counts by resolution (fixed / partial / open / obsolete
 ```
 
 ## Brief — Planner (Phase 3)
+
+Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
 
 ```text
 Scope: build the complete thread plan and write every discovery brief.
@@ -330,6 +342,8 @@ proved trigger absence.
 
 ## Brief — Collection Audit (Phase 4.5)
 
+Tier: `standard` (Model Tiers in `references/scaling-and-indexes.md`).
+
 ```text
 Scope: audit discovery collection; do not re-review the CL. Use this
 single-worker form only when all required ledgers/briefs fit within
@@ -382,6 +396,8 @@ file path.
 
 ## Brief — Collection-Audit Shard (Phase 4.5, when indexed)
 
+Tier: `standard` (Model Tiers in `references/scaling-and-indexes.md`).
+
 ```text
 Scope: audit only collection shard CA⟨batch⟩ from
 ⟨review-dir⟩/collection/index.tsv. Do not inspect another shard and do not
@@ -403,6 +419,8 @@ count, path, and complete/partial with exact remainder.
 ```
 
 ## Brief — Collection Exact-Coverage Collector (Phase 4.5, sharded)
+
+Tier: `mechanical` (Model Tiers in `references/scaling-and-indexes.md`).
 
 ```text
 Scope: mechanically collect collection shards; make no review judgments.
@@ -435,6 +453,8 @@ file count, ORC count, candidate count, and paths.
 ```
 
 ## Brief — Verification Planner (Phase 5)
+
+Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
 
 ```text
 Scope: plan verification; do not issue verdicts yourself.
@@ -492,6 +512,8 @@ is a fresh zero-row view. Missing/incomplete source artifacts never qualify.
 
 ## Brief — Verification-Planning Shard (Phase 5, VPLAN⟨shard⟩)
 
+Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
+
 Use this map/collect form when the selected candidate index and canonical row
 packets exceed one worker's input budget.
 
@@ -527,6 +549,8 @@ brief paths, output path, complete/partial with exact remainder.
 
 ## Brief — Verification-Plan Exact Collector (Phase 5)
 
+Tier: `mechanical` (Model Tiers in `references/scaling-and-indexes.md`).
+
 ```text
 Scope: collect VPLAN shards mechanically; do not group candidates, propose
 merges, or alter planner decisions.
@@ -553,6 +577,8 @@ interval/brief errors, canonical path, complete/needs-repair.
 ```
 
 ## Brief — Root-Cause Planner (Phase 5.5)
+
+Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
 
 ```text
 Scope: identify all root-cause triggers and plan bounded RC batches; do not
@@ -596,6 +622,8 @@ malformed value disqualifies the fast path.
 
 ## Brief — Root-Cause-Planning Shard (Phase 5.5, RCPLAN⟨shard⟩)
 
+Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
+
 Use this map/collect form when the exact trigger universe and canonical packets
 exceed one worker's input budget. In delta mode the universe is exactly the
 named round's verdict triggers plus new trigger-scope IDs canonicalized for
@@ -633,6 +661,8 @@ interval, brief paths, output path, complete/partial with exact remainder.
 
 ## Brief — Root-Cause-Plan Exact Collector (Phase 5.5)
 
+Tier: `mechanical` (Model Tiers in `references/scaling-and-indexes.md`).
+
 ```text
 Scope: collect RCPLAN shards mechanically; do not decide triggers, regroup
 items, or alter planner dispositions.
@@ -659,6 +689,8 @@ brief errors, canonical path, complete/needs-repair.
 ```
 
 ## Brief — Root-Cause Challenger (Phase 5.5, one per batch)
+
+Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
 
 ```text
 Scope: root-cause, layering, and fix optimality for batch RC⟨batch⟩ ONLY —
@@ -697,6 +729,8 @@ remaining.
 ```
 
 ## Brief — Reconciliation Builder (Phase 6)
+
+Tier: `standard` (Model Tiers in `references/scaling-and-indexes.md`).
 
 ```text
 Scope: build the reconciliation table; do not draft review text. Use this
@@ -740,6 +774,8 @@ promoted findings count, questions count, open gate lines.
 
 ## Brief — Reconciliation Shard (Phase 6, when indexed)
 
+Tier: `standard` (Model Tiers in `references/scaling-and-indexes.md`).
+
 ```text
 Scope: reconcile only RB⟨batch⟩, the exact row IDs in
 ⟨review-dir⟩/reconciliation/shards/RB⟨batch⟩.scope.tsv. Do not draft review
@@ -764,6 +800,8 @@ card IDs, missing/foreign IDs, paths, complete/partial with exact remainder.
 
 ## Brief — Reconciliation Exact-Coverage Collector (Phase 6, sharded)
 
+Tier: `mechanical` (Model Tiers in `references/scaling-and-indexes.md`).
+
 ```text
 Scope: collect reconciliation shards mechanically; do not change a
 disposition, severity, merge, or card.
@@ -787,6 +825,8 @@ question card coverage, open gate lines, paths, complete/needs-repair.
 ```
 
 ## Brief — Draft Writer (Phase 7, only when bounded)
+
+Tier: `standard` (Model Tiers in `references/scaling-and-indexes.md`).
 
 ```text
 Scope: write the review from the reconciled record.
@@ -829,6 +869,8 @@ pending-delivery), file paths.
 
 ## Brief — Finding Writer (Phase 7, large reviews, one per card)
 
+Tier: `standard` (Model Tiers in `references/scaling-and-indexes.md`).
+
 ```text
 Scope: draft only card ⟨card-ID⟩ for draft revision ⟨draft-revision⟩. Do not
 read other cards or reopen the corpus.
@@ -852,6 +894,8 @@ or explicit remaining.
 
 ## Brief — Frame Writer (Phase 7, large reviews)
 
+Tier: `standard` (Model Tiers in `references/scaling-and-indexes.md`).
+
 ```text
 Scope: draft non-finding framing for revision ⟨draft-revision⟩; do not draft or
 re-adjudicate individual findings/questions.
@@ -869,6 +913,8 @@ Return: one line — verdict sentence, ordered part count, path.
 ```
 
 ## Brief — Draft Assembly (Phase 7, large reviews, one per assembly node)
+
+Tier: `mechanical` (Model Tiers in `references/scaling-and-indexes.md`).
 
 ```text
 Scope: assemble node ⟨node-ID⟩ for revision ⟨draft-revision⟩ from only these
@@ -899,6 +945,8 @@ part IDs, complete or needs another level.
 ```
 
 ## Brief — Synthesis Challenge Planner (Phase 8)
+
+Tier: `standard` (Model Tiers in `references/scaling-and-indexes.md`).
 
 If all content and structural coverage fits one budgeted shard, do not spawn
 this planner or a collector agent. Render the one-row round index and
@@ -943,6 +991,8 @@ Return: one line — shard list and coverage totals.
 
 ## Brief — Synthesis Challenger (Phase 8, one per CH shard)
 
+Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
+
 ```text
 Scope: adversarial audit of draft revision ⟨draft-revision⟩ for challenge
 shard ⟨CH-batch⟩ only: ⟨card IDs, draft-section IDs, structural row IDs, or
@@ -979,6 +1029,8 @@ Return: one line — issue count and the file path.
 
 ## Brief — Challenge Collector (Phase 8)
 
+Tier: `mechanical` (Model Tiers in `references/scaling-and-indexes.md`).
+
 ```text
 Scope: collect challenge shards for draft revision ⟨draft-revision⟩; do not
 re-adjudicate them.
@@ -997,6 +1049,8 @@ IDs, and a new collection pass; addressing old issues alone is not sufficient.
 ```
 
 ## Brief — Patchset-Delta Inspector (Phase 9, only if a newer patchset appeared)
+
+Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
 
 ```text
 Scope: assess patchset ⟨new-PS⟩, which appeared during the review of
@@ -1022,6 +1076,8 @@ re-run, file path.
 ```
 
 ## Brief — Delivery Gate Finalizer (Phase 9, after the final challenge)
+
+Tier: `mechanical` (Model Tiers in `references/scaling-and-indexes.md`).
 
 Canonical path: run
 `python3 ⟨skill-dir⟩/scripts/refresh-delivery-gate.py ⟨review-dir⟩`
