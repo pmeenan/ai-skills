@@ -131,7 +131,8 @@ unrelated cache cleanup, takeover worktrees receive a two-hour removal grace,
 a released matching worktree is reused, other released clean cache entries are
 removed, dirty inactive entries are preserved, environment timeout overrides
 stay synchronized, archived lease logs older than 30 days are pruned, live
-validation fails after release, and ordinary audit validation still passes.
+validation fails after release, the active lease path is absent with a
+released audit event preserved, and ordinary audit validation still passes.
 
 ## Resume drill
 

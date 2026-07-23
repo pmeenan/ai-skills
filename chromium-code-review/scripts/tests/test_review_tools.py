@@ -253,6 +253,15 @@ output.write_bytes(pathlib.Path(source).read_bytes())
         self.assertFalse(second_review.exists())
 
         self.release_lease(first_review)
+        self.assertFalse(lease.exists())
+        release_archives = list(
+            lease.parent.glob("cl-1-ps2.released-*.log"))
+        self.assertEqual(len(release_archives), 1)
+        release_events = [
+            json.loads(line)
+            for line in release_archives[0].read_text().splitlines()
+        ]
+        self.assertEqual("released", release_events[-1]["event"])
         inactive = subprocess.run(
             [str(VALIDATE), str(first_review), "--phase", "pin",
              "--require-active-lease"],

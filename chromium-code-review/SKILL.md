@@ -558,7 +558,12 @@ challenge for the exact delivered draft. Material patchset changes restart in
 a new review directory; no new SHA may reuse old ledgers or verdicts. After
 the final artifacts have been read for delivery, run
 `scripts/worktree-lease.py release <review-dir> "review complete"` for every
-pin owned by this review. Leave the clean worktree cache in place for reuse.
+pin owned by this review. **This is a mandatory pre-response cleanup gate: do
+not send or claim completion of the review until every release command
+succeeds.** Release atomically removes the active `cl-<CL>-ps<PS>.log` path and
+retains only a `.released-*` audit archive. If release fails, report the
+cleanup failure and active lease path instead of presenting the review as
+complete. Leave the clean worktree cache in place for reuse.
 
 ## Degraded Modes
 

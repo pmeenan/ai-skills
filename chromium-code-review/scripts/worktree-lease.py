@@ -240,6 +240,10 @@ def release_values(path: Path, token: str, message: str) -> Path:
             fail(f"refusing to release another review's lease: {path}", code=3)
         append_event(path, token, "released", message=message)
         destination = archive_lease(path, "released", token)
+        if path.exists():
+            fail(f"active lease path still exists after release: {path}")
+        if not destination.is_file():
+            fail(f"release archive was not created: {destination}")
     return destination
 
 

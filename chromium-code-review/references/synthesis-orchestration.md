@@ -129,6 +129,10 @@ and `delivery-gate.md` for delivery. Limit the final check to formatting and
 verdict/finding consistency; route content changes back through Phase 8.
 
 After final artifacts are read, run `scripts/worktree-lease.py release
-<review-dir> "review complete"` for every pin owned by the review. Leave clean
-cached worktrees in place; later invocations remove released or expired
+<review-dir> "review complete"` for every pin owned by the review. This is the
+last mandatory gate before sending the final response: every release must
+succeed. The command atomically removes the active `cl-<CL>-ps<PS>.log` path;
+the `.released-*` file is inactive audit history. If any release fails, do not
+claim the review is complete—report the cleanup failure and active path. Leave
+clean cached worktrees in place; later invocations remove released or expired
 entries. Preserve review directories and manifests as the audit trail.
