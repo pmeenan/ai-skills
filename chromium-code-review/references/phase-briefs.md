@@ -308,7 +308,8 @@ Never use FETCH_HEAD or change the pinned worktree.
 
 Deliverable: ⟨review-dir⟩/ledger/PR.md — Baseline Derivation, Gerrit Thread
 Normalization, one PR-⟨n⟩ Prior-Feedback row per prior finding and unresolved
-thread, plus Candidate rows only for partial/open items, in the shape from
+thread, plus Candidate rows only for partial/open items and one Candidate
+descriptors row per such item, in the shape from
 ⟨skill-dir⟩/references/templates.md.
 
 Return: one line — counts by resolution (fixed / partial / open / obsolete
@@ -563,7 +564,10 @@ rows are context and must not be scheduled again. Then:
    accounted without an independent verdict only if reconciliation later
    validates equivalence and cites the survivor's verdict; otherwise it must
    be scheduled.
-2. Group every remaining candidate into skeptic batches, sized by trace
+2. Validate each candidate's descriptor row. Preserve every semantic field
+   and typed obligation in the inline packet; reject a plan that omits a
+   class-required obligation.
+3. Group every remaining candidate into skeptic batches, sized by trace
    cost rather than row count: a serious candidate whose refutation needs
    caller sweeps or interleaving analysis gets its own batch (or shares
    with 1–2 closely related rows); mid-weight candidates ~3–5 per batch;
@@ -572,7 +576,7 @@ rows are context and must not be scheduled again. Then:
    `candidate_packet_budget_bytes` from profile.json; split instead of
    truncating. Every candidate row from every thread appears in
    exactly one batch or one merge line.
-3. Assign the next unused zero-padded IDs V001, V002, ... (including in delta
+4. Assign the next unused zero-padded IDs V001, V002, ... (including in delta
    mode) and write one skeptic brief per batch
    to ⟨review-dir⟩/briefs/V⟨batch⟩.md
    in the Verification Skeptic shape from
@@ -661,6 +665,41 @@ Return: one line — universe/accounted counts, duplicate/foreign/missing IDs,
 interval/brief errors, canonical path, complete/needs-repair.
 ```
 
+## Brief — Invariant Affinity Reconciler (Phase 5.25)
+
+Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
+
+```text
+Scope: perform one global semantic-affinity and consistency pass after every
+skeptic batch has collected; do not issue verdicts or draft comments.
+
+Inputs: fresh ⟨review-dir⟩/indexes/{candidates,verdicts}.tsv and manifest
+fingerprints, ⟨review-dir⟩/verification/batches.md, and only the indexed Trace
+closure / Verified affinity blocks needed to resolve conflicts.
+
+Procedure:
+1. Assign every CONFIRMED or UNPROVEN candidate/verdict pair to exactly one
+   RF001, RF002, ... family by shared base/protocol, invariant owner, violated
+   invariant, state transition, fix layer, and related symbols. Similar wording
+   or file location alone is insufficient; separate skeptic batches do not
+   prevent a shared family.
+2. Run the six mandatory global checks from templates.md: contradictory
+   assumptions, invariant-owner collisions, style-authority scope, lifetime
+   operation owner, reachability termination, and repeated local fixes.
+3. Write ⟨review-dir⟩/verification/affinity.md in the exact Root families and
+   Consistency audit shapes. Cite code/artifacts for every result. If ownership
+   remains genuinely unresolved, keep the related rows together and state the
+   precise open question rather than splitting them into local tickets.
+4. Rebuild indexes so every surviving verdict carries root_family. On very
+   large inputs, descriptor extraction may be sharded, but final family
+   assignment remains one global pass over all compact descriptors.
+
+Deliverable: ⟨review-dir⟩/verification/affinity.md.
+
+Return: one line — surviving pairs, root-family count, consistency conflicts,
+and artifact path.
+```
+
 ## Brief — Root-Cause Planner (Phase 5.5)
 
 Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
@@ -671,6 +710,7 @@ perform root-cause analysis yourself.
 
 Inputs: ⟨review-dir⟩/indexes/verdicts.tsv,
 ⟨review-dir⟩/verification/batches.md,
+⟨review-dir⟩/verification/affinity.md,
 ⟨review-dir⟩/indexes/candidates.tsv, and
 ⟨review-dir⟩/indexes/inventory.tsv, all covered by the current
 indexes/manifest.json fingerprints. Read these compact indexes first. Extract
@@ -682,10 +722,11 @@ Procedure: read ⟨skill-dir⟩/references/verification-and-fixes.md —
 Create one Trigger Accounting row for every CONFIRMED or UNPROVEN verdict,
 every candidate/finding containing a proposed fix, and every inventory scope
 marked root-cause required. Apply every trigger named
-there; do not rely on the orchestrator's status lines. Group scheduled items
-into trace-sized related batches; serious candidates normally stand alone or
-in very small groups, and no fixed quota may combine unrelated traces. Keep
-each generated brief bounded and assign the next unused IDs RC001, RC002, .... In delta mode,
+there; do not rely on the orchestrator's status lines. Schedule each root
+family as one indivisible semantic unit containing every member
+candidate/verdict ID. Never split a family by prior batch, method, or discovery
+thread; keep unrelated families separate. Assign the next unused IDs RC001,
+RC002, .... In delta mode,
 process only the explicitly supplied reopened-round verdict IDs and preserve
 all prior batch files.
 
@@ -779,8 +820,8 @@ Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
 
 ```text
 Scope: root-cause, layering, and fix optimality for batch RC⟨batch⟩ ONLY —
-these candidates/fixes or change-level inventory scopes: ⟨IDs, e.g.
-EPW-2/V001-1, AL-4/V002-2, T001⟩. Other batches' items are context, not
+these complete root families or change-level inventory scopes: ⟨IDs, e.g.
+RF001 (EPW-2/V001-1, AL-4/V002-2), T001⟩. Other batches' items are context, not
 work items.
 
 Inputs: the listed verdict rows in ⟨review-dir⟩/verification/*.md, the
@@ -790,7 +831,15 @@ inventory trigger-scope rows, and ⟨review-dir⟩/context.md.
 Procedure: read
 ⟨skill-dir⟩/references/verification-and-fixes.md and execute only the
 "Root-Cause, Layering, And Fix Optimality" section, fully — every layer
-walk and drill — for each candidate in your batch.
+walk and drill — for each complete family in your batch. Produce a
+State × Method matrix when protocol state is involved, explain excluded
+nearby methods, select one fix layer and comment count for the family, and
+make the required Suggested-edit decision. For an applicable edit, re-read the
+pinned changed-side range and record its verbatim selected lines plus the exact
+replacement in the canonical multiline RC-row fields from templates.md;
+otherwise record the concrete eligibility condition that fails. Put only
+`applicable — RC⟨batch⟩-⟨n⟩` in the root-family table cell; the RC row owns
+the lossless code.
 
 Deliverables:
 - ⟨review-dir⟩/root-cause/RC⟨batch⟩.md — RC⟨batch⟩-⟨n⟩ rows in the shape
@@ -826,6 +875,7 @@ budget. Otherwise use the shard and exact-collector briefs below.
 Inputs: mechanically generated
 ⟨review-dir⟩/indexes/reconciliation.tsv and its fresh
 indexes/manifest.json fingerprint, plus
+⟨review-dir⟩/verification/affinity.md,
 ⟨review-dir⟩/root-cause/batches.md, ⟨review-dir⟩/plan.md, and
 gerrit/unresolved-threads.json. Use artifact/anchor fields in the definition
 index to extract exact row bodies; do not ingest compliance matrices or whole
@@ -839,12 +889,19 @@ index builder has already distinguished defining IDs from incidental evidence
 mentions. Use its source/anchor links to read only row bodies whose disposition
 needs judgment; never ingest compliance-matrix prose. The indexed definition
 set is the completeness authority: every defined ID must appear in your table.
+Treat each root family as the promotion boundary: default to one promoted
+finding per family. Multiple findings require a Root-family promotion
+exception with cited evidence of distinct invariant owners or independently
+bad outcomes.
 Then copy the
 Pre-Output Gate checklist verbatim to the bottom of reconciliation.md and
 fill every line provable from the indexed files, marking draft-dependent lines
 "pending draft" and Freshness `pending-delivery`. For each promoted finding
 and owner question, write one bounded evidence card under
-synthesis/⟨ROW-ID⟩.md using templates.md. A card is at most
+synthesis/⟨ROW-ID⟩.md using templates.md. Every finding card carries the
+root-cause Suggested edit decision, exact range/selected lines/replacement
+when applicable, or a specific omission reason; do not re-decide it during
+drafting. A card is at most
 `profile.json:/context_budget/evidence_card_budget_bytes`; if supporting
 evidence exceeds that, split it into numbered parts referenced by
 the root card. Write the complete bounded manifest to synthesis/index.md. Do
@@ -853,7 +910,15 @@ the disposition itself using exact `promoted → F<number>` or
 `question → Q<number>` syntax. The index contains exactly those items, and
 each row's `source rows` includes the disposition's defining row. A severity
 downgrade remains a promotion at the calibrated severity; never emit a bare
-`downgraded` disposition.
+`downgraded` disposition. Use only `merged → <survivor-row-id>` for a merge
+and emit one matching templates.md `Merge equivalence` row with separately
+cited trigger, invariant, outcome, and the survivor's exact verdict. The
+survivor must be direct, verdict-owning, and verdict-consistently dispositioned;
+artifact pointers must resolve to existing, nonempty review-relative files.
+Reject the merge rather than inventing free-form equivalence prose.
+Audit every verdict-bearing candidate independently: CONFIRMED cannot use a
+free-form dismissed/duplicate disposition, UNPROVEN cannot disappear outside
+Questions, and REFUTED names its verdict/citation.
 
 Deliverables: ⟨review-dir⟩/reconciliation.md,
 ⟨review-dir⟩/synthesis/index.md, and ⟨review-dir⟩/synthesis/*.md cards.
@@ -878,7 +943,11 @@ The measured required input is below profile.json's worker budget.
 
 Procedure: apply synthesis-and-output.md's Reconciliation rules to every
 assigned definition exactly once. Write one disposition per defining row and
-one bounded evidence card per promoted finding/question. Cards obey
+one bounded evidence card per promoted finding/question. Finding cards carry
+the root-cause Suggested edit decision and its exact replacement evidence or
+specific omission reason. For each merge, emit the exact structured Merge
+equivalence row in templates.md; shard scopes keep the merged row, survivor,
+and verdict together. Cards obey
 evidence_card_budget_bytes and split supporting material rather than truncate.
 
 Deliverables: reconciliation/shards/RB⟨batch⟩.md and this shard's immutable
@@ -902,7 +971,9 @@ counts. Extract IDs and manifest fields only.
 
 Procedure: prove every defining ID has exactly one disposition, no shard emits
 a foreign/duplicate ID, and promoted/question dispositions have exactly one
-card while all other dispositions have none. Concatenate dispositions in
+card while all other dispositions have none. Require exactly one structured
+Merge equivalence row for every merged disposition and no foreign equivalence
+row. Concatenate dispositions in
 definition-index order, build synthesis/index.md from measured card paths and
 bytes, and fill the non-draft gate lines from compact evidence. Any mismatch
 returns needs-repair; never choose among conflicting rows yourself.
@@ -947,7 +1018,11 @@ the author receives all actionable feedback in a single review round. For
 every synthesis item, write the exact `draft-parts/⟨item⟩.md` fragment in the
 templates.md shape; for every finding also write
 `gerrit-parts/⟨item⟩.md`. Include the canonical `Synthesis item` field in each
-draft fragment, then assemble those bytes without editing them.
+draft fragment, then assemble those bytes without editing them. Copy each
+card's Suggested edit decision exactly. If applicable, put the same
+replacement text in one fenced `suggestion` block in both fragments and target
+the recorded contiguous range; if omitted, retain its specific reason in the
+review fragment and do not invent a partial snippet.
 
 Deliverables: ⟨review-dir⟩/draft-review.md,
 ⟨review-dir⟩/gerrit-comments.md, every exact per-item fragment,
@@ -984,7 +1059,10 @@ Procedure: read synthesis-and-output.md Finding Format, Severity Calibration,
 Output Format, and Tone plus verification-and-fixes.md Gerrit rules. Draft the
 finding or question exactly from the reconciled evidence; do not re-adjudicate.
 Include the exact `Synthesis item: ⟨card-ID⟩` field and internal source-row
-trail in the review fragment.
+trail in the review fragment. For a finding, copy its Suggested edit decision:
+an applicable edit has the identical fenced `suggestion` replacement in the
+review and Gerrit fragments at the card's exact target range; an omitted edit
+keeps the card's specific reason and has no suggestion block.
 
 Deliverables: exact final-output bytes in
 `draft-parts/⟨card-ID⟩.md`; for a finding, exact target/comment bytes in

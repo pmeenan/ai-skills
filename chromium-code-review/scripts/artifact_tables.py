@@ -58,6 +58,23 @@ def _row_matches(heading: str, row: dict[str, str], index: int,
                  target: str) -> bool:
     if target.startswith("matrix:") and heading == "Compliance matrix":
         return target == f"matrix:{index}"
+    if target.startswith("descriptor:") and heading == "Candidate descriptors":
+        return row.get("candidate") == target.removeprefix("descriptor:")
+    if target.startswith("trace:") and heading == "Trace closure":
+        parts = target.split(":", 2)
+        return (
+            len(parts) == 3
+            and row.get("candidate") == parts[1]
+            and row.get("obligation") == parts[2]
+        )
+    if target.startswith("affinity:") and heading == "Verified affinity":
+        return row.get("candidate") == target.removeprefix("affinity:")
+    if target.startswith("family:") and heading == "Root families":
+        return row.get("root family") == target.removeprefix("family:")
+    if target.startswith("audit:") and heading == "Consistency audit":
+        return row.get("check") == target.removeprefix("audit:")
+    if target.startswith("root-family:") and heading == "Root-family analysis":
+        return row.get("root family") == target.removeprefix("root-family:")
     for column in (
         "surface id", "scope id", "id", "row", "class id", "thread", "unit"
     ):
@@ -71,7 +88,10 @@ def effective_tables(text: str, source: str = "input") -> tuple[list[Table], lis
 
     A structured amendment uses operation `replace-fields` and stores a JSON
     object in `replacement / reason`. Targets are stable row IDs or
-    `matrix:<1-based-row>`. Every target must resolve to exactly one row and
+    `matrix:<1-based-row>`. Descriptor/verification family tables use the
+    explicit targets `descriptor:<candidate>`, `trace:<candidate>:<obligation>`,
+    `affinity:<candidate>`, `family:<RF-id>`, `audit:<check>`, and
+    `root-family:<RF-id>`. Every target must resolve to exactly one row and
     every replacement key must name an existing column.
     """
     parsed, errors = parse_tables(text, source)

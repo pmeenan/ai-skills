@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -62,6 +64,22 @@ ROSTER_PREFIX = {
         "NET", "FTS", "HOL",
     ))
 }
+
+
+def load_review_validator():
+    name = "chromium_code_review_validate_review_dir"
+    if name in sys.modules:
+        return sys.modules[name]
+    sys.path.insert(0, str(SCRIPTS))
+    try:
+        spec = importlib.util.spec_from_file_location(name, VALIDATE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.remove(str(SCRIPTS))
 
 
 class UnresolvedCommentsTest(unittest.TestCase):
@@ -576,11 +594,15 @@ class ReviewDirectoryValidatorTest(unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Fixture"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "fixture@example.test"], check=True)
-        (self.repo / "a.cc").write_text("int value = 1;\n", encoding="utf-8")
+        (self.repo / "a.cc").write_text(
+            "int value = 1;\nint stable = 0;\n", encoding="utf-8"
+        )
         subprocess.run(["git", "-C", str(self.repo), "add", "a.cc"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "base"], check=True)
         self.parent = self.git("rev-parse", "HEAD")
-        (self.repo / "a.cc").write_text("int value = 2;\n", encoding="utf-8")
+        (self.repo / "a.cc").write_text(
+            "int value = 2;\nint stable = 0;\n", encoding="utf-8"
+        )
         subprocess.run(["git", "-C", str(self.repo), "commit", "-qam", "change"], check=True)
         self.sha = self.git("rev-parse", "HEAD")
         self.make_review()
@@ -790,6 +812,66 @@ complete
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn("PASS:", run.stdout)
+
+    def test_suggested_edit_target_is_pinned_changed_side_text(self) -> None:
+        validator = load_review_validator()
+
+        def errors(target_text: str, selected: str,
+                   gerrit_target: str | None = None) -> list[str]:
+            report = validator.Report()
+            target = validator.SUGGESTION_TARGET.fullmatch(
+                f"replaces {target_text}"
+            )
+            if target is None:
+                return ["malformed target"]
+            validator.validate_suggestion_target(
+                self.review,
+                "F001",
+                target,
+                selected,
+                f"{gerrit_target or target_text}\n",
+                report,
+            )
+            return report.errors
+
+        self.assertFalse(errors("a.cc:1", "int value = 2;"))
+        self.assertTrue(any(
+            "normalized repo-relative" in error
+            for error in errors("../a.cc:1", "int value = 2;")
+        ))
+        self.assertTrue(any(
+            "normalized repo-relative" in error
+            for error in errors("/etc/passwd:1", "root")
+        ))
+        self.assertTrue(any(
+            "unchanged or unknown" in error
+            for error in errors("unchanged.cc:1", "anything")
+        ))
+        self.assertTrue(any(
+            "outside the pinned file" in error
+            for error in errors("a.cc:999999", "anything")
+        ))
+        self.assertTrue(any(
+            "selected lines do not match" in error
+            for error in errors("a.cc:1", "int value = 999;")
+        ))
+        self.assertTrue(any(
+            "does not intersect a changed-side hunk" in error
+            for error in errors("a.cc:2", "int stable = 0;")
+        ))
+        self.assertTrue(any(
+            "exact target declarations" in error
+            for error in errors("a.cc:1", "int value = 2;", "a.cc:2")
+        ))
+        self.assertTrue(any(
+            "standalone target declarations" in error
+            for error in errors(
+                "a.cc:1", "int value = 2;", "b.cc:7\na.cc:1"
+            )
+        ))
+        self.assertIsNone(
+            validator.SUGGESTION_TARGET.fullmatch("replaces a.cc:0")
+        )
 
     def test_collection_rejects_stale_profile(self) -> None:
         profile_md = self.review / "profile.md"
@@ -1502,8 +1584,8 @@ none
 
 ## Trigger accounting
 
-| candidate / verdict | trigger | disposition | RC batch |
-| --- | --- | --- | --- |
+| candidate / verdict | root family | trigger | disposition | RC batch |
+| --- | --- | --- | --- | --- |
 """, encoding="utf-8")
         run = subprocess.run(
             [str(VALIDATE), str(self.review), "--phase", "verification"],
@@ -1541,9 +1623,9 @@ none
 
 ## Trigger accounting
 
-| candidate / verdict | trigger | disposition | RC batch |
-| --- | --- | --- | --- |
-| T001 | inventory: state holder | scheduled | RC001 |
+| candidate / verdict | root family | trigger | disposition | RC batch |
+| --- | --- | --- | --- | --- |
+| T001 | — | inventory: state holder | scheduled | RC001 |
 
 ## Batches
 
@@ -1722,7 +1804,15 @@ Return partial with explicit remaining scope when needed.
             encoding="utf-8",
         )
         card = self.review / "synthesis" / "F001.md"
-        card.write_text("# Card\n" + "x" * 4492, encoding="utf-8")
+        card.write_text(
+            "# Card\n"
+            "- Root cause: none — no validated root-cause fix\n"
+            "- Root family: none — no scheduled family\n"
+            "- Suggested edit decision: omitted — fixture fix needs "
+            "coordinated edits\n"
+            + "x" * 4492,
+            encoding="utf-8",
+        )
         (self.review / "synthesis" / "index.md").write_text(
             "# Synthesis index\n\n"
             "| item | card | bytes | source rows |\n"
@@ -1753,7 +1843,14 @@ Return partial with explicit remaining scope when needed.
             encoding="utf-8",
         )
         synthesis = self.review / "synthesis"
-        card_payload = "# Card\n" + "x" * 2192
+        card_payload = (
+            "# Card\n"
+            "- Root cause: none — no validated root-cause fix\n"
+            "- Root family: none — no scheduled family\n"
+            "- Suggested edit decision: omitted — fixture fix needs "
+            "coordinated edits\n"
+            + "x" * 2192
+        )
         rows = []
         for identifier, source in (
             ("F001", "EPW-1"),
@@ -1797,6 +1894,181 @@ Return partial with explicit remaining scope when needed.
             [str(VALIDATE), str(self.review), "--phase", "reconciliation"],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
+    def test_confirmed_merge_requires_structured_equivalence(self) -> None:
+        validator = load_review_validator()
+        verification = self.review / "verification"
+        verification.mkdir(exist_ok=True)
+        (self.review / "proof.md").write_text(
+            "# Invariant\n\nBoth rows use the same operation contract.\n",
+            encoding="utf-8",
+        )
+        (verification / "V001.md").write_text(
+            """# Verdict fixture
+
+| id | candidate | verdict |
+| --- | --- | --- |
+| V001-1 | EPW-1 | CONFIRMED |
+| V001-2 | AL-1 | CONFIRMED |
+""",
+            encoding="utf-8",
+        )
+        reconciliation = self.review / "reconciliation.md"
+        valid_text = """# Reconciliation
+
+| row | thread | disposition |
+| --- | --- | --- |
+| EPW-1 | Error-Path Walk | promoted → F001 |
+| AL-1 | Async And Lifecycle | merged → EPW-1 |
+
+## Merge equivalence
+
+| merged row | survivor | trigger equivalence | invariant equivalence | outcome equivalence | survivor verdict |
+| --- | --- | --- | --- | --- | --- |
+| AL-1 | EPW-1 | same call path at a.cc:1 | same invariant at proof.md:/invariant | same failure at a.cc:1 | V001-1 CONFIRMED |
+"""
+        reconciliation.write_text(valid_text, encoding="utf-8")
+        source_ids = {
+            "EPW-1": self.review / "ledger" / "EPW.md",
+            "AL-1": self.review / "ledger" / "AL.md",
+        }
+        report = validator.Report()
+        validator.validate_reconciliation(
+            self.review,
+            source_ids,
+            {"EPW-1": "RF001", "AL-1": "RF001"},
+            report,
+            final=False,
+        )
+        self.assertFalse(report.errors, report.errors)
+
+        cross_family = validator.Report()
+        validator.validate_reconciliation(
+            self.review,
+            source_ids,
+            {"EPW-1": "RF001", "AL-1": "RF002"},
+            cross_family,
+            final=False,
+        )
+        self.assertTrue(any(
+            "crosses root families RF002/RF001" in error
+            for error in cross_family.errors
+        ))
+
+        (verification / "V001.md").write_text(
+            """# Verdict fixture
+
+| id | candidate | verdict |
+| --- | --- | --- |
+| V001-1 | EPW-1 | REFUTED |
+| V001-2 | AL-1 | CONFIRMED |
+""",
+            encoding="utf-8",
+        )
+        mismatch_text = valid_text.replace(
+            "| EPW-1 | Error-Path Walk | promoted → F001 |",
+            "| EPW-1 | Error-Path Walk | refuted (a.cc:1) |",
+        ).replace(
+            "V001-1 CONFIRMED", "V001-1 REFUTED"
+        )
+        reconciliation.write_text(mismatch_text, encoding="utf-8")
+        mismatch = validator.Report()
+        validator.validate_reconciliation(
+            self.review, source_ids, {}, mismatch, final=False
+        )
+        self.assertTrue(any(
+            "hides CONFIRMED behind survivor verdict REFUTED" in error
+            for error in mismatch.errors
+        ))
+
+        (verification / "V001.md").write_text(
+            """# Verdict fixture
+
+| id | candidate | verdict |
+| --- | --- | --- |
+| V001-1 | EPW-1 | CONFIRMED |
+| V001-2 | AL-1 | CONFIRMED |
+""",
+            encoding="utf-8",
+        )
+        reconciliation.write_text(
+            valid_text.replace(
+                "| AL-1 | Async And Lifecycle | merged → EPW-1 |",
+                "| AL-1 | Async And Lifecycle | "
+                "dismissed: duplicate of EPW-1 |",
+            ),
+            encoding="utf-8",
+        )
+        disguised = validator.Report()
+        validator.validate_reconciliation(
+            self.review, source_ids, {}, disguised, final=False
+        )
+        self.assertTrue(any(
+            "has CONFIRMED verdict" in error
+            and "expected promoted" in error
+            for error in disguised.errors
+        ))
+
+        exception_text = valid_text.replace(
+            "| AL-1 | EPW-1 | same call path at a.cc:1 | "
+            "same invariant at proof.md:/invariant "
+            "| same failure at a.cc:1 | V001-1 CONFIRMED |",
+            "| AL-1 | EPW-1 | evidence-exception:x | "
+            "evidence-exception:y | evidence-exception:z | "
+            "V001-1 CONFIRMED |",
+        )
+        reconciliation.write_text(exception_text, encoding="utf-8")
+        exceptions = validator.Report()
+        validator.validate_reconciliation(
+            self.review, source_ids, {}, exceptions, final=False
+        )
+        self.assertTrue(any(
+            "lacks cited trigger equivalence" in error
+            for error in exceptions.errors
+        ))
+
+        missing_artifact_text = valid_text.replace(
+            "same invariant at proof.md:/invariant",
+            "same invariant at missing.md:/nope",
+        )
+        reconciliation.write_text(missing_artifact_text, encoding="utf-8")
+        missing_artifact = validator.Report()
+        validator.validate_reconciliation(
+            self.review, source_ids, {}, missing_artifact, final=False
+        )
+        self.assertTrue(any(
+            "cites missing or empty review artifact missing.md:/nope" in error
+            for error in missing_artifact.errors
+        ))
+
+        reconciliation.write_text(
+            valid_text.replace(
+                "| AL-1 | Async And Lifecycle | merged → EPW-1 |",
+                "| AL-1 | Async And Lifecycle | merged duplicate |",
+            ),
+            encoding="utf-8",
+        )
+        malformed = validator.Report()
+        validator.validate_reconciliation(
+            self.review, source_ids, {}, malformed, final=False
+        )
+        self.assertTrue(any(
+            "malformed merge disposition" in error
+            for error in malformed.errors
+        ))
+
+        reconciliation.write_text(
+            valid_text.split("## Merge equivalence", 1)[0],
+            encoding="utf-8",
+        )
+        missing = validator.Report()
+        validator.validate_reconciliation(
+            self.review, source_ids, {}, missing, final=False
+        )
+        self.assertTrue(any(
+            "lacks an exact Merge equivalence row" in error
+            for error in missing.errors
+        ))
 
     def test_assembly_rejects_declared_byte_mismatch(self) -> None:
         self.make_large_synthesis_assembly(declared_bytes=1)
@@ -1845,7 +2117,15 @@ Return partial with explicit remaining scope when needed.
         )
 
         card = self.review / "synthesis" / "EPW-1.md"
-        card.write_text("# Card EPW-1\n\nfinding body\n", encoding="utf-8")
+        card.write_text(
+            "# Card EPW-1\n\n"
+            "finding body\n\n"
+            "- Root cause: none — no validated root-cause fix\n"
+            "- Root family: none — no scheduled family\n"
+            "- Suggested edit decision: omitted — fixture fix needs "
+            "coordinated edits\n",
+            encoding="utf-8",
+        )
         (self.review / "synthesis" / "index.md").write_text(
             "# Synthesis index\n\n"
             "| item | card | bytes | source rows |\n"
@@ -1901,6 +2181,7 @@ Return partial with explicit remaining scope when needed.
 - **Severity:** P2
 - **Origin:** CL-introduced
 - **Fix status:** needs fix
+- **Suggested edit:** omitted — fixture fix needs coordinated edits
 - **Regression test:** add a fixture regression
 - **Rows:** EPW-1 / V001-1
 """,
@@ -1956,7 +2237,280 @@ Return partial with explicit remaining scope when needed.
         )
         self.assertEqual(complete.returncode, 0, complete.stdout + complete.stderr)
 
+        old_draft_fragment = draft_fragment.read_bytes()
+        old_gerrit_fragment = gerrit_fragment.read_bytes()
+        missing_decision = old_draft_fragment.replace(
+            b"- **Suggested edit:** omitted "
+            b"\xe2\x80\x94 fixture fix needs coordinated edits\n",
+            b"",
+        )
+        draft_fragment.write_bytes(missing_decision)
+        draft.write_bytes(
+            draft.read_bytes().replace(
+                old_draft_fragment, missing_decision, 1
+            )
+        )
         manifest = self.review / "output-coverage.tsv"
+        manifest.write_text(
+            "item\tkind\tdraft_path\tdraft_bytes\tdraft_sha256\t"
+            "gerrit_path\tgerrit_bytes\tgerrit_sha256\n"
+            f"F001\tfinding\tdraft-parts/F001.md\t"
+            f"{draft_fragment.stat().st_size}\t"
+            f"{hashlib.sha256(draft_fragment.read_bytes()).hexdigest()}\t"
+            f"gerrit-parts/F001.md\t{gerrit_fragment.stat().st_size}\t"
+            f"{hashlib.sha256(gerrit_fragment.read_bytes()).hexdigest()}\n",
+            encoding="utf-8",
+        )
+        missing_decision_run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(missing_decision_run.returncode, 1)
+        self.assertIn(
+            "draft fragment lacks a non-empty 'Suggested edit' field",
+            missing_decision_run.stdout,
+        )
+        draft_fragment.write_bytes(old_draft_fragment)
+        draft.write_bytes(
+            draft.read_bytes().replace(
+                missing_decision, old_draft_fragment, 1
+            )
+        )
+
+        (self.review / "root-cause" / "RC001.md").write_text(
+            """# Root cause fixture
+
+## RC001-1 (for EPW-1)
+
+- Root family: RF001
+- Suggested-edit decision: applicable — replaces a.cc:1
+- Suggested-edit selected lines:
+
+  ```cpp
+  int value = 2;
+  ```
+- Suggested-edit replacement:
+
+  ```suggestion
+  int value = 3;
+  ```
+
+## Root-family analysis
+
+| root family | members | shared invariant | invariant owner | state / transition | method coverage | excluded nearby | fix layer | comment count | suggested edit | evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| RF001 | EPW-1 | fixture value changes safely | fixture statement | old → new value | assignment checked | none — single statement | assignment | one | applicable — RC001-1 | a.cc:1 |
+""",
+            encoding="utf-8",
+        )
+        reconciliation.write_text(
+            reconciliation.read_text(encoding="utf-8").replace(
+                "| R1-RC001-1 | Reopened | clean (cited) |",
+                "| R1-RC001-1 | Reopened | clean (cited) |\n"
+                "| RC001-1 | Root cause | supports F001 |",
+            ),
+            encoding="utf-8",
+        )
+        index = self.review / "challenge" / "round-1" / "index.md"
+        index.write_text(
+            index.read_text(encoding="utf-8").replace(
+                "card:F001, row:EPW-1, row:R1-RC001-1",
+                "card:F001, row:EPW-1, row:RC001-1, row:R1-RC001-1",
+            ),
+            encoding="utf-8",
+        )
+        card.write_text(
+            "# Card EPW-1\n\n"
+            "finding body\n\n"
+            "- Root cause: RC001-1 — validated fixture fix\n"
+            "- Root family: RF001\n"
+            "- Suggested edit decision: applicable — replaces a.cc:1\n"
+            "- Suggested edit selected lines:\n\n"
+            "  ```cpp\n"
+            "  int value = 2;\n"
+            "  ```\n"
+            "- Suggested edit replacement:\n\n"
+            "  ```suggestion\n"
+            "  int value = 3;\n"
+            "  ```\n",
+            encoding="utf-8",
+        )
+        (self.review / "synthesis" / "index.md").write_text(
+            "# Synthesis index\n\n"
+            "| item | card | bytes | source rows |\n"
+            "| --- | --- | --- | --- |\n"
+            f"| F001 | synthesis/EPW-1.md | {card.stat().st_size} | "
+            "EPW-1, RC001-1 |\n",
+            encoding="utf-8",
+        )
+        self.refresh_indexes()
+        draft_fragment.write_text(
+            """#### Fixture finding (P2)
+
+- **Synthesis item:** F001
+- **Claim:** fixture claim
+- **Location:** a.cc:1
+- **Evidence:** fixture evidence at a.cc:1
+- **Severity:** P2
+- **Origin:** CL-introduced
+- **Fix status:** validated fix
+- **Suggested edit:** applicable — replaces a.cc:1
+
+  ```suggestion
+  int value = 3;
+  ```
+- **Regression test:** add a fixture regression
+- **Rows:** EPW-1 / V001-1
+""",
+            encoding="utf-8",
+        )
+        gerrit_fragment.write_text(
+            "a.cc:1\n"
+            "Can this preserve the fixture invariant?\n\n"
+            "```suggestion\n"
+            "int value = 3;\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        draft.write_bytes(
+            draft.read_bytes().replace(
+                old_draft_fragment, draft_fragment.read_bytes(), 1
+            )
+        )
+        gerrit.write_bytes(
+            gerrit.read_bytes().replace(
+                old_gerrit_fragment, gerrit_fragment.read_bytes(), 1
+            )
+        )
+        manifest.write_text(
+            "item\tkind\tdraft_path\tdraft_bytes\tdraft_sha256\t"
+            "gerrit_path\tgerrit_bytes\tgerrit_sha256\n"
+            f"F001\tfinding\tdraft-parts/F001.md\t"
+            f"{draft_fragment.stat().st_size}\t"
+            f"{hashlib.sha256(draft_fragment.read_bytes()).hexdigest()}\t"
+            f"gerrit-parts/F001.md\t{gerrit_fragment.stat().st_size}\t"
+            f"{hashlib.sha256(gerrit_fragment.read_bytes()).hexdigest()}\n",
+            encoding="utf-8",
+        )
+        applicable = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(
+            applicable.returncode, 0, applicable.stdout + applicable.stderr
+        )
+
+        validator = load_review_validator()
+        affinity_report = validator.Report()
+        validator.validate_synthesis(
+            self.review,
+            {
+                "EPW-1": self.review / "ledger" / "EPW.md",
+                "RC001-1": self.review / "root-cause" / "RC001.md",
+            },
+            {"F001": ("finding", "EPW-1")},
+            {"EPW-1": "RF999"},
+            {"evidence_card_budget_bytes": 100000,
+             "worker_input_budget_bytes": 100000},
+            affinity_report,
+        )
+        self.assertTrue(any(
+            "unrelated RF001" in error
+            or "differs from authoritative affinity" in error
+            for error in affinity_report.errors
+        ))
+
+        applicable_card = card.read_text(encoding="utf-8")
+        omitted_card = applicable_card.replace(
+            "- Root cause: RC001-1 — validated fixture fix\n"
+            "- Root family: RF001\n",
+            "- Root cause: none — no validated root-cause fix\n"
+            "- Root family: none — no scheduled family\n",
+        ).replace(
+            "- Suggested edit decision: applicable — replaces a.cc:1\n"
+            "- Suggested edit selected lines:\n\n"
+            "  ```cpp\n"
+            "  int value = 2;\n"
+            "  ```\n"
+            "- Suggested edit replacement:\n\n"
+            "  ```suggestion\n"
+            "  int value = 3;\n"
+            "  ```\n",
+            "- Suggested edit decision: omitted — coordinated edit required\n",
+        )
+        card.write_text(omitted_card, encoding="utf-8")
+        synthesis_index = self.review / "synthesis" / "index.md"
+        synthesis_index.write_text(
+            synthesis_index.read_text(encoding="utf-8").replace(
+                f"| {len(applicable_card.encode())} | EPW-1, RC001-1 |",
+                f"| {card.stat().st_size} | EPW-1, RC001-1 |",
+            ),
+            encoding="utf-8",
+        )
+        self.refresh_indexes()
+        root_mismatch = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(root_mismatch.returncode, 1)
+        self.assertIn(
+            "erases canonical root-cause Suggested edit decision",
+            root_mismatch.stdout,
+        )
+        card.write_text(applicable_card, encoding="utf-8")
+        synthesis_index.write_text(
+            synthesis_index.read_text(encoding="utf-8").replace(
+                f"| {len(omitted_card.encode())} | EPW-1, RC001-1 |",
+                f"| {card.stat().st_size} | EPW-1, RC001-1 |",
+            ),
+            encoding="utf-8",
+        )
+        self.refresh_indexes()
+
+        matching_gerrit = gerrit_fragment.read_bytes()
+        mismatched_gerrit = matching_gerrit.replace(
+            b"int value = 3;", b"int different = 3;"
+        )
+        gerrit_fragment.write_bytes(mismatched_gerrit)
+        gerrit.write_bytes(
+            gerrit.read_bytes().replace(
+                matching_gerrit, mismatched_gerrit, 1
+            )
+        )
+        manifest.write_text(
+            "item\tkind\tdraft_path\tdraft_bytes\tdraft_sha256\t"
+            "gerrit_path\tgerrit_bytes\tgerrit_sha256\n"
+            f"F001\tfinding\tdraft-parts/F001.md\t"
+            f"{draft_fragment.stat().st_size}\t"
+            f"{hashlib.sha256(draft_fragment.read_bytes()).hexdigest()}\t"
+            f"gerrit-parts/F001.md\t{gerrit_fragment.stat().st_size}\t"
+            f"{hashlib.sha256(gerrit_fragment.read_bytes()).hexdigest()}\n",
+            encoding="utf-8",
+        )
+        mismatch = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(mismatch.returncode, 1)
+        self.assertIn("draft and Gerrit suggestion blocks differ", mismatch.stdout)
+
+        gerrit_fragment.write_bytes(matching_gerrit)
+        gerrit.write_bytes(
+            gerrit.read_bytes().replace(
+                mismatched_gerrit, matching_gerrit, 1
+            )
+        )
+        manifest.write_text(
+            "item\tkind\tdraft_path\tdraft_bytes\tdraft_sha256\t"
+            "gerrit_path\tgerrit_bytes\tgerrit_sha256\n"
+            f"F001\tfinding\tdraft-parts/F001.md\t"
+            f"{draft_fragment.stat().st_size}\t"
+            f"{hashlib.sha256(draft_fragment.read_bytes()).hexdigest()}\t"
+            f"gerrit-parts/F001.md\t{gerrit_fragment.stat().st_size}\t"
+            f"{hashlib.sha256(gerrit_fragment.read_bytes()).hexdigest()}\n",
+            encoding="utf-8",
+        )
+
         manifest.write_text(
             manifest.read_text(encoding="utf-8").replace(
                 hashlib.sha256(draft_fragment.read_bytes()).hexdigest(),

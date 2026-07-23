@@ -206,7 +206,10 @@ orchestrator never loads these):
   covers the whole changed surface.
 - **Targeted review:** focus on the requested subsystem, file, or risk area —
   the planner triggers only the matching roster entries — but any serious
-  blocker discovered nearby is still reported.
+  blocker discovered nearby is still reported. Targeted/bounded scope does
+  not relax artifact shapes, typed trace closure, affinity reconciliation, or
+  worker validation; use the same canonical review directory and gates for the
+  smaller candidate universe.
 - **Short summary:** honor the shorter format, but still pin the patchset and
   disclose important unverified areas.
 
@@ -455,7 +458,8 @@ message) in `plan.md` and `progress.md`. A nonzero exit is
 attempt while it still owns a new artifact, or create a narrow amendment
 attempt for collected prestate. Rows are carried
 forward by the files themselves under their own IDs. Deduplication is a
-reconciliation-time disposition ("row X merged into row Y"), never an
+reconciliation-time disposition (`merged → <survivor-row-id>` plus structured
+equivalence), never an
 orchestrator pre-processing step; severity is judged in verification, not
 at collection.
 
@@ -505,7 +509,17 @@ waves, and targeted retry rules as discovery. Each writes
 refutation standard; a skeptic that cannot name the guard line or produce
 the safe trace has confirmed the finding, not dismissed it. Candidates that
 honest tracing can neither confirm nor refute become owner questions —
-never silent drops.
+never silent drops. Each verdict artifact closes every typed obligation from
+its candidate descriptor and restates the verified semantic affinity;
+worker-artifact validation rejects incomplete cross-layer traces.
+
+After every skeptic batch collects, spawn one global **Invariant Affinity
+Reconciler** using the Phase 5.25 brief. It assigns every CONFIRMED/UNPROVEN
+candidate and verdict to exactly one root family, audits assumptions across
+batches, and writes `verification/affinity.md`. Descriptor extraction may be
+sharded for scale, but family assignment is global. Rebuild indexes afterward.
+Root-cause planning is blocked until complete family coverage and all six
+consistency-audit rows validate.
 
 ## Phase 5.5 — Root-Cause, Layering, And Fix Optimality
 
@@ -515,15 +529,20 @@ planner/challengers. Otherwise root-cause trigger selection is analysis, never
 inferred by the orchestrator from status lines. Spawn the **Root-Cause Planner**
 (brief in `phase-briefs.md`). It reads every skeptic verdict, applies every
 trigger in `references/verification-and-fixes.md`, includes the inventory's
-root-cause-required change scopes, groups related triggered candidates/scopes
-into trace-sized batches, and writes
+root-cause-required change scopes, groups complete root families/scopes into
+trace-sized batches, and writes
 `root-cause/batches.md` plus one complete `briefs/RC<batch>.md` per batch.
-Serious candidates normally stand alone or in very small related groups; no
-fixed three-to-five quota may force unrelated traces together.
+One family is indivisible even when its members came from different skeptic
+batches; unrelated families remain separate.
 
 Spawn one **Root-Cause Challenger** per planned batch in capacity-derived
-waves. Each executes Root-Cause, Layering, And Fix Optimality over its batch
-only and writes `root-cause/RC<batch>.md`.
+waves. Each executes Root-Cause, Layering, And Fix Optimality over every
+complete family in its batch and writes `root-cause/RC<batch>.md`. It also
+decides whether the validated fix is safely expressible as one small Gerrit
+suggested edit, recording the exact selected range and replacement when it is,
+or the specific reason it is not. Drafting never invents this decision from
+local prose. The RC row is the canonical owner: reconciliation and drafting
+preserve its family, decision, selected text, and replacement.
 
 **Reopened issues are canonical ledger rows before they become work.** A
 challenger that finds a better owner, missing caller family, duplicated
@@ -558,6 +577,14 @@ disposition line per row (promoted / refuted / question / merged / clean), no
 ranges, no "rest dismissed". A confirmed finding whose severity was
 downgraded is still `promoted → F<number>` at its calibrated severity; a bare
 `downgraded` disposition would make it disappear from output and is forbidden.
+The default is one promoted finding per root family; multiple promotions
+require a cited exception proving distinct owners or independently bad
+outcomes. The inverse is equally strict: every `merged → <survivor-row-id>`
+disposition has one structured, cited Merge equivalence row proving equal
+trigger, invariant, and outcome and naming the survivor's exact verdict.
+Artifact pointers used as equivalence evidence resolve to existing, nonempty
+review-relative files. Free-form merges, merge chains, cross-family merges,
+and verdict-class mismatches are gate failures.
 It also writes the pre-output gate
 skeleton from `references/synthesis-and-output.md` at the bottom of
 `reconciliation.md`, filling the lines it can prove.
@@ -566,7 +593,8 @@ skeleton from `references/synthesis-and-output.md` at the bottom of
   `synthesis/<ROW-ID>.md` evidence card per promoted finding or owner
   question. A card contains only that row's claim, calibrated disposition,
   citations, trace, root-cause/fix analysis, origin, and existing-thread
-  mapping. Cards obey the profile's evidence-card budget; if a trace is
+  mapping, including the Suggested edit decision and exact replacement
+  evidence when applicable. Cards obey the profile's evidence-card budget; if a trace is
   larger, split it into numbered parts referenced by the index. Never cap the
   number of cards or truncate evidence. These cards are the synthesis
   handoff; the Draft Writer must not reread the entire discovery/verification
@@ -587,7 +615,12 @@ index and produces `draft-review.md` plus `gerrit-comments.md` without
 reloading the full review corpus. It also produces exact per-synthesis-item
 draft/Gerrit fragments and `output-coverage.tsv`; final validation proves
 every promoted finding/question owns a card and every required fragment occurs
-exactly once in its delivered output.
+exactly once in its delivered output. For an applicable Suggested edit, the
+review finding and Gerrit fragment contain the same apply-ready fenced
+`suggestion` block; an ineligible edit carries a specific omission reason
+instead of a partial code sketch. Final validation checks applicable targets
+against the pinned revision and changed-side hunks, not just their Markdown
+shape.
 
 ## Phase 8 — Synthesis Challenge
 

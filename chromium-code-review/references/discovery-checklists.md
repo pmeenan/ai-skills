@@ -83,12 +83,11 @@ manual thread work, and the script's output says which is which.
   `git diff --color=never --unified=0 <parent> <revision> -- '*.cc' '*.h' '*.mm' '*.md' | LC_ALL=C rg -n '^[+][^+].*[^[:ascii:]]'`.
   Each hit in comments, docs, or developer-facing test prose is a polish
   candidate unless the character is intentional and justified.
-- Scan added or modified `bool` declarations for predicate-style names:
+- Scan added or modified `bool` declarations as convention leads:
   `git diff --color=never --unified=0 <parent> <revision> -- '*.cc' '*.h' | rg -n '^[+][^+].*\bbool\s+[A-Za-z0-9_]+_'`.
-  Blink/Chromium booleans should usually read like predicates (`is_`, `has_`,
-  `should_`, `did_`, `can_`, etc.). Flags that enable an optimization must not
-  be named like the current cached/result state; record ambiguous names as
-  optional polish.
+  Do not infer a repository-wide `is_`/`has_` rule from the hit. Open the
+  applicable directory guidance or nearby local convention and inspect
+  callsites for actual semantic ambiguity. Only then record a candidate.
 - For each changed, new, or removed function/method/helper — including
   private/protected methods, anonymous-namespace helpers, test hooks, and
   stateful lambdas — search its symbol or call pattern and visit each
@@ -554,11 +553,15 @@ dropping them from an otherwise-LGTM review.
   invariant. If not, request a brief comment naming what the field means and
   what invalidates or owns it. Prefer a comment on the state group over
   scattered comments when several fields form one invariant.
-- Check boolean names for Chromium/Blink predicate style and semantic
-  precision: use names that read as true/false facts or policy decisions
-  (`is_`, `has_`, `should_`, `did_`, `can_`, `needs_`, etc.), and distinguish
-  "should cache" from "is cached" or "has cached value". Ambiguous booleans are
-  optional polish even when the code is otherwise correct.
+- Treat boolean naming as a convention lead, not a repository-wide rule.
+  Predicate prefixes such as `is_`, `has_`, and `should_` are not universal
+  Chromium requirements, and Blink/WebKit guidance does not automatically
+  apply outside Blink. Before emitting a naming candidate, cite the applicable
+  directory-specific style guide, `PRESUBMIT.py`, OWNERS guidance, or a strong
+  local convention from nearby code. Without an applicable authority or a
+  concrete semantic ambiguity at the callsite, record the scan as clean and do
+  not create a style finding. When ambiguity is real, distinguish policy
+  (`should cache`) from state (`is cached`) and possession (`has cached value`).
 - For changed comments and API docs, verify each behavioral clause is
   literally supported by the implementation. Watch for misleading causal or
   exclusivity words such as "only", "whenever", "until", "unless",

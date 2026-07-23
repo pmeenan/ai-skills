@@ -38,14 +38,27 @@ until every row has a disposition.
 
 Cross-checks while building the table:
 
+- Every verdict-bearing candidate has a verdict-consistent terminal
+  disposition: CONFIRMED is promoted or structurally merged, UNPROVEN becomes
+  a question or structural merge, and REFUTED is refuted/dismissed with its
+  verdict or code citation, or structurally merged. `dismissed: duplicate`
+  cannot bypass the merge contract.
 - Every serious candidate has a verdict row; a candidate with no verdict is
   an unaccounted row, not an implicit dismissal, except a candidate with an
   explicit merge proposal. A merged candidate does not need a redundant
   verdict only when reconciliation verifies the same trigger, violated
   invariant, and outcome as the survivor and cites the survivor's verdict. If
   equivalence fails, reject the merge and return the row for verification.
-- Merge dispositions cite the surviving row; the merged row's evidence must
-  actually duplicate the survivor's.
+- Merge dispositions use exactly `merged → <survivor-row-id>` and have one
+  matching `Merge equivalence` row in the templates.md shape. That row
+  separately cites equal trigger, violated invariant, and outcome, plus the
+  survivor's exact verdict. The survivor exists, owns a verdict, is not itself
+  merged, and has the verdict-consistent terminal disposition. When both rows
+  have verdicts their verdict classes match; when affinity assigned both,
+  their root family matches. Free-form `merged because ...` prose is invalid.
+  Equivalence cells require actual code citations or canonical artifact
+  pointers whose review-relative files exist and are nonempty;
+  `evidence-exception:` is not sufficient for a semantic merge.
 - Every UNPROVEN verdict maps to a Questions entry; every reopened
   root-cause row maps to a verdict or a question.
 - Every row amendment is applied in order; the original row remains present
@@ -59,7 +72,13 @@ manifest row to `synthesis/index.md`. A card is at most
 `profile.json:/context_budget/evidence_card_budget_bytes`. It
 contains the effective candidate row, verdict, root-cause result, merge
 support, severity/origin, Gerrit-thread target, verbatim line, and caveats
-needed for that item — not entire source artifacts. Split excess supporting
+needed for that item — not entire source artifacts. Every finding card also
+carries the root-cause pass's Suggested edit decision. An applicable decision
+includes the exact changed-side target range, verbatim selected lines, and
+replacement, plus exact `Root cause` and `Root family` bindings; reconciliation
+must not substitute a locally attractive snippet for an RC omission. When no
+root-cause pass ran, record both bindings as `none` and the decision as omitted
+because no fix was validated. An omitted decision includes a specific reason. Split excess supporting
 material into numbered parts; never truncate a row. This card set,
 not all verdict and ledger files, is the Draft Writer's synthesis input.
 
@@ -170,6 +189,11 @@ Record and report every finding with:
   `introduced-in-PS<N>` for regressions the newer patchset added.
 - **Fix status:** validated fix, option needing verification, or no fix
   proposed.
+- **Suggested edit:** `applicable — replaces path:start-end`, followed by the
+  exact fenced `suggestion` replacement, or
+  `omitted — <specific reason>`. Applicability is decided and evidenced in
+  the root-cause/evidence card, not improvised while drafting. The same
+  replacement block must appear byte-for-byte in the Gerrit-ready comment.
 - For P1/P2 findings: the smallest regression test that would have caught it.
 - **Rows:** the ledger row and verdict IDs behind the finding (e.g.
   `EPW-2 / V001-1`) — an internal trail for the gate; omit it from
@@ -295,8 +319,11 @@ Output Rules section of `references/verification-and-fixes.md`:
   `gerrit/unresolved-threads.json`. Do not open duplicate new threads for an
   existing topic.
 - **New inline comments:** repo-relative file, exact line or range, verbatim line
-  text from the reviewed patchset, and concise comment text. Prefix optional
-  polish with `nit:`.
+  text from the reviewed patchset, and concise comment text. When the finding's
+  Suggested edit decision is applicable, attach the comment to that exact
+  selected range and include its fenced `suggestion` block; Gerrit replaces
+  the attached lines with the block contents. Prefix optional polish with
+  `nit:`.
 
 For Gerrit-ready text, cite findings as repo-relative `path:line` against the
 reviewed patchset, extract quoted code verbatim, and re-check line numbers
@@ -365,6 +392,9 @@ delivery is blocked while any line is pending or blank.
     conditions.
 12. **Gerrit text:** no local paths or `file://` URLs; no placeholder
     inlines; quoted lines re-checked verbatim against the pinned patchset;
+    every applicable Suggested edit has identical apply-ready `suggestion`
+    blocks in the review and Gerrit fragment, and every omitted edit names a
+    specific reason;
     replies target normalized root/latest IDs from
     `gerrit/unresolved-threads.json` instead of duplicating them.
 13. **Honesty:** the test-execution statement matches what was actually run;

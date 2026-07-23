@@ -390,6 +390,12 @@ class BuildReviewIndexesTest(unittest.TestCase):
 | --- | --- | --- | --- | --- | --- | --- |
 | EPW-1 | loses callback | foo.cc:11 | trace at foo.cc:11 and caller.cc:20 | CL-introduced | P1 | candidate |
 
+## Candidate descriptors
+
+| candidate | classes | obligations | base / interface | invariant owner | violated invariant | state / transition | proposed fix layer | related symbols |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| EPW-1 | async-lifetime | callee/backend-implementation, async-operation-owner, destruction/cancellation, platform-branches | Foo callback contract | Foo pending callback state | callback completes exactly once while its storage is retained | pending → completion or cancellation | Foo completion boundary | Foo::Run, callback_ |
+
 ## Amendments
 
 | amendment | target | operation | replacement / reason | evidence | attempt |
@@ -404,6 +410,17 @@ class BuildReviewIndexesTest(unittest.TestCase):
 | id | candidate | verdict | evidence | severity (anchor) | origin |
 | --- | --- | --- | --- | --- | --- |
 | V001-1 | EPW-1 | CONFIRMED | trace foo.cc:11 to caller.cc:20 | P1 (anchor) | CL-introduced |
+""",
+        )
+        write(
+            root / "verification" / "affinity.md",
+            """# Affinity
+
+## Root families
+
+| root family | members | shared invariant | invariant owner | state / transition | fix layer | related symbols | disposition |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| RF001 | EPW-1, V001-1 | callback completes exactly once | Foo callback state | pending → completion | Foo completion boundary | Foo::Run, callback_ | one root cause |
 """,
         )
         write(
@@ -453,6 +470,14 @@ class BuildReviewIndexesTest(unittest.TestCase):
         self.assertEqual("replace by EPW-A1", candidates[0]["status"])
         verdicts = self.read_tsv(root / "indexes" / "verdicts.tsv")
         self.assertEqual("CONFIRMED", verdicts[0]["verdict"])
+        self.assertEqual("RF001", verdicts[0]["root_family"])
+        self.assertEqual(
+            "callee/backend-implementation, async-operation-owner, "
+            "destruction/cancellation, platform-branches",
+            candidates[0]["obligations"],
+        )
+        self.assertEqual("Foo pending callback state",
+                         candidates[0]["invariant_owner"])
         reconciliation = self.read_tsv(root / "indexes" / "reconciliation.tsv")
         self.assertEqual("EPW-1", reconciliation[0]["row"])
         by_row = {row["row"]: row for row in reconciliation}
@@ -518,6 +543,12 @@ class BuildReviewIndexesTest(unittest.TestCase):
 | id | claim | location | evidence / hypothesis | origin | severity | status |
 | --- | --- | --- | --- | --- | --- | --- |
 | AL-1 | duplicate callback loss | foo.cc:11 | same trace at foo.cc:11 | CL-introduced | P1 | candidate |
+
+## Candidate descriptors
+
+| candidate | classes | obligations | base / interface | invariant owner | violated invariant | state / transition | proposed fix layer | related symbols |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| AL-1 | async-lifetime | callee/backend-implementation, async-operation-owner, destruction/cancellation, platform-branches | Foo callback contract | Foo pending callback state | callback completes exactly once while its storage is retained | pending → completion or cancellation | Foo completion boundary | Foo::Run, callback_ |
 """,
         )
         write(
@@ -677,6 +708,180 @@ class BuildReviewIndexesTest(unittest.TestCase):
         failed = run("python3", str(INDEXES), str(root), check=False)
         self.assertNotEqual(0, failed.returncode)
         self.assertIn("exactly one full repo-relative path", failed.stderr)
+
+
+class WorkerArtifactClosureTest(unittest.TestCase):
+    def make_review(self, obligations: str) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+        temporary = tempfile.TemporaryDirectory()
+        root = Path(temporary.name)
+        write(
+            root / "indexes" / "candidates.tsv",
+            "id\tobligations\n"
+            f"AL-1\t{obligations}\n",
+        )
+        return temporary, root
+
+    def test_async_verdict_must_close_every_cross_layer_obligation(self) -> None:
+        temporary, root = self.make_review(
+            "callee/backend-implementation, async-operation-owner, "
+            "destruction/cancellation, platform-branches"
+        )
+        self.addCleanup(temporary.cleanup)
+        artifact = root / "verification" / "V001.md"
+        write(
+            artifact,
+            """# Verdict
+
+| id | candidate | verdict | evidence | severity (anchor) | origin |
+| --- | --- | --- | --- | --- | --- |
+| V001-1 | AL-1 | CONFIRMED | local buffer dies at foo.cc:12 | P1 | CL-introduced |
+
+## Trace closure
+
+| candidate | obligation | result | evidence |
+| --- | --- | --- | --- |
+| AL-1 | async-operation-owner | PROVES CANDIDATE | local buffer dies at foo.cc:12 |
+
+## Verified affinity
+
+| candidate | base / interface | invariant owner | violated invariant | state / transition | proposed fix layer | related symbols |
+| --- | --- | --- | --- | --- | --- | --- |
+| AL-1 | async write | socket | buffer retained until completion | pending → callback | socket write | Write, callback |
+""",
+        )
+        result = run(
+            "python3", str(ARTIFACT_VALIDATE), str(root), str(artifact),
+            check=False,
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("trace closure mismatch", result.stderr)
+        self.assertIn("callee/backend-implementation", result.stderr)
+
+    def test_style_candidate_requires_applicable_authority_obligation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = root / "ledger" / "CLP.md"
+            write(
+                artifact,
+                """# Polish
+
+## Compliance matrix
+
+| # | question | answer | evidence | candidate |
+| --- | --- | --- | --- | --- |
+| 1 | boolean naming | ambiguous | net/foo.cc:10 | CLP-1 |
+
+## Candidate rows
+
+| id | claim | location | evidence / hypothesis | origin | severity | status |
+| --- | --- | --- | --- | --- | --- | --- |
+| CLP-1 | boolean needs is_ prefix | net/foo.cc:10 | mechanical bool scan | CL-introduced | | candidate |
+
+## Candidate descriptors
+
+| candidate | classes | obligations | base / interface | invariant owner | violated invariant | state / transition | proposed fix layer | related symbols |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| CLP-1 | style-convention | caller-reachability | local naming convention | nearby net code | boolean reads as predicate | declaration → callsite | rename | enabled_ |
+""",
+            )
+            result = run(
+                "python3", str(ARTIFACT_VALIDATE), str(root), str(artifact),
+                check=False,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("style-authority", result.stderr)
+            with artifact.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    "\n## Amendments\n\n"
+                    "| amendment | target | operation | replacement / reason | evidence | attempt |\n"
+                    "| --- | --- | --- | --- | --- | --- |\n"
+                    '| CLP-A1 | descriptor:CLP-1 | replace-fields | '
+                    '{"obligations": "style-authority"} | net/STYLE.md:10 | 2 |\n'
+                )
+            repaired = run(
+                "python3", str(ARTIFACT_VALIDATE), str(root), str(artifact),
+                check=False,
+            )
+            self.assertEqual(
+                0, repaired.returncode, repaired.stdout + repaired.stderr
+            )
+
+    def test_complete_async_refutation_passes(self) -> None:
+        obligations = (
+            "callee/backend-implementation, async-operation-owner, "
+            "destruction/cancellation, platform-branches"
+        )
+        temporary, root = self.make_review(obligations)
+        self.addCleanup(temporary.cleanup)
+        artifact = root / "verification" / "V001.md"
+        write(
+            artifact,
+            """# Verdict
+
+| id | candidate | verdict | evidence | severity (anchor) | origin |
+| --- | --- | --- | --- | --- | --- |
+| V001-1 | AL-1 | REFUTED | backend retains the buffer at socket.cc:40 | — | — |
+
+## Trace closure
+
+| candidate | obligation | result | evidence |
+| --- | --- | --- | --- |
+| AL-1 | callee/backend-implementation | REFUTES CANDIDATE | backend retains caller buffer at socket.cc:40 |
+| AL-1 | async-operation-owner | REFUTES CANDIDATE | pending write owns the buffer at socket.cc:41 |
+| AL-1 | destruction/cancellation | REFUTES CANDIDATE | destructor cancels before member teardown at wrapper.cc:80 |
+| AL-1 | platform-branches | NEUTRAL | POSIX and Windows retain equivalent buffers at socket_posix.cc:90 and socket_win.cc:110 |
+
+## Verified affinity
+
+| candidate | base / interface | invariant owner | violated invariant | state / transition | proposed fix layer | related symbols |
+| --- | --- | --- | --- | --- | --- | --- |
+| AL-1 | async write | backend pending operation | buffer retained until completion | pending → completion/cancel | no fix — contract holds | Write, pending_write_ |
+""",
+        )
+        result = run(
+            "python3", str(ARTIFACT_VALIDATE), str(root), str(artifact),
+            check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_affinity_requires_global_candidate_and_verdict_membership(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write(
+                root / "indexes" / "verdicts.tsv",
+                "id\tcandidate\tverdict\n"
+                "V001-1\tSMM-1\tCONFIRMED\n"
+                "V002-1\tCAS-1\tUNPROVEN\n",
+            )
+            artifact = root / "verification" / "affinity.md"
+            write(
+                artifact,
+                """# Affinity
+
+## Root families
+
+| root family | members | shared invariant | invariant owner | state / transition | fix layer | related symbols | disposition |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| RF001 | SMM-1, V001-1, CAS-1 | operation requires connected state | DatagramSocket state contract | disconnected → operation | shared precondition | Read, Write | one root cause |
+
+## Consistency audit
+
+| check | rows / families | evidence | result |
+| --- | --- | --- | --- |
+| contradictory assumptions | RF001 | socket.cc:10 | consistent |
+| invariant-owner collisions | RF001 | socket.h:20 | one owner |
+| style-authority scope | all | evidence-exception:no-style-candidates | none |
+| lifetime operation owner | all | evidence-exception:no-lifetime-candidates | none |
+| reachability termination | RF001 | caller.cc:30 | reaches caller |
+| repeated local fixes | RF001 | socket.cc:40 | one shared fix |
+""",
+            )
+            result = run(
+                "python3", str(ARTIFACT_VALIDATE), str(root), str(artifact),
+                check=False,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("CAS-1/V002-1 is not fully assigned", result.stderr)
 
 
 class ProcessContractToolsTest(unittest.TestCase):

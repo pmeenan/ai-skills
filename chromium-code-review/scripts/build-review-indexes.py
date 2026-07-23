@@ -214,10 +214,24 @@ def candidate_rows(root: Path) -> list[list[str]]:
     for path in paths:
         parsed = list(tables(read(path), relative(path, root)))
         amendments: dict[str, dict[str, str]] = {}
+        descriptors: dict[str, dict[str, str]] = {}
         for heading, header, rows in parsed:
             if heading == "Amendments" and {"amendment", "target", "operation"}.issubset(header):
                 for row in rows:
                     amendments[row.get("target", "")] = row
+            if heading == "Candidate descriptors" and {
+                "candidate", "classes", "obligations", "base / interface",
+                "invariant owner", "violated invariant", "state / transition",
+                "proposed fix layer", "related symbols",
+            }.issubset(header):
+                for row in rows:
+                    candidate = clean(row.get("candidate", ""))
+                    if candidate in descriptors:
+                        fail(
+                            f"{relative(path, root)}: duplicate Candidate "
+                            f"descriptors row for {candidate}"
+                        )
+                    descriptors[candidate] = row
         for heading, header, rows in parsed:
             candidate_table = heading == "Candidate rows" or (
                 path.name == "collection.md" and {"id", "claim", "status"}.issubset(header)
@@ -250,10 +264,24 @@ def candidate_rows(root: Path) -> list[list[str]]:
                     amendment_evidence = amendment.get("evidence", "")
                 else:
                     amendment_evidence = ""
+                descriptor = descriptors.get(identifier)
+                if descriptor is None:
+                    fail(
+                        f"{source}: candidate {identifier} has no Candidate "
+                        "descriptors row"
+                    )
                 output.append([
                     identifier, clean(row.get("claim", "")), clean(row.get("location", "")),
                     clean(row.get("origin", "")), clean(row.get("severity", "")),
                     clean(status), citations(evidence + " " + amendment_evidence), clean(evidence), source,
+                    clean(descriptor.get("classes", "")),
+                    clean(descriptor.get("obligations", "")),
+                    clean(descriptor.get("base / interface", "")),
+                    clean(descriptor.get("invariant owner", "")),
+                    clean(descriptor.get("violated invariant", "")),
+                    clean(descriptor.get("state / transition", "")),
+                    clean(descriptor.get("proposed fix layer", "")),
+                    clean(descriptor.get("related symbols", "")),
                 ])
     return sorted(output, key=lambda row: row[0])
 
@@ -262,10 +290,51 @@ def verdict_rows(root: Path) -> list[list[str]]:
     paths = [p for p in (sorted((root / "verification").glob("V*.md")) if (root / "verification").is_dir() else []) if p.name != "VTER.md"]
     output: list[list[str]] = []
     seen: dict[str, str] = {}
+    root_families: dict[str, str] = {}
+    affinity_path = root / "verification" / "affinity.md"
+    if affinity_path.is_file():
+        for heading, header, rows in tables(
+            read(affinity_path), relative(affinity_path, root)
+        ):
+            if heading != "Root families" or not {
+                "root family", "members"
+            }.issubset(header):
+                continue
+            for row in rows:
+                family = clean(row.get("root family", ""))
+                for member in ROW_ID_RE.findall(row.get("members", "")):
+                    previous = root_families.get(member)
+                    if previous is not None and previous != family:
+                        fail(
+                            f"{relative(affinity_path, root)}: row {member} "
+                            f"belongs to both {previous} and {family}"
+                        )
+                    root_families[member] = family
     for path in paths:
         if path.name == "batches.md":
             continue
-        for _, header, rows in tables(read(path), relative(path, root)):
+        parsed = list(tables(read(path), relative(path, root)))
+        closure: dict[str, list[str]] = {}
+        affinities: dict[str, dict[str, str]] = {}
+        for heading, header, rows in parsed:
+            if heading == "Trace closure" and {
+                "candidate", "obligation", "result", "evidence"
+            }.issubset(header):
+                for row in rows:
+                    candidate = clean(row.get("candidate", ""))
+                    closure.setdefault(candidate, []).append(
+                        f"{clean(row.get('obligation', ''))}="
+                        f"{clean(row.get('result', ''))}"
+                    )
+            if heading == "Verified affinity" and {
+                "candidate", "base / interface", "invariant owner",
+                "violated invariant", "state / transition",
+                "proposed fix layer", "related symbols",
+            }.issubset(header):
+                for row in rows:
+                    candidate = clean(row.get("candidate", ""))
+                    affinities[candidate] = row
+        for _, header, rows in parsed:
             if not {"id", "candidate", "verdict"}.issubset(header):
                 continue
             for row in rows:
@@ -277,10 +346,20 @@ def verdict_rows(root: Path) -> list[list[str]]:
                     fail(f"duplicate verdict ID {identifier} in {seen[identifier]} and {source}")
                 seen[identifier] = source
                 evidence = row.get("evidence", "")
+                candidate = clean(row.get("candidate", ""))
+                affinity = affinities.get(candidate, {})
                 output.append([
-                    identifier, clean(row.get("candidate", "")), clean(row.get("verdict", "")),
+                    identifier, candidate, clean(row.get("verdict", "")),
                     clean(row.get("severity (anchor)", row.get("severity", ""))),
                     clean(row.get("origin", "")), citations(evidence), clean(evidence), source,
+                    "; ".join(closure.get(candidate, [])) or "-",
+                    clean(affinity.get("base / interface", "")) or "-",
+                    clean(affinity.get("invariant owner", "")) or "-",
+                    clean(affinity.get("violated invariant", "")) or "-",
+                    clean(affinity.get("state / transition", "")) or "-",
+                    clean(affinity.get("proposed fix layer", "")) or "-",
+                    clean(affinity.get("related symbols", "")) or "-",
+                    root_families.get(candidate, root_families.get(identifier, "-")),
                 ])
     return sorted(output, key=lambda row: row[0])
 
@@ -458,6 +537,9 @@ def source_paths(root: Path) -> dict[str, list[Path]]:
     if (root / "collection.md").is_file():
         candidates.append(root / "collection.md")
     verdicts = [p for p in (sorted((root / "verification").glob("V*.md")) if (root / "verification").is_dir() else []) if p.name != "VTER.md"]
+    affinity = root / "verification" / "affinity.md"
+    if affinity.is_file():
+        verdicts.append(affinity)
     reconciliation = sorted({*candidates, *verdicts})
     reconciliation += sorted((root / "root-cause").glob("RC*.md")) if (root / "root-cause").is_dir() else []
     batches = root / "verification" / "batches.md"
@@ -489,7 +571,7 @@ def manifest(root: Path, payloads: dict[str, str], sources: dict[str, list[Path]
                 for path in sources[name]
             ],
         }
-    return json.dumps({"schema_version": 1, "indexes": indexes}, indent=2, sort_keys=True) + "\n"
+    return json.dumps({"schema_version": 2, "indexes": indexes}, indent=2, sort_keys=True) + "\n"
 
 
 def main() -> int:
@@ -507,11 +589,23 @@ def main() -> int:
             ["kind", "id", "subject", "scope", "tags", "citations", "source"], inventory_rows(root)
         ),
         "candidates.tsv": encode(
-            ["id", "claim", "location", "origin", "severity", "status", "citations", "evidence_excerpt", "source"],
+            [
+                "id", "claim", "location", "origin", "severity", "status",
+                "citations", "evidence_excerpt", "source", "classes",
+                "obligations", "base_interface", "invariant_owner",
+                "violated_invariant", "state_transition",
+                "proposed_fix_layer", "related_symbols",
+            ],
             candidate_rows(root),
         ),
         "verdicts.tsv": encode(
-            ["id", "candidate", "verdict", "severity", "origin", "citations", "evidence_excerpt", "source"],
+            [
+                "id", "candidate", "verdict", "severity", "origin",
+                "citations", "evidence_excerpt", "source", "trace_closure",
+                "base_interface", "invariant_owner", "violated_invariant",
+                "state_transition", "proposed_fix_layer", "related_symbols",
+                "root_family",
+            ],
             verdict_rows(root),
         ),
         "reconciliation.tsv": encode(

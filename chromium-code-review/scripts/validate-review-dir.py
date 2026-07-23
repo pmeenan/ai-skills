@@ -18,7 +18,7 @@ import csv
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
@@ -32,10 +32,46 @@ PHASES = {"pin": 0, "collection": 1, "verification": 2,
 ROW_ID_TEXT = r"(?:[A-Z][A-Z0-9]*-\d+|R\d+-RC\d+-\d+)"
 ROW_ID = re.compile(rf"^{ROW_ID_TEXT}$")
 CITATION = re.compile(r"(?:^|[\s`(\[])([A-Za-z0-9_.+@{}\-/]+):\d+")
+SUGGESTED_EDIT_FIELD = re.compile(
+    r"(?im)^- \*\*Suggested edit:\*\*\s*"
+    r"(applicable|omitted)\s*(?:—|-)\s*(\S[^\r\n]*)$"
+)
+CARD_SUGGESTED_EDIT_FIELD = re.compile(
+    r"(?im)^- Suggested edit decision:\s*"
+    r"(applicable|omitted)\s*(?:—|-)\s*(\S[^\r\n]*)$"
+)
+SUGGESTION_TARGET = re.compile(
+    r"(?i)^replaces\s+([A-Za-z0-9_.+@{}\-/]+):([1-9]\d*)"
+    r"(?:-([1-9]\d*))?$"
+)
+NON_SPECIFIC_OMISSION = {
+    "n/a",
+    "none",
+    "not applicable",
+    "no suggestion",
+    "omitted",
+}
 ARTIFACT_POINTER = re.compile(
     r"(?:^|\s|`)([A-Za-z0-9_.+@{}\-/]+\.(?:json|md):/"
     r"[A-Za-z0-9_./~-]+)"
 )
+
+
+def review_artifact_pointer_exists(root: Path, pointer: str) -> bool:
+    """Return whether a review-relative artifact pointer names real evidence."""
+    path_text, separator, _ = pointer.partition(":/")
+    artifact_path = PurePosixPath(path_text)
+    if not separator or artifact_path.is_absolute() or ".." in artifact_path.parts:
+        return False
+    try:
+        resolved_root = root.resolve()
+        resolved_path = (root / artifact_path).resolve()
+        resolved_path.relative_to(resolved_root)
+        return resolved_path.is_file() and resolved_path.stat().st_size > 0
+    except (OSError, ValueError):
+        return False
+
+
 ROSTER = (
     "Desk-Check Simulation + Arithmetic Drills",
     "Data Lineage",
@@ -112,6 +148,47 @@ MANIFEST_TIERS = {"mechanical", "standard", "frontier", "inherit"}
 TIER_ORDER = {"mechanical": 0, "standard": 1, "frontier": 2}
 TIER_FLOOR_STANDARD = {"Mechanical Leads", "Changed-Lines Polish"}
 EVIDENCE_EXCEPTION = re.compile(r"evidence-exception:\s*\S+")
+ROOT_FAMILY = re.compile(r"^RF\d{3,}$")
+OBLIGATIONS = {
+    "local-proof",
+    "base-contract",
+    "caller-reachability",
+    "callee/backend-implementation",
+    "async-operation-owner",
+    "destruction/cancellation",
+    "platform-branches",
+    "style-authority",
+}
+CLASS_OBLIGATIONS = {
+    "general": set(),
+    "contract": {
+        "base-contract", "caller-reachability",
+        "callee/backend-implementation",
+    },
+    "async-lifetime": {
+        "callee/backend-implementation", "async-operation-owner",
+        "destruction/cancellation", "platform-branches",
+    },
+    "style-convention": {"style-authority"},
+    "state-protocol": {
+        "base-contract", "caller-reachability",
+        "callee/backend-implementation",
+    },
+    "platform": {"platform-branches"},
+}
+DESCRIPTOR_COLUMNS = {
+    "candidate", "classes", "obligations", "base / interface",
+    "invariant owner", "violated invariant", "state / transition",
+    "proposed fix layer", "related symbols",
+}
+CONSISTENCY_CHECKS = {
+    "contradictory assumptions",
+    "invariant-owner collisions",
+    "style-authority scope",
+    "lifetime operation owner",
+    "reachability termination",
+    "repeated local fixes",
+}
 GATE_VERDICTS = {"PROVEN", "REJECTED", "UNPROVEN"}
 RESIDUE_SCOPE = re.compile(r"^residue\((TC\d+(?:\s*,\s*TC\d+)*)\):\s+\S")
 MANIFEST_STATES = {
@@ -166,6 +243,304 @@ def read_text(path: Path, report: Report, required: bool = True) -> str:
     return ""
 
 
+def fenced_field(
+    text: str,
+    label: str,
+    required_info: str | None = None,
+) -> str | None:
+    """Return normalized fenced content following one exact list field."""
+    lines = text.splitlines()
+    field_pattern = re.compile(rf"^- {re.escape(label)}:\s*$")
+    for index, line in enumerate(lines):
+        if field_pattern.fullmatch(line) is None:
+            continue
+        cursor = index + 1
+        while cursor < len(lines) and not lines[cursor].strip():
+            cursor += 1
+        if cursor >= len(lines):
+            return None
+        opening = re.fullmatch(r"([ ]{0,3})```([A-Za-z0-9_+.-]*)\s*", lines[cursor])
+        if opening is None:
+            return None
+        if required_info is not None and opening.group(2) != required_info:
+            return None
+        indent = opening.group(1)
+        content: list[str] = []
+        cursor += 1
+        while cursor < len(lines):
+            if re.fullmatch(rf"{re.escape(indent)}```\s*", lines[cursor]):
+                return "\n".join(
+                    value[len(indent):] if value.startswith(indent) else value
+                    for value in content
+                )
+            content.append(lines[cursor])
+            cursor += 1
+        return None
+    return None
+
+
+def fenced_blocks(text: str, info: str) -> list[str]:
+    """Return normalized contents of all fenced blocks with one info string."""
+    lines = text.splitlines()
+    blocks: list[str] = []
+    cursor = 0
+    while cursor < len(lines):
+        opening = re.fullmatch(
+            rf"([ ]{{0,3}})```{re.escape(info)}\s*", lines[cursor]
+        )
+        if opening is None:
+            cursor += 1
+            continue
+        indent = opening.group(1)
+        content: list[str] = []
+        cursor += 1
+        while cursor < len(lines):
+            if re.fullmatch(rf"{re.escape(indent)}```\s*", lines[cursor]):
+                blocks.append(
+                    "\n".join(
+                        value[len(indent):]
+                        if value.startswith(indent) else value
+                        for value in content
+                    )
+                )
+                break
+            content.append(lines[cursor])
+            cursor += 1
+        cursor += 1
+    return blocks
+
+
+def root_suggestion_decisions(
+    root: Path,
+    report: Report,
+) -> dict[str, dict[str, Any]]:
+    """Extract canonical RC-row suggestion decisions for card binding."""
+    decisions: dict[str, dict[str, Any]] = {}
+    family_members: dict[str, set[str]] = defaultdict(set)
+    root_cause = root / "root-cause"
+    for path in sorted(root_cause.glob("RC*.md")) if root_cause.exists() else []:
+        text = read_text(path, report)
+        matches = list(re.finditer(r"(?m)^## (RC\d+-\d+)\b[^\r\n]*$", text))
+        for position, match in enumerate(matches):
+            identifier = match.group(1)
+            end = matches[position + 1].start() if position + 1 < len(matches) else len(text)
+            section = text[match.end():end]
+            family_match = re.search(
+                r"(?im)^- Root family:\s*(RF\d{3,})\s*$", section
+            )
+            decision_match = re.search(
+                r"(?im)^- Suggested-edit decision:\s*"
+                r"(applicable|omitted)\s*(?:—|-)\s*(\S[^\r\n]*)$",
+                section,
+            )
+            if decision_match is None:
+                continue
+            if identifier in decisions:
+                report.error(
+                    f"root-cause Suggested edit decision {identifier} is "
+                    "defined more than once"
+                )
+                continue
+            status = decision_match.group(1).lower()
+            detail = decision_match.group(2).strip()
+            selected = fenced_field(section, "Suggested-edit selected lines")
+            replacement = fenced_field(
+                section, "Suggested-edit replacement", "suggestion"
+            )
+            if family_match is None:
+                report.error(
+                    f"root-cause row {identifier} with a Suggested edit "
+                    "decision lacks an exact Root family field"
+                )
+                continue
+            if status == "applicable":
+                if SUGGESTION_TARGET.fullmatch(detail) is None:
+                    report.error(
+                        f"root-cause row {identifier} has malformed applicable "
+                        "Suggested edit target"
+                    )
+                if selected is None:
+                    report.error(
+                        f"root-cause row {identifier} applicable Suggested edit "
+                        "lacks selected lines"
+                    )
+                if replacement is None:
+                    report.error(
+                        f"root-cause row {identifier} applicable Suggested edit "
+                        "lacks a replacement block"
+                    )
+            elif detail.lower() in NON_SPECIFIC_OMISSION:
+                report.error(
+                    f"root-cause row {identifier} has a non-specific Suggested "
+                    "edit omission reason"
+                )
+            elif selected is not None or replacement is not None:
+                report.error(
+                    f"root-cause row {identifier} marks Suggested edit omitted "
+                    "but contains selected/replacement fences"
+                )
+            decisions[identifier] = {
+                "family": family_match.group(1),
+                "status": status,
+                "detail": detail,
+                "selected": selected or "",
+                "replacement": replacement or "",
+            }
+        for heading, header, rows in table_dicts(text):
+            if heading != "Root-family analysis":
+                continue
+            if not {"root family", "members"}.issubset(header):
+                continue
+            for row in rows:
+                family = row.get("root family", "").strip()
+                family_members[family].update(
+                    re.findall(ROW_ID_TEXT, row.get("members", ""))
+                )
+    for identifier, decision in decisions.items():
+        decision["members"] = family_members.get(decision["family"], set())
+        decision["members"].add(identifier)
+    return decisions
+
+
+def validate_suggestion_target(
+    root: Path,
+    item: str,
+    target: re.Match[str],
+    selected: str | None,
+    gerrit_text: str,
+    report: Report,
+) -> None:
+    """Prove a suggested edit targets verbatim changed-side pinned text."""
+    repo_path = target.group(1)
+    pure_path = PurePosixPath(repo_path)
+    if (
+        pure_path.is_absolute()
+        or ".." in pure_path.parts
+        or not pure_path.parts
+        or pure_path.as_posix() != repo_path
+    ):
+        report.error(
+            f"output coverage {item} Suggested edit target is not a normalized "
+            "repo-relative path"
+        )
+        return
+    start = int(target.group(2))
+    end = int(target.group(3) or start)
+    target_text = f"{repo_path}:{start}"
+    if target.group(3):
+        target_text += f"-{end}"
+    declarations = re.findall(
+        rf"(?m)^(?:###\s+)?{re.escape(target_text)}\s*$", gerrit_text
+    )
+    if len(declarations) != 1:
+        report.error(
+            f"output coverage {item} Gerrit fragment has "
+            f"{len(declarations)} exact target declarations for {target_text}; "
+            "expected one"
+        )
+    all_targets = re.findall(
+        r"(?m)^(?:###\s+)?[A-Za-z0-9_.+@{}\-/]+:[1-9]\d*"
+        r"(?:-[1-9]\d*)?\s*$",
+        gerrit_text,
+    )
+    if len(all_targets) != 1:
+        report.error(
+            f"output coverage {item} Gerrit fragment has "
+            f"{len(all_targets)} standalone target declarations; expected "
+            "exactly one total"
+        )
+
+    pin = read_text(root / "pin.md", report)
+    changed: set[str] = set()
+    in_files = False
+    for line in pin.splitlines():
+        if line.startswith("- Files changed"):
+            in_files = True
+            continue
+        if in_files:
+            match = re.match(
+                r"^  - (.*?)(?: \[[A-Z?]+; \+[0-9?]+/-[0-9?]+\])?$",
+                line,
+            )
+            if match:
+                changed.add(match.group(1))
+            elif line.strip():
+                in_files = False
+    if repo_path not in changed:
+        report.error(
+            f"output coverage {item} Suggested edit targets unchanged or "
+            f"unknown file {repo_path}"
+        )
+        return
+
+    worktree_value = field(pin, "Worktree")
+    revision = field(pin, "Revision SHA")
+    parent = field(pin, "Parent SHA")
+    if not worktree_value or not revision or not parent:
+        report.error(
+            f"output coverage {item} cannot verify Suggested edit against "
+            "the pinned worktree"
+        )
+        return
+    worktree = Path(worktree_value.split(" (", 1)[0])
+    try:
+        source = subprocess.run(
+            ["git", "-C", str(worktree), "show", f"{revision}:{repo_path}"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).stdout.decode("utf-8")
+        diff = subprocess.run(
+            [
+                "git", "-C", str(worktree), "diff", "--unified=0",
+                parent, revision, "--", repo_path,
+            ],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).stdout
+    except (subprocess.CalledProcessError, UnicodeDecodeError) as error:
+        detail = (
+            error.stderr.decode("utf-8", "replace")
+            if isinstance(error, subprocess.CalledProcessError)
+            and isinstance(error.stderr, bytes)
+            else str(error)
+        )
+        report.error(
+            f"output coverage {item} cannot read Suggested edit target from "
+            f"the pinned revision: {detail.strip()}"
+        )
+        return
+
+    source_lines = source.splitlines()
+    if end < start or end > len(source_lines):
+        report.error(
+            f"output coverage {item} Suggested edit range {target_text} is "
+            f"outside the pinned file's {len(source_lines)} lines"
+        )
+        return
+    actual_selected = "\n".join(source_lines[start - 1:end])
+    if selected is None or selected != actual_selected:
+        report.error(
+            f"output coverage {item} Suggested edit selected lines do not "
+            "match the pinned changed-side range"
+        )
+
+    changed_new_lines: set[int] = set()
+    for hunk in re.finditer(
+        r"(?m)^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", diff
+    ):
+        hunk_start = int(hunk.group(1))
+        hunk_count = int(hunk.group(2) or "1")
+        changed_new_lines.update(range(hunk_start, hunk_start + hunk_count))
+    if not changed_new_lines.intersection(range(start, end + 1)):
+        report.error(
+            f"output coverage {item} Suggested edit range {target_text} does "
+            "not intersect a changed-side hunk in the pinned patch"
+        )
+
+
 def read_json(path: Path, report: Report) -> Any:
     try:
         raw = path.read_bytes()
@@ -188,6 +563,14 @@ def split_row(line: str) -> list[str]:
         body = body[:-1]
     cells = re.split(r"(?<!\\)\|", body)
     return [cell.replace(r"\|", "|").strip() for cell in cells]
+
+
+def comma_tokens(value: str) -> set[str]:
+    return {
+        token.strip().lower()
+        for token in re.split(r"[,;]", value)
+        if token.strip()
+    }
 
 
 def tables(text: str) -> Iterable[tuple[str, list[str], list[list[str]]]]:
@@ -688,31 +1071,72 @@ def validate_trigger_inventory(
     return required, trigger_rows
 
 
-def validate_root_cause_trigger_accounting(root: Path, required: set[str],
-                                           report: Report) -> None:
+def validate_root_cause_trigger_accounting(
+    root: Path,
+    required: set[str],
+    surviving: dict[str, tuple[str, str]],
+    membership: dict[str, str],
+    report: Report,
+) -> None:
     path = root / "root-cause" / "batches.md"
     text = read_text(path, report)
+    suggestion_decisions = root_suggestion_decisions(root, report)
     accounting: Counter[str] = Counter()
     scheduled: set[str] = set()
+    family_batches: dict[str, set[str]] = defaultdict(set)
+    survivor_accounting: Counter[str] = Counter()
     found_table = False
     for heading, header, rows in table_dicts(text):
         if heading != "Trigger accounting":
             continue
         found_table = True
-        if not {"candidate / verdict", "disposition", "rc batch"}.issubset(header):
+        if not {
+            "candidate / verdict", "root family", "disposition", "rc batch"
+        }.issubset(header):
             report.error(f"{path}: Trigger accounting has the wrong columns")
             continue
         for row in rows:
             scope = row.get("candidate / verdict", "")
-            scope = scope.upper()
-            if not TRIGGER_ID.fullmatch(scope):
-                continue
-            accounting[scope] += 1
             disposition = row.get("disposition", "")
             batch = row.get("rc batch", "")
-            if re.match(r"(?i)^scheduled\b", disposition) and re.fullmatch(r"RC\d+", batch):
-                scheduled.add(scope)
+            family = row.get("root family", "").strip()
+            trigger_scope = scope.upper()
+            if TRIGGER_ID.fullmatch(trigger_scope):
+                accounting[trigger_scope] += 1
+                if (
+                    re.match(r"(?i)^scheduled\b", disposition)
+                    and re.fullmatch(r"RC\d+", batch)
+                ):
+                    scheduled.add(trigger_scope)
+                continue
+            row_ids = set(re.findall(ROW_ID_TEXT, scope))
+            for candidate, (verdict_id, _) in surviving.items():
+                if candidate not in row_ids and verdict_id not in row_ids:
+                    continue
+                survivor_accounting[verdict_id] += 1
+                expected_family = membership.get(candidate)
+                if family != expected_family:
+                    report.error(
+                        f"{path}: trigger {candidate}/{verdict_id} uses root "
+                        f"family '{family}', expected '{expected_family}'"
+                    )
+                if re.match(r"(?i)^scheduled\b", disposition):
+                    if not re.fullmatch(r"RC\d+", batch):
+                        report.error(
+                            f"{path}: scheduled root family {family} has "
+                            f"invalid RC batch '{batch}'"
+                        )
+                    else:
+                        family_batches[family].add(batch)
     if not found_table:
+        empty_fast_path = (
+            not required
+            and not surviving
+            and re.search(r"(?m)^- Trigger count:\s*0\s*$", text)
+            and re.search(r"(?m)^- Result:\s*empty\b", text)
+        )
+        if empty_fast_path:
+            return
         report.error(f"{path}: missing ## Trigger accounting table")
     for scope in sorted(required):
         if accounting[scope] != 1:
@@ -720,6 +1144,100 @@ def validate_root_cause_trigger_accounting(root: Path, required: set[str],
                 f"root-cause trigger scope {scope} has {accounting[scope]} accounting rows")
         elif scope not in scheduled:
             report.error(f"root-cause-required scope {scope} is not scheduled to an RC batch")
+    for candidate, (verdict_id, _) in surviving.items():
+        if survivor_accounting[verdict_id] != 1:
+            report.error(
+                f"surviving candidate/verdict {candidate}/{verdict_id} has "
+                f"{survivor_accounting[verdict_id]} root-cause trigger rows"
+            )
+    for family, batches in sorted(family_batches.items()):
+        if len(batches) != 1:
+            report.error(
+                f"root family {family} is split across RC batches "
+                f"{sorted(batches)}"
+            )
+            continue
+        batch = next(iter(batches))
+        artifact = root / "root-cause" / f"{batch}.md"
+        if not artifact.is_file():
+            report.error(
+                f"root family {family} is scheduled to {batch} but "
+                f"{artifact} is missing"
+            )
+            continue
+        analyses = 0
+        for heading, header, rows in table_dicts(read_text(artifact, report)):
+            if heading != "Root-family analysis":
+                continue
+            required_columns = {
+                "root family", "members", "shared invariant",
+                "invariant owner", "state / transition", "method coverage",
+                "excluded nearby", "fix layer", "comment count",
+                "suggested edit", "evidence",
+            }
+            if not required_columns.issubset(header):
+                report.error(
+                    f"{artifact}: Root-family analysis has wrong columns"
+                )
+                continue
+            for row in rows:
+                if row.get("root family", "").strip() != family:
+                    continue
+                analyses += 1
+                for member in re.findall(ROW_ID_TEXT, row.get("members", "")):
+                    authoritative_family = membership.get(member)
+                    if (
+                        authoritative_family is not None
+                        and authoritative_family != family
+                    ):
+                        report.error(
+                            f"{artifact}: root family {family} injects member "
+                            f"{member} assigned by affinity to "
+                            f"{authoritative_family}"
+                        )
+                for field in required_columns - {"root family"}:
+                    if not row.get(field, "").strip():
+                        report.error(
+                            f"{artifact}: root family {family} has blank "
+                            f"{field}"
+                        )
+                suggested_edit = row.get("suggested edit", "").strip()
+                if not re.match(
+                    r"(?i)^(?:applicable|omitted)\s*(?:—|-)\s*\S",
+                    suggested_edit,
+                ):
+                    report.error(
+                        f"{artifact}: root family {family} has malformed "
+                        "Suggested edit decision"
+                    )
+                family_decisions = {
+                    identifier: decision
+                    for identifier, decision in suggestion_decisions.items()
+                    if decision["family"] == family
+                }
+                if len(family_decisions) != 1:
+                    report.error(
+                        f"{artifact}: root family {family} has "
+                        f"{len(family_decisions)} canonical RC Suggested edit "
+                        "decisions; expected exactly one"
+                    )
+                else:
+                    identifier, decision = next(iter(family_decisions.items()))
+                    expected = (
+                        f"applicable — {identifier}"
+                        if decision["status"] == "applicable"
+                        else f"omitted — {decision['detail']}"
+                    )
+                    if suggested_edit != expected:
+                        report.error(
+                            f"{artifact}: root family {family} Suggested edit "
+                            f"cell must be '{expected}'"
+                        )
+        if analyses != 1:
+            report.error(
+                f"{artifact}: root family {family} has {analyses} "
+                "Root-family analysis rows"
+            )
 
 
 def validate_generated_briefs(root: Path, report: Report) -> None:
@@ -1823,18 +2341,113 @@ def ledger_data(root: Path, report: Report) -> tuple[dict[str, Path], set[str], 
     return source_ids, candidate_ids, covered_files
 
 
-def validate_verdicts(root: Path, candidates: set[str], report: Report) -> None:
+def validate_candidate_descriptors(
+    root: Path, candidates: set[str], report: Report
+) -> None:
+    descriptors: dict[str, tuple[Path, dict[str, str]]] = {}
+    paths = (
+        sorted((root / "ledger").glob("**/*.md"))
+        if (root / "ledger").exists() else []
+    )
+    if (root / "collection.md").is_file():
+        paths.append(root / "collection.md")
+    for path in paths:
+        for heading, header, rows in table_dicts(read_text(path, report)):
+            if heading != "Candidate descriptors":
+                continue
+            if not DESCRIPTOR_COLUMNS.issubset(header):
+                report.error(f"{path}: Candidate descriptors has wrong columns")
+                continue
+            for row in rows:
+                candidate = row.get("candidate", "").strip()
+                if candidate in descriptors:
+                    report.error(
+                        f"candidate {candidate} has duplicate descriptor rows "
+                        f"in {descriptors[candidate][0]} and {path}"
+                    )
+                else:
+                    descriptors[candidate] = (path, row)
+    for candidate in sorted(candidates):
+        item = descriptors.get(candidate)
+        if item is None:
+            report.error(f"candidate {candidate} has no Candidate descriptors row")
+            continue
+        path, row = item
+        classes = comma_tokens(row.get("classes", ""))
+        obligations = comma_tokens(row.get("obligations", ""))
+        unknown_classes = classes - set(CLASS_OBLIGATIONS)
+        unknown_obligations = obligations - OBLIGATIONS
+        if not classes or unknown_classes:
+            report.error(
+                f"{path}: candidate {candidate} has invalid classes "
+                f"{sorted(unknown_classes) if unknown_classes else '(blank)'}"
+            )
+        if not obligations or unknown_obligations:
+            report.error(
+                f"{path}: candidate {candidate} has invalid obligations "
+                f"{sorted(unknown_obligations) if unknown_obligations else '(blank)'}"
+            )
+        if classes and not unknown_classes:
+            required = set().union(
+                *(CLASS_OBLIGATIONS[item] for item in classes)
+            )
+            missing = required - obligations
+            if missing:
+                report.error(
+                    f"{path}: candidate {candidate} lacks class-required "
+                    f"obligations {sorted(missing)}"
+                )
+        for field in DESCRIPTOR_COLUMNS - {
+            "candidate", "classes", "obligations"
+        }:
+            value = row.get(field, "").strip()
+            if not value or value.lower() in {"-", "unknown", "n/a"}:
+                report.error(
+                    f"{path}: candidate {candidate} has unresolved descriptor "
+                    f"'{field}'; use 'unknown — reason' if necessary"
+                )
+    for candidate, (path, _) in descriptors.items():
+        if candidate not in candidates:
+            report.error(
+                f"{path}: Candidate descriptors references non-candidate "
+                f"{candidate}"
+            )
+
+
+def validate_verdicts(
+    root: Path, candidates: set[str], report: Report
+) -> dict[str, tuple[str, str]]:
     verdicts: Counter[str] = Counter()
+    surviving: dict[str, tuple[str, str]] = {}
     for path in sorted((root / "verification").glob("V*.md")):
         if path.name == "VTER.md":
             continue
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_DIR / "validate-worker-artifact.py"),
+                str(root),
+                str(path),
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if result.returncode != 0:
+            report.error(
+                f"{path}: worker-artifact validation failed: "
+                f"{(result.stderr or result.stdout).strip()}"
+            )
         for _, header, rows in table_dicts(read_text(path, report)):
             if {"candidate", "verdict"}.issubset(header):
                 for row in rows:
+                    verdict_id = row.get("id", "")
                     candidate = row.get("candidate", "")
                     verdict = row.get("verdict", "")
                     if candidate:
                         verdicts[candidate] += 1
+                    if verdict in {"CONFIRMED", "UNPROVEN"}:
+                        surviving[candidate] = (verdict_id, verdict)
                     if verdict not in {"CONFIRMED", "REFUTED", "UNPROVEN"}:
                         report.error(f"{path}: invalid verdict '{verdict}' for {candidate}")
                     evidence = row.get("evidence", "")
@@ -1871,22 +2484,241 @@ def validate_verdicts(root: Path, candidates: set[str], report: Report) -> None:
         for reopened_id in set(re.findall(r"R\d+-RC\d+-\d+", read_text(path, report))):
             if reopened_id not in known_rows:
                 report.error(f"{path} references non-canonical reopened row {reopened_id}")
+    return surviving
+
+
+def validate_affinity(
+    root: Path,
+    candidates: set[str],
+    surviving: dict[str, tuple[str, str]],
+    report: Report,
+) -> dict[str, str]:
+    has_verdicts = False
+    verification = root / "verification"
+    for verdict_path in (
+        sorted(verification.glob("V*.md")) if verification.exists() else []
+    ):
+        if verdict_path.name == "VTER.md":
+            continue
+        for _, header, rows in table_dicts(read_text(verdict_path, report)):
+            if {"candidate", "verdict"}.issubset(header) and rows:
+                has_verdicts = True
+                break
+        if has_verdicts:
+            break
+    if not has_verdicts:
+        return {}
+    path = root / "verification" / "affinity.md"
+    text = read_text(path, report)
+    membership: dict[str, str] = {}
+    families: set[str] = set()
+    found_families = False
+    found_audit = False
+    audit_checks: Counter[str] = Counter()
+    known_rows = candidates | {
+        verdict_id for verdict_id, _ in surviving.values()
+    }
+    for heading, header, rows in table_dicts(text):
+        if heading == "Root families":
+            found_families = True
+            required = {
+                "root family", "members", "shared invariant",
+                "invariant owner", "state / transition", "fix layer",
+                "related symbols", "disposition",
+            }
+            if not required.issubset(header):
+                report.error(f"{path}: Root families has wrong columns")
+                continue
+            for row in rows:
+                family = row.get("root family", "").strip()
+                if not ROOT_FAMILY.fullmatch(family):
+                    report.error(f"{path}: invalid root family '{family}'")
+                    continue
+                if family in families:
+                    report.error(f"{path}: duplicate root family {family}")
+                families.add(family)
+                members = set(re.findall(ROW_ID_TEXT, row.get("members", "")))
+                if not members:
+                    report.error(f"{path}: root family {family} has no members")
+                for member in members:
+                    if member not in known_rows:
+                        report.error(
+                            f"{path}: root family {family} has unknown member "
+                            f"{member}"
+                        )
+                    previous = membership.get(member)
+                    if previous is not None:
+                        report.error(
+                            f"{path}: row {member} belongs to both {previous} "
+                            f"and {family}"
+                        )
+                    membership[member] = family
+                for field in (
+                    "shared invariant", "invariant owner", "state / transition",
+                    "fix layer", "related symbols", "disposition",
+                ):
+                    if not row.get(field, "").strip():
+                        report.error(
+                            f"{path}: root family {family} has blank {field}"
+                        )
+        if heading == "Consistency audit":
+            found_audit = True
+            if not {"check", "rows / families", "evidence", "result"}.issubset(
+                header
+            ):
+                report.error(f"{path}: Consistency audit has wrong columns")
+                continue
+            for row in rows:
+                check = row.get("check", "").strip().lower()
+                audit_checks[check] += 1
+                evidence = row.get("evidence", "")
+                if check not in CONSISTENCY_CHECKS:
+                    report.error(
+                        f"{path}: unknown consistency audit check '{check}'"
+                    )
+                if not row.get("result", "").strip():
+                    report.error(
+                        f"{path}: consistency audit check '{check}' has no result"
+                    )
+                if not (
+                    CITATION.search(evidence)
+                    or ARTIFACT_POINTER.search(evidence)
+                    or EVIDENCE_EXCEPTION.search(evidence)
+                ):
+                    report.error(
+                        f"{path}: consistency audit check '{check}' has no "
+                        "code/artifact evidence or evidence-exception"
+                    )
+    if not found_families:
+        report.error(f"{path}: missing ## Root families table")
+    if not found_audit:
+        report.error(f"{path}: missing ## Consistency audit table")
+    for check in sorted(CONSISTENCY_CHECKS):
+        if audit_checks[check] != 1:
+            report.error(
+                f"{path}: consistency check '{check}' occurs "
+                f"{audit_checks[check]} times"
+            )
+    for candidate, (verdict_id, _) in surviving.items():
+        candidate_family = membership.get(candidate)
+        verdict_family = membership.get(verdict_id)
+        if candidate_family is None or verdict_family is None:
+            report.error(
+                f"{path}: surviving candidate/verdict {candidate}/{verdict_id} "
+                "is not fully assigned to a root family"
+            )
+        elif candidate_family != verdict_family:
+            report.error(
+                f"{path}: candidate/verdict {candidate}/{verdict_id} split "
+                f"across {candidate_family}/{verdict_family}"
+            )
+    return membership
 
 
 def validate_reconciliation(
-    root: Path, source_ids: dict[str, Path], report: Report, final: bool
+    root: Path,
+    source_ids: dict[str, Path],
+    family_membership: dict[str, str],
+    report: Report,
+    final: bool,
 ) -> dict[str, tuple[str, str]]:
     path = root / "reconciliation.md"
     text = read_text(path, report)
     dispositions: Counter[str] = Counter()
+    disposition_values: dict[str, str] = {}
     expected_cards: dict[str, tuple[str, str]] = {}
+    promoted_by_family: dict[str, set[str]] = defaultdict(set)
+    promotion_exceptions: set[str] = set()
+    merge_equivalence: dict[tuple[str, str], dict[str, str]] = {}
+    verdicts_by_candidate: dict[str, tuple[str, str]] = {}
+    for verdict_path in sorted((root / "verification").glob("V*.md")):
+        if verdict_path.name == "VTER.md":
+            continue
+        for _, header, rows in table_dicts(read_text(verdict_path, report)):
+            if not {"id", "candidate", "verdict"}.issubset(header):
+                continue
+            for verdict_row in rows:
+                candidate = verdict_row.get("candidate", "").strip()
+                verdict_id = verdict_row.get("id", "").strip()
+                verdict = verdict_row.get("verdict", "").strip()
+                if candidate and verdict_id and verdict:
+                    verdicts_by_candidate[candidate] = (verdict_id, verdict)
     for _, header, rows in table_dicts(text):
+        if {"root family", "justification", "evidence"}.issubset(header):
+            for row in rows:
+                family = row.get("root family", "").strip()
+                if not ROOT_FAMILY.fullmatch(family):
+                    report.error(
+                        f"reconciliation promotion exception has invalid "
+                        f"root family '{family}'"
+                    )
+                elif (
+                    not row.get("justification", "").strip()
+                    or not (
+                        CITATION.search(row.get("evidence", ""))
+                        or ARTIFACT_POINTER.search(row.get("evidence", ""))
+                    )
+                ):
+                    report.error(
+                        f"root-family promotion exception {family} lacks "
+                        "justification with code/artifact evidence"
+                    )
+                else:
+                    promotion_exceptions.add(family)
+        if {
+            "merged row", "survivor", "trigger equivalence",
+            "invariant equivalence", "outcome equivalence",
+            "survivor verdict",
+        }.issubset(header):
+            for row in rows:
+                merged_row = row.get("merged row", "").strip()
+                survivor = row.get("survivor", "").strip()
+                key = (merged_row, survivor)
+                if key in merge_equivalence:
+                    report.error(
+                        f"reconciliation duplicates merge-equivalence row "
+                        f"{merged_row} → {survivor}"
+                    )
+                    continue
+                merge_equivalence[key] = row
+                if not ROW_ID.fullmatch(merged_row) or not ROW_ID.fullmatch(
+                    survivor
+                ):
+                    report.error(
+                        "reconciliation merge-equivalence row has invalid "
+                        f"IDs '{merged_row}'/'{survivor}'"
+                    )
+                for field_name in (
+                    "trigger equivalence",
+                    "invariant equivalence",
+                    "outcome equivalence",
+                ):
+                    evidence = row.get(field_name, "").strip()
+                    artifact_pointers = [
+                        match.group(1)
+                        for match in ARTIFACT_POINTER.finditer(evidence)
+                    ]
+                    for pointer in artifact_pointers:
+                        if not review_artifact_pointer_exists(root, pointer):
+                            report.error(
+                                f"merge {merged_row} → {survivor} cites "
+                                f"missing or empty review artifact {pointer} "
+                                f"for {field_name}"
+                            )
+                    if not evidence or not (
+                        CITATION.search(evidence) or artifact_pointers
+                    ):
+                        report.error(
+                            f"merge {merged_row} → {survivor} lacks cited "
+                            f"{field_name}"
+                        )
         if {"row", "disposition"}.issubset(header):
             for row in rows:
                 identifier = row.get("row", "")
                 if ROW_ID.fullmatch(identifier):
                     dispositions[identifier] += 1
                     disposition = row.get("disposition", "").strip()
+                    disposition_values[identifier] = disposition
                     if not disposition:
                         report.error(f"reconciliation row {identifier} has blank disposition")
                         continue
@@ -1899,6 +2731,17 @@ def validate_reconciliation(
                         kind, keyword, prefix = "finding", "promoted", "F"
                     elif normalized.startswith("question"):
                         kind, keyword, prefix = "question", "question", "Q"
+                    elif normalized.startswith("merged"):
+                        merge_match = re.fullmatch(
+                            rf"(?i)merged\s*(?:→|->)\s*({ROW_ID_TEXT})",
+                            disposition,
+                        )
+                        if merge_match is None:
+                            report.error(
+                                f"reconciliation row {identifier} has "
+                                "malformed merge disposition; expected "
+                                "'merged → <survivor-row-id>'"
+                            )
                     elif normalized.startswith("downgraded"):
                         report.error(
                             f"reconciliation row {identifier} uses forbidden "
@@ -1919,6 +2762,9 @@ def validate_reconciliation(
                         )
                     elif item_match is not None:
                         item = item_match.group(1).upper()
+                        family = family_membership.get(identifier)
+                        if family is not None and kind == "finding":
+                            promoted_by_family[family].add(item)
                         if item in expected_cards:
                             prior = expected_cards[item][1]
                             report.error(
@@ -1927,12 +2773,144 @@ def validate_reconciliation(
                             )
                         else:
                             expected_cards[item] = (kind, identifier)
+    merge_edges: dict[str, str] = {}
+    for identifier, disposition in disposition_values.items():
+        match = re.fullmatch(
+            rf"(?i)merged\s*(?:→|->)\s*({ROW_ID_TEXT})", disposition
+        )
+        if match is not None:
+            merge_edges[identifier] = match.group(1)
+    for merged_row, survivor in sorted(merge_edges.items()):
+        if survivor == merged_row:
+            report.error(f"reconciliation row {merged_row} merges into itself")
+            continue
+        if survivor not in source_ids:
+            report.error(
+                f"reconciliation row {merged_row} merges into unknown "
+                f"survivor {survivor}"
+            )
+            continue
+        if survivor in merge_edges:
+            report.error(
+                f"reconciliation merge {merged_row} → {survivor} uses a "
+                "merged survivor; target the final verdict-owning row directly"
+            )
+        evidence = merge_equivalence.get((merged_row, survivor))
+        if evidence is None:
+            report.error(
+                f"reconciliation merge {merged_row} → {survivor} lacks an "
+                "exact Merge equivalence row"
+            )
+        survivor_verdict = verdicts_by_candidate.get(survivor)
+        if survivor_verdict is None:
+            report.error(
+                f"reconciliation merge {merged_row} → {survivor} has no "
+                "verdict-owning survivor"
+            )
+        else:
+            verdict_id, verdict = survivor_verdict
+            if evidence is not None:
+                cited_verdict = re.fullmatch(
+                    r"\s*(V[A-Z0-9]*-\d+)\s+"
+                    r"(CONFIRMED|REFUTED|UNPROVEN)\s*",
+                    evidence.get("survivor verdict", ""),
+                )
+                if (
+                    cited_verdict is None
+                    or cited_verdict.group(1) != verdict_id
+                    or cited_verdict.group(2) != verdict
+                ):
+                    report.error(
+                        f"merge {merged_row} → {survivor} does not cite the "
+                        f"survivor's exact verdict {verdict_id} {verdict}"
+                    )
+            merged_verdict = verdicts_by_candidate.get(merged_row)
+            if (
+                merged_verdict is not None
+                and merged_verdict[1] != verdict
+            ):
+                report.error(
+                    f"reconciliation merge {merged_row} → {survivor} hides "
+                    f"{merged_verdict[1]} behind survivor verdict {verdict}"
+                )
+            survivor_disposition = disposition_values.get(survivor, "")
+            required_prefix = {
+                "CONFIRMED": "promoted",
+                "UNPROVEN": "question",
+                "REFUTED": "refuted",
+            }.get(verdict)
+            if (
+                required_prefix is not None
+                and not survivor_disposition.lower().startswith(required_prefix)
+            ):
+                report.error(
+                    f"reconciliation merge survivor {survivor} has "
+                    f"{verdict} verdict but disposition "
+                    f"'{survivor_disposition or 'blank'}'"
+                )
+        merged_family = family_membership.get(merged_row)
+        survivor_family = family_membership.get(survivor)
+        if (
+            merged_family is not None
+            and survivor_family is not None
+            and merged_family != survivor_family
+        ):
+            report.error(
+                f"reconciliation merge {merged_row} → {survivor} crosses "
+                f"root families {merged_family}/{survivor_family}"
+            )
+    for key in sorted(set(merge_equivalence) - {
+        (merged, survivor) for merged, survivor in merge_edges.items()
+    }):
+        report.error(
+            f"reconciliation has foreign Merge equivalence row "
+            f"{key[0]} → {key[1]} without a matching disposition"
+        )
+    for candidate, (verdict_id, verdict) in sorted(
+        verdicts_by_candidate.items()
+    ):
+        disposition = disposition_values.get(candidate, "")
+        if candidate in merge_edges:
+            continue
+        normalized = disposition.lower()
+        valid = (
+            (verdict == "CONFIRMED" and normalized.startswith("promoted"))
+            or (verdict == "UNPROVEN" and normalized.startswith("question"))
+            or (
+                verdict == "REFUTED"
+                and (
+                    normalized.startswith("refuted")
+                    or normalized.startswith("dismissed")
+                )
+                and (
+                    verdict_id in disposition
+                    or CITATION.search(disposition) is not None
+                )
+            )
+        )
+        if not valid:
+            expected = {
+                "CONFIRMED": "promoted → F<number> or structured merged",
+                "UNPROVEN": "question → Q<number> or structured merged",
+                "REFUTED": "refuted/dismissed with evidence or structured merged",
+            }.get(verdict, "a verdict-consistent disposition")
+            report.error(
+                f"reconciliation candidate {candidate} has {verdict} verdict "
+                f"but disposition '{disposition or 'blank'}'; expected "
+                f"{expected}"
+            )
     for identifier in sorted(source_ids):
         if dispositions[identifier] != 1:
             report.error(f"row {identifier} has {dispositions[identifier]} reconciliation dispositions")
     for identifier in dispositions:
         if identifier not in source_ids:
             report.error(f"reconciliation references unknown row {identifier}")
+    for family, items in sorted(promoted_by_family.items()):
+        if len(items) > 1 and family not in promotion_exceptions:
+            report.error(
+                f"root family {family} promotes multiple findings "
+                f"{sorted(items)} without a Root-family promotion exception"
+            )
 
     if final:
         gate = text.split("## Pre-output gate", 1)
@@ -1956,11 +2934,13 @@ def validate_synthesis(
     root: Path,
     source_ids: dict[str, Path],
     expected_cards: dict[str, tuple[str, str]],
+    family_membership: dict[str, str],
     budgets: dict[str, int],
     report: Report,
 ) -> dict[str, str]:
     index = root / "synthesis" / "index.md"
     text = read_text(index, report)
+    rc_suggestions = root_suggestion_decisions(root, report)
     cards: dict[str, str] = {}
     total_bytes = 0
     evidence_budget = budgets.get("evidence_card_budget_bytes")
@@ -1987,6 +2967,168 @@ def validate_synthesis(
             if not card.is_file():
                 report.error(f"synthesis card is missing: {card}")
                 continue
+            card_text = read_text(card, report)
+            if kind == "finding":
+                decision = CARD_SUGGESTED_EDIT_FIELD.search(card_text)
+                if decision is None:
+                    report.error(
+                        f"synthesis finding card {item} lacks a non-empty "
+                        "'Suggested edit decision' field"
+                    )
+                else:
+                    status = decision.group(1).lower()
+                    detail = decision.group(2).strip()
+                    blocks = fenced_blocks(card_text, "suggestion")
+                    card_replacement = fenced_field(
+                        card_text, "Suggested edit replacement", "suggestion"
+                    )
+                    root_cause_match = re.search(
+                        r"(?im)^- Root cause:\s*(RC\d+-\d+|none)\b",
+                        card_text,
+                    )
+                    root_family_match = re.search(
+                        r"(?im)^- Root family:\s*(RF\d{3,}|none)\b",
+                        card_text,
+                    )
+                    if root_cause_match is None or root_family_match is None:
+                        report.error(
+                            f"synthesis finding card {item} lacks exact Root "
+                            "cause / Root family binding fields"
+                        )
+                    rc_identifier = (
+                        root_cause_match.group(1)
+                        if root_cause_match is not None else "none"
+                    )
+                    owner = expected[1] if expected is not None else ""
+                    authoritative_family = family_membership.get(owner)
+                    owner_rc_decisions = {
+                        identifier: value
+                        for identifier, value in rc_suggestions.items()
+                        if owner and owner in value.get("members", set())
+                    }
+                    if rc_identifier == "none" and owner_rc_decisions:
+                        report.error(
+                            f"synthesis finding card {item} erases canonical "
+                            "root-cause Suggested edit decision(s) "
+                            f"{sorted(owner_rc_decisions)}"
+                        )
+                    elif (
+                        rc_identifier != "none"
+                        and owner_rc_decisions
+                        and rc_identifier not in owner_rc_decisions
+                    ):
+                        report.error(
+                            f"synthesis finding card {item} binds Suggested "
+                            "edit to an RC row outside its root family"
+                        )
+                    if authoritative_family is not None:
+                        if rc_identifier == "none":
+                            report.error(
+                                f"synthesis finding card {item} erases "
+                                f"authoritative root family "
+                                f"{authoritative_family}"
+                            )
+                        elif (
+                            rc_identifier in rc_suggestions
+                            and rc_suggestions[rc_identifier]["family"]
+                            != authoritative_family
+                        ):
+                            report.error(
+                                f"synthesis finding card {item} binds owner "
+                                f"{owner} from {authoritative_family} to "
+                                f"unrelated {rc_suggestions[rc_identifier]['family']}"
+                            )
+                        if (
+                            root_family_match is not None
+                            and root_family_match.group(1)
+                            != authoritative_family
+                        ):
+                            report.error(
+                                f"synthesis finding card {item} Root family "
+                                "differs from authoritative affinity"
+                            )
+                    if (
+                        rc_identifier == "none"
+                        and root_family_match is not None
+                        and root_family_match.group(1) != "none"
+                    ):
+                        report.error(
+                            f"synthesis finding card {item} has a Root family "
+                            "without a Root cause binding"
+                        )
+                    if status == "applicable":
+                        if SUGGESTION_TARGET.fullmatch(detail) is None:
+                            report.error(
+                                f"synthesis finding card {item} has malformed "
+                                "applicable Suggested edit target"
+                            )
+                        if len(blocks) != 1 or card_replacement is None:
+                            report.error(
+                                f"synthesis finding card {item} applicable "
+                                f"Suggested edit has {len(blocks)} suggestion "
+                                "blocks; expected exactly one"
+                            )
+                        selected = fenced_field(
+                            card_text, "Suggested edit selected lines"
+                        )
+                        if selected is None:
+                            report.error(
+                                f"synthesis finding card {item} applicable "
+                                "Suggested edit lacks selected lines"
+                            )
+                        rc_decision = rc_suggestions.get(rc_identifier)
+                        if rc_decision is None:
+                            report.error(
+                                f"synthesis finding card {item} applicable "
+                                "Suggested edit lacks a canonical RC decision"
+                            )
+                        elif (
+                            (owner and owner not in rc_decision["members"])
+                            or
+                            root_family_match is None
+                            or root_family_match.group(1)
+                            != rc_decision["family"]
+                            or status != rc_decision["status"]
+                            or detail != rc_decision["detail"]
+                            or selected != rc_decision["selected"]
+                            or card_replacement != rc_decision["replacement"]
+                        ):
+                            report.error(
+                                f"synthesis finding card {item} Suggested edit "
+                                "differs from its root-cause decision"
+                            )
+                    else:
+                        if detail.lower() in NON_SPECIFIC_OMISSION:
+                            report.error(
+                                f"synthesis finding card {item} has a "
+                                "non-specific Suggested edit omission reason"
+                            )
+                        if blocks:
+                            report.error(
+                                f"synthesis finding card {item} marks Suggested "
+                                "edit omitted but contains a suggestion block"
+                            )
+                        rc_decision = rc_suggestions.get(rc_identifier)
+                        if rc_identifier != "none":
+                            if rc_decision is None:
+                                report.error(
+                                    f"synthesis finding card {item} cites "
+                                    f"unknown RC Suggested edit decision "
+                                    f"{rc_identifier}"
+                                )
+                            elif (
+                                (owner and owner not in rc_decision["members"])
+                                or
+                                root_family_match is None
+                                or root_family_match.group(1)
+                                != rc_decision["family"]
+                                or status != rc_decision["status"]
+                                or detail != rc_decision["detail"]
+                            ):
+                                report.error(
+                                    f"synthesis finding card {item} Suggested "
+                                    "edit differs from its root-cause decision"
+                                )
             actual = card.stat().st_size
             total_bytes += actual
             if evidence_budget is not None and actual > evidence_budget:
@@ -2007,6 +3149,19 @@ def validate_synthesis(
             for source in card_sources:
                 if source and source not in source_ids:
                     report.error(f"synthesis item {item} cites unknown source row {source}")
+            if kind == "finding":
+                root_cause_match = re.search(
+                    r"(?im)^- Root cause:\s*(RC\d+-\d+|none)\b", card_text
+                )
+                if (
+                    root_cause_match is not None
+                    and root_cause_match.group(1) != "none"
+                    and root_cause_match.group(1) not in card_sources
+                ):
+                    report.error(
+                        f"synthesis item {item} omits its Root cause row "
+                        f"{root_cause_match.group(1)} from source rows"
+                    )
             if expected is not None and expected[1] not in card_sources:
                 report.error(
                     f"synthesis item {item} omits its owning reconciliation "
@@ -2108,6 +3263,31 @@ def validate_output_coverage(
     report: Report,
 ) -> None:
     """Prove every synthesis item survives as exact final-output bytes."""
+    card_suggestions: dict[
+        str, tuple[str, str, str | None, str | None]
+    ] = {}
+    synthesis_index = read_text(root / "synthesis" / "index.md", report)
+    for _, header, index_rows in table_dicts(synthesis_index):
+        if not {"item", "card"}.issubset(header):
+            continue
+        for index_row in index_rows:
+            item = index_row.get("item", "")
+            if synthesis_items.get(item) != "finding":
+                continue
+            card_path = root / index_row.get("card", "")
+            if not card_path.is_file():
+                continue
+            card_text = read_text(card_path, report)
+            decision = CARD_SUGGESTED_EDIT_FIELD.search(card_text)
+            if decision is None:
+                continue
+            blocks = fenced_blocks(card_text, "suggestion")
+            card_suggestions[item] = (
+                decision.group(1).lower(),
+                decision.group(2).strip(),
+                blocks[0] if len(blocks) == 1 else None,
+                fenced_field(card_text, "Suggested edit selected lines"),
+            )
     manifest = root / "output-coverage.tsv"
     if not manifest.is_file():
         if synthesis_items:
@@ -2184,6 +3364,109 @@ def validate_output_coverage(
             )
         return payload
 
+    def suggestion_decision(
+        item: str,
+        draft_text: str,
+        gerrit_text: str,
+    ) -> None:
+        decision = SUGGESTED_EDIT_FIELD.search(draft_text)
+        if decision is None:
+            report.error(
+                f"output coverage {item} draft fragment lacks a non-empty "
+                "'Suggested edit' field"
+            )
+            return
+        status = decision.group(1).lower()
+        detail = decision.group(2).strip()
+        draft_blocks = fenced_blocks(draft_text, "suggestion")
+        gerrit_blocks = fenced_blocks(gerrit_text, "suggestion")
+        card_decision = card_suggestions.get(item)
+        if card_decision is not None:
+            card_status, card_detail, _, _ = card_decision
+            if status != card_status or detail != card_detail:
+                report.error(
+                    f"output coverage {item} Suggested edit decision differs "
+                    "from its synthesis card"
+                )
+        if status == "omitted":
+            if detail.lower() in NON_SPECIFIC_OMISSION:
+                report.error(
+                    f"output coverage {item} has a non-specific Suggested "
+                    "edit omission reason"
+                )
+            if draft_blocks or gerrit_blocks:
+                report.error(
+                    f"output coverage {item} marks Suggested edit omitted but "
+                    "contains a suggestion block"
+                )
+            return
+
+        target = SUGGESTION_TARGET.fullmatch(detail)
+        if target is None:
+            report.error(
+                f"output coverage {item} has malformed applicable Suggested "
+                "edit target; expected 'replaces path:start-end'"
+            )
+        else:
+            start = int(target.group(2))
+            end = int(target.group(3) or start)
+            if end < start:
+                report.error(
+                    f"output coverage {item} Suggested edit target range is "
+                    "reversed"
+                )
+            elif end - start + 1 > 10:
+                report.error(
+                    f"output coverage {item} Suggested edit selects "
+                    f"{end - start + 1} lines; maximum is 10"
+                )
+            validate_suggestion_target(
+                root,
+                item,
+                target,
+                card_decision[3] if card_decision is not None else None,
+                gerrit_text,
+                report,
+            )
+        if len(draft_blocks) != 1 or len(gerrit_blocks) != 1:
+            report.error(
+                f"output coverage {item} applicable Suggested edit requires "
+                "exactly one suggestion block in both draft and Gerrit "
+                f"fragments (found {len(draft_blocks)} and "
+                f"{len(gerrit_blocks)})"
+            )
+            return
+        if draft_blocks[0] != gerrit_blocks[0]:
+            report.error(
+                f"output coverage {item} draft and Gerrit suggestion blocks "
+                "differ"
+            )
+        if (
+            card_decision is not None
+            and card_decision[2] is not None
+            and draft_blocks[0] != card_decision[2]
+        ):
+            report.error(
+                f"output coverage {item} suggestion block differs from its "
+                "synthesis card"
+            )
+        replacement = draft_blocks[0]
+        replacement_lines = replacement.rstrip("\r\n").splitlines()
+        if len(replacement_lines) > 20:
+            report.error(
+                f"output coverage {item} Suggested edit has "
+                f"{len(replacement_lines)} replacement lines; maximum is 20"
+            )
+        if any(
+            line.strip().lower()
+            in {"...", "…", "<replacement>", "<code>", "placeholder"}
+            for line in replacement_lines
+        ):
+            report.error(
+                f"output coverage {item} Suggested edit contains a "
+                "placeholder or elision"
+            )
+
     for line_number, row in enumerate(rows, 2):
         if None in row or any(row.get(column) is None
                               for column in OUTPUT_COVERAGE_COLUMNS):
@@ -2219,6 +3502,7 @@ def validate_output_coverage(
             draft_payload,
             "draft",
         )
+        draft_text = ""
         if draft_fragment is not None:
             try:
                 draft_text = draft_fragment.decode("utf-8")
@@ -2233,7 +3517,7 @@ def validate_output_coverage(
                 )
             required_fields = (
                 ("Claim", "Location", "Evidence", "Severity", "Origin",
-                 "Fix status", "Regression test", "Rows")
+                 "Fix status", "Suggested edit", "Regression test", "Rows")
                 if expected_kind == "finding"
                 else ("Question", "Why it matters", "Rows")
             )
@@ -2257,6 +3541,7 @@ def validate_output_coverage(
                 gerrit_payload,
                 "gerrit",
             )
+            gerrit_text = ""
             if gerrit_fragment is not None:
                 try:
                     gerrit_text = gerrit_fragment.decode("utf-8")
@@ -2270,6 +3555,8 @@ def validate_output_coverage(
                         f"output coverage {item} Gerrit fragment lacks a "
                         "repo-relative path:line target"
                     )
+            if draft_fragment is not None and gerrit_fragment is not None:
+                suggestion_decision(item, draft_text, gerrit_text)
         elif (
             row["gerrit_path"] != "-"
             or row["gerrit_bytes"] != "-"
@@ -2793,6 +4080,8 @@ def main() -> int:
     synthesis_items: dict[str, str] = {}
     budgets: dict[str, int] = {}
     input_assignments: dict[str, list[dict[str, str]]] = {}
+    surviving: dict[str, tuple[str, str]] = {}
+    family_membership: dict[str, str] = {}
     if level >= PHASES["collection"]:
         if (root / ".work-unit-seal-transaction.json").exists():
             report.error(
@@ -2811,20 +4100,27 @@ def main() -> int:
         input_assignments = validate_input_manifest(root, budgets, report)
         validate_manifest(root, report, final=level >= PHASES["final"])
         source_ids, candidates, covered = ledger_data(root, report)
+        validate_candidate_descriptors(root, candidates, report)
         validate_collection_coverage(root, report, level)
         validate_ter_gate(root, report)
         for changed in sorted(set(changed_files) - covered):
             report.error(f"per-file floor missing ledger/ORC row for {changed}")
     if level >= PHASES["verification"]:
-        validate_verdicts(root, candidates, report)
-        validate_root_cause_trigger_accounting(root, required_root_cause_scopes,
-                                               report)
+        surviving = validate_verdicts(root, candidates, report)
+        family_membership = validate_affinity(
+            root, candidates, surviving, report
+        )
+        validate_root_cause_trigger_accounting(
+            root, required_root_cause_scopes, surviving, family_membership,
+            report,
+        )
     if level >= PHASES["reconciliation"]:
         expected_cards = validate_reconciliation(
-            root, source_ids, report, final=level >= PHASES["final"]
+            root, source_ids, family_membership, report,
+            final=level >= PHASES["final"]
         )
         synthesis_items = validate_synthesis(
-            root, source_ids, expected_cards, budgets, report
+            root, source_ids, expected_cards, family_membership, budgets, report
         )
     if level >= PHASES["final"]:
         validate_final(

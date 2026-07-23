@@ -25,6 +25,11 @@ code, not from memory.
 
 - Build a minimal state or call trace from the code that demonstrates the
   issue, or demonstrates its absence.
+- Read the candidate's `Candidate descriptors` row and close every declared
+  obligation. Do not substitute a local syntax observation for a
+  `local-proof`, `base-contract`, `caller-reachability`, `callee/backend-implementation`,
+  `async-operation-owner`, `destruction/cancellation`, `platform-branches`,
+  or `style-authority` trace.
 - Cite the exact code path and any relevant tests or comments.
 - Classify the issue: correctness bug, contract mismatch, missing test,
   performance risk, lifecycle risk, or polish.
@@ -51,6 +56,15 @@ code, not from memory.
   on the failure path, and the success path skipped it entirely.
 - Distinguish observation from proposed fix. Never recommend a concrete fix
   until it has been traced through the relevant edge cases below.
+- For async-lifetime claims, identify who retains the caller buffer or
+  operation state after an `ERR_IO_PENDING`-style return, then trace
+  cancellation and callback invalidation through destruction on each backend.
+  Local variable death, declaration order, or callback capture syntax alone
+  cannot confirm a use-after-free.
+- For style claims, cite authority applicable to the changed directory.
+  Blink/WebKit naming guidance is not a Chromium-wide convention, and a
+  mechanical `bool` hit without local authority or concrete callsite ambiguity
+  is REFUTED.
 
 ## Skeptic Verdicts
 
@@ -72,6 +86,16 @@ evidence fields — a verdict missing its fields is not a verdict:
 - **UNPROVEN** requires: what was traced, what remains unproven, and a
   drafted question for the CL owner. UNPROVEN rows go to the review's
   Questions section — never to the bin.
+
+Each verdict file also contains `## Trace closure` and
+`## Verified affinity`. Emit exactly one closure row for every obligation
+declared by that candidate—no omissions and no invented extras. Results are
+`PROVES CANDIDATE`, `REFUTES CANDIDATE`, `NEUTRAL`, `OPEN`, or
+`NOT APPLICABLE — reason`, each with code evidence or an explicit
+`evidence-exception:`. CONFIRMED/REFUTED may not retain OPEN obligations;
+UNPROVEN must name at least one. Verified affinity restates or corrects the
+base/interface, invariant owner, violated invariant, state/transition, likely
+fix layer, and related symbols after tracing.
 
 A skeptic that cannot produce REFUTED's required fields has confirmed the
 finding, not dismissed it. When the decisive evidence legitimately has no
@@ -222,13 +246,20 @@ distinct zero-padded `RC001`, `RC002`, ... IDs. Generated root-cause briefs inhe
 common directives, authority boundary, append/retry, and partial-return
 contract from templates.md.
 
+Before this planning step, the global Invariant Affinity Reconciler assigns
+every CONFIRMED/UNPROVEN candidate and verdict to one `RF<number>` family and
+runs the six-row cross-batch consistency audit in templates.md. Root-cause
+planning consumes whole families, not isolated line items. Sharding may extract
+descriptors but may not make independent family assignments.
+
 ## Root-Cause, Layering, And Fix Optimality
 
 Run this after candidate verification and before final synthesis. The goal is
 to catch surface fixes: changes that repair the observed hunk, caller, or test
 without repairing the invariant owner.
 
-For every P1/P2 candidate, risky P3, proposed fix, performance optimization,
+For every complete root family containing a P1/P2 candidate, risky P3,
+proposed fix, performance optimization,
 flaky-test fix, async/lifecycle change, state-machine change, cache/throttle,
 or new state holder, record a root-cause row with these fields:
 
@@ -246,6 +277,21 @@ or new state holder, record a root-cause row with these fields:
   invariant is covered, with representative `path:line` citations.
 - **Chosen-fix verdict:** validated right layer, plausible but needs owner
   confirmation, too local/surface-level, or no fix proposed.
+- **Suggested-edit decision:** `applicable` only when one exact Gerrit inline
+  replacement fully implements the validated fix; otherwise
+  `omitted — <specific reason>`. For an applicable edit, record the
+  repo-relative changed-side range, the verbatim selected lines, and the exact
+  replacement. Re-trace the replacement through the same edge cases as the
+  chosen fix; a plausible code sketch is not an applicable edit. Use the
+  canonical multiline RC-row fields from `templates.md`; never compress
+  multiline selected/replacement text into a root-family table cell. The
+  table cell references the owning RC row, and reconciliation copies that
+  row's decision byte-for-byte into the evidence card.
+- **Family coverage:** every candidate/verdict member, a State × Method matrix
+  when a protocol state is involved, excluded nearby methods with reasons,
+  one chosen fix layer, and whether the family produces one review comment.
+  Multiple comments require distinct invariant owners or independently bad
+  outcomes, not merely different methods or discovery threads.
 
 Use these drills to fill the row:
 
@@ -379,11 +425,31 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   feedback belongs in the main comment body; inline comments must target
   real, modified lines of code.
 - **Concise, query-based inlines:** frame inline feedback as questions or
-  concise queries (e.g., "Can we gate these success-only metrics...?")
-  rather than writing out large diff blocks, unless a specific, simple
-  replacement is optimal. Avoid repeating the same suggestion across
-  multiple files/declarations; place a single comment at the most relevant
-  site.
+  concise queries (e.g., "Can we gate these success-only metrics...?").
+  Avoid repeating the same suggestion across multiple files/declarations;
+  place a single comment at the most relevant site.
+- **Make applicable edits directly actionable:** every promoted finding has a
+  `Suggested edit` decision inherited from its evidence card. Mark it
+  `applicable` only when the validated fix is fully determined, replaces one
+  contiguous changed-side range of at most 10 lines, needs at most 20
+  replacement lines, and requires no coordinated edit, API/design choice,
+  generated output, or unseen context. Then include the exact same fenced
+  `suggestion` block in both the review finding and its Gerrit fragment. The
+  block contains replacement text only — no diff markers, ellipses,
+  placeholders, or explanatory prose — and its target range must be the lines
+  Gerrit should replace. This is an apply-ready edit, not pseudocode.
+  Re-check the path is normalized and repo-relative, the positive range is
+  in-bounds and intersects the pinned patch's changed side, and the selected
+  text exactly equals those lines in the pinned revision. The Gerrit fragment
+  contains exactly one standalone target declaration (`path:start-end` or a
+  `###` heading with that value), so the fence cannot accidentally bind to a
+  citation in explanatory prose.
+- **Explain omissions:** when any eligibility condition fails, write
+  `Suggested edit: omitted — <specific reason>` in the review finding and
+  keep the Gerrit comment to concise fix guidance. Typical reasons are
+  coordinated multi-location changes, an unresolved owner/API choice,
+  replacement too large for one inline, or a fix not yet validated. Never
+  force a locally neat snippet that repairs only one symptom of a root family.
 - **Exhaustive coverage without truncation:** Every promoted finding (each a
   card in `synthesis/index.md`) writes one exact
   `gerrit-parts/<item>.md` target/comment fragment and measured

@@ -146,6 +146,29 @@ complete FRAME card list is not coverage. Questions require draft coverage but
 no Gerrit fragment; merged candidates are represented by their promoted
 survivor and do not create foreign cards.
 
+Merge validation is symmetric with split validation. A CONFIRMED candidate
+cannot disappear behind free-form `merged` prose: every merge uses
+`merged → <survivor-row-id>`, owns exactly one structured equivalence row with
+cited trigger/invariant/outcome, targets a direct verdict-owning survivor, and
+matches the survivor's verdict class and authoritative root family. Artifact
+pointers in equivalence cells resolve to existing, nonempty review artifacts.
+Fixtures must reject a missing/foreign equivalence row, unknown or chained
+survivor, cross-family merge, CONFIRMED-to-REFUTED mismatch, and missing
+artifact evidence.
+
+Every promoted finding card must also make a Suggested edit decision. An
+`applicable` decision has one contiguous changed-side range, one complete
+replacement block, and identical fenced `suggestion` contents in the review
+and Gerrit fragments. Fixtures must prove final validation rejects a missing
+decision, a root-cause/card decision mismatch, unsafe absolute/traversing or
+unchanged targets, non-positive/out-of-bounds ranges, selected text that
+differs from the pinned revision, a target outside the pinned changed-side
+hunks, and a draft/Gerrit replacement mismatch. The validator also rejects
+a malformed/oversized range, a replacement over the line cap, an
+elision/placeholder, and an omitted decision that still carries a block. An
+`omitted` decision must have a specific reason, so `N/A` or `not applicable`
+does not pass mechanically.
+
 For `mechanical-leads.sh`, create a temporary two-file Git fixture where both
 files contain deterministic hits. Invoke the script once for each individual
 pathspec and once for both. Assert that each shard contains only its requested

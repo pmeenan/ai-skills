@@ -182,7 +182,9 @@ else
   echo "UNAVAILABLE: neither rg nor grep -P is present. Run the non-ASCII scan manually."
 fi
 
-section "Added bool declarations (predicate-name check: is_/has_/should_/did_/can_/needs_...)"
+section "Added bool declarations requiring local convention check"
+echo "Lead only: predicate prefixes are not a Chromium-wide rule. Cite the applicable directory authority or concrete callsite ambiguity before filing a candidate."
+echo
 optional_scan grep -E '(^|[^A-Za-z0-9_])bool[[:space:]]+[A-Za-z0-9_]+_[[:space:]]*[;={]' "$ADDED_CC"
 
 section "Count-returning calls with possibly discarded results (Push/Pull/Write/Send/Read)"

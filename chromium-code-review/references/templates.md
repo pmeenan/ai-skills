@@ -27,6 +27,7 @@ verdicts into a real review.
 - collection.md — Collection Audit
 - Subagent Brief — Verification Skeptic
 - verification/ — Batches And Skeptic Verdict Rows
+- verification/affinity.md — Invariant Affinity And Consistency Audit
 - root-cause/ — Plan, Root-Cause Rows, And Reopened Rows
 - reconciliation.md — Reconciliation Table And Pre-Output Gate
 - synthesis/ — Bounded Index And Evidence Cards
@@ -131,6 +132,7 @@ write an unqualified "batch 1": it is ambiguous after handoff.
   verification/planning/index.tsv # planner-shard scopes + reserved V-ID intervals
   verification/planning/VPLAN001.md # immutable planner-shard result
   verification/V001.md    # skeptic verdict rows, one file per batch
+  verification/affinity.md # global root families + cross-batch audit
   indexes/verdicts.tsv    # compact derived verdict/trigger index
   root-cause/batches.md   # trigger-to-RC-batch map
   root-cause/planning/index.tsv # planner-shard scopes + reserved RC-ID intervals
@@ -209,7 +211,10 @@ Valid operations are `replace-fields`, `replace`, `supersede`, and
 `retract-duplicate` (only when the same attempt emitted an identical row
 twice). Use `replace-fields` for any structurally parsed table cell. Its
 `replacement / reason` is a non-empty JSON object whose keys exactly match
-table headers; targets are a stable row ID or `matrix:<1-based-row>`. Indexers,
+table headers. Targets are a stable row ID, `matrix:<1-based-row>`,
+`descriptor:<candidate>`, `trace:<candidate>:<obligation>`,
+`affinity:<candidate>`, `family:<RF-id>`, `audit:<check>`, or
+`root-family:<RF-id>`. Indexers,
 validators, and collectors all apply these replacements before checking the
 effective row. Use the narrative operations only for candidate lifecycle
 text. The latest valid amendment for a target is authoritative, but the
@@ -568,7 +573,7 @@ are never trusted:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "indexes": {
     "inventory.tsv": {
       "row_count": 32,
@@ -733,7 +738,8 @@ not fixes.
    functions. Execute the recipe as written — do not work from a summary of
    it.
 
-4. Deliverable: write your compliance matrix and candidate rows to
+4. Deliverable: write your compliance matrix, candidate rows, and one
+   Candidate descriptors row per status candidate/reopened row to
    /tmp/scratch/cl-9999999-ps3/ledger/EPW.md in the shapes from
    /home/user/src/ai-skills/chromium-code-review/references/templates.md,
    with row IDs EPW-1, EPW-2, ... First the compliance matrix: one row per
@@ -742,7 +748,11 @@ not fixes.
    "no findings" without a complete matrix is not an acceptable return.
    Then the candidate rows: claim, repo-relative `path:line`, evidence, and
    either an IF/THEN/UNLESS hypothesis or a trace record
-   (scenario → lines visited → outcome). Leave severity blank. Your final
+   (scenario → lines visited → outcome). Leave severity blank. Classify each
+   candidate and declare the typed cross-layer obligations a skeptic must
+   close; preserve the base/interface, invariant, state transition, likely
+   fix layer, and related symbols even when an item is still
+   `unknown — reason`. Your final
    message is only: the list of row IDs you produced and the ledger file
    path.
 
@@ -794,12 +804,40 @@ Scope: DelayBuffer::Push, ::Flush, ::OnTimer (net/streams/delay_buffer.cc)
 | --- | --- | --- | --- | --- | --- | --- |
 | EPW-1 | ERR_ABORTED path leaves `pending_` set; next Push hits `CHECK(!pending_)` | net/streams/delay_buffer.cc:141 | IF Push returns ERR_ABORTED THEN `pending_` stays true and the next Push CHECK-crashes UNLESS a reset path clears it (none found in this class) | CL-introduced | | candidate |
 | EPW-2 | Success-shaped return after failure cleanup | net/streams/delay_buffer.cc:203 | trace: OnTimer → OnWriteFailure() at :199 clears `buffer_` → returns `write_len_ > 0` → caller's DoLoop treats the failed write as progress | CL-introduced | | candidate |
+
+## Candidate descriptors
+
+| candidate | classes | obligations | base / interface | invariant owner | violated invariant | state / transition | proposed fix layer | related symbols |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| EPW-1 | state-protocol | base-contract, caller-reachability, callee/backend-implementation | DelayBuffer public call-state contract | DelayBuffer pending-state transition | an aborted operation must leave the object callable or explicitly terminal | Push active → aborted → next Push | unknown — verification must identify whether Abort or Push owns reset | DelayBuffer::Push, DelayBuffer::Abort, pending_ |
+| EPW-2 | contract | base-contract, caller-reachability, callee/backend-implementation | OnTimer completion result consumed by DelayStream::DoWriteComplete | unknown — verification must trace the shared completion contract | a completion result must report bytes accepted XOR an error | write pending → timer fires after backend failure | unknown — verification must compare cleanup helper, completion wrapper, and caller | DelayBuffer::OnTimer, OnWriteFailure, DoWriteComplete |
 ```
 
 The matrix row 1 shows the anomaly rule in action: the answer records the
 anomaly AND emits the candidate. Row 4 is the mandatory-candidate class
 (success-shaped return after failure cleanup) — recorded, never adjudicated
-in-thread.
+in-thread. Every status `candidate`/`reopened` row has exactly one descriptor
+row. `classes` is one or more of `general`, `contract`, `async-lifetime`,
+`style-convention`, `state-protocol`, or `platform`. `obligations` uses only
+`local-proof`, `base-contract`, `caller-reachability`, `callee/backend-implementation`,
+`async-operation-owner`, `destruction/cancellation`, `platform-branches`, and
+`style-authority`. Class-required obligations are mandatory:
+
+- `contract` and `state-protocol`: base contract, caller reachability, and
+  callee/backend implementation;
+- `async-lifetime`: callee/backend implementation, async operation owner,
+  destruction/cancellation, and platform branches;
+- `style-convention`: applicable style authority;
+- `platform`: platform branches.
+
+Use `local-proof` only for a genuinely local claim such as punctuation or an
+unused include. It never substitutes for a class-required cross-layer
+obligation.
+
+Use `unknown — reason` for unresolved semantic descriptors; a bare
+`unknown`, `N/A`, or `-` is invalid. The descriptors preserve semantic
+affinity across sharded verification and tell the skeptic exactly which
+cross-layer contracts must be closed.
 
 ## ledger/TER.md And verification/VTER.md — Transformation Classes And Gate
 
@@ -832,6 +870,12 @@ headings — fails validation.
 | TER-1 | clean: class TC1 conforming; re-derivation empty | net/foo/a.cc:1 | rederive diff empty | CL-introduced | | clean (class TC1 conforming) |
 | TER-2 | class TC1 conforming sites plus residue below | net/foo/b.cc:1 | rederive diff empty except hunk H0412 | CL-introduced | | mixed (class TC1 + residue) |
 | TER-3 | residue: hand-edited callsite deviates from TC1 | net/foo/b.cc:88 | rederive diff nonempty (3 lines) | CL-introduced | | candidate |
+
+## Candidate descriptors
+
+| candidate | classes | obligations | base / interface | invariant owner | violated invariant | state / transition | proposed fix layer | related symbols |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| TER-3 | contract | base-contract, caller-reachability, callee/backend-implementation | transformed call contract | shared transformation class TC1 | every class member preserves old behavior | old call → transformed call | unknown — verification must locate the divergence owner | TC1, transformed helper |
 ```
 
 The gate skeptic writes `verification/VTER.md` with the dedicated schema —
@@ -923,6 +967,12 @@ verdicts.
 | id | claim | location | evidence / hypothesis | origin | severity | status |
 | --- | --- | --- | --- | --- | --- | --- |
 | PR-2 | prior unresolved double-completion concern remains | net/streams/delay_buffer.cc:172 | trace: ... | introduced-in-PS2 | | candidate |
+
+## Candidate descriptors
+
+| candidate | classes | obligations | base / interface | invariant owner | violated invariant | state / transition | proposed fix layer | related symbols |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| PR-2 | async-lifetime | callee/backend-implementation, async-operation-owner, destruction/cancellation, platform-branches | Flush completion contract | DelayBuffer pending completion state | one operation completes exactly once | pending → abort/flush → completion | unknown — verification must compare completion owners | Flush, pending_, callback_ |
 ```
 
 Never assume "previous patchset" means `PS-1`. Prefer an explicit patchset/SHA
@@ -1023,8 +1073,8 @@ Verification-Planner routing input; `evidence_excerpt` selects likely groups
 but never replaces opening the canonical `source` row for judgment:
 
 ```tsv
-id	claim	location	origin	severity	status	citations	evidence_excerpt	source
-EPW-2	failed flush reported as success	net/streams/delay_buffer.cc:203	CL-introduced	-	candidate	net/streams/delay_buffer.cc:203	trace: OnTimer...	ledger/EPW.md
+id	claim	location	origin	severity	status	citations	evidence_excerpt	source	classes	obligations	base_interface	invariant_owner	violated_invariant	state_transition	proposed_fix_layer	related_symbols
+EPW-2	failed flush reported as success	net/streams/delay_buffer.cc:203	CL-introduced	-	candidate	net/streams/delay_buffer.cc:203	trace: OnTimer...	ledger/EPW.md	contract	base-contract, caller-reachability, callee/backend-implementation	OnTimer completion contract	unknown — verification pending	completion reports bytes XOR error	write failure → timer completion	unknown — compare completion layers	OnTimer, DoWriteComplete
 ```
 
 Every canonical candidate definition appears exactly once. Zero data rows is
@@ -1060,14 +1110,18 @@ confirmation, not a dismissal.
    — the "Verifying Candidate Findings" and "Skeptic Verdicts" sections —
    and refute under that standard.
 
-4. Deliverable: write one verdict row per candidate to
+4. Deliverable: write one verdict row, one Verified affinity row, and one
+   Trace closure row per declared obligation for each candidate to
    /tmp/scratch/cl-9999999-ps3/verification/V001.md, IDs V001-1, V001-2, ...,
    in the shape from templates.md. CONFIRMED requires the completing trace
    plus a severity proposal matched to the anchor table in
    /home/user/src/ai-skills/chromium-code-review/references/synthesis-and-output.md
    plus an origin label. REFUTED requires the guard `path:line` or the
    concrete safe trace. UNPROVEN requires what you traced, what remains
-   unproven, and a drafted question for the CL owner. Your final message
+   unproven, and a drafted question for the CL owner. A lifetime claim is not
+   closed until the backend operation owner, retention contract,
+   cancellation/destruction behavior, and platform branches are traced; a
+   style claim is not closed without applicable directory authority. Your final message
    is only: verdict per row ID and the file path.
 
 5. Rules: refute with code, not memory. "Looks handled", "the caller
@@ -1170,22 +1224,84 @@ Each skeptic writes its own `verification/V⟨batch⟩.md`:
 | V001-1 | EPW-2 | CONFIRMED | trace: timer fires after write failure; delay_buffer.cc:199 clears buffer_, :203 returns write_len_=1024; consumer delay_stream.cc:88 advances its offset → bytes silently lost | P1 (anchor: success-shaped return after failure cleanup) | CL-introduced |
 | V002-1 | EPW-1 | REFUTED | guard: delay_buffer.cc:96 — Abort() resets pending_ before any caller can re-enter Push; safe trace: Push → ERR_ABORTED → Abort → Push completes | — | — |
 | V002-3 | AL-3 | UNPROVEN | traced both orderings; could not establish whether OnDisconnect can run before OnTimer on the IO sequence → Question Q2 for owner: "Can the disconnect handler run before a queued OnTimer on the same sequence?" | — | — |
+
+## Trace closure
+
+| candidate | obligation | result | evidence |
+| --- | --- | --- | --- |
+| EPW-2 | base-contract | PROVES CANDIDATE | DelayBuffer::OnTimer promises an operation result at delay_buffer.h:71; its caller treats positive values as accepted bytes at delay_stream.cc:88 |
+| EPW-2 | caller-reachability | PROVES CANDIDATE | production trace DelayStream::DoWrite → DelayBuffer::OnTimer → DoWriteComplete at delay_stream.cc:71-91 |
+| EPW-2 | callee/backend-implementation | PROVES CANDIDATE | backend error reaches OnWriteFailure at delay_buffer.cc:199 but :203 replaces it with write_len_ |
+
+## Verified affinity
+
+| candidate | base / interface | invariant owner | violated invariant | state / transition | proposed fix layer | related symbols |
+| --- | --- | --- | --- | --- | --- | --- |
+| EPW-2 | OnTimer completion result consumed by DelayStream::DoWriteComplete | DelayBuffer::OnTimer completion boundary | completion reports bytes accepted XOR an error | backend write failure → cleanup → timer completion | return the retained backend error from OnTimer after cleanup | DelayBuffer::OnTimer, OnWriteFailure, DelayStream::DoWriteComplete |
 ```
 
 (The V002 rows above belong in `verification/V002.md`; they are shown here only
-to illustrate all three verdict shapes.)
+to illustrate all three verdict shapes.) Each candidate has one Trace closure
+row per declared obligation and exactly one Verified affinity row. Trace
+results are `PROVES CANDIDATE`, `REFUTES CANDIDATE`, `NEUTRAL`, `OPEN`, or
+`NOT APPLICABLE — reason`. Each row cites code or uses an explicit
+`evidence-exception:`. CONFIRMED requires at least one proving row and no OPEN
+row; REFUTED requires at least one refuting row and no OPEN row; UNPROVEN
+requires an OPEN row. For async-lifetime claims, local variable or member
+destruction is never sufficient by itself: close the backend operation owner,
+buffer-retention contract, callback invalidation, destruction/cancellation,
+and every relevant platform branch.
 
 After skeptic collection, regenerate `indexes/verdicts.tsv` mechanically:
 
 ```tsv
-id	candidate	verdict	severity	origin	citations	evidence_excerpt	source
-V001-1	EPW-2	CONFIRMED	P1	CL-introduced	delay_buffer.cc:199-203	trace: timer fires...	verification/V001.md
-V002-1	EPW-1	REFUTED	-	-	delay_buffer.cc:96	guard: Abort resets...	verification/V002.md
+id	candidate	verdict	severity	origin	citations	evidence_excerpt	source	trace_closure	base_interface	invariant_owner	violated_invariant	state_transition	proposed_fix_layer	related_symbols	root_family
+V001-1	EPW-2	CONFIRMED	P1	CL-introduced	delay_buffer.cc:199-203	trace: timer fires...	verification/V001.md	base-contract=PROVES CANDIDATE; caller-reachability=PROVES CANDIDATE; callee/backend-implementation=PROVES CANDIDATE	OnTimer completion contract	DelayBuffer::OnTimer	completion reports bytes XOR error	write failure → cleanup → completion	return retained error	OnTimer, DoWriteComplete	RF001
 ```
 
 Every non-merged candidate has exactly one verdict. Merged candidates retain
 their explicit merge edge in `verification/batches.md`. Missing, duplicate, or
 unknown candidate references block root-cause planning.
+
+## verification/affinity.md — Invariant Affinity And Consistency Audit
+
+After all skeptic batches collect, one global Invariant Affinity Reconciler
+reads the compact indexes and selected descriptor/closure rows. It assigns
+every CONFIRMED or UNPROVEN candidate/verdict pair to exactly one root family
+before root-cause planning:
+
+```markdown
+# Invariant affinity — CL 9999999 PS3
+
+## Root families
+
+| root family | members | shared invariant | invariant owner | state / transition | fix layer | related symbols | disposition |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| RF001 | EPW-2, V001-1, SMM-4, V004-1 | completion reports bytes accepted XOR an error | DelayBuffer completion boundary | backend failure → cleanup → completion | DelayBuffer::OnTimer | OnTimer, OnWriteFailure, DoWriteComplete | one root cause; method symptoms share owner and outcome |
+
+## Consistency audit
+
+| check | rows / families | evidence | result |
+| --- | --- | --- | --- |
+| contradictory assumptions | RF001 | verification/V001.md:/Trace-closure; verification/V004.md:/Trace-closure | consistent — both traces use the same completion contract |
+| invariant-owner collisions | RF001 | delay_buffer.h:61-75 | one owner |
+| style-authority scope | all style candidates | evidence-exception:no-style-candidates | no surviving style-only claim |
+| lifetime operation owner | all async-lifetime candidates | evidence-exception:no-async-lifetime-candidates | none surviving |
+| reachability termination | RF001 | delay_stream.cc:71-91 | trace reaches production consumer |
+| repeated local fixes | RF001 | delay_buffer.cc:180-205 | one completion-boundary fix covers the affected methods |
+```
+
+All six audit rows are mandatory, using a cited `evidence-exception:` only
+when the relevant class is truly empty. The global pass compares batches for
+contradictory assumptions, shared invariant owners, directory-specific style
+authority, untraced async operation ownership, reachability that stops at the
+changed wrapper, and repeated local fixes that should collapse into one
+interface/state fix. When input is large, shard descriptor extraction only;
+family assignment and the consistency audit remain global over compact rows.
+Rebuild indexes afterward so surviving verdicts carry `root_family`.
+When all candidates are refuted, keep the same `## Root families` table with
+headers and zero rows, and still write the six audit rows; zero surviving
+families is not permission to skip the cross-batch consistency check.
 
 ## root-cause/ — Plan, Root-Cause Rows, And Reopened Rows
 
@@ -1220,26 +1336,27 @@ for that round; it never reschedules original inventory scopes.
 
 ## Trigger accounting
 
-| candidate / verdict | trigger | disposition | RC batch |
-| --- | --- | --- | --- |
-| EPW-2 / V001-1 | P1 CONFIRMED + proposed fix | scheduled | RC001 |
-| T001 | inventory: async/lifecycle + new state holder | scheduled | RC002 |
-| CLP-1 / V003-3 | cheap P3 punctuation, no fix analysis | not applicable: no root-cause trigger proved by V003-3 | — |
+| candidate / verdict | root family | trigger | disposition | RC batch |
+| --- | --- | --- | --- | --- |
+| EPW-2 / V001-1 | RF001 | P1 CONFIRMED + proposed fix | scheduled | RC001 |
+| T001 | — | inventory: async/lifecycle + new state holder | scheduled | RC002 |
+| CLP-1 / V003-3 | — | cheap P3 punctuation, no fix analysis | not applicable: no root-cause trigger proved by V003-3 | — |
 
 ## Batches
 
-| batch | brief | candidates | output | bounded input |
+| batch | brief | root families / scopes | output | bounded input |
 | --- | --- | --- | --- | --- |
-| RC001 | briefs/RC001.md | EPW-2/V001-1 | root-cause/RC001.md | 1 expensive candidate, 74 lines |
+| RC001 | briefs/RC001.md | RF001: EPW-2/V001-1, SMM-4/V004-1 | root-cause/RC001.md | one complete root family, 121 lines |
 | RC002 | briefs/RC002.md | inventory scope T001 | root-cause/RC002.md | one change-level invariant walk |
 ```
 
 Every CONFIRMED/UNPROVEN verdict, proposed fix, and inventory scope marked
 root-cause required gets one trigger row, even when the result is
-`not applicable` with cited verdict/index evidence. Batch by trace cost;
-serious candidates normally stand alone or in very small related groups, and
-no quota may force unrelated traces together. Split before a brief becomes too
-large to execute rigorously; never truncate.
+`not applicable` with cited verdict/index evidence. Every surviving root
+family is scheduled as one semantic unit; never split one family because its
+members came from different skeptic batches. Keep unrelated families separate.
+If one family exceeds a worker budget, shard evidence extraction but provide
+one challenger a compact synthesis containing every member ID.
 
 When fresh `indexes/verdicts.tsv` contains zero data rows and
 `indexes/inventory.tsv` contains no root-cause-required scope, the trigger set is
@@ -1270,11 +1387,12 @@ One root-cause row is written for each scheduled candidate or inventory scope, w
 from Root-Cause, Layering, And Fix Optimality. Each challenger owns one batch
 and file (`root-cause/RC001.md`, rows `RC001-⟨n⟩`):
 
-```markdown
+````markdown
 # Root-cause rows — batch RC001 — CL 9999999 PS3
 
 ## RC001-1 (for EPW-2 / V001-1)
 
+- Root family: RF001
 - Symptom: consumer advances past bytes the socket never accepted.
 - Direct trigger: write failure while a flush timer is armed.
 - Violated invariant: a completion value must report what the operation
@@ -1291,8 +1409,33 @@ and file (`root-cause/RC001.md`, rows `RC001-⟨n⟩`):
   (delay_buffer.cc:167).
 - Chosen-fix verdict: validated right layer — return the error from OnTimer
   after cleanup; no API change needed.
+- Suggested-edit decision: applicable — replaces net/streams/delay_buffer.cc:203
+- Suggested-edit selected lines:
 
-```
+  ```cpp
+  return write_len_;
+  ```
+- Suggested-edit replacement:
+
+  ```suggestion
+  return result;
+  ```
+
+## Root-family analysis
+
+| root family | members | shared invariant | invariant owner | state / transition | method coverage | excluded nearby | fix layer | comment count | suggested edit | evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| RF001 | EPW-2/V001-1, SMM-4/V004-1 | completion reports bytes accepted XOR an error | DelayBuffer completion boundary | backend failure → cleanup → completion | Read, Write, and ReadMultiple checked; affected cells share the same pre-operation state contract | Connect excluded because it establishes rather than consumes the state | enforce the contract at the shared state boundary | one — members share owner and bad outcome | applicable — RC001-1 | delay_buffer.h:61-75; delay_buffer.cc:180-205 |
+
+````
+
+Every RC row has an exact `Root family` and `Suggested-edit decision`. An
+applicable decision uses the multiline `Suggested-edit selected lines` and
+`Suggested-edit replacement` fields above; an omitted decision uses
+`omitted — <specific reason>` and has neither fence. The root-family table
+stores only `applicable — <RC-row-ID>` or the exact omitted decision. This
+keeps multiline code out of lossy table cells and gives reconciliation a
+canonical decision to copy into the evidence card.
 
 Reopened candidates become canonical rows before further work. For round 1,
 challenger RC001 owns `ledger/reopened/round-1-RC001.md`:
@@ -1305,6 +1448,12 @@ challenger RC001 owns `ledger/reopened/round-1-RC001.md`:
 | id | parent rows | claim | location | evidence / hypothesis | requested recipe | origin | status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | R1-RC001-1 | EPW-2 / V001-1 / RC001-1 | sibling caller can report stale progress | net/streams/other_delay_stream.cc:90 | IF the shared helper is entered after cleanup THEN it returns stale length UNLESS caller resets write_len_ (not found) | Error-Path Walk: OtherDelayStream completion paths | CL-introduced | candidate |
+
+## Candidate descriptors
+
+| candidate | classes | obligations | base / interface | invariant owner | violated invariant | state / transition | proposed fix layer | related symbols |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| R1-RC001-1 | contract | base-contract, caller-reachability, callee/backend-implementation | shared completion-helper contract | unknown — delta verification must compare sibling callers | completion reports bytes XOR error | backend failure → cleanup → sibling completion | unknown — compare helper and sibling caller | OtherDelayStream, OnWriteFailure |
 ```
 
 A row that exists only in a status line or brief does not exist. Requested
@@ -1357,7 +1506,7 @@ exists only after all shards and the gate pass exact collection.
 | --- | --- | --- |
 | EPW-1 | Error-Path Walk | refuted (V002-1: guard delay_buffer.cc:96) |
 | EPW-2 | Error-Path Walk | promoted → F001 (P1, V001-1, RC001-1) |
-| AL-1 | Async And Lifecycle | merged → EPW-2 (same return-path defect, duplicate evidence) |
+| AL-1 | Async And Lifecycle | merged → EPW-2 |
 | AL-2 | Async And Lifecycle | refuted (V002-2: timer stopped in Abort, delay_buffer.cc:97) |
 | AL-3 | Async And Lifecycle | question → Q002 (V002-3: UNPROVEN) |
 | ML-1 | Mechanical Leads | promoted → F003 (P3 non-ASCII em dash in comment) |
@@ -1366,6 +1515,38 @@ exists only after all shards and the gate pass exact collection.
 | RC001-1 | Root-cause challenger | supports F001; reopened R1-RC001-1 |
 | R1-RC001-1 | Reopened round 1 | refuted (V004-1; guard other_delay_stream.cc:88) |
 ```
+
+Every `merged → <survivor-row-id>` disposition has exactly one structured
+equivalence row:
+
+```markdown
+## Merge equivalence
+
+| merged row | survivor | trigger equivalence | invariant equivalence | outcome equivalence | survivor verdict |
+| --- | --- | --- | --- | --- | --- |
+| AL-1 | EPW-2 | same timer-after-write-failure sequence at delay_buffer.cc:180-203 | same completion-result invariant at verification/affinity.md:/root-families/RF001 | same false-success/offset-advance outcome at delay_stream.cc:88 | V001-1 CONFIRMED |
+```
+
+The three equivalence cells each carry code or artifact evidence; an artifact
+pointer is review-relative and its file must exist and be nonempty. A shared
+location or fix alone is insufficient. The survivor is a direct,
+verdict-owning row rather than another merge, and its reconciliation
+disposition agrees with that verdict (`promoted` for CONFIRMED, `question` for
+UNPROVEN, `refuted` for REFUTED).
+
+The default is one promoted finding per root family. If a family truly has
+multiple independently actionable owners or bad outcomes, add:
+
+```markdown
+## Root-family promotion exceptions
+
+| root family | justification | evidence |
+| --- | --- | --- |
+| RF007 | two independent owners and fixes: parser validation versus storage rollback | parser.cc:88; store.cc:141 |
+```
+
+Without this cited exception, multiple promoted findings from the same family
+fail the reconciliation gate.
 
 The gate is filled at the bottom of the same file; the canonical checklist
 lives in `references/synthesis-and-output.md` (Pre-Output Gate). Filled
@@ -1401,7 +1582,7 @@ dispositions own no card. A severity downgrade stays inside a
 omit the finding. The validator compares these sets exactly; a missing card is
 an error, not an empty-review warning.
 
-```markdown
+````markdown
 # EPW-2 evidence card — CL 9999999 PS3
 
 - Disposition: promoted → F001 (P1, V001-1, RC001-1)
@@ -1409,12 +1590,22 @@ an error, not an empty-review warning.
 - Candidate: EPW-2 (effective row, including amendment if any)
 - Verdict: V001-1 CONFIRMED — completing trace ...
 - Root cause: RC001-1 — invariant owner and fix verdict ...
+- Root family: RF001
 - Merge support: AL-1 (equivalence validated)
 - Severity / origin: P1, anchor ..., CL-introduced
 - Existing Gerrit thread: root abc123, or `none`
 - Verbatim changed line: `return write_len_;`
+- Suggested edit decision: applicable — replaces net/streams/delay_buffer.cc:203
+- Suggested edit selected lines:
+  ```cpp
+  return write_len_;
+  ```
+- Suggested edit replacement:
+  ```suggestion
+  return result;
+  ```
 - Required test / verification caveat: ...
-```
+````
 
 `synthesis/index.md` is the compact card manifest:
 
@@ -1436,7 +1627,7 @@ fragments: `draft-parts/<item>.md` is the byte-for-byte review block for every
 finding/question, and `gerrit-parts/<item>.md` is the byte-for-byte Gerrit
 comment for every finding. Questions have no Gerrit fragment.
 
-```markdown
+````markdown
 #### Failed flush reported as success — silent byte loss (P1)
 
 - **Synthesis item:** F001
@@ -1446,9 +1637,22 @@ comment for every finding. Questions have no Gerrit fragment.
 - **Severity:** P1 — success-shaped return after failure cleanup.
 - **Origin:** CL-introduced.
 - **Fix status:** validated fix — ...
+- **Suggested edit:** applicable — replaces net/streams/delay_buffer.cc:203
+
+  ```suggestion
+  return result;
+  ```
 - **Regression test:** ...
 - **Rows:** EPW-2 / V001-1 / RC001-1
-```
+````
+
+When an inline replacement is not eligible, use exactly
+`- **Suggested edit:** omitted — <specific reason>` and emit no
+`suggestion` fence. An applicable edit uses one contiguous changed-side range
+of at most 10 selected lines and at most 20 replacement lines. Its
+`suggestion` block is byte-for-byte identical in the draft and Gerrit
+fragments and contains only complete replacement text. Empty replacement text
+is allowed for a validated deletion.
 
 `gerrit-parts/F001.md` contains only the exact target/comment block intended
 for Gerrit, including its repo-relative `path:line`; it contains no internal
@@ -1595,7 +1799,7 @@ copies the accepted result into only the Freshness line of reconciliation.md.
 
 ## gerrit-comments.md
 
-```markdown
+````markdown
 # Gerrit-ready comments — CL 9999999 PS3 / 4f2a09c1
 
 ## Main comment
@@ -1618,10 +1822,14 @@ Not LGTM until the failed-flush result bug is fixed. ...
 - Comment: Can this return the captured write error after cleanup? Returning a
   positive length advances the caller past bytes that were not accepted.
 
+  ```suggestion
+  return result;
+  ```
+
 ## Optional polish
 
 - `nit:` ...
-```
+````
 
 An absent section says `None`; never emit placeholder comments. Thread replies
 use the normalized thread root/latest IDs from
@@ -1630,7 +1838,7 @@ use the normalized thread root/latest IDs from
 
 ## Final-Review Finding
 
-```markdown
+````markdown
 #### 1. Failed flush reported as success — silent byte loss (P1)
 
 - **Synthesis item:** F001
@@ -1647,10 +1855,15 @@ use the normalized thread root/latest IDs from
 - **Fix status:** validated fix — return the error code captured by
   OnWriteFailure() after cleanup completes (traced through immediate,
   delayed, and abort paths).
+- **Suggested edit:** applicable — replaces net/streams/delay_buffer.cc:203
+
+  ```suggestion
+  return result;
+  ```
 - **Regression test:** in delay_buffer_unittest.cc, fail the underlying
   write with ERR_CONNECTION_RESET while a flush is pending and assert the
   flush completion reports the error and the consumer offset does not
   advance.
 - **Rows:** EPW-2 / V001-1 / RC001-1 (internal trail — omit from Gerrit-ready
   text).
-```
+````
