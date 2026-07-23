@@ -554,8 +554,11 @@ deterministic collector, selected from `indexes/reconciliation.tsv`. They
 enumerate every row ID present in `ledger/*.md`, `collection.md`,
 `ledger/reopened/*.md`, `verification/*.md`, and `root-cause/*.md` — the
 files themselves, never a summary — and write the reconciliation table: one
-disposition line per row (promoted / refuted / question / downgraded / merged
-/ clean), no ranges, no "rest dismissed". It also writes the pre-output gate
+disposition line per row (promoted / refuted / question / merged / clean), no
+ranges, no "rest dismissed". A confirmed finding whose severity was
+downgraded is still `promoted → F<number>` at its calibrated severity; a bare
+`downgraded` disposition would make it disappear from output and is forbidden.
+It also writes the pre-output gate
 skeleton from `references/synthesis-and-output.md` at the bottom of
 `reconciliation.md`, filling the lines it can prove.
 
@@ -581,7 +584,10 @@ drafting.
 Load `references/synthesis-orchestration.md` and execute its Phase 7 section.
 It selects bounded single-writer or hierarchical assembly from the synthesis
 index and produces `draft-review.md` plus `gerrit-comments.md` without
-reloading the full review corpus.
+reloading the full review corpus. It also produces exact per-synthesis-item
+draft/Gerrit fragments and `output-coverage.tsv`; final validation proves
+every promoted finding/question owns a card and every required fragment occurs
+exactly once in its delivered output.
 
 ## Phase 8 — Synthesis Challenge
 

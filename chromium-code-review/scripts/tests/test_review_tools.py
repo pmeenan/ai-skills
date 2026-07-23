@@ -1713,6 +1713,14 @@ Return partial with explicit remaining scope when needed.
 
     def test_profile_budget_replaces_fixed_evidence_card_limit(self) -> None:
         self.make_final_artifacts()
+        reconciliation = self.review / "reconciliation.md"
+        reconciliation.write_text(
+            reconciliation.read_text(encoding="utf-8").replace(
+                "| EPW-1 | Error-Path Walk | clean (cited) |",
+                "| EPW-1 | Error-Path Walk | promoted → F001 (P2, V001-1) |",
+            ),
+            encoding="utf-8",
+        )
         card = self.review / "synthesis" / "F001.md"
         card.write_text("# Card\n" + "x" * 4492, encoding="utf-8")
         (self.review / "synthesis" / "index.md").write_text(
@@ -1721,6 +1729,7 @@ Return partial with explicit remaining scope when needed.
             "| --- | --- | --- | --- |\n"
             f"| F001 | synthesis/F001.md | {card.stat().st_size} | EPW-1 |\n",
             encoding="utf-8")
+        self.refresh_indexes()
         run = subprocess.run(
             [str(VALIDATE), str(self.review), "--phase", "reconciliation"],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -1730,15 +1739,31 @@ Return partial with explicit remaining scope when needed.
     def make_large_synthesis_assembly(self, declared_bytes: int | None = None,
                                       oversized_children: bool = False) -> int:
         self.make_final_artifacts()
+        reconciliation = self.review / "reconciliation.md"
+        reconciliation.write_text(
+            reconciliation.read_text(encoding="utf-8")
+            .replace(
+                "| EPW-1 | Error-Path Walk | clean (cited) |",
+                "| EPW-1 | Error-Path Walk | promoted → F001 (P2, V001-1) |",
+            )
+            .replace(
+                "| R1-RC001-1 | Reopened | clean (cited) |",
+                "| R1-RC001-1 | Reopened | promoted → F002 (P3, V001-2) |",
+            ),
+            encoding="utf-8",
+        )
         synthesis = self.review / "synthesis"
         card_payload = "# Card\n" + "x" * 2192
         rows = []
-        for identifier in ("F001", "F002"):
+        for identifier, source in (
+            ("F001", "EPW-1"),
+            ("F002", "R1-RC001-1"),
+        ):
             card = synthesis / f"{identifier}.md"
             card.write_text(card_payload, encoding="utf-8")
             rows.append(
                 f"| {identifier} | synthesis/{identifier}.md | "
-                f"{card.stat().st_size} | EPW-1 |"
+                f"{card.stat().st_size} | {source} |"
             )
         (synthesis / "index.md").write_text(
             "# Synthesis index\n\n| item | card | bytes | source rows |\n"
@@ -1762,6 +1787,7 @@ Return partial with explicit remaining scope when needed.
             f"draft-parts/F002.md | {actual if declared_bytes is None else declared_bytes} | "
             "draft-review.md + gerrit-comments.md | complete |\n",
             encoding="utf-8")
+        self.refresh_indexes()
         return actual
 
     def test_assembly_recomputes_exact_child_bytes(self) -> None:
@@ -1794,6 +1820,272 @@ Return partial with explicit remaining scope when needed.
             [str(VALIDATE), str(self.review), "--phase", "final"],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
+    def test_promoted_finding_requires_card_and_exact_draft_gerrit_fragments(
+            self) -> None:
+        self.make_final_artifacts()
+        reconciliation = self.review / "reconciliation.md"
+        reconciliation.write_text(
+            reconciliation.read_text(encoding="utf-8").replace(
+                "| EPW-1 | Error-Path Walk | clean (cited) |",
+                "| EPW-1 | Error-Path Walk | promoted → F001 (P2, V001-1) |",
+            ),
+            encoding="utf-8",
+        )
+        self.refresh_indexes()
+
+        missing_card = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(missing_card.returncode, 1)
+        self.assertIn(
+            "reconciliation finding F001 for row EPW-1 has no synthesis card",
+            missing_card.stdout,
+        )
+
+        card = self.review / "synthesis" / "EPW-1.md"
+        card.write_text("# Card EPW-1\n\nfinding body\n", encoding="utf-8")
+        (self.review / "synthesis" / "index.md").write_text(
+            "# Synthesis index\n\n"
+            "| item | card | bytes | source rows |\n"
+            "| --- | --- | --- | --- |\n"
+            f"| F001 | synthesis/EPW-1.md | {card.stat().st_size} | "
+            "R1-RC001-1 |\n",
+            encoding="utf-8")
+        wrong_owner = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "reconciliation"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(wrong_owner.returncode, 1)
+        self.assertIn(
+            "omits its owning reconciliation row EPW-1",
+            wrong_owner.stdout,
+        )
+        (self.review / "synthesis" / "index.md").write_text(
+            "# Synthesis index\n\n"
+            "| item | card | bytes | source rows |\n"
+            "| --- | --- | --- | --- |\n"
+            f"| F001 | synthesis/EPW-1.md | {card.stat().st_size} | EPW-1 |\n",
+            encoding="utf-8",
+        )
+        index = self.review / "challenge" / "round-1" / "index.md"
+        index.write_text(
+            index.read_text(encoding="utf-8").replace(
+                "row:EPW-1, row:R1-RC001-1",
+                "card:F001, row:EPW-1, row:R1-RC001-1"),
+            encoding="utf-8")
+
+        # An incidental ID token is not a complete finding.
+        draft = self.review / "draft-review.md"
+        draft.write_text(
+            draft.read_text(encoding="utf-8") + "\nRows: F001 / V001-1\n",
+            encoding="utf-8",
+        )
+        token_only = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(token_only.returncode, 1)
+        self.assertIn("output-coverage.tsv is missing", token_only.stdout)
+
+        draft_fragment = self.review / "draft-parts" / "F001.md"
+        draft_fragment.parent.mkdir()
+        draft_fragment.write_text(
+            """#### Fixture finding (P2)
+
+- **Synthesis item:** F001
+- **Claim:** fixture claim
+- **Location:** a.cc:1
+- **Evidence:** fixture evidence at a.cc:1
+- **Severity:** P2
+- **Origin:** CL-introduced
+- **Fix status:** needs fix
+- **Regression test:** add a fixture regression
+- **Rows:** EPW-1 / V001-1
+""",
+            encoding="utf-8",
+        )
+        gerrit_fragment = self.review / "gerrit-parts" / "F001.md"
+        gerrit_fragment.parent.mkdir()
+        gerrit_fragment.write_text(
+            "a.cc:1\nCan this preserve the fixture invariant?\n",
+            encoding="utf-8",
+        )
+        (self.review / "output-coverage.tsv").write_text(
+            "item\tkind\tdraft_path\tdraft_bytes\tdraft_sha256\t"
+            "gerrit_path\tgerrit_bytes\tgerrit_sha256\n"
+            f"F001\tfinding\tdraft-parts/F001.md\t"
+            f"{draft_fragment.stat().st_size}\t"
+            f"{hashlib.sha256(draft_fragment.read_bytes()).hexdigest()}\t"
+            f"gerrit-parts/F001.md\t{gerrit_fragment.stat().st_size}\t"
+            f"{hashlib.sha256(gerrit_fragment.read_bytes()).hexdigest()}\n",
+            encoding="utf-8",
+        )
+        draft.write_bytes(draft.read_bytes() + draft_fragment.read_bytes())
+
+        missing_gerrit = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(missing_gerrit.returncode, 1)
+        self.assertIn(
+            "gerrit fragment occurs 0 times", missing_gerrit.stdout
+        )
+
+        gerrit = self.review / "gerrit-comments.md"
+        original_gerrit = gerrit.read_bytes()
+        gerrit.write_bytes(
+            original_gerrit
+            + gerrit_fragment.read_bytes()
+            + gerrit_fragment.read_bytes()
+        )
+        duplicated = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(duplicated.returncode, 1)
+        self.assertIn(
+            "gerrit fragment occurs 2 times", duplicated.stdout
+        )
+
+        gerrit.write_bytes(original_gerrit + gerrit_fragment.read_bytes())
+        complete = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(complete.returncode, 0, complete.stdout + complete.stderr)
+
+        manifest = self.review / "output-coverage.tsv"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                hashlib.sha256(draft_fragment.read_bytes()).hexdigest(),
+                "0" * 64,
+                1,
+            ),
+            encoding="utf-8",
+        )
+        stale_hash = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(stale_hash.returncode, 1)
+        self.assertIn("draft hash mismatch", stale_hash.stdout)
+
+    def test_question_requires_exact_card_and_draft_fragment_only(self) -> None:
+        self.make_final_artifacts()
+        reconciliation = self.review / "reconciliation.md"
+        reconciliation.write_text(
+            reconciliation.read_text(encoding="utf-8").replace(
+                "| EPW-1 | Error-Path Walk | clean (cited) |",
+                "| EPW-1 | Error-Path Walk | "
+                "question → Q001 (V001-1: UNPROVEN) |",
+            ),
+            encoding="utf-8",
+        )
+        card = self.review / "synthesis" / "EPW-1.md"
+        card.write_text("# Question card\n\nowner decision needed\n", encoding="utf-8")
+        (self.review / "synthesis" / "index.md").write_text(
+            "# Synthesis index\n\n"
+            "| item | card | bytes | source rows |\n"
+            "| --- | --- | --- | --- |\n"
+            f"| Q001 | synthesis/EPW-1.md | {card.stat().st_size} | EPW-1 |\n",
+            encoding="utf-8",
+        )
+        challenge = self.review / "challenge" / "round-1" / "index.md"
+        challenge.write_text(
+            challenge.read_text(encoding="utf-8").replace(
+                "row:EPW-1, row:R1-RC001-1",
+                "card:Q001, row:EPW-1, row:R1-RC001-1",
+            ),
+            encoding="utf-8",
+        )
+        fragment = self.review / "draft-parts" / "Q001.md"
+        fragment.parent.mkdir()
+        fragment.write_text(
+            """#### Owner question
+
+- **Synthesis item:** Q001
+- **Question:** Should this fixture retain the old value?
+- **Why it matters:** The intended compatibility contract is unclear.
+- **Rows:** EPW-1 / V001-1
+""",
+            encoding="utf-8",
+        )
+        (self.review / "draft-review.md").write_bytes(
+            (self.review / "draft-review.md").read_bytes()
+            + fragment.read_bytes()
+        )
+        (self.review / "output-coverage.tsv").write_text(
+            "item\tkind\tdraft_path\tdraft_bytes\tdraft_sha256\t"
+            "gerrit_path\tgerrit_bytes\tgerrit_sha256\n"
+            f"Q001\tquestion\tdraft-parts/Q001.md\t{fragment.stat().st_size}\t"
+            f"{hashlib.sha256(fragment.read_bytes()).hexdigest()}\t-\t-\t-\n",
+            encoding="utf-8",
+        )
+        self.refresh_indexes()
+
+        complete = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(complete.returncode, 0, complete.stdout + complete.stderr)
+
+        manifest = self.review / "output-coverage.tsv"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                "\t-\t-\t-\n",
+                "\tgerrit-parts/Q001.md\t0\t" + "0" * 64 + "\n",
+            ),
+            encoding="utf-8",
+        )
+        invalid_gerrit = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(invalid_gerrit.returncode, 1)
+        self.assertIn(
+            "must use '-' for all Gerrit coverage fields",
+            invalid_gerrit.stdout,
+        )
+
+    def test_promoted_disposition_rejects_noncanonical_trailing_text(
+            self) -> None:
+        self.make_final_artifacts()
+        reconciliation = self.review / "reconciliation.md"
+        reconciliation.write_text(
+            reconciliation.read_text(encoding="utf-8").replace(
+                "| EPW-1 | Error-Path Walk | clean (cited) |",
+                "| EPW-1 | Error-Path Walk | "
+                "promoted → F001 but the card was omitted |",
+            ),
+            encoding="utf-8",
+        )
+        self.refresh_indexes()
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "reconciliation"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("malformed finding disposition", run.stdout)
+
+    def test_bare_downgraded_disposition_cannot_drop_finding(self) -> None:
+        self.make_final_artifacts()
+        reconciliation = self.review / "reconciliation.md"
+        reconciliation.write_text(
+            reconciliation.read_text(encoding="utf-8").replace(
+                "| EPW-1 | Error-Path Walk | clean (cited) |",
+                "| EPW-1 | Error-Path Walk | downgraded to P3 |",
+            ),
+            encoding="utf-8",
+        )
+        self.refresh_indexes()
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "reconciliation"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("forbidden bare downgraded disposition", run.stdout)
 
     def test_large_draft_section_hash_and_concatenation_are_enforced(self) -> None:
         self.make_sectioned_final()

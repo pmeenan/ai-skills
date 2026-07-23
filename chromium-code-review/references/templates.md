@@ -30,7 +30,7 @@ verdicts into a real review.
 - root-cause/ — Plan, Root-Cause Rows, And Reopened Rows
 - reconciliation.md — Reconciliation Table And Pre-Output Gate
 - synthesis/ — Bounded Index And Evidence Cards
-- draft-parts/ And draft-assembly/
+- Exact Output Fragments, Coverage, And Draft Assembly
 - challenge/ And challenge.md
 - patchset-delta.md And delivery-gate.md
 - gerrit-comments.md
@@ -142,7 +142,9 @@ write an unqualified "batch 1": it is ambiguous after handoff.
   reconciliation/shards/RB001.md # bounded disposition shard when needed
   synthesis/index.md     # bounded synthesis-handoff manifest
   synthesis/EPW-2.md     # bounded evidence card per promoted/question row
-  draft-parts/F001.md    # large-review finding fragment
+  draft-parts/F001.md    # exact review fragment for one finding/question
+  gerrit-parts/F001.md   # exact Gerrit fragment for one finding
+  output-coverage.tsv    # exact card→draft/Gerrit fragment hashes
   draft-parts/FRAME.md   # large-review summary/plan/notes fragment
   draft-assembly/L01-N001.md # bounded hierarchical assembly node
   draft-sections/index.tsv # large-draft immutable section/digest index
@@ -172,9 +174,9 @@ Thread ledger files are append-only records of discovery: later passes never
 rewrite them. A row's life-cycle state advances in `verification/V⟨batch⟩.md`
 (verdicts) and `reconciliation.md` (dispositions), not by editing the row.
 A row, once written, is never deleted or edited, and every row is carried to
-synthesis: promoted, downgraded, merged, or dismissed with a one-line recorded
-reason. Information silently lost at consolidation time is a common source of
-incomplete reviews.
+synthesis: promoted (at its calibrated severity, including a downgrade),
+merged, or dismissed with a one-line recorded reason. Information silently
+lost at consolidation time is a common source of incomplete reviews.
 
 ### Append-only retry and amendment contract
 
@@ -1390,10 +1392,19 @@ bound, split supporting material into numbered parts and keep the root card
 within the bound. The draft writer consumes these cards instead of
 all verdict and root-cause files.
 
+The disposition owns the synthesis-item identity: use exactly
+`promoted → F<number> (...)` or `question → Q<number> (...)`. Every such item
+appears exactly once in `synthesis/index.md`, and that index row's `source
+rows` includes the disposition's defining row. Non-promoted/non-question
+dispositions own no card. A severity downgrade stays inside a
+`promoted → F<number>` disposition; never use bare `downgraded`, which would
+omit the finding. The validator compares these sets exactly; a missing card is
+an error, not an empty-review warning.
+
 ```markdown
 # EPW-2 evidence card — CL 9999999 PS3
 
-- Disposition: promoted P1
+- Disposition: promoted → F001 (P1, V001-1, RC001-1)
 - Claim / location: failed flush reported as success — net/streams/delay_buffer.cc:203
 - Candidate: EPW-2 (effective row, including amendment if any)
 - Verdict: V001-1 CONFIRMED — completing trace ...
@@ -1414,25 +1425,47 @@ all verdict and root-cause files.
 | Q002 | synthesis/AL-3.md | 1902 | AL-3, V002-3 |
 ```
 
-## draft-parts/ And draft-assembly/
+## Exact Output Fragments, draft-parts/, And draft-assembly/
 
 When the card index has at most 12 cards and the measured total required input
 (cards plus compact control artifacts) is at most
 `worker_input_budget_bytes` from `profile.json`, one Draft Writer may
-consume them. Above either threshold, use one
-Finding Writer per card and a separate Frame Writer. They produce bounded
-fragments:
+consume them. Above either threshold, use one Finding Writer per card and a
+separate Frame Writer. Both topologies produce the same exact per-item
+fragments: `draft-parts/<item>.md` is the byte-for-byte review block for every
+finding/question, and `gerrit-parts/<item>.md` is the byte-for-byte Gerrit
+comment for every finding. Questions have no Gerrit fragment.
 
 ```markdown
-# Draft part F001 — revision 1
+#### Failed flush reported as success — silent byte loss (P1)
 
-- Destination section: CL-Introduced Issues & Suggestions / blocking
-- Ordering key: P1-001
-- Review markdown: ...
-- Gerrit target: new inline net/streams/delay_buffer.cc:203 / existing thread abc123 / main only
-- Gerrit markdown: ...
-- Rows: EPW-2 / V001-1 / RC001-1
+- **Synthesis item:** F001
+- **Claim:** failed cleanup still returns a success-shaped byte count.
+- **Location:** net/streams/delay_buffer.cc:203
+- **Evidence:** ...
+- **Severity:** P1 — success-shaped return after failure cleanup.
+- **Origin:** CL-introduced.
+- **Fix status:** validated fix — ...
+- **Regression test:** ...
+- **Rows:** EPW-2 / V001-1 / RC001-1
 ```
+
+`gerrit-parts/F001.md` contains only the exact target/comment block intended
+for Gerrit, including its repo-relative `path:line`; it contains no internal
+item marker. `output-coverage.tsv` binds both fragments to the card:
+
+```tsv
+item	kind	draft_path	draft_bytes	draft_sha256	gerrit_path	gerrit_bytes	gerrit_sha256
+F001	finding	draft-parts/F001.md	⟨bytes⟩	⟨sha256⟩	gerrit-parts/F001.md	⟨bytes⟩	⟨sha256⟩
+Q002	question	draft-parts/Q002.md	⟨bytes⟩	⟨sha256⟩	-	-	-
+```
+
+The item set equals `synthesis/index.md` exactly. A finding fragment has the
+complete Finding Format fields; a question fragment has non-empty
+`Synthesis item`, `Question`, `Why it matters`, and `Rows` fields. Final
+validation checks every measured fragment occurs byte-for-byte exactly once
+in its destination output. An ID in a frame/list does not count, and a
+finding without a Gerrit fragment cannot pass.
 
 `FRAME.md` contains only High-Level Summary, Prior Review Follow-Up, Positives,
 Verification Notes, Next Steps, verdict sentence, and the ordered part list; it
@@ -1442,8 +1475,9 @@ Assembly is hierarchical. Every assembly node consumes at most 12 input cards
 or fragments and no more than `worker_input_budget_bytes` total, writes one
 `draft-assembly/L<level>-N<node>.md`,
 and records exact child paths plus byte counts. Nodes only order, join,
-deduplicate exact repeated boilerplate, and validate required headings; they
-never reopen ledgers/verdicts, alter claims/severity/fixes, or invent evidence.
+validate required headings, but never edit, summarize, deduplicate, or omit
+bytes inside a per-item draft/Gerrit fragment. They never reopen
+ledgers/verdicts, alter claims/severity/fixes, or invent evidence.
 The root assembly writes `draft-review.md` and `gerrit-comments.md`. If a node
 would exceed either bound, add another level. The assembly manifest shape is:
 
@@ -1457,7 +1491,10 @@ would exceed either bound, add another level. The assembly manifest shape is:
 ```
 
 The root output starts with `- Draft revision: ⟨n⟩`; `FRAME.md` is a required
-root input, not optional framing that may be dropped during assembly.
+root input, not optional framing that may be dropped during assembly. The root
+also collects the measured per-worker coverage rows into canonical
+`output-coverage.tsv`; duplicate, missing, foreign, stale-hash, or
+non-included fragments block delivery.
 
 When a root draft exceeds `worker_input_budget_bytes`, assembly also emits
 immutable section fragments and an exact-concatenation index:
@@ -1596,6 +1633,7 @@ use the normalized thread root/latest IDs from
 ```markdown
 #### 1. Failed flush reported as success — silent byte loss (P1)
 
+- **Synthesis item:** F001
 - **Claim:** When the flush timer fires after a write failure,
   `DelayBuffer::OnTimer` runs failure cleanup but still returns
   `write_len_`, so the caller's DoLoop advances past bytes the socket never

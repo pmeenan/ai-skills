@@ -136,7 +136,15 @@ validation must fail before collection for a bad matrix or inventory row. A
 valid structured amendment must repair the same row for worker validation,
 indexing, and review-directory validation, while a missing/abbreviated hunk
 path or malformed amendment must fail all applicable consumers without
-publishing replacement indexes.
+publishing replacement indexes. Final validation must fail when a promoted
+finding or owner question in `reconciliation.md` lacks exactly one owned
+synthesis card, when the card lacks exactly one measured draft fragment, or
+when that fragment is absent/duplicated/changed in `draft-review.md`. It must
+also fail when a finding's measured Gerrit fragment is
+absent/duplicated/changed in `gerrit-comments.md`. An incidental item ID or a
+complete FRAME card list is not coverage. Questions require draft coverage but
+no Gerrit fragment; merged candidates are represented by their promoted
+survivor and do not create foreign cards.
 
 For `mechanical-leads.sh`, create a temporary two-file Git fixture where both
 files contain deterministic hits. Invoke the script once for each individual

@@ -38,8 +38,12 @@ verdicts, or source traces. Use the briefs in `phase-briefs.md`.
 The writer reads `reconciliation.md`, `synthesis/index.md`, only its assigned
 cards or parts, `context.md`, `pin.md`, `gerrit/unresolved-threads.json`, and
 the worktree for verbatim source lines. It writes `draft-review.md` and
-`gerrit-comments.md` per `synthesis-and-output.md`. Keep the post-synthesis
-freshness gate explicitly `pending-delivery`.
+`gerrit-comments.md` per `synthesis-and-output.md`, plus exact per-item
+`draft-parts/`/`gerrit-parts/` fragments and measured
+`output-coverage.tsv`. Every synthesis item has one draft fragment; every
+finding has one Gerrit fragment; their bytes occur exactly once in the
+corresponding root output. Keep the post-synthesis freshness gate explicitly
+`pending-delivery`.
 
 Collect only finding counts by severity, the verdict line, and whether every
 non-freshness gate line is answered. Repair any `no` line through a targeted
@@ -66,7 +70,8 @@ For larger inputs, spawn the Synthesis Challenge Planner and one Synthesis
 Challenger per shard in capacity-derived waves.
 
 When `draft-sections/index.tsv` exists, a content challenger reads only its
-assigned draft/Gerrit sections, the bounded global frame, and its cards. A
+assigned draft/Gerrit sections, exact per-item fragments and coverage rows, the
+bounded global frame, and its cards. A
 structural challenger reads only its reconciliation-row shard, gate, and frame.
 Exactly one `global:consistency` shard reads the frame, ordered section index,
 section headings/digests, verdict summary, and Gerrit target index—not every

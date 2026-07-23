@@ -1873,19 +1873,60 @@ def validate_verdicts(root: Path, candidates: set[str], report: Report) -> None:
                 report.error(f"{path} references non-canonical reopened row {reopened_id}")
 
 
-def validate_reconciliation(root: Path, source_ids: dict[str, Path], report: Report,
-                            final: bool) -> None:
+def validate_reconciliation(
+    root: Path, source_ids: dict[str, Path], report: Report, final: bool
+) -> dict[str, tuple[str, str]]:
     path = root / "reconciliation.md"
     text = read_text(path, report)
     dispositions: Counter[str] = Counter()
+    expected_cards: dict[str, tuple[str, str]] = {}
     for _, header, rows in table_dicts(text):
         if {"row", "disposition"}.issubset(header):
             for row in rows:
                 identifier = row.get("row", "")
                 if ROW_ID.fullmatch(identifier):
                     dispositions[identifier] += 1
-                    if not row.get("disposition"):
+                    disposition = row.get("disposition", "").strip()
+                    if not disposition:
                         report.error(f"reconciliation row {identifier} has blank disposition")
+                        continue
+                    normalized = disposition.lower()
+                    item_match: re.Match[str] | None = None
+                    kind = ""
+                    keyword = ""
+                    prefix = ""
+                    if normalized.startswith("promoted"):
+                        kind, keyword, prefix = "finding", "promoted", "F"
+                    elif normalized.startswith("question"):
+                        kind, keyword, prefix = "question", "question", "Q"
+                    elif normalized.startswith("downgraded"):
+                        report.error(
+                            f"reconciliation row {identifier} uses forbidden "
+                            "bare downgraded disposition; use "
+                            "'promoted → F<number>' at the calibrated severity"
+                        )
+                    if kind:
+                        item_match = re.fullmatch(
+                            rf"(?i){keyword}\s*(?:→|->)\s*"
+                            rf"({prefix}\d+)(?:\s+\([^()\r\n]+\))?",
+                            disposition,
+                        )
+                    if kind and item_match is None:
+                        report.error(
+                            f"reconciliation row {identifier} has malformed "
+                            f"{kind} disposition; expected '{keyword} → "
+                            f"{prefix}<number>' with an optional parenthesized note"
+                        )
+                    elif item_match is not None:
+                        item = item_match.group(1).upper()
+                        if item in expected_cards:
+                            prior = expected_cards[item][1]
+                            report.error(
+                                f"reconciliation synthesis item {item} is assigned "
+                                f"to both {prior} and {identifier}"
+                            )
+                        else:
+                            expected_cards[item] = (kind, identifier)
     for identifier in sorted(source_ids):
         if dispositions[identifier] != 1:
             report.error(f"row {identifier} has {dispositions[identifier]} reconciliation dispositions")
@@ -1908,13 +1949,19 @@ def validate_reconciliation(root: Path, source_ids: dict[str, Path], report: Rep
                 if not re.match(r"(?i)^yes\b", answer):
                     report.error(
                         f"pre-output gate line {number} is not affirmatively complete")
+    return expected_cards
 
 
-def validate_synthesis(root: Path, source_ids: dict[str, Path],
-                       budgets: dict[str, int], report: Report) -> set[str]:
+def validate_synthesis(
+    root: Path,
+    source_ids: dict[str, Path],
+    expected_cards: dict[str, tuple[str, str]],
+    budgets: dict[str, int],
+    report: Report,
+) -> dict[str, str]:
     index = root / "synthesis" / "index.md"
     text = read_text(index, report)
-    cards: set[str] = set()
+    cards: dict[str, str] = {}
     total_bytes = 0
     evidence_budget = budgets.get("evidence_card_budget_bytes")
     worker_budget = budgets.get("worker_input_budget_bytes")
@@ -1925,7 +1972,17 @@ def validate_synthesis(root: Path, source_ids: dict[str, Path],
             item = row["item"]
             if item in cards:
                 report.error(f"synthesis/index.md duplicates item {item}")
-            cards.add(item)
+                continue
+            expected = expected_cards.get(item)
+            if expected is None:
+                report.error(
+                    f"synthesis/index.md contains foreign item {item}; no "
+                    "promoted/question reconciliation disposition owns it"
+                )
+                kind = "finding" if item.startswith("F") else "question"
+            else:
+                kind = expected[0]
+            cards[item] = kind
             card = root / row["card"]
             if not card.is_file():
                 report.error(f"synthesis card is missing: {card}")
@@ -1943,11 +2000,24 @@ def validate_synthesis(root: Path, source_ids: dict[str, Path],
                     report.error(f"synthesis card byte count mismatch for {card}: {declared} != {actual}")
             except ValueError:
                 report.error(f"synthesis/index.md has invalid byte count for {item}")
-            for source in (part.strip() for part in row["source rows"].split(",")):
+            card_sources = {
+                part.strip() for part in row["source rows"].split(",")
+                if part.strip()
+            }
+            for source in card_sources:
                 if source and source not in source_ids:
                     report.error(f"synthesis item {item} cites unknown source row {source}")
-    if not cards and source_ids:
-        report.warn("synthesis/index.md contains no evidence-card rows")
+            if expected is not None and expected[1] not in card_sources:
+                report.error(
+                    f"synthesis item {item} omits its owning reconciliation "
+                    f"row {expected[1]} from source rows"
+                )
+    missing = sorted(set(expected_cards) - set(cards))
+    for item in missing:
+        kind, owner = expected_cards[item]
+        report.error(
+            f"reconciliation {kind} {item} for row {owner} has no synthesis card"
+        )
     if len(cards) > 12 or (worker_budget is not None and total_bytes > worker_budget):
         parts = root / "draft-parts"
         assembly = root / "draft-assembly" / "manifest.md"
@@ -2024,6 +2094,195 @@ DRAFT_SECTION_COLUMNS = (
     "draft_sha256", "gerrit_path", "gerrit_bytes", "gerrit_sha256", "cards",
     "rows", "global_frame",
 )
+OUTPUT_COVERAGE_COLUMNS = (
+    "item", "kind", "draft_path", "draft_bytes", "draft_sha256",
+    "gerrit_path", "gerrit_bytes", "gerrit_sha256",
+)
+
+
+def validate_output_coverage(
+    root: Path,
+    synthesis_items: dict[str, str],
+    draft: str,
+    gerrit: str,
+    report: Report,
+) -> None:
+    """Prove every synthesis item survives as exact final-output bytes."""
+    manifest = root / "output-coverage.tsv"
+    if not manifest.is_file():
+        if synthesis_items:
+            report.error(
+                "output-coverage.tsv is missing; promoted findings/questions "
+                "lack exact draft/Gerrit fragment coverage"
+            )
+        return
+    try:
+        with manifest.open(encoding="utf-8", newline="") as stream:
+            reader = csv.DictReader(stream, delimiter="\t")
+            if tuple(reader.fieldnames or ()) != OUTPUT_COVERAGE_COLUMNS:
+                report.error("output-coverage.tsv has wrong columns or order")
+                return
+            rows = list(reader)
+    except (OSError, csv.Error) as error:
+        report.error(f"cannot parse output-coverage.tsv: {error}")
+        return
+
+    seen: set[str] = set()
+    draft_path = root / "draft-review.md"
+    gerrit_path = root / "gerrit-comments.md"
+    draft_payload = (
+        draft_path.read_bytes() if draft_path.is_file() else draft.encode("utf-8")
+    )
+    gerrit_payload = (
+        gerrit_path.read_bytes() if gerrit_path.is_file() else gerrit.encode("utf-8")
+    )
+
+    def exact_fragment(
+        item: str,
+        value: str,
+        expected: str,
+        byte_value: str,
+        hash_value: str,
+        destination: bytes,
+        label: str,
+    ) -> bytes | None:
+        if value != expected:
+            report.error(
+                f"output coverage {item} {label}_path must be {expected}, "
+                f"found {value or 'blank'}"
+            )
+            return None
+        path = root / value
+        if not path.is_file():
+            report.error(f"output coverage {item} lacks {label} fragment {path}")
+            return None
+        payload = path.read_bytes()
+        if not payload.strip():
+            report.error(f"output coverage {item} has empty {label} fragment")
+        try:
+            declared = int(byte_value)
+            if declared != len(payload):
+                report.error(
+                    f"output coverage {item} {label} byte count mismatch: "
+                    f"{declared} != {len(payload)}"
+                )
+        except ValueError:
+            report.error(
+                f"output coverage {item} has invalid {label}_bytes '{byte_value}'"
+            )
+        actual_hash = hashlib.sha256(payload).hexdigest()
+        if hash_value != actual_hash:
+            report.error(
+                f"output coverage {item} {label} hash mismatch: "
+                f"{hash_value or 'blank'} != {actual_hash}"
+            )
+        occurrences = destination.count(payload) if payload else 0
+        if occurrences != 1:
+            report.error(
+                f"output coverage {item} {label} fragment occurs {occurrences} "
+                f"times in final {label} output; expected exactly one"
+            )
+        return payload
+
+    for line_number, row in enumerate(rows, 2):
+        if None in row or any(row.get(column) is None
+                              for column in OUTPUT_COVERAGE_COLUMNS):
+            report.error(
+                f"output-coverage.tsv line {line_number} has the wrong "
+                "number of tab-separated fields"
+            )
+            continue
+        item = row["item"]
+        if item in seen:
+            report.error(f"output-coverage.tsv duplicates item {item}")
+            continue
+        seen.add(item)
+        expected_kind = synthesis_items.get(item)
+        if expected_kind is None:
+            report.error(
+                f"output-coverage.tsv contains foreign item {item}; no "
+                "synthesis card owns it"
+            )
+            continue
+        if row["kind"] != expected_kind:
+            report.error(
+                f"output coverage {item} kind {row['kind'] or 'blank'} does "
+                f"not match synthesis kind {expected_kind}"
+            )
+
+        draft_fragment = exact_fragment(
+            item,
+            row["draft_path"],
+            f"draft-parts/{item}.md",
+            row["draft_bytes"],
+            row["draft_sha256"],
+            draft_payload,
+            "draft",
+        )
+        if draft_fragment is not None:
+            try:
+                draft_text = draft_fragment.decode("utf-8")
+            except UnicodeDecodeError:
+                report.error(f"output coverage {item} draft fragment is not UTF-8")
+                draft_text = ""
+            marker = rf"(?m)^- \*\*Synthesis item:\*\* {re.escape(item)}\s*$"
+            if not re.search(marker, draft_text):
+                report.error(
+                    f"output coverage {item} draft fragment lacks exact "
+                    f"'- **Synthesis item:** {item}' marker"
+                )
+            required_fields = (
+                ("Claim", "Location", "Evidence", "Severity", "Origin",
+                 "Fix status", "Regression test", "Rows")
+                if expected_kind == "finding"
+                else ("Question", "Why it matters", "Rows")
+            )
+            for field_name in required_fields:
+                if not re.search(
+                    rf"(?m)^- \*\*{re.escape(field_name)}:\*\*\s*\S",
+                    draft_text,
+                ):
+                    report.error(
+                        f"output coverage {item} draft fragment lacks non-empty "
+                        f"'{field_name}' field"
+                    )
+
+        if expected_kind == "finding":
+            gerrit_fragment = exact_fragment(
+                item,
+                row["gerrit_path"],
+                f"gerrit-parts/{item}.md",
+                row["gerrit_bytes"],
+                row["gerrit_sha256"],
+                gerrit_payload,
+                "gerrit",
+            )
+            if gerrit_fragment is not None:
+                try:
+                    gerrit_text = gerrit_fragment.decode("utf-8")
+                except UnicodeDecodeError:
+                    report.error(
+                        f"output coverage {item} Gerrit fragment is not UTF-8"
+                    )
+                    gerrit_text = ""
+                if not CITATION.search(gerrit_text):
+                    report.error(
+                        f"output coverage {item} Gerrit fragment lacks a "
+                        "repo-relative path:line target"
+                    )
+        elif (
+            row["gerrit_path"] != "-"
+            or row["gerrit_bytes"] != "-"
+            or row["gerrit_sha256"] != "-"
+        ):
+            report.error(
+                f"question {item} must use '-' for all Gerrit coverage fields"
+            )
+
+    for item in sorted(set(synthesis_items) - seen):
+        report.error(
+            f"synthesis item {item} has no output-coverage.tsv row"
+        )
 
 
 def validate_draft_sections(root: Path, draft_revision: str,
@@ -2193,7 +2452,7 @@ def validate_draft_sections(root: Path, draft_revision: str,
 
 
 def validate_final(root: Path, sha: str | None, source_ids: dict[str, Path],
-                   synthesis_items: set[str], budgets: dict[str, int],
+                   synthesis_items: dict[str, str], budgets: dict[str, int],
                    input_assignments: dict[str, list[dict[str, str]]],
                    report: Report) -> None:
     draft = read_text(root / "draft-review.md", report)
@@ -2207,6 +2466,7 @@ def validate_final(root: Path, sha: str | None, source_ids: dict[str, Path],
         report.error("draft-review.md lacks a positive integer Draft revision")
     if re.search(r"(?:file://|/(?:tmp|home)/|<[^>]+>)", gerrit):
         report.error("gerrit-comments.md contains a local path/URL or placeholder inline")
+    validate_output_coverage(root, synthesis_items, draft, gerrit, report)
     sections = validate_draft_sections(
         root, draft_revision, budgets.get("worker_input_budget_bytes"), report
     )
@@ -2530,7 +2790,7 @@ def main() -> int:
     candidates: set[str] = set()
     covered: set[str] = set()
     required_root_cause_scopes: set[str] = set()
-    synthesis_items: set[str] = set()
+    synthesis_items: dict[str, str] = {}
     budgets: dict[str, int] = {}
     input_assignments: dict[str, list[dict[str, str]]] = {}
     if level >= PHASES["collection"]:
@@ -2560,9 +2820,12 @@ def main() -> int:
         validate_root_cause_trigger_accounting(root, required_root_cause_scopes,
                                                report)
     if level >= PHASES["reconciliation"]:
-        validate_reconciliation(root, source_ids, report,
-                                final=level >= PHASES["final"])
-        synthesis_items = validate_synthesis(root, source_ids, budgets, report)
+        expected_cards = validate_reconciliation(
+            root, source_ids, report, final=level >= PHASES["final"]
+        )
+        synthesis_items = validate_synthesis(
+            root, source_ids, expected_cards, budgets, report
+        )
     if level >= PHASES["final"]:
         validate_final(
             root, sha, source_ids, synthesis_items, budgets, input_assignments,

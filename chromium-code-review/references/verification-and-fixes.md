@@ -309,8 +309,9 @@ Examples of the intended reasoning pattern:
 Before final output, run a contradiction pass over the ledger and the draft
 review:
 
-- Does the final review account for every ledger entry — promoted, downgraded,
-  or dismissed with a recorded reason?
+- Does the final review account for every ledger entry — promoted at its
+  calibrated severity (including downgrades), merged, or dismissed with a
+  recorded reason?
 - Did the root-cause/layering pass run for every triggering candidate or fix,
   and are any reopened rows verified, refuted, or converted into questions?
 - Is the selected fix layer the invariant owner or intentionally below/above
@@ -383,9 +384,13 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   replacement is optimal. Avoid repeating the same suggestion across
   multiple files/declarations; place a single comment at the most relevant
   site.
-- **Exhaustive coverage without truncation:** Every distinct `CONFIRMED`
-  finding must map to an inline Gerrit comment. Do not sample, compress, or
-  truncate confirmed technical problems to shorten output length. Presenting
+- **Exhaustive coverage without truncation:** Every promoted finding (each a
+  card in `synthesis/index.md`) writes one exact
+  `gerrit-parts/<item>.md` target/comment fragment and measured
+  `output-coverage.tsv` row; the fragment bytes occur exactly once in
+  `gerrit-comments.md`. Merged duplicates are already folded into their
+  surviving finding, so they need no separate comment. Do not sample,
+  compress, or truncate promoted findings to shorten output length. Presenting
   100% of actionable bugs upfront is mandatory to prevent multiple review
   rounds.
 - **Normalize threads before replying:** `comments.json` is keyed by file and

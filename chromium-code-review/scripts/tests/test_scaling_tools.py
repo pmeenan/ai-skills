@@ -412,7 +412,7 @@ class BuildReviewIndexesTest(unittest.TestCase):
 
 | row | thread | disposition |
 | --- | --- | --- |
-| EPW-1 | Error Path | promoted F001 via V001-1 at foo.cc:11 |
+| EPW-1 | Error Path | promoted → F001 (V001-1 at foo.cc:11) |
 """,
         )
         write(

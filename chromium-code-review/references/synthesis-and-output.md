@@ -23,7 +23,9 @@ contradiction checklist and Gerrit output rules live in
 Synthesis produces a **reconciliation table** in `reconciliation.md` as a
 required artifact: every row ID mapped to its disposition — promoted (to
 finding N), refuted (with the citation), converted to a question,
-downgraded, merged (into row M), or clean (cited). Build the table by
+merged (into row M), or clean (cited). A severity downgrade is not a terminal
+disposition: the confirmed finding remains `promoted → F<number>` at its
+calibrated severity. Build the table by
 enumerating the row IDs present in `ledger/*.md`, `collection.md`,
 `verification/*.md`, and `root-cause/*.md` — the files themselves, never a
 summary of them, with no ranges and no "rest dismissed". Output is blocked
@@ -88,37 +90,51 @@ gate line is blank is the failure mode the gate exists to stop.
 
 ### Comprehensive Output Mandate (No-Truncation Guarantee)
 To avoid multiple review rounds and ensure exhaustive feedback delivery:
-- **Exhaustive coverage:** Every distinct finding evaluated as `CONFIRMED` in
-  `verdicts.tsv` MUST be explicitly articulated as a finding in
-  `draft-review.md` and as an inline comment in `gerrit-comments.md`.
+- **Exhaustive coverage:** Every promoted finding and owner question in
+  `reconciliation.md` — equivalently, every card in `synthesis/index.md` —
+  MUST have one exact `draft-parts/<item>.md` fragment included byte-for-byte
+  once in `draft-review.md`; every finding also has one exact
+  `gerrit-parts/<item>.md` fragment included byte-for-byte once in
+  `gerrit-comments.md`. The measured hashes and paths live in
+  `output-coverage.tsv`. The synthesis cards, not raw `verdicts.tsv` rows, are
+  the coverage set: a
+  CONFIRMED verdict that reconciliation merged into a survivor is represented
+  by that survivor, and a severity-downgraded finding remains a promotion at
+  its calibrated severity. The validator first proves reconciliation
+  promotions/questions
+  equal the card index, then proves the card index equals the coverage
+  manifest. An item ID in framing prose is not coverage.
 - **Zero truncation or sampling:** Never cherry-pick, sample, or compress
-  confirmed evaluation results into a "top priority" or "representative"
-  subset to reduce draft size. Presenting a partial subset causes multiple
-  review iterations and violates workflow objectives.
+  promoted findings into a "top priority" or "representative" subset to reduce
+  draft size. Presenting a partial subset causes multiple review iterations
+  and violates workflow objectives.
 - **Deduplication without omission:** When multiple discovery workers report
-  overlapping observations of the exact same root defect, cluster and merge
-  them into a single canonical comment citing all applicable code locations.
-  Never discard a distinct technical defect during merging.
+  overlapping observations of the exact same root defect, reconciliation
+  merges them into one surviving row citing all applicable code locations.
+  Never discard a distinct technical defect during merging; a genuinely
+  distinct defect keeps its own promoted card and finding.
 
 The Draft Writer reads cards one at a time and does not ingest all verdict or
-root-cause files. It may mechanically extract compact plan/outcome fields. If
-a card is missing required evidence or conflicts with reconciliation, report
-the gate failure instead of searching the entire record and silently repairing
-it.
+root-cause files. It writes the exact per-item fragments and measured
+`output-coverage.tsv` rows before assembling the final outputs. If a card is
+missing required evidence or conflicts with reconciliation, report the gate
+failure instead of searching the entire record and silently repairing it.
 
 The single Draft Writer path is allowed only when the card index has at most
 12 cards and its assigned artifacts plus required reference sections fit the
 agent input budget: at most 35% of a known context window, or 128 KiB when
 capacity is unknown. Above either bound, Finding Writers produce one bounded
-`draft-parts/<card>.md` per card and a Frame Writer
-produces `draft-parts/FRAME.md`. Draft Assembly then combines only those parts
+`draft-parts/<card>.md` plus (for findings) `gerrit-parts/<card>.md` per card,
+and a Frame Writer produces `draft-parts/FRAME.md`. Draft Assembly then
+combines only those parts
 through a bounded tree: each node consumes at most 12 children while remaining
 within the same input budget, writes a versioned intermediate, and records its
 children, measured bytes, and token estimate in the assembly manifest.
-Assembly may order, join, remove exact duplicate
-boilerplate, and check headings; it must never reopen the corpus or change a
-claim, severity, origin, fix, question, or citation. Add levels instead of
-exceeding a bound. Only the root writes the current draft and Gerrit outputs.
+Assembly may order and join framing, but per-item fragment bytes are immutable:
+it must never edit, summarize, deduplicate, or omit them. It must never reopen
+the corpus or change a claim, severity, origin, fix, question, or citation.
+Add levels instead of exceeding a bound. Only the root writes the current
+draft/Gerrit outputs and canonical coverage manifest.
 
 With zero cards, the Frame Writer may operate in no-card root mode and write
 the complete draft/Gerrit outputs directly; it still consumes context, plan,
@@ -144,6 +160,8 @@ delivery without a new contradiction pass.
 
 Record and report every finding with:
 
+- **Synthesis item:** its unique `F<number>` from the reconciliation
+  disposition and `synthesis/index.md`.
 - **Claim:** one sentence describing concrete behavior, not vibes.
 - **Location:** repo-relative `path:line` against the reviewed patchset.
 - **Evidence:** the minimal state/call trace or citation that demonstrates it.
@@ -156,6 +174,10 @@ Record and report every finding with:
 - **Rows:** the ledger row and verdict IDs behind the finding (e.g.
   `EPW-2 / V001-1`) — an internal trail for the gate; omit it from
   Gerrit-ready text.
+
+Record every owner question as its own exact draft fragment with non-empty
+`Synthesis item` (`Q<number>`), `Question`, `Why it matters`, and `Rows`
+fields. Questions do not get Gerrit fragment rows.
 
 ## Severity Calibration
 
@@ -234,7 +256,10 @@ to its immutable challenge round and delivery gate; it is not Gerrit prose.
    praised "failures fail open safely" about the exact branch that treated a
    failure as success.)
 6. **Questions:** Only questions whose answers affect correctness, API contract,
-   or landing readiness. Every UNPROVEN verdict lands here.
+   or landing readiness. Every UNPROVEN verdict lands here. Each question
+   carries its originating row/verdict ID trail (e.g. `Rows: AL-7 / V003-2`) —
+   internal, like the finding trail; omit it from Gerrit-facing text — so the
+   pre-output gate can prove no promoted card was dropped.
 7. **Verification Notes:** State tests run or not run, production wiring traced
    or not traced, and any important areas not verified.
    - Name subagents by human-readable thread name (e.g. "the Error-Path Walk
@@ -320,13 +345,16 @@ delivery is blocked while any line is pending or blank.
    `root-cause/*.md` has exactly one disposition line — no ranges, no "rest
    dismissed".
 8. **Verdicts (comprehensive and non-truncated):** every promoted finding
-   cites a CONFIRMED verdict with its trace, and all unique CONFIRMED
-   findings from verdicts.tsv are articulated in draft-review.md and
-   gerrit-comments.md without truncation or sampling; every independently
-   refuted row cites its guard or safe trace; every UNPROVEN row appears in
-   Questions; every merged candidate either has its own verdict or has
-   validated trigger/invariant/outcome equivalence to a survivor whose
-   verdict is cited.
+   cites a CONFIRMED verdict with its trace, and every promoted finding and
+   owner question has exactly one measured draft fragment included in
+   draft-review.md and, for findings, exactly one measured Gerrit fragment
+   included in gerrit-comments.md, with reconciliation→card→coverage sets
+   equal and no truncation, sampling, or
+   "representative subset"; every independently refuted row cites its guard or
+   safe trace; every UNPROVEN row appears in Questions; every merged candidate
+   either has its own verdict or has validated trigger/invariant/outcome
+   equivalence to a survivor whose verdict is cited (a merged candidate is
+   represented by its survivor, never dropped).
 9. **Root cause:** `root-cause/batches.md` accounts for every trigger; the
    layering pass ran for every triggering candidate and
    fix; reopened rows were re-verified, refuted, or converted to questions.

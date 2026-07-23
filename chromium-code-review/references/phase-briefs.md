@@ -848,7 +848,12 @@ synthesis/⟨ROW-ID⟩.md using templates.md. A card is at most
 `profile.json:/context_budget/evidence_card_budget_bytes`; if supporting
 evidence exceeds that, split it into numbered parts referenced by
 the root card. Write the complete bounded manifest to synthesis/index.md. Do
-not copy all verdicts into one synthesis document.
+not copy all verdicts into one synthesis document. Assign each output item in
+the disposition itself using exact `promoted → F<number>` or
+`question → Q<number>` syntax. The index contains exactly those items, and
+each row's `source rows` includes the disposition's defining row. A severity
+downgrade remains a promotion at the calibrated severity; never emit a bare
+`downgraded` disposition.
 
 Deliverables: ⟨review-dir⟩/reconciliation.md,
 ⟨review-dir⟩/synthesis/index.md, and ⟨review-dir⟩/synthesis/*.md cards.
@@ -938,11 +943,19 @@ the "Verdict Alignment And Gerrit Output Rules" section of
 Findings come from the reconciliation table's promotions; report record
 contradictions instead of papering over them. You must exhaustively include
 every single promoted finding without truncation, sampling, or omission so
-the author receives all actionable feedback in a single review round.
+the author receives all actionable feedback in a single review round. For
+every synthesis item, write the exact `draft-parts/⟨item⟩.md` fragment in the
+templates.md shape; for every finding also write
+`gerrit-parts/⟨item⟩.md`. Include the canonical `Synthesis item` field in each
+draft fragment, then assemble those bytes without editing them.
 
 Deliverables: ⟨review-dir⟩/draft-review.md,
-⟨review-dir⟩/gerrit-comments.md, and completed draft-dependent gate lines
-in reconciliation.md. Do not mark Freshness yes: it remains
+⟨review-dir⟩/gerrit-comments.md, every exact per-item fragment,
+⟨review-dir⟩/output-coverage.tsv with measured sizes/hashes, and completed
+draft-dependent gate lines in reconciliation.md. The coverage item set must
+exactly equal synthesis/index.md; each draft fragment occurs exactly once in
+the review and each finding's Gerrit fragment occurs exactly once in the
+Gerrit output. Do not mark Freshness yes: it remains
 `pending-delivery` until the post-challenge Gerrit refresh. For revision >1,
 first preserve the prior current outputs as draft-review.revision-⟨n-1⟩.md and
 gerrit-comments.revision-⟨n-1⟩.md; never append a second review to the old file.
@@ -970,10 +983,15 @@ oversized card is returned for splitting.
 Procedure: read synthesis-and-output.md Finding Format, Severity Calibration,
 Output Format, and Tone plus verification-and-fixes.md Gerrit rules. Draft the
 finding or question exactly from the reconciled evidence; do not re-adjudicate.
+Include the exact `Synthesis item: ⟨card-ID⟩` field and internal source-row
+trail in the review fragment.
 
-Deliverable: draft-parts/⟨card-ID⟩.md in the Draft Part shape from
-templates.md, containing destination, ordering key, review markdown, Gerrit
-target/text, and source rows.
+Deliverables: exact final-output bytes in
+`draft-parts/⟨card-ID⟩.md`; for a finding, exact target/comment bytes in
+`gerrit-parts/⟨card-ID⟩.md`; and one measured
+`output-coverage/⟨card-ID⟩.tsv` data row in the templates.md schema. A question
+uses `-` for all Gerrit fields. Do not add wrappers or metadata that should not
+appear in the final output.
 
 Return: one line — card ID, destination/ordering key, output path, complete
 or explicit remaining.
@@ -993,8 +1011,10 @@ root-cause/batches.md summary. Extract only compact outcome fields.
 
 Deliverable: draft-parts/FRAME.md with High-Level Summary, Prior Review
 Follow-Up, cited Positives, Verification Notes, Next Steps, verdict sentence,
-and the complete ordered card-part list. Apply verdict alignment. Freshness
-remains pending-delivery.
+and the complete ordered card-part list. The list must name every card in
+synthesis/index.md with no omission; a missing card part is a truncation
+defect, not an editorial choice. Apply verdict alignment. Freshness remains
+pending-delivery.
 
 Return: one line — verdict sentence, ordered part count, path.
 ```
@@ -1013,13 +1033,18 @@ profile.json:/context_budget/worker_input_budget_bytes. If exceeded,
 return `needs another assembly level`; never squeeze, summarize, or omit.
 
 Procedure: order and join children, remove only exact repeated boilerplate,
-and validate required headings/part IDs. Do not alter claims, severity, origin,
-fix status, questions, or citations. A non-root node writes
+and validate required headings/part IDs. Per-item fragment bytes are immutable:
+do not alter, summarize, deduplicate, or omit them. The assembled
+draft-review.md must contain every draft fragment exactly once and
+gerrit-comments.md every finding's Gerrit fragment exactly once. A non-root
+node writes
 draft-assembly/⟨node-ID⟩.md. The root writes draft-review.md and
 gerrit-comments.md and updates the draft-dependent gate lines, with Freshness
 still pending-delivery. The root must include `FRAME.md` and start
 draft-review.md with `- Draft revision: ⟨draft-revision⟩`. Append the node row
-to draft-assembly/manifest.md. If either root output exceeds the worker input
+to draft-assembly/manifest.md. At the root, collect every per-item coverage row
+into `output-coverage.tsv`, rejecting duplicate/missing/foreign items and
+remeasuring every byte count/hash. If either root output exceeds the worker input
 budget, also write bounded immutable draft/Gerrit fragments and
 `draft-sections/index.tsv` using the exact dual-path byte/hash schema in
 templates.md. The root outputs must byte-equal the fragments concatenated in
@@ -1044,8 +1069,8 @@ fresh-round requirement remain mandatory.
 ```text
 Scope: shard the adversarial audit; do not audit the content yourself.
 
-Inputs: synthesis/index.md, reconciliation.md, draft-review.md, and
-gerrit-comments.md for challenge round ⟨round⟩. When
+Inputs: synthesis/index.md, reconciliation.md, output-coverage.tsv,
+draft-review.md, and gerrit-comments.md for challenge round ⟨round⟩. When
 draft-sections/index.tsv exists, use it as the content-routing authority and
 verify its revision, byte counts, hashes, cards, and rows before planning.
 
@@ -1086,7 +1111,8 @@ shard ⟨CH-batch⟩ only: ⟨card IDs, draft-section IDs, structural row IDs, o
 global-index scope⟩. Change nothing.
 
 Inputs: for a bounded single-shard draft, draft-review.md and
-gerrit-comments.md. For a sectioned draft, only the assigned immutable
+gerrit-comments.md plus output-coverage.tsv and the assigned exact per-item
+fragments. For a sectioned draft, only the assigned immutable
 draft-sections/*.md and matching gerrit-sections/*.md, the bounded global frame,
 and their index rows/hashes — never the complete draft. Also use the scoped
 synthesis cards, assigned reconciliation rows, plan.md, and the worktree for
