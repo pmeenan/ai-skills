@@ -8,6 +8,12 @@ absolute — subagents start cold in the repository checkout), prepend the
 Common Header, and spawn. Do not paraphrase briefs or compose them freehand,
 and do not inline reference-file content into them.
 
+For every substitution, `⟨skill-dir⟩` is the verified immutable
+`⟨review-dir⟩/skill-snapshot`, never the live canonical skill checkout. Finish
+the substituted brief and its exact input list, then register both with
+`⟨skill-dir⟩/scripts/seal-work-unit.py` before spawning it. A sealed brief is
+read-only; corrections use a new attempt-numbered brief and seal.
+
 Discovery-thread and skeptic briefs are NOT here — the Planner and
 Verification-Planner agents write those into `⟨review-dir⟩/briefs/`, and the
 orchestrator spawns them with only: "Read and execute the brief at
@@ -70,12 +76,20 @@ or workspace directory. Retry the named path once, then use the final-message
 fallback for a single-file deliverable or return `blocked — cannot write
 ⟨exact path⟩` for a multi-file deliverable.
 
-This is attempt ⟨attempt⟩. Row-bearing and audit deliverables are append-only:
-if one exists, inspect its last complete row and Amendments section, do not
-redo completed scope, do not reuse IDs, and append corrections using the
-normative amendment shape in ⟨skill-dir⟩/references/templates.md. Draft and
-index deliverables follow their explicit revision/archive rule. Never
-truncate or regenerate an immutable artifact.
+This is attempt ⟨attempt⟩. A new row-bearing or audit deliverable remains owned
+by this attempt until local validation passes; correct its draft in place
+before returning. If it is a collected `prestate`, inspect its last complete
+row and Amendments section, do not redo completed scope or reuse IDs, and use
+structured `replace-fields` amendments from
+⟨skill-dir⟩/references/templates.md for parsed cells. Draft and index
+deliverables follow their explicit revision/archive rule. Never truncate or
+regenerate a collected artifact.
+
+Before returning, run
+`⟨skill-dir⟩/scripts/validate-worker-artifact.py ⟨review-dir⟩ <each-row-bearing-deliverable>`.
+Fix failures in a new artifact before collection; for collected prestate use
+an amendment. Never bypass validation with an abbreviated/missing path. If no
+valid correction is expressible, return `needs-repair` with the exact error.
 
 Extract, don't ingest: when you need only rows, sections, IDs, or fields
 from a large input file, pull them mechanically (grep/sed/jq/awk) instead

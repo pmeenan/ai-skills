@@ -598,6 +598,7 @@ class ReviewDirectoryValidatorTest(unittest.TestCase):
         tools.mkdir()
         validator = tools / "validate-review-dir.py"
         shutil.copy2(VALIDATE, validator)
+        shutil.copy2(SCRIPTS / "artifact_tables.py", tools / "artifact_tables.py")
         helper = tools / "worktree-lease.py"
         helper.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
         helper.chmod(0o644)
@@ -638,6 +639,9 @@ class ReviewDirectoryValidatorTest(unittest.TestCase):
   - a.cc [M; +1/-1]
 """, encoding="utf-8")
         (self.review / "gerrit").mkdir()
+        (self.review / "skill-snapshot").mkdir()
+        (self.review / "skill-snapshot" / "snapshot-manifest.json").write_text(
+            '{"schema_version": 1, "files": []}\n', encoding="utf-8")
         (self.review / "gerrit" / "unresolved-threads.json").write_text(
             '{"summary":{"total_threads":0,"unresolved_threads":0,"malformed_entries":0},'
             '"threads": [], "malformed": []}\n', encoding="utf-8")
@@ -1040,6 +1044,56 @@ Return partial with explicit remaining scope when needed.
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(run.returncode, 1)
         self.assertIn("citation-free PASS", run.stdout)
+
+    def test_structured_matrix_amendment_is_effective_for_collection(self) -> None:
+        ledger = self.review / "ledger" / "EPW.md"
+        text = ledger.read_text(encoding="utf-8").replace(
+            "| yes | a.cc:1 |", "| yes | — |"
+        )
+        replacement = json.dumps({"evidence": "a.cc:1"})
+        ledger.write_text(
+            text
+            + "\n## Amendments\n\n"
+            + "| amendment | target | operation | replacement / reason | evidence | attempt |\n"
+            + "| --- | --- | --- | --- | --- | --- |\n"
+            + f"| EPW-A1 | matrix:1 | replace-fields | {replacement} | a.cc:1 | 2 |\n",
+            encoding="utf-8",
+        )
+        self.refresh_indexes()
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
+    def test_nested_planning_artifact_table_errors_are_rejected(self) -> None:
+        planning = self.review / "verification" / "planning" / "VPLAN001.md"
+        planning.parent.mkdir(parents=True)
+        planning.write_text(
+            """# Planning shard
+
+## Rows
+
+| id | value |
+| --- | --- |
+| P1 | original |
+
+## Amendments
+
+| amendment | target | operation | replacement / reason | evidence | attempt |
+| --- | --- | --- | --- | --- | --- |
+| P1-A1 | P1 | replace-fields | not-json | a.cc:1 | 2 |
+""",
+            encoding="utf-8",
+        )
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(run.returncode, 1)
+        self.assertIn(
+            "P1-A1 replace-fields payload is not valid JSON", run.stdout
+        )
 
     def test_duplicate_manifest_attempt_is_rejected(self) -> None:
         manifest = self.review / "orchestration.tsv"

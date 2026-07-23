@@ -116,6 +116,14 @@ Modes is only for harnesses with no such tool at all.
    canonical artifact at a time. Loop until complete or honestly terminated.
    A partial return is a normal handoff, never grounds to mark the phase done
    or fold its remainder into another agent.
+7. **Freeze the skill inputs and seal each work unit before spawn.** Phase 0
+   creates an immutable skill snapshot inside the review directory. Every
+   worker reference and helper path comes from that snapshot, never from the
+   live skill checkout. After a brief is final, seal its exact inputs and queue
+   row atomically; a sealed brief is read-only and any correction becomes a
+   new attempt. A new artifact remains editable by its sole producer until it
+   passes local validation and is collected. After collection, preserve its
+   prefix and express parsed-row corrections with structured amendments.
 
 ## Reference Files And Scripts
 
@@ -140,6 +148,17 @@ Orchestrator-facing (the only skill files the orchestrator loads):
 - `scripts/worktree-lease.py`: atomically acquires, heartbeats, validates,
   releases, archives, and garbage-collects the one-hour per-pin worktree lease
   log. Use it for every lease mutation rather than editing the log directly.
+- `scripts/snapshot-skill.py`: atomically creates and verifies the immutable
+  per-review skill snapshot. Run it immediately after fetch and use the
+  snapshot for every subsequent reference/helper path.
+- `scripts/seal-work-unit.py`: validates the snapshot and input budget, hashes
+  a final brief and its exact inputs, queues the attempt, and makes the brief
+  read-only in one recoverable transaction. Run it before every worker spawn.
+  Rerunning the exact same command after an interruption is idempotent and
+  returns `already sealed`; never invent a new attempt merely to recover.
+- `scripts/validate-worker-artifact.py`: applies the same structured table and
+  amendment rules as the indexer/collection validator. Both the producer and
+  orchestrator run it before an artifact is collected.
 - `scripts/validate-review-dir.py`: deterministic artifact, ID, manifest, and
   gate validation. Run it at the named phase gates; a nonzero result blocks
   the next phase and is repaired through workers, never waived from memory.
@@ -278,6 +297,13 @@ a non-current patchset, pass that exact patchset to `fetch-cl.sh`, record
 the current revision. Otherwise the initial pin must be Gerrit's current
 patchset.
 
+Immediately run `scripts/snapshot-skill.py <canonical-skill-dir> <review-dir>`.
+It writes the immutable snapshot at `<review-dir>/skill-snapshot` and verifies
+its manifest before reuse. From this point onward, `⟨skill-dir⟩` in every
+brief, reference input, and helper invocation means that snapshot path. Do not
+mix live canonical files with snapshot files, and do not refresh the snapshot
+mid-review; a materially changed skill starts a new review directory.
+
 Run `scripts/extract-unresolved-comments.py` directly before profiling,
 prior-feedback reconciliation, or drafting. It mechanically builds the reply
 graph in `comments.json` and writes `gerrit/unresolved-threads.json`; workers
@@ -288,7 +314,8 @@ helper.
 
 ## Phase 1 — Context And Inventory
 
-Run `scripts/profile-review.py` and record `profile.json`/`profile.md`. Apply
+Run `<review-dir>/skill-snapshot/scripts/profile-review.py` and record
+`profile.json`/`profile.md`. Apply
 the topology and input-budget contract in `references/scaling-and-indexes.md`;
 Inventory may escalate the conservative class but never silently downgrade it.
 
@@ -345,6 +372,14 @@ self-contained discovery brief per spawned thread.
   read-only, directives, partial-return, and deliverable rules. Generated
   discovery, skeptic, root-cause, finding-writer, assembly, continuation, and
   repair briefs are not exempt.
+
+Before spawning any planned unit, finish its brief and exact input list, then
+run `<review-dir>/skill-snapshot/scripts/seal-work-unit.py`. The seal is the
+only supported way to add the queued orchestration row and input-manifest
+rows. Never edit or repoint a sealed brief; archive it as evidence and create
+an attempt-numbered replacement when a correction is required. If sealing is
+interrupted, rerun the same command: an exact recovered queued row succeeds as
+`already sealed`, while a conflicting row fails.
 
 ## Phase 4 — Discovery Execution
 
@@ -412,8 +447,13 @@ deferred row may survive to the collection audit.
 
 **Collect ledger files; never transcribe or compress them.** Collection is:
 confirm the thread's `ledger/<THREAD>.md` exists and is non-trivial
-(`ls`, `wc -l`), record the outcome (row count from the thread's status
-message) in `plan.md` and `progress.md`, and move on. Rows are carried
+(`ls`, `wc -l`), independently run
+`<review-dir>/skill-snapshot/scripts/validate-worker-artifact.py` on it, and
+only after a zero exit record the outcome (row count from the thread's status
+message) in `plan.md` and `progress.md`. A nonzero exit is
+`needs-repair`, not `complete`; return the exact diagnostics to the owning
+attempt while it still owns a new artifact, or create a narrow amendment
+attempt for collected prestate. Rows are carried
 forward by the files themselves under their own IDs. Deduplication is a
 reconciliation-time disposition ("row X merged into row Y"), never an
 orchestrator pre-processing step; severity is judged in verification, not

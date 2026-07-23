@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import csv
+import fcntl
+import hashlib
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -12,6 +15,9 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 PROFILE = SCRIPTS / "profile-review.py"
 INDEXES = SCRIPTS / "build-review-indexes.py"
 REFRESH = SCRIPTS / "refresh-delivery-gate.py"
+SNAPSHOT = SCRIPTS / "snapshot-skill.py"
+SEAL = SCRIPTS / "seal-work-unit.py"
+ARTIFACT_VALIDATE = SCRIPTS / "validate-worker-artifact.py"
 
 
 def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -595,6 +601,358 @@ class BuildReviewIndexesTest(unittest.TestCase):
         result = run("python3", str(INDEXES), str(root), "--check", check=False)
         self.assertNotEqual(0, result.returncode)
         self.assertIn("manifest.json", result.stderr)
+
+    def test_inventory_hunk_path_is_strict_and_structured_amendment_repairs_it(self) -> None:
+        temporary, root = self.make_review()
+        self.addCleanup(temporary.cleanup)
+        write(
+            root / "profile.json",
+            json.dumps({"hunks": [{"id": "H0001", "path": "net/foo.cc"}]}) + "\n",
+        )
+        write(
+            root / "inventory.md",
+            """# Inventory
+
+## Changed surfaces
+
+| surface ID | surface | owned hunks / earliest changed line | contract source | callers | old → new behavior | state / lifetime | tests | reachability | scope label |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| S0001 | Foo::Run | H0001 / foo.cc:10 | net/foo.h:5 | caller | old to new | pending | test | production | core |
+
+## Risk-area map
+
+| file | risk areas |
+| --- | --- |
+| net/foo.cc | state |
+
+## Trigger inventory
+
+| scope ID | surface | discovery triggers | root-cause trigger | evidence |
+| --- | --- | --- | --- | --- |
+| T001 | Foo::Run | SMM | required: state | net/foo.cc:10 |
+""",
+        )
+        failed = run("python3", str(INDEXES), str(root), check=False)
+        self.assertNotEqual(0, failed.returncode)
+        self.assertIn("belongs to net/foo.cc", failed.stderr)
+        self.assertFalse((root / "indexes" / "inventory.tsv").exists())
+
+        payload = json.dumps({
+            "owned hunks / earliest changed line": "H0001 / net/foo.cc:10"
+        })
+        with (root / "inventory.md").open("a", encoding="utf-8") as stream:
+            stream.write(
+                "\n## Amendments\n\n"
+                "| amendment | target | operation | replacement / reason | evidence | attempt |\n"
+                "| --- | --- | --- | --- | --- | --- |\n"
+                f"| INV-A1 | S0001 | replace-fields | {payload} | net/foo.cc:10 | 2 |\n"
+            )
+        run("python3", str(INDEXES), str(root))
+        inventory = self.read_tsv(root / "indexes" / "inventory.tsv")
+        self.assertEqual("S0001", next(row for row in inventory
+                                       if row["kind"] == "surface")["id"])
+
+    def test_missing_hunk_path_cannot_bypass_validation(self) -> None:
+        temporary, root = self.make_review()
+        self.addCleanup(temporary.cleanup)
+        write(
+            root / "profile.json",
+            json.dumps({"hunks": [{"id": "H0001", "path": "net/foo.cc"}]}) + "\n",
+        )
+        inventory = root / "inventory.md"
+        write(
+            inventory,
+            inventory.read_text(encoding="utf-8").replace(
+                "| surface | contract source | callers | old → new behavior | state / lifetime | tests | reachability | scope label |",
+                "| surface ID | surface | owned hunks / earliest changed line | contract source | callers | old → new behavior | state / lifetime | tests | reachability | scope label |",
+            ).replace(
+                "| --- | --- | --- | --- | --- | --- | --- | --- |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+                1,
+            ).replace(
+                "| Foo::Run (foo.cc:10) | foo.h:5 | caller | old to new | pending_ | foo_test.cc:4 | production | core |",
+                "| S0001 | Foo::Run | H0001 / :10 | net/foo.h:5 | caller | old to new | pending | test | production | core |",
+            ),
+        )
+        failed = run("python3", str(INDEXES), str(root), check=False)
+        self.assertNotEqual(0, failed.returncode)
+        self.assertIn("exactly one full repo-relative path", failed.stderr)
+
+
+class ProcessContractToolsTest(unittest.TestCase):
+    def test_snapshot_is_immutable_when_live_skill_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = root / "skill"
+            review = root / "review"
+            review.mkdir()
+            write(skill / "SKILL.md", "---\nname: fixture\ndescription: fixture\n---\n")
+            write(skill / "references" / "rules.md", "version one\n")
+            write(skill / "scripts" / "helper.py", "print('one')\n")
+            run("python3", str(SNAPSHOT), str(skill), str(review))
+            frozen = review / "skill-snapshot" / "references" / "rules.md"
+            write(skill / "references" / "rules.md", "version two\n")
+            checked = run(
+                "python3", str(SNAPSHOT), str(skill), str(review), "--check"
+            )
+            self.assertIn("current:", checked.stdout)
+            self.assertEqual("version one\n", frozen.read_text(encoding="utf-8"))
+
+            frozen.chmod(0o644)
+            write(frozen, "tampered\n")
+            tampered = run(
+                "python3", str(SNAPSHOT), str(skill), str(review), "--check",
+                check=False,
+            )
+            self.assertNotEqual(0, tampered.returncode)
+            self.assertIn("changed after sealing", tampered.stderr)
+
+    def test_seal_registers_hashes_and_is_idempotent_for_exact_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            review = root / "review"
+            review.mkdir()
+            snapshot = review / "skill-snapshot"
+            rules = snapshot / "references" / "rules.md"
+            write(rules, "rules\n")
+            write(
+                snapshot / "snapshot-manifest.json",
+                json.dumps({
+                    "schema_version": 1,
+                    "files": [{
+                        "path": "references/rules.md",
+                        "bytes": 6,
+                        "sha256": hashlib.sha256(b"rules\n").hexdigest(),
+                    }],
+                }) + "\n",
+            )
+            brief = review / "briefs" / "EPW.md"
+            control = review / "directives.md"
+            artifact = review / "ledger" / "EPW.md"
+            write(brief, "final brief\n")
+            write(control, "full review\n")
+            command = (
+                "python3", str(SEAL), str(review), "--phase", "4",
+                "--work-id", "EPW", "--attempt", "1", "--tier", "frontier",
+                "--brief", str(brief), "--artifact", str(artifact),
+                "--input", f"control={control}",
+                "--input", f"reference={rules}",
+            )
+            run(*command)
+            with (review / "input-manifest.tsv").open(
+                encoding="utf-8", newline=""
+            ) as stream:
+                rows = list(csv.DictReader(stream, delimiter="\t"))
+            self.assertEqual(3, len(rows))
+            self.assertEqual(
+                hashlib.sha256(b"final brief\n").hexdigest(),
+                next(row for row in rows if row["role"] == "brief")["sha256"],
+            )
+            self.assertEqual(0, brief.stat().st_mode & 0o222)
+            duplicate = run(*command, check=False)
+            self.assertEqual(0, duplicate.returncode, duplicate.stderr)
+            self.assertIn("already sealed", duplicate.stdout)
+            mismatch = run(*command, "--depends-on", "OTHER", check=False)
+            self.assertNotEqual(0, mismatch.returncode)
+            self.assertIn("does not match the requested seal", mismatch.stderr)
+            with (review / "orchestration.tsv").open(
+                encoding="utf-8", newline=""
+            ) as stream:
+                self.assertEqual(
+                    1, len(list(csv.DictReader(stream, delimiter="\t")))
+                )
+
+    def test_seal_rejects_live_reference_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            review = root / "review"
+            review.mkdir()
+            snapshot = review / "skill-snapshot"
+            write(
+                snapshot / "snapshot-manifest.json",
+                '{"schema_version": 1, "files": []}\n',
+            )
+            brief = review / "briefs" / "EPW.md"
+            write(brief, "final brief\n")
+            live_reference = root / "live-skill" / "rules.md"
+            write(live_reference, "moving rules\n")
+            rejected = run(
+                "python3", str(SEAL), str(review), "--phase", "4",
+                "--work-id", "EPW", "--attempt", "1", "--tier", "frontier",
+                "--brief", str(brief),
+                "--artifact", str(review / "ledger" / "EPW.md"),
+                "--input", f"reference={live_reference}", check=False,
+            )
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertIn("not from the sealed skill snapshot", rejected.stderr)
+            self.assertNotEqual(0, brief.stat().st_mode & 0o200)
+
+    def test_rejected_seal_does_not_make_brief_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            review = Path(temporary)
+            write(
+                review / "skill-snapshot" / "snapshot-manifest.json",
+                '{"schema_version": 1, "files": []}\n',
+            )
+            write(
+                review / "profile.json",
+                json.dumps({
+                    "context_budget": {"worker_input_budget_bytes": 1}
+                }) + "\n",
+            )
+            brief = review / "briefs" / "EPW.md"
+            write(brief, "too large\n")
+            rejected = run(
+                "python3", str(SEAL), str(review), "--phase", "4",
+                "--work-id", "EPW", "--attempt", "1", "--tier", "frontier",
+                "--brief", str(brief),
+                "--artifact", str(review / "ledger" / "EPW.md"),
+                check=False,
+            )
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertIn("inputs exceed budget", rejected.stderr)
+            self.assertNotEqual(0, brief.stat().st_mode & 0o200)
+            self.assertFalse((review / "orchestration.tsv").exists())
+            self.assertFalse((review / "input-manifest.tsv").exists())
+
+    def test_rerunning_interrupted_seal_recovers_idempotently(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            review = Path(temporary)
+            snapshot = review / "skill-snapshot"
+            write(
+                snapshot / "snapshot-manifest.json",
+                '{"schema_version": 1, "files": []}\n',
+            )
+            old_brief = review / "briefs" / "OLD.md"
+            write(old_brief, "old\n")
+            orchestration = (
+                "phase\twork_id\tattempt\tstate\ttier\ttask_id\tbrief\tartifact\tremaining_scope\tdepends_on\n"
+                f"4\tOLD\t1\tqueued\tfrontier\t-\t{old_brief}\t{review / 'ledger/OLD.md'}\t-\t-\n"
+            )
+            old_hash = hashlib.sha256(b"old\n").hexdigest()
+            inputs = (
+                "work_id\tattempt\tphase\tbrief\tinput_path\trole\tbytes\tsha256\n"
+                f"OLD\t1\t4\t{old_brief}\t{old_brief}\tbrief\t4\t"
+                f"{old_hash}\n"
+            )
+            write(
+                review / ".work-unit-seal-transaction.json",
+                json.dumps({"orchestration": orchestration, "inputs": inputs})
+                + "\n",
+            )
+            recovered = run(
+                "python3", str(SEAL), str(review), "--phase", "4",
+                "--work-id", "OLD", "--attempt", "1", "--tier", "frontier",
+                "--brief", str(old_brief),
+                "--artifact", str(review / "ledger" / "OLD.md"),
+            )
+            self.assertIn("already sealed OLD:1", recovered.stdout)
+            self.assertFalse(
+                (review / ".work-unit-seal-transaction.json").exists()
+            )
+            with (review / "orchestration.tsv").open(
+                encoding="utf-8", newline=""
+            ) as stream:
+                rows = list(csv.DictReader(stream, delimiter="\t"))
+            self.assertEqual(["OLD"], [row["work_id"] for row in rows])
+            with (review / "input-manifest.tsv").open(
+                encoding="utf-8", newline=""
+            ) as stream:
+                input_rows = list(csv.DictReader(stream, delimiter="\t"))
+            self.assertEqual(["OLD"], [row["work_id"] for row in input_rows])
+            self.assertEqual(0, old_brief.stat().st_mode & 0o222)
+
+    def test_snapshot_and_seal_guards_time_out(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            review = root / "review"
+            review.mkdir()
+            skill = root / "skill"
+            write(
+                skill / "SKILL.md",
+                "---\nname: fixture\ndescription: fixture\n---\n",
+            )
+            environment = {
+                **os.environ,
+                "CHROMIUM_REVIEW_GUARD_SECONDS": "0.05",
+            }
+            with (review / ".skill-snapshot.lock").open("a+") as stream:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+                blocked = subprocess.run(
+                    ["python3", str(SNAPSHOT), str(skill), str(review)],
+                    check=False, text=True, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, env=environment,
+                )
+            self.assertNotEqual(0, blocked.returncode)
+            self.assertIn(
+                "timed out waiting for skill snapshot guard", blocked.stderr
+            )
+
+            write(
+                review / "skill-snapshot" / "snapshot-manifest.json",
+                '{"schema_version": 1, "files": []}\n',
+            )
+            brief = review / "briefs" / "EPW.md"
+            write(brief, "brief\n")
+            with (review / ".orchestration.lock").open("a+") as stream:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+                blocked = subprocess.run(
+                    [
+                        "python3", str(SEAL), str(review), "--phase", "4",
+                        "--work-id", "EPW", "--attempt", "1", "--tier",
+                        "frontier", "--brief", str(brief), "--artifact",
+                        str(review / "ledger" / "EPW.md"),
+                    ],
+                    check=False, text=True, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, env=environment,
+                )
+            self.assertNotEqual(0, blocked.returncode)
+            self.assertIn(
+                "timed out waiting for orchestration mutation guard",
+                blocked.stderr,
+            )
+            self.assertNotEqual(0, brief.stat().st_mode & 0o200)
+
+    def test_worker_validator_applies_matrix_field_amendment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            review = Path(temporary)
+            ledger = review / "ledger" / "EPW.md"
+            write(
+                ledger,
+                """# EPW
+
+## Compliance matrix
+
+| question | answer | evidence |
+| --- | --- | --- |
+| callback retained? | yes | |
+
+## Candidate rows
+
+| id | claim | location | evidence / hypothesis | origin | severity | status |
+| --- | --- | --- | --- | --- | --- | --- |
+""",
+            )
+            failed = run(
+                "python3", str(ARTIFACT_VALIDATE), str(review), str(ledger),
+                "--kind", "ledger", check=False,
+            )
+            self.assertNotEqual(0, failed.returncode)
+            self.assertIn("blank answer/evidence", failed.stderr)
+
+            payload = json.dumps({"evidence": "net/foo.cc:10"})
+            with ledger.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    "\n## Amendments\n\n"
+                    "| amendment | target | operation | replacement / reason | evidence | attempt |\n"
+                    "| --- | --- | --- | --- | --- | --- |\n"
+                    f"| EPW-A1 | matrix:1 | replace-fields | {payload} | net/foo.cc:10 | 2 |\n"
+                )
+            checked = run(
+                "python3", str(ARTIFACT_VALIDATE), str(review), str(ledger),
+                "--kind", "ledger",
+            )
+            self.assertIn("valid ledger", checked.stdout)
 
 
 class RefreshDeliveryGateTest(unittest.TestCase):

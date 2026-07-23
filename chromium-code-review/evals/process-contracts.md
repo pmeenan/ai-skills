@@ -56,6 +56,14 @@ snapshot-observable defect:
     `<PREFIX> absent` row from another inventory shard, or coexists with any
     positive trigger for that prefix. Accept both `T<n>` and collision-free
     `I<shard>-T<n>` IDs.
+13. The immutable skill snapshot is missing, corrupted, or differs from its
+    manifest; a sealed work unit names a live canonical reference, has a stale
+    input hash, exceeds its tier budget, or leaves an interrupted seal
+    transaction behind.
+14. A structurally parsed table has a malformed or ambiguous amendment, an
+    inventory hunk uses an abbreviated/missing repo-relative path, or worker
+    artifact validation would fail even though its orchestration attempt is
+    marked complete.
 
 The scaling fixture set must also prove these positive/negative cases:
 
@@ -107,10 +115,28 @@ bash -n scripts/fetch-cl.sh
 bash -n scripts/mechanical-leads.sh
 python3 -m py_compile scripts/extract-unresolved-comments.py scripts/worktree-lease.py
 python3 -m py_compile scripts/profile-review.py scripts/build-review-indexes.py
+python3 -m py_compile scripts/artifact_tables.py scripts/snapshot-skill.py
+python3 -m py_compile scripts/seal-work-unit.py scripts/validate-worker-artifact.py
 python3 -m py_compile scripts/refresh-delivery-gate.py
 python3 -m py_compile scripts/validate-review-dir.py
 python3 -m unittest discover -s scripts/tests -v
 ```
+
+The process-tool fixtures must additionally prove that a live canonical skill
+edit cannot change an existing snapshot, snapshot tampering is detected, a
+final brief is hashed/queued/made read-only atomically, conflicting duplicate
+attempts and live-reference inputs are rejected, and an interrupted
+manifest/queue pair is recovered before another unit is appended and cannot
+pass a phase gate while its transaction journal remains. Rerunning the
+interrupted unit's exact seal must return success without adding a row; a
+changed seal for that key must fail. Both snapshot and orchestration guards
+must time out with a diagnostic instead of blocking indefinitely, and a
+pre-transaction rejection must leave the unqueued brief writable. Worker
+validation must fail before collection for a bad matrix or inventory row. A
+valid structured amendment must repair the same row for worker validation,
+indexing, and review-directory validation, while a missing/abbreviated hunk
+path or malformed amendment must fail all applicable consumers without
+publishing replacement indexes.
 
 For `mechanical-leads.sh`, create a temporary two-file Git fixture where both
 files contain deterministic hits. Invoke the script once for each individual

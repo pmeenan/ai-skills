@@ -14,6 +14,8 @@ import tempfile
 from pathlib import Path
 from typing import Iterable
 
+from artifact_tables import effective_tables
+
 
 ROW_ID_RE = re.compile(r"(?:[A-Z][A-Z0-9]*-\d+|R\d+-RC\d+-\d+)")
 
@@ -21,45 +23,13 @@ def fail(message: str) -> "NoReturn":
     raise SystemExit(f"build-review-indexes.py: {message}")
 
 
-def split_row(line: str) -> list[str]:
-    body = line.strip()
-    if body.startswith("|"):
-        body = body[1:]
-    if body.endswith("|") and not body.endswith(r"\|"):
-        body = body[:-1]
-    cells = re.split(r"(?<!\\)\|", body)
-    return [cell.replace(r"\|", "|").strip() for cell in cells]
-
-
 def tables(
     text: str, source: str = "input"
 ) -> Iterable[tuple[str, list[str], list[dict[str, str]]]]:
-    lines = text.splitlines()
-    heading = ""
-    index = 0
-    while index < len(lines):
-        if lines[index].startswith("## "):
-            heading = lines[index][3:].strip()
-        if (
-            lines[index].lstrip().startswith("|")
-            and index + 1 < len(lines)
-            and re.match(r"^\s*\|?\s*:?-{3,}", lines[index + 1])
-        ):
-            header = [cell.lower() for cell in split_row(lines[index])]
-            index += 2
-            rows = []
-            while index < len(lines) and lines[index].lstrip().startswith("|"):
-                values = split_row(lines[index])
-                if len(values) != len(header):
-                    fail(
-                        f"{source}:{index + 1}: malformed Markdown table row; "
-                        f"expected {len(header)} cells, found {len(values)}"
-                    )
-                rows.append(dict(zip(header, values)))
-                index += 1
-            yield heading, header, rows
-            continue
-        index += 1
+    parsed, errors = effective_tables(text, source)
+    if errors:
+        fail("; ".join(errors))
+    yield from parsed
 
 
 def clean(value: str, limit: int = 600) -> str:
@@ -159,11 +129,15 @@ def inventory_rows(root: Path) -> list[list[str]]:
                         claimed.extend(
                             f"H{value:0{width}d}"
                             for value in range(first, last + 1))
-                    cell_file = None
-                    location = re.search(
+                    locations = re.findall(
                         r"/\s*([A-Za-z0-9_.+@{}\-/]+):\d+", hunk_cell)
-                    if location:
-                        cell_file = location.group(1).lstrip(":")
+                    if claimed and profile_hunk_paths and len(locations) != 1:
+                        fail(
+                            f"{relative(path, root)}: surface {surface_id} must "
+                            "name exactly one full repo-relative path after '/' "
+                            "in its owned-hunks cell"
+                        )
+                    cell_file = locations[0] if len(locations) == 1 else None
                     for hunk_id in claimed:
                         owner = hunk_owners.setdefault(hunk_id, path)
                         if owner != path:
@@ -173,13 +147,11 @@ def inventory_rows(root: Path) -> list[list[str]]:
                                 f"{relative(path, root)}; shard hunk "
                                 "ownership must be disjoint")
                         expected_file = profile_hunk_paths.get(hunk_id)
-                        if expected_file and cell_file and \
-                                not expected_file.endswith(cell_file) and \
-                                not cell_file.endswith(expected_file):
+                        if expected_file and cell_file != expected_file:
                             fail(
                                 f"{relative(path, root)}: hunk {hunk_id} "
                                 f"belongs to {expected_file} but the surface "
-                                f"row cites {cell_file}")
+                                f"row cites {cell_file or 'no full path'}")
                     subject = clean(row.get("surface", ""))
                     tags = clean(row.get("reachability", ""))
                     if subject.lower().startswith("group:"):

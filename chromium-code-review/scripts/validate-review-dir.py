@@ -24,6 +24,8 @@ import subprocess
 import sys
 from typing import Any, Iterable
 
+from artifact_tables import effective_tables
+
 
 PHASES = {"pin": 0, "collection": 1, "verification": 2,
           "reconciliation": 3, "final": 4}
@@ -127,6 +129,7 @@ INPUT_MANIFEST_ROLES = {
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROFILE_SCRIPT = SCRIPT_DIR / "profile-review.py"
 INDEX_SCRIPT = SCRIPT_DIR / "build-review-indexes.py"
+SNAPSHOT_SCRIPT = SCRIPT_DIR / "snapshot-skill.py"
 
 
 class Report:
@@ -210,8 +213,33 @@ def tables(text: str) -> Iterable[tuple[str, list[str], list[list[str]]]]:
 
 
 def table_dicts(text: str) -> Iterable[tuple[str, list[str], list[dict[str, str]]]]:
-    for heading, header, rows in tables(text):
-        yield heading, header, [dict(zip(header, row)) for row in rows]
+    parsed, _ = effective_tables(text)
+    yield from parsed
+
+
+def validate_artifact_table_contracts(root: Path, report: Report) -> None:
+    paths: set[Path] = set()
+    for name in ("inventory.md", "collection.md", "plan.md", "reconciliation.md"):
+        path = root / name
+        if path.is_file():
+            paths.add(path)
+    for directory, pattern in (
+        ("inventory", "*.md"),
+        ("ledger", "**/*.md"),
+        ("verification", "**/*.md"),
+        ("root-cause", "**/*.md"),
+    ):
+        base = root / directory
+        if base.is_dir():
+            paths.update(path for path in base.glob(pattern) if path.is_file())
+    for path in sorted(paths):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        _, errors = effective_tables(text, str(path))
+        for error in errors:
+            report.error(error)
 
 
 def field(text: str, name: str) -> str | None:
@@ -268,6 +296,22 @@ def validate_scaling_outputs(root: Path, report: Report) -> dict[str, int]:
         if worker is not None and budgets.get(name, 0) > worker:
             report.error(f"profile.json {name} exceeds worker_input_budget_bytes")
     return budgets
+
+
+def validate_skill_snapshot(root: Path, report: Report) -> None:
+    try:
+        result = subprocess.run(
+            [sys.executable, str(SNAPSHOT_SCRIPT), str(SCRIPT_DIR.parent),
+             str(root), "--check"],
+            check=False, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as error:
+        report.error(f"cannot run skill snapshot validator: {error}")
+        return
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        report.error(f"skill snapshot is absent or stale: {detail}")
 
 
 def validate_pin(root: Path, report: Report, require_active_lease: bool = False,
@@ -2490,6 +2534,14 @@ def main() -> int:
     budgets: dict[str, int] = {}
     input_assignments: dict[str, list[dict[str, str]]] = {}
     if level >= PHASES["collection"]:
+        if (root / ".work-unit-seal-transaction.json").exists():
+            report.error(
+                "an interrupted work-unit seal transaction needs recovery; "
+                "rerun the original exact seal-work-unit.py command before "
+                "continuing (an identical recovered attempt returns success)"
+            )
+        validate_skill_snapshot(root, report)
+        validate_artifact_table_contracts(root, report)
         budgets = validate_scaling_outputs(root, report)
         required_root_cause_scopes, trigger_rows = validate_trigger_inventory(
             root, report
