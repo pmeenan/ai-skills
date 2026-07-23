@@ -86,6 +86,20 @@ the Verdict Alignment And Gerrit Output Rules in
 pre-output gate lines in `reconciliation.md`. Producing review text while a
 gate line is blank is the failure mode the gate exists to stop.
 
+### Comprehensive Output Mandate (No-Truncation Guarantee)
+To avoid multiple review rounds and ensure exhaustive feedback delivery:
+- **Exhaustive coverage:** Every distinct finding evaluated as `CONFIRMED` in
+  `verdicts.tsv` MUST be explicitly articulated as a finding in
+  `draft-review.md` and as an inline comment in `gerrit-comments.md`.
+- **Zero truncation or sampling:** Never cherry-pick, sample, or compress
+  confirmed evaluation results into a "top priority" or "representative"
+  subset to reduce draft size. Presenting a partial subset causes multiple
+  review iterations and violates workflow objectives.
+- **Deduplication without omission:** When multiple discovery workers report
+  overlapping observations of the exact same root defect, cluster and merge
+  them into a single canonical comment citing all applicable code locations.
+  Never discard a distinct technical defect during merging.
+
 The Draft Writer reads cards one at a time and does not ingest all verdict or
 root-cause files. It may mechanically extract compact plan/outcome fields. If
 a card is missing required evidence or conflicts with reconciliation, report
@@ -305,11 +319,14 @@ delivery is blocked while any line is pending or blank.
    `ledger/reopened/*.md`, `collection.md`, `verification/*.md`, and
    `root-cause/*.md` has exactly one disposition line — no ranges, no "rest
    dismissed".
-8. **Verdicts:** every promoted finding cites a CONFIRMED verdict with its
-   trace; every independently refuted row cites its guard or safe trace;
-   every UNPROVEN row appears in Questions; every merged candidate either
-   has its own verdict or has validated trigger/invariant/outcome equivalence
-   to a survivor whose verdict is cited.
+8. **Verdicts (comprehensive and non-truncated):** every promoted finding
+   cites a CONFIRMED verdict with its trace, and all unique CONFIRMED
+   findings from verdicts.tsv are articulated in draft-review.md and
+   gerrit-comments.md without truncation or sampling; every independently
+   refuted row cites its guard or safe trace; every UNPROVEN row appears in
+   Questions; every merged candidate either has its own verdict or has
+   validated trigger/invariant/outcome equivalence to a survivor whose
+   verdict is cited.
 9. **Root cause:** `root-cause/batches.md` accounts for every trigger; the
    layering pass ran for every triggering candidate and
    fix; reopened rows were re-verified, refuted, or converted to questions.

@@ -383,6 +383,11 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   replacement is optimal. Avoid repeating the same suggestion across
   multiple files/declarations; place a single comment at the most relevant
   site.
+- **Exhaustive coverage without truncation:** Every distinct `CONFIRMED`
+  finding must map to an inline Gerrit comment. Do not sample, compress, or
+  truncate confirmed technical problems to shorten output length. Presenting
+  100% of actionable bugs upfront is mandatory to prevent multiple review
+  rounds.
 - **Normalize threads before replying:** `comments.json` is keyed by file and
   contains CommentInfo arrays. Flatten with paths retained, group replies by
   transitive `in_reply_to` root, order within each thread by `updated` (stable

@@ -936,7 +936,9 @@ Procedure: read
 the "Verdict Alignment And Gerrit Output Rules" section of
 ⟨skill-dir⟩/references/verification-and-fixes.md, then execute them.
 Findings come from the reconciliation table's promotions; report record
-contradictions instead of papering over them.
+contradictions instead of papering over them. You must exhaustively include
+every single promoted finding without truncation, sampling, or omission so
+the author receives all actionable feedback in a single review round.
 
 Deliverables: ⟨review-dir⟩/draft-review.md,
 ⟨review-dir⟩/gerrit-comments.md, and completed draft-dependent gate lines
