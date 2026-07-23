@@ -256,6 +256,7 @@ def run_git(worktree: Path, *args: str) -> str:
             ["git", "-C", str(worktree), *args],
             check=True,
             text=True,
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         ).stdout
