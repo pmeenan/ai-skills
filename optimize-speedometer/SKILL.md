@@ -101,11 +101,12 @@ flowchart TD
    - Generate two reports: (1) Full process tree, and (2) Renderer deep-dive via `perf script --time <start_sec>,<end_sec> --pid <renderer_pid>`.
 4. **Quality Rejection Gate:** Reject profiles with unmatched measurement marks, poor call stack unwinding, overall `[unknown]` frames >15%, concentrated `[unknown]` frames >10% within any dominant call stack, or insufficient total samples (<5,000 samples).
 5. **Post-Phase 1 Feasibility Gate:** Calculate sensitivity ranges (Optimistic, Plausible, Conservative). If the plausible scenario range does not support a 5% full-suite improvement, corroborate with wall-time traces before documenting an explicit infeasibility result or renegotiating target.
-6. **Cleanup Worktree:** Remove disposable profiling worktree (`git worktree remove ../perf-profile-phase1`). Author candidate dossiers in `.agents/scratch/speedometer3_candidates/`.
+6. **Exhaustive Hotspot Inventory:** Author candidate dossiers in `.agents/scratch/speedometer3_candidates/` for EVERY in-scope call stack consuming ≥ 0.5% of the total CPU profile. Do NOT prematurely filter for 'actionability' or 'risk' at this stage. Phase 1 must produce a complete, unfiltered inventory of all time spent outside `v8` and `angle`.
+7. **Cleanup Worktree:** Remove disposable profiling worktree (`git worktree remove ../perf-profile-phase1`).
 
 ### Phase 2: Dedicated Worktree Prototyping & Randomized A/B Validation
 * **Worktree Isolation:** Every candidate experiment MUST run in a dedicated git worktree (`git worktree add ../candidate-<ID> candidate/<ID>-<name>`).
-* **Opportunity Sizing Check:** CPU-clock sample share is an opportunity-sizing check, not a rigid rejection invariant.
+* **Opportunity Sizing & Feature Breaking:** For each Phase 1 candidate, perform deeper analysis to identify its real optimization potential. Experimentally measure the rough wall-clock impact by breaking features, disabling checks, or bypassing security guardrails if necessary. This destructive testing is purely to validate the maximum theoretical optimization potential on the A/B score before designing a real solution.
 * **Randomized Block-Interleaved A/B Verification:**
   - Run randomized ABBA/BAAB block repetitions using Crossbench:
     ```bash
