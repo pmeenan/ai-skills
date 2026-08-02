@@ -101,7 +101,10 @@ flowchart TD
    - Generate two reports: (1) Full process tree, and (2) Renderer deep-dive via `perf script --time <start_sec>,<end_sec> --pid <renderer_pid>`.
 4. **Quality Rejection Gate:** Reject profiles with unmatched measurement marks, poor call stack unwinding, overall `[unknown]` frames >15%, concentrated `[unknown]` frames >10% within any dominant call stack, or insufficient total samples (<5,000 samples).
 5. **Post-Phase 1 Feasibility Gate:** Calculate sensitivity ranges (Optimistic, Plausible, Conservative). If the plausible scenario range does not support a 5% full-suite improvement, corroborate with wall-time traces before documenting an explicit infeasibility result or renegotiating target.
-6. **Exhaustive Hotspot Inventory:** Author candidate dossiers in `.agents/scratch/speedometer3_candidates/` for EVERY in-scope call stack consuming ≥ 0.5% of the total CPU profile. Do NOT prematurely filter for 'actionability' or 'risk' at this stage. Phase 1 must produce a complete, unfiltered inventory of all time spent outside `v8` and `angle`.
+6. **Exhaustive Hotspot Inventory:** Author candidate dossiers in `.agents/scratch/speedometer3_candidates/` for EVERY in-scope call stack consuming ≥ 0.5% of the total inclusive CPU profile. 
+   - **EXCLUDE:** Pure V8 compilation/execution (`v8::`, `[JIT]`), Angle (`angle::`), OS primitives (`libc`, `__GI`), and thread wrappers (`pthread`).
+   - **INCLUDE:** Blink's generated V8 bindings (`third_party/blink/renderer/bindings/`), Mojo IPC serialization (`mojo::`), and all shared container/memory primitives (`WTF::`, `partition_alloc`).
+   - Do NOT prematurely filter for 'actionability' or 'risk' at this stage. Phase 1 must produce a complete, unfiltered inventory of all time spent outside the raw `v8` engine and `angle`.
 7. **Cleanup Worktree:** Remove disposable profiling worktree (`git worktree remove ../perf-profile-phase1`).
 
 ### Phase 2: Dedicated Worktree Prototyping & Randomized A/B Validation
