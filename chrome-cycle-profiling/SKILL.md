@@ -11,10 +11,10 @@ This skill provides the authoritative runbook, instrumentation resources, and ve
 
 ## 1. Environment Constraints & Ground Truth Protocol
 
-1. **No Hardware PMU Constraint:**
-   * Desktop Cloud VMs lack hardware performance counters (`perf stat -e cycles` fails).
-   * **Mandatory Flag:** All sampling `perf record` invocations MUST explicitly specify `-e cpu-clock -F 997 -k mono`. Software-timer sampling provides accurate time attribution and flame graphs.
-   * **Microarchitectural Limitation:** Software sampling cannot measure hardware cache misses, branch mispredicts, or instruction stalls. Any candidate relying on microarchitectural effects MUST be validated on bare metal or Pinpoint, never claimed from local VM data.
+1. **Bare-Metal PMU Available:**
+   * The test environment is a physical bare-metal machine with hardware PMU counters.
+   * **Mandatory Flag:** All sampling `perf record` invocations SHOULD explicitly specify `-e cycles -F 997 -k mono`. Software-timer sampling (`cpu-clock`) is deprecated in favor of hardware ground truth.
+   * **Microarchitectural Awareness:** Hardware cache misses, branch mispredicts, and instruction stalls can now be measured locally using hardware events.
 2. **Full-Suite Scope & Headless Screening:**
    * **Full Suite Scope:** Phase 1 profiling and feasibility scope-gate decisions MUST be based on a representative profile across the **full Speedometer 3 suite** (`--stories=all`). Single-story profiles are used strictly for localized candidate discovery.
    * **Headless vs Desktop:** Local VM profiling and verification runs execute headless (`--headless=new`). Local runs serve as relative A/B screening evidence. Desktop-mode Pinpoint trybots or bare-metal desktop runs are the authoritative ground truth for candidate promotion and final validation.
@@ -37,17 +37,17 @@ Execute these 5 preflight steps in order before Phase 1 profiling. All 5 must pa
 
 ```bash
 # Step 1: Software sampling check
-perf stat -e cpu-clock true
+perf stat -e cycles true
 
 # Step 2: System-wide permissions check (must use sudo & -a)
-sudo perf record -e cpu-clock -F 997 -k mono -g -a -o /tmp/preflight-a.data -- sleep 2 && sudo perf report -i /tmp/preflight-a.data --stdio | head -5
+sudo perf record -e cycles -F 997 -k mono -g -a -o /tmp/preflight-a.data -- sleep 2 && sudo perf report -i /tmp/preflight-a.data --stdio | head -5
 
 # Step 3: Symbolization smoke test against live Chrome (using -k mono, --no-sandbox, & --js-flags=--perf-basic-prof)
 out/perf/chrome --user-data-dir=/tmp/perf-profile --no-first-run --no-sandbox --headless=new --js-flags=--perf-basic-prof https://example.com &
 CHROME_PID=$!
 sleep 5
 RENDERER_PID=$(ps aux | grep "type=renderer" | grep -v "grep" | head -n 1 | awk '{print $2}')
-perf record -e cpu-clock -F 997 -k mono -g -p $RENDERER_PID -o /tmp/preflight-jit.data -- sleep 5
+perf record -e cycles -F 997 -k mono -g -p $RENDERER_PID -o /tmp/preflight-jit.data -- sleep 5
 kill $CHROME_PID || true
 perf report -i /tmp/preflight-jit.data --stdio | head -50
 
