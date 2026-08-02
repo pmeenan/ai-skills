@@ -4,93 +4,112 @@
 # found in the LICENSE file.
 
 import argparse
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
-CWD = "/usr/local/google/home/pmeenan/src/chromium/src"
-DEFAULT_STORIES = "NewsSite-Next,NewsSite-Nuxt"
+def get_repo_root():
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
-def run_crossbench(browser, stories, repetitions, out_dir, extra_browser_args=""):
-    print(f"Running Crossbench Speedometer: browser={browser}, stories={stories}, repetitions={repetitions}...")
-    full_out_dir = os.path.join(CWD, out_dir)
-    if os.path.exists(full_out_dir):
-        print(f"Cleaning up existing output directory: {full_out_dir}")
-        shutil.rmtree(full_out_dir)
-        
-    full_browser_args = f"--enable-logging=stderr --log-level=0 --v=1 {extra_browser_args}".strip()
-    cmd = [
-        "vpython3", "./third_party/crossbench/cb.py",
-        "speedometer_3.0",
-        "--env-validation=warn",
-        f"--browser={browser}",
-        "--headless",
-        f"--repetitions={repetitions}",
-        f"--out-dir={out_dir}",
-        f"--stories={stories}",
-        f"--browser-args={full_browser_args}"
-    ]
-    subprocess.run(cmd, cwd=CWD, check=True)
-
-def parse_and_report_cycles(out_dir):
-    print("\n=== PARSING CYCLE PROFILER LOGS ===")
-    profile_found = False
+def parse_mono_timestamps(out_dir, cwd):
+    start_time = None
+    end_time = None
     
-    # Crossbench results structure contains stories and sessions folders
-    for root, dirs, files in os.walk(os.path.join(CWD, out_dir)):
+    for root, dirs, files in os.walk(os.path.join(cwd, out_dir)):
         for file in files:
             if file == "browser.stdout.log":
                 log_file_path = os.path.join(root, file)
-                print(f"Parsing log file: {os.path.relpath(log_file_path, CWD)}")
-                
                 with open(log_file_path, "r") as f:
-                    lines = f.readlines()
-                    
-                # Read backward to find the last/most complete CYCLE PROFILE block
-                block_started = False
-                profile_block = []
-                for line in reversed(lines):
-                    if "=== CYCLE PROFILE" in line:
-                        profile_block.append(line.strip())
-                        block_started = True
-                        break # Got the most complete header
-                    if block_started or "cycles (" in line:
-                        profile_block.append(line.strip())
-                        block_started = True
-                
-                if block_started and profile_block:
-                    profile_found = True
-                    print("\nFinal Measured Cycle Profile:")
-                    for val in reversed(profile_block):
-                        # Clean up standard Chromium log metadata prefix
-                        clean_line = re.sub(r'^\[\d+:\d+:\d+\/\d+\.\d+:ERROR:[^\]]+\]\s*', '', val)
-                        print(clean_line)
-                    print("-" * 40)
-
-    if not profile_found:
-        print("Warning: No '=== CYCLE PROFILE' log lines found in any browser.stdout.log files.")
-        print("Make sure you have compiled with CycleProfiler active and executed matching stories.")
+                    for line in f:
+                        if "[SP3_MONO_TIME]" in line:
+                            if "sp3-measurement-start" in line:
+                                m = re.search(r"sp3-measurement-start:\s*([\d\.]+)", line)
+                                if m:
+                                    if start_time is None:
+                                        start_time = float(m.group(1))
+                            elif "sp3-measurement-end" in line:
+                                m = re.search(r"sp3-measurement-end:\s*([\d\.]+)", line)
+                                if m:
+                                    end_time = float(m.group(1))
+    return start_time, end_time
 
 def main():
-    parser = argparse.ArgumentParser(description="Run Speedometer with cycle profiling probes and report results.")
-    parser.add_argument("--browser", default="out/Default/chrome", help="Browser build path (default: out/Default/chrome)")
-    parser.add_argument("--stories", default=DEFAULT_STORIES, help=f"Speedometer stories to run (default: {DEFAULT_STORIES})")
+    parser = argparse.ArgumentParser(description="Run Speedometer 3 full Chrome process-tree perf cpu-clock sampling with V8 basic-prof symbolization.")
+    parser.add_argument("--browser", default="out/perf/chrome", help="Browser build path (default: out/perf/chrome)")
+    parser.add_argument("--stories", default="all", help="Speedometer stories to run (default: all)")
     parser.add_argument("--repetitions", type=int, default=1, help="Number of repetitions (default: 1)")
-    parser.add_argument("--out-dir", default="scratch/results_probes", help="Crossbench results output directory (default: scratch/results_probes)")
-    parser.add_argument("--extra-browser-args", default="", help="Extra browser arguments")
-    parser.add_argument("--no-run", action="store_true", help="Skip running and only parse existing logs in out-dir")
     args = parser.parse_args()
 
-    if not args.no_run:
-        try:
-            run_crossbench(args.browser, args.stories, args.repetitions, args.out_dir, args.extra_browser_args)
-        except Exception as e:
-            print(f"Error running Crossbench: {e}", file=sys.stderr)
-            sys.exit(1)
-            
-    parse_and_report_cycles(args.out_dir)
+    cwd = get_repo_root()
+    temp_results_dir = tempfile.mkdtemp(prefix="results_perf_sampling_", dir=os.path.join(cwd, "scratch"))
+    rel_out_dir = os.path.relpath(temp_results_dir, cwd)
+
+    perf_data_file = os.path.join(temp_results_dir, "perf_sampling.data")
+
+    cb_cmd = [
+        "vpython3", "./third_party/crossbench/cb.py",
+        "speedometer_3.0",
+        "--network=third_party/speedometer/v3.0",
+        "--env-validation=warn",
+        f"--browser={args.browser}",
+        "--headless",
+        "--no-sandbox",
+        "--js-flags=--perf-basic-prof",
+        f"--repetitions={args.repetitions}",
+        f"--out-dir={os.path.join(rel_out_dir, 'cb')}",
+        f"--stories={args.stories}"
+    ]
+
+    print(f"\n=======================================================")
+    print(f" FULL CHROME PROCESS TREE PERF SAMPLING (-k mono)")
+    print(f" Output Data : {perf_data_file}")
+    print(f" Output Dir  : {rel_out_dir}")
+    print(f" Browser     : {args.browser}")
+    print(f" Stories     : {args.stories}")
+    print(f"=======================================================\n")
+
+    perf_cmd = [
+        "perf", "record",
+        "-e", "cycles",
+        "-F", "997",
+        "-k", "mono",
+        "-g",
+        "-o", perf_data_file,
+        "--"
+    ] + cb_cmd
+
+    print(f"Launching perf record wrapper: {' '.join(perf_cmd)}")
+    subprocess.run(perf_cmd, cwd=cwd, check=True)
+
+    start_t, end_t = parse_mono_timestamps(rel_out_dir, cwd)
+    
+    print(f"\n=======================================================")
+    print(f" PERF PROFILE CAPTURED")
+    print(f" Perf Data File: {perf_data_file}")
+    if start_t and end_t:
+        print(f" Measurement Window: {start_t:.3f}s to {end_t:.3f}s (Duration: {end_t - start_t:.3f}s)")
+        print(f" 1. Full Process-Tree Report: perf report -i {perf_data_file} --time {start_t:.3f},{end_t:.3f} --stdio | head -60")
+        print(f" 2. Renderer-Only Report    : perf report -i {perf_data_file} --comms=chrome --time {start_t:.3f},{end_t:.3f} --stdio | head -60")
+    else:
+        print(f" 1. Full Process-Tree Report: perf report -i {perf_data_file} --stdio | head -60")
+        print(f" 2. Renderer-Only Report    : perf report -i {perf_data_file} --comms=chrome --stdio | head -60")
+    print(f" Note: Ensure /tmp/perf-*.map files remain intact for symbol resolution.")
+    print(f"=======================================================\n")
+
+    manifest = {
+        "browser": args.browser,
+        "stories": args.stories,
+        "perf_data_file": perf_data_file,
+        "start_time_mono": start_t,
+        "end_time_mono": end_t
+    }
+    manifest_file = os.path.join(cwd, "scratch", "perf_run_manifest.json")
+    with open(manifest_file, "w") as f:
+        json.dump(manifest, f, indent=2)
 
 if __name__ == "__main__":
     main()
