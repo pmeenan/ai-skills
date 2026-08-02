@@ -105,7 +105,7 @@ flowchart TD
 7. **Cleanup Worktree:** Remove disposable profiling worktree (`git worktree remove ../perf-profile-phase1`).
 
 ### Phase 2: Dedicated Worktree Prototyping & Randomized A/B Validation
-* **Worktree Isolation:** Every candidate experiment MUST run in a dedicated git worktree (`git worktree add ../candidate-<ID> candidate/<ID>-<name>`).
+* **Dedicated Prototyping Branch:** All prototyping and destructive opportunity-sizing experiments will be conducted directly on the dedicated `speedometer` branch on the bare-metal machine. You can use standard `git diff` and `git status` without worrying about isolated worktrees.
 * **Opportunity Sizing & Feature Breaking:** For each Phase 1 candidate, perform deeper analysis to identify its real optimization potential. Experimentally measure the rough wall-clock impact by breaking features, disabling checks, or bypassing security guardrails if necessary. This destructive testing is purely to validate the maximum theoretical optimization potential on the A/B score before designing a real solution.
 * **Randomized Block-Interleaved A/B Verification:**
   - Run randomized ABBA/BAAB block repetitions using Crossbench:
