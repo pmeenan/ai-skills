@@ -79,9 +79,13 @@ section body. No challenger receives the complete large draft merely because
 it is convenient. Each result records the exact section SHA-256 values it
 audited.
 
-The collector writes immutable `challenge/round-<N>/CH*.md` results and
-`challenge/round-<N>/index.md`; `challenge.md` points to the current complete
-round. A missing shard is an incomplete round, never a pass.
+Challengers write immutable `challenge/round-<N>/CH*.md` results. Collect the
+round by running
+`scripts/collect-challenge-round.py <review-dir> <round>` directly — it
+finalizes `challenge/round-<N>/index.md` and writes the `challenge.md`
+pointer; spawn the Challenge Collector wrapper brief only when the helper
+cannot execute. A missing shard is an incomplete round (nonzero exit), never
+a pass.
 
 If a shard is missing, repair it. If any issue exists, revise through the same
 bounded topology as Phase 7: use a targeted Draft Writer only when the complete

@@ -1,15 +1,23 @@
 # Phase Briefs
 
-Orchestrator-facing: this file and SKILL.md are the only skill files the
+Orchestrator-facing: these briefs and SKILL.md are the only skill content the
 orchestrator loads before synthesis; Phase 7 also loads
-`synthesis-orchestration.md`. Each brief below is spawned as one fresh-context
-subagent. Copy the brief, substitute every `⟨placeholder⟩` (all paths
+`synthesis-orchestration.md`. Once the snapshot exists, load the per-brief
+section files under `⟨skill-dir⟩/references/worker/phase-briefs/`
+just-in-time — the Common Header once, then each phase's brief when that
+phase becomes runnable — rather than ingesting this whole file. Each brief
+below is spawned as one fresh-context subagent. Copy the brief, substitute every `⟨placeholder⟩` (all paths
 absolute — subagents start cold in the repository checkout), prepend the
 Common Header, and spawn. Do not paraphrase briefs or compose them freehand,
 and do not inline reference-file content into them.
 
 For every substitution, `⟨skill-dir⟩` is the verified immutable
-`⟨review-dir⟩/skill-snapshot`, never the live canonical skill checkout. Finish
+`⟨review-dir⟩/skill-snapshot`, never the live canonical skill checkout. The
+snapshot contains generated per-section worker references under
+`⟨skill-dir⟩/references/worker/⟨stem⟩/⟨slug⟩.md` (each stem has an
+`index.md` naming its sections); the briefs below already point at the exact
+section files their workers execute, so a worker never ingests a whole
+reference monolith for one section. Finish
 the substituted brief and its exact input list, then register both with
 `⟨skill-dir⟩/scripts/seal-work-unit.py` before spawning it. A sealed brief is
 read-only; corrections use a new attempt-numbered brief and seal.
@@ -81,7 +89,8 @@ by this attempt until local validation passes; correct its draft in place
 before returning. If it is a collected `prestate`, inspect its last complete
 row and Amendments section, do not redo completed scope or reuse IDs, and use
 structured `replace-fields` amendments from
-⟨skill-dir⟩/references/templates.md for parsed cells. Draft and index
+⟨skill-dir⟩/references/worker/templates/the-review-directory.md for parsed
+cells. Draft and index
 deliverables follow their explicit revision/archive rule. Never truncate or
 regenerate a collected artifact.
 
@@ -95,7 +104,13 @@ Extract, don't ingest: when you need only rows, sections, IDs, or fields
 from a large input file, pull them mechanically (grep/sed/jq/awk) instead
 of reading the whole file — ledger files' "## Candidate rows" sections,
 row-ID columns, and normalized threads in gerrit/unresolved-threads.json. Read full files only
-when your procedure genuinely needs their full text.
+when your procedure genuinely needs their full text. The same discipline
+applies to code: when this brief lists a code packet
+(⟨review-dir⟩/packets/⟨work-id⟩-code.md), read it before opening worktree
+files and prefer line-ranged reads around your scope afterwards; consult
+⟨review-dir⟩/callers/index.tsv before re-running a symbol search. Opening
+any worktree file your procedure needs is always allowed — the packet bounds
+nothing; re-deriving its diff is waste.
 
 If your remaining work will not fit in your context, do not thin it out to
 finish: complete what you can at full rigor, write it to your deliverable,
@@ -144,8 +159,8 @@ Scope: bug/design/description alignment and scope relevance for the full CL.
 Do not build the changed-surface inventory.
 
 Procedure: read
-⟨skill-dir⟩/references/inventory-and-planning.md — the "Gather Context"
-section — and execute it against the pinned diff. Read the CL
+⟨skill-dir⟩/references/worker/inventory-and-planning/gather-context-pass-1.md
+and execute it against the pinned diff. Read the CL
 description from ⟨review-dir⟩/pin.md; follow public bug links and design
 docs it references. Bound external ingestion: distill each bug or design
 doc into context.md rather than carrying its full text — for long bug
@@ -156,7 +171,8 @@ fully so the draft writer can caveat bug-alignment claims.
 
 Deliverable: ⟨review-dir⟩/context.md — Sources Consulted, Intended Behavior
 And Scope, Description-To-Code Alignment, Scope Relevance, and Unknowns And
-Caveats in the exact shape from ⟨skill-dir⟩/references/templates.md.
+Caveats in the exact shape from
+⟨skill-dir⟩/references/worker/templates/context-md.md.
 
 Return: one line — sources consulted count, discrepancies count, unknowns
 count, and the deliverable path.
@@ -176,8 +192,11 @@ only `git diff ⟨parent-sha⟩ ⟨sha⟩ -- ⟨pathspec⟩`, never ambient HEAD
 
 Inputs also include ⟨review-dir⟩/profile.json and profile.md.
 
-Procedure: read ⟨skill-dir⟩/references/inventory-and-planning.md — "Pass 1" —
-and execute it. Inventory every changed/new/removed function, method,
+Procedure: read
+⟨skill-dir⟩/references/worker/inventory-and-planning/pass-1-changed-surface-inventory-and-risk-area-map.md
+and
+⟨skill-dir⟩/references/worker/inventory-and-planning/specialist-trigger-decisions.md,
+then execute Pass 1. Inventory every changed/new/removed function, method,
 constructor, destructor, stateful lambda, and helper, including private,
 anonymous-namespace, test-only, and generated surfaces — but aggregate
 homogeneous classes per the Pass 1 aggregation rule: test bodies, generated
@@ -196,7 +215,8 @@ Use context.md if present, but do not block on it and do not edit it.
 
 Deliverable: ⟨review-dir⟩/inventory.md — changed surfaces, risk-area map,
 and stable trigger inventory (including root-cause-required scope IDs) in
-the exact shape from ⟨skill-dir⟩/references/templates.md. The orchestrator
+the exact shape from
+⟨skill-dir⟩/references/worker/templates/inventory-md-changed-surface-inventory-and-risk-area-map.md. The orchestrator
 regenerates `indexes/inventory.tsv` after collection; do not handwrite it.
 
 Return: one line — risk areas, changed-file count, surface count, path.
@@ -219,8 +239,11 @@ pathspec ⟨explicit path list including both sides of renames/deletions⟩. Use
 only that range/pathspec and the hunk ownership map in
 ⟨review-dir⟩/profile.json, never ambient HEAD.
 
-Procedure: read ⟨skill-dir⟩/references/inventory-and-planning.md — "Pass 1" —
-and execute it for every scoped file. Inventory every changed/new/removed
+Procedure: read
+⟨skill-dir⟩/references/worker/inventory-and-planning/pass-1-changed-surface-inventory-and-risk-area-map.md
+and
+⟨skill-dir⟩/references/worker/inventory-and-planning/specialist-trigger-decisions.md,
+then execute Pass 1 for every scoped file. Inventory every changed/new/removed
 function, method, constructor, destructor, stateful lambda, and helper,
 including private, anonymous-namespace, test-only, and generated surfaces —
 aggregated per the Pass 1 aggregation rule: test bodies, generated blocks,
@@ -240,7 +263,7 @@ silently omitting or duplicating scope is invalid.
 
 Deliverable: ⟨review-dir⟩/inventory/⟨SHARD⟩.md — changed surfaces,
 risk-area map, and shard-unique trigger inventory in the inventory shape from
-⟨skill-dir⟩/references/templates.md. The orchestrator regenerates the central
+⟨skill-dir⟩/references/worker/templates/inventory-md-changed-surface-inventory-and-risk-area-map.md. The orchestrator regenerates the central
 inventory index after all shards finish; do not handwrite it.
 
 Return: one line — shard name, risk areas, scoped-file count, surface count,
@@ -295,9 +318,11 @@ fields with jq rather than reading it whole),
 ALL_REVISIONS; do not read it whole).
 
 Procedure: read
-⟨skill-dir⟩/references/inventory-and-planning.md — the "Pass 2" section —
+⟨skill-dir⟩/references/worker/inventory-and-planning/pass-2-prior-feedback-reconciliation.md
 and execute it. Derive the prior reviewed revision under the Baseline
-Derivation contract in templates.md: prefer an explicit PS/SHA in the supplied
+Derivation contract in
+⟨skill-dir⟩/references/worker/templates/ledger-pr-md-prior-feedback-reconciliation.md:
+prefer an explicit PS/SHA in the supplied
 feedback; otherwise map `revisions[*]._number` and `created` plus review/message
 timestamps and choose the newest revision no later than the prior-review
 timestamp. Never assume the baseline is the pinned patchset minus one. If derivation is ambiguous, record baseline
@@ -310,7 +335,7 @@ Deliverable: ⟨review-dir⟩/ledger/PR.md — Baseline Derivation, Gerrit Threa
 Normalization, one PR-⟨n⟩ Prior-Feedback row per prior finding and unresolved
 thread, plus Candidate rows only for partial/open items and one Candidate
 descriptors row per such item, in the shape from
-⟨skill-dir⟩/references/templates.md.
+⟨skill-dir⟩/references/worker/templates/ledger-pr-md-prior-feedback-reconciliation.md.
 
 Return: one line — counts by resolution (fixed / partial / open / obsolete
 / superseded) and the file path.
@@ -357,26 +382,44 @@ Deliverables:
 - ⟨review-dir⟩/plan.md — the full roster, one row per entry (or shard),
   status `spawn` or
   `not applicable — trigger absence proved by ⟨T IDs⟩`, priority batch assignments, in
-  the shape from ⟨skill-dir⟩/references/templates.md. When Transformation
+  the shape from
+  ⟨skill-dir⟩/references/worker/templates/plan-md-thread-plan-roster.md. When Transformation
   Equivalence And Residue is spawned, bulk-scoped threads become
   `deferred — pending TER gate (round two)` rows with no briefs yet. Do
   NOT write a gate brief: the orchestrator generates the TER Gate Skeptic
   from its phase brief after the TER ledger exists, so the brief's inputs
   are complete and hashable at generation time.
 - ⟨review-dir⟩/briefs/⟨THREAD⟩.md — one self-contained brief per spawn
-  row, using the Generated Common Header and Discovery Thread shape from
-  templates.md verbatim (including directives, untrusted-input authority,
+  row, using the shapes in
+  ⟨skill-dir⟩/references/worker/templates/generated-common-header.md and
+  ⟨skill-dir⟩/references/worker/templates/subagent-brief-discovery-thread.md
+  verbatim (including directives, untrusted-input authority,
   attempt/append-only amendments, full-payload fallback, and partial
   continuation semantics), absolute paths throughout, skill dir ⟨skill-dir⟩, review dir
   ⟨review-dir⟩, mechanical-leads script
   ⟨skill-dir⟩/scripts/mechanical-leads.sh.
-- Each brief names exactly one roster entry and its exact reference section.
-  Specialist sections use
-  ⟨skill-dir⟩/references/chromium-specialist-checklists.md; FPM, ACS, and
-  TER use ⟨skill-dir⟩/references/specialist-recipes.md. Verify and register the
-  exact reference file, then extract/read only the named section rather than
-  ingesting unrelated sections. Shard by the natural semantic units in
+- Each brief names exactly one roster entry and points its Procedure at the
+  exact per-section worker reference file(s) for that entry from
+  ⟨skill-dir⟩/references/worker/ — recipe threads name the recipe's file plus
+  context-rules.md under worker/deep-dive-recipes/; checklist sections name
+  their file under worker/discovery-checklists/ plus
+  per-surface-invariant-questions.md; specialist sections name their file
+  under worker/chromium-specialist-checklists/; FPM, ACS, and TER name their
+  file under worker/specialist-recipes/. Copy exact paths from each stem's
+  index.md — sealing verifies the named files exist. Register each named
+  section file as a reference input; do not assign whole reference monoliths
+  when the entry's section files exist. Shard by the natural semantic units in
   inventory-and-planning.md before any input budget is exceeded.
+- ⟨review-dir⟩/packets/⟨THREAD⟩.spec.tsv — one machine-readable scope spec
+  per spawn row whose scope is a dense-hunk shard, spans multiple files, or
+  shares files with other threads (a single-file full-diff scope may skip
+  it), in the shape from
+  ⟨skill-dir⟩/references/worker/templates/scope-packet-spec-and-code-packets.md:
+  diff rows for the thread's exact pathspec (copy a dense shard's owned
+  old/new intervals into the range columns) plus slice rows for
+  declarations/contracts worth pre-cutting. List the packet path
+  ⟨review-dir⟩/packets/⟨THREAD⟩-code.md as an `assigned` input in the
+  brief — the orchestrator materializes it from your spec before sealing.
 - Register every generated brief and all its exact inputs in root
   input-manifest.tsv before returning; no discovery brief may spawn first.
 - Priority scheduling batches use D01, D02, ...; never an unqualified number.
@@ -406,10 +449,11 @@ sections. Enumerate as exact absolute paths: every TER ledger file and
 every scratch transcript the ledger cites (transcripts live under
 ⟨review-dir⟩/scratch/TER/ and are cited review-relative; resolve them
 against the review directory — a citation you cannot resolve to an
-existing file is an error to report, not to skip). Fill the "Subagent Brief — TER
-Gate Skeptic" shape from ⟨skill-dir⟩/references/templates.md verbatim,
-prepending the Generated Common Header (work ID VTER, tier frontier), with
-those enumerated inputs — never a glob.
+existing file is an error to report, not to skip). Fill the shape in
+⟨skill-dir⟩/references/worker/templates/subagent-brief-ter-gate-skeptic.md
+verbatim, prepending the Generated Common Header from
+⟨skill-dir⟩/references/worker/templates/generated-common-header.md (work ID
+VTER, tier frontier), with those enumerated inputs — never a glob.
 
 Deliverables:
 - ⟨review-dir⟩/briefs/VTER.md — the complete gate brief.
@@ -467,7 +511,8 @@ Procedure and checks:
    row. For files with none, read the file's diff yourself and append an
    explicit ORC-⟨n⟩ clean-or-candidate row to ⟨review-dir⟩/collection.md
    in the Per-File Floor shape from
-   ⟨skill-dir⟩/references/templates.md — never a silent omission.
+   ⟨skill-dir⟩/references/worker/templates/per-file-floor-rows.md — never a
+   silent omission.
 
 Deliverable: ⟨review-dir⟩/collection.md — audit verdict per thread, your
 ORC rows, and a gap list naming the exact matrix rows or trace units to repair.
@@ -498,7 +543,8 @@ extract candidate location paths and write a sorted Observed Files section.
 For every gap, write only the narrow repair brief owned by this shard.
 
 Deliverable: ⟨review-dir⟩/collection/shards/CA⟨batch⟩.md with Thread Audit,
-Observed Files, and Gaps in the templates.md shapes. Do not write ORC rows.
+Observed Files, and Gaps in the shapes from
+⟨skill-dir⟩/references/worker/templates/collection-md-collection-audit.md. Do not write ORC rows.
 
 Return: one line — shard, audited-thread count, gap count, observed-file
 count, path, and complete/partial with exact remainder.
@@ -553,8 +599,10 @@ In delta mode, filter the index to exactly the explicitly named reopened-round
 IDs. Compliance matrices and unrelated ledger prose are not inputs.
 
 Procedure: read
-⟨skill-dir⟩/references/verification-and-fixes.md — "Verifying Candidate
-Findings" and "Skeptic Verdicts". In delta mode, preserve all prior batch
+⟨skill-dir⟩/references/worker/verification-and-fixes/verifying-candidate-findings.md
+and
+⟨skill-dir⟩/references/worker/verification-and-fixes/skeptic-verdicts.md.
+In delta mode, preserve all prior batch
 files and process exactly the supplied reopened-round IDs; ordinary candidate
 rows are context and must not be scheduled again. Then:
 1. Identify duplicate candidate rows across threads; record proposed
@@ -572,20 +620,32 @@ rows are context and must not be scheduled again. Then:
    caller sweeps or interleaving analysis gets its own batch (or shares
    with 1–2 closely related rows); mid-weight candidates ~3–5 per batch;
    only cheap/cosmetic rows (naming, punctuation, description nits) go up
-   to the 8-row cap. Also cap each inline candidate packet at
+   to the 8-row cap. Within those bounds, group by code locality:
+   candidates anchored in the same file or surface share a batch unless
+   severity demands isolation — one code load then serves every verdict in
+   the batch, while splitting same-file candidates across batches re-reads
+   the same code in each one. Also cap each inline candidate packet at
    `candidate_packet_budget_bytes` from profile.json; split instead of
    truncating. Every candidate row from every thread appears in
    exactly one batch or one merge line.
 4. Assign the next unused zero-padded IDs V001, V002, ... (including in delta
    mode) and write one skeptic brief per batch
    to ⟨review-dir⟩/briefs/V⟨batch⟩.md
-   in the Verification Skeptic shape from
-⟨skill-dir⟩/references/templates.md, prepending the Generated Common
-   Header verbatim (directives, untrusted-input authority, append/retry, and
+   in the shape from
+   ⟨skill-dir⟩/references/worker/templates/subagent-brief-verification-skeptic.md,
+   prepending the Generated Common Header from
+   ⟨skill-dir⟩/references/worker/templates/generated-common-header.md
+   verbatim (directives, untrusted-input authority, append/retry, and
    partial semantics), with the batch's full candidate
    rows inline, verdict IDs V⟨batch⟩-⟨n⟩, deliverable file
    ⟨review-dir⟩/verification/V⟨batch⟩.md, and the anchor-table reference
-   pointing at ⟨skill-dir⟩/references/synthesis-and-output.md. Register each
+   pointing at
+   ⟨skill-dir⟩/references/worker/synthesis-and-output/severity-calibration.md.
+   Also write ⟨review-dir⟩/packets/V⟨batch⟩.spec.tsv (shape in
+   ⟨skill-dir⟩/references/worker/templates/scope-packet-spec-and-code-packets.md)
+   with one diff row per file the batch's candidates cite, and list
+   ⟨review-dir⟩/packets/V⟨batch⟩-code.md as an assigned input in the brief;
+   the orchestrator materializes it before sealing. Register each
    brief and its exact candidate/reference/control inputs in input-manifest.tsv.
 
 Deliverables: ⟨review-dir⟩/verification/batches.md and the briefs.
@@ -683,7 +743,9 @@ Procedure:
    invariant, state transition, fix layer, and related symbols. Similar wording
    or file location alone is insufficient; separate skeptic batches do not
    prevent a shared family.
-2. Run the six mandatory global checks from templates.md: contradictory
+2. Run the six mandatory global checks from
+   ⟨skill-dir⟩/references/worker/templates/verification-affinity-md-invariant-affinity-and-consistency-audit.md:
+   contradictory
    assumptions, invariant-owner collisions, style-authority scope, lifetime
    operation owner, reachability termination, and repeated local fixes.
 3. Write ⟨review-dir⟩/verification/affinity.md in the exact Root families and
@@ -717,8 +779,10 @@ indexes/manifest.json fingerprints. Read these compact indexes first. Extract
 only the indexed verdict/candidate/inventory blocks for possible triggers;
 do not ingest every verdict, ledger, or inventory file.
 
-Procedure: read ⟨skill-dir⟩/references/verification-and-fixes.md —
-"Root-Cause Trigger Planning" and "Root-Cause, Layering, And Fix Optimality".
+Procedure: read
+⟨skill-dir⟩/references/worker/verification-and-fixes/root-cause-trigger-planning.md
+and
+⟨skill-dir⟩/references/worker/verification-and-fixes/root-cause-layering-and-fix-optimality.md.
 Create one Trigger Accounting row for every CONFIRMED or UNPROVEN verdict,
 every candidate/finding containing a proposed fix, and every inventory scope
 marked root-cause required. Apply every trigger named
@@ -731,7 +795,8 @@ process only the explicitly supplied reopened-round verdict IDs and preserve
 all prior batch files.
 
 Deliverables:
-- ⟨review-dir⟩/root-cause/batches.md in the exact shape from templates.md.
+- ⟨review-dir⟩/root-cause/batches.md in the exact shape from
+  ⟨skill-dir⟩/references/worker/templates/root-cause-plan-root-cause-rows-and-reopened-rows.md.
 - ⟨review-dir⟩/briefs/RC⟨batch⟩.md per scheduled batch, using the Generated
   Common Header verbatim and embedding the exact candidate/verdict rows;
   register each brief and exact inputs in input-manifest.tsv.
@@ -829,27 +894,31 @@ candidate rows they reference in ⟨review-dir⟩/ledger/*.md, any listed
 inventory trigger-scope rows, and ⟨review-dir⟩/context.md.
 
 Procedure: read
-⟨skill-dir⟩/references/verification-and-fixes.md and execute only the
-"Root-Cause, Layering, And Fix Optimality" section, fully — every layer
+⟨skill-dir⟩/references/worker/verification-and-fixes/root-cause-layering-and-fix-optimality.md
+and execute it fully — every layer
 walk and drill — for each complete family in your batch. Produce a
 State × Method matrix when protocol state is involved, explain excluded
 nearby methods, select one fix layer and comment count for the family, and
 make the required Suggested-edit decision. For an applicable edit, re-read the
 pinned changed-side range and record its verbatim selected lines plus the exact
-replacement in the canonical multiline RC-row fields from templates.md;
+replacement in the canonical multiline RC-row fields from the root-cause shape
+file named below;
 otherwise record the concrete eligibility condition that fails. Put only
 `applicable — RC⟨batch⟩-⟨n⟩` in the root-family table cell; the RC row owns
 the lossless code.
 
 Deliverables:
 - ⟨review-dir⟩/root-cause/RC⟨batch⟩.md — RC⟨batch⟩-⟨n⟩ rows in the shape
-  from ⟨skill-dir⟩/references/templates.md: better-owner hypotheses,
+  from
+  ⟨skill-dir⟩/references/worker/templates/root-cause-plan-root-cause-rows-and-reopened-rows.md:
+  better-owner hypotheses,
   callsite gaps, duplicated-state risks, stale-fix risks, and
   refutations, each with path:line evidence.
 - If your pass opens new candidates, write them first as canonical rows in
   ⟨review-dir⟩/ledger/reopened/round-⟨round⟩-RC⟨batch⟩.md with IDs
-  R⟨round⟩-RC⟨batch⟩-1, -2, ... and the Reopened Candidates shape from
-  templates.md. A status-line-only or brief-only candidate does not exist.
+  R⟨round⟩-RC⟨batch⟩-1, -2, ... and the Reopened Candidates shape from the
+  same root-cause shape file. A status-line-only or brief-only candidate does
+  not exist.
 - When a reopened row needs a named discovery recipe, write a bounded
   Generated Common Header discovery brief with exact scope; its worker appends
   evidence/amendments or additional canonical rows to the same round, without
@@ -882,8 +951,8 @@ index to extract exact row bodies; do not ingest compliance matrices or whole
 row-bearing files.
 
 Procedure: read
-⟨skill-dir⟩/references/synthesis-and-output.md — the "Reconciliation"
-section — and execute it: enumerate every row ID from the files
+⟨skill-dir⟩/references/worker/synthesis-and-output/reconciliation-phase-6.md
+and execute it: enumerate every row ID from the files
 fresh, fingerprinted index and give each exactly one disposition line. The
 index builder has already distinguished defining IDs from incidental evidence
 mentions. Use its source/anchor links to read only row bodies whose disposition
@@ -894,11 +963,14 @@ finding per family. Multiple findings require a Root-family promotion
 exception with cited evidence of distinct invariant owners or independently
 bad outcomes.
 Then copy the
-Pre-Output Gate checklist verbatim to the bottom of reconciliation.md and
+Pre-Output Gate checklist (from
+⟨skill-dir⟩/references/worker/synthesis-and-output/pre-output-gate.md)
+verbatim to the bottom of reconciliation.md and
 fill every line provable from the indexed files, marking draft-dependent lines
 "pending draft" and Freshness `pending-delivery`. For each promoted finding
 and owner question, write one bounded evidence card under
-synthesis/⟨ROW-ID⟩.md using templates.md. Every finding card carries the
+synthesis/⟨ROW-ID⟩.md using
+⟨skill-dir⟩/references/worker/templates/synthesis-bounded-index-and-evidence-cards.md. Every finding card carries the
 root-cause Suggested edit decision, exact range/selected lines/replacement
 when applicable, or a specific omission reason; do not re-decide it during
 drafting. A card is at most
@@ -911,7 +983,9 @@ the disposition itself using exact `promoted → F<number>` or
 each row's `source rows` includes the disposition's defining row. A severity
 downgrade remains a promotion at the calibrated severity; never emit a bare
 `downgraded` disposition. Use only `merged → <survivor-row-id>` for a merge
-and emit one matching templates.md `Merge equivalence` row with separately
+and emit one matching `Merge equivalence` row (shape in
+⟨skill-dir⟩/references/worker/templates/reconciliation-md-reconciliation-table-and-pre-output-gate.md)
+with separately
 cited trigger, invariant, outcome, and the survivor's exact verdict. The
 survivor must be direct, verdict-owning, and verdict-consistently dispositioned;
 artifact pointers must resolve to existing, nonempty review-relative files.
@@ -941,12 +1015,15 @@ assigned relationship closures. Candidate/verdict, merge-survivor,
 root-cause-parent, and reopened-parent relationships are kept in one shard.
 The measured required input is below profile.json's worker budget.
 
-Procedure: apply synthesis-and-output.md's Reconciliation rules to every
-assigned definition exactly once. Write one disposition per defining row and
+Procedure: apply the Reconciliation rules in
+⟨skill-dir⟩/references/worker/synthesis-and-output/reconciliation-phase-6.md
+to every assigned definition exactly once. Write one disposition per defining row and
 one bounded evidence card per promoted finding/question. Finding cards carry
 the root-cause Suggested edit decision and its exact replacement evidence or
 specific omission reason. For each merge, emit the exact structured Merge
-equivalence row in templates.md; shard scopes keep the merged row, survivor,
+equivalence row (shape in
+⟨skill-dir⟩/references/worker/templates/reconciliation-md-reconciliation-table-and-pre-output-gate.md);
+shard scopes keep the merged row, survivor,
 and verdict together. Cards obey
 evidence_card_budget_bytes and split supporting material rather than truncate.
 
@@ -1008,15 +1085,18 @@ explicitly in Verification Notes. This is draft revision ⟨draft-revision⟩.
 
 Procedure: read
 ⟨skill-dir⟩/references/synthesis-and-output.md — "Drafting The Review",
-"Finding Format", "Severity Calibration", "Output Format", "Tone" — and
-the "Verdict Alignment And Gerrit Output Rules" section of
-⟨skill-dir⟩/references/verification-and-fixes.md, then execute them.
+"Finding Format", "Severity Calibration", "Output Format", "Tone" (most of
+the file, so use the canonical reference) — and
+⟨skill-dir⟩/references/worker/verification-and-fixes/verdict-alignment-and-gerrit-output-rules.md,
+then execute them.
 Findings come from the reconciliation table's promotions; report record
 contradictions instead of papering over them. You must exhaustively include
 every single promoted finding without truncation, sampling, or omission so
 the author receives all actionable feedback in a single review round. For
 every synthesis item, write the exact `draft-parts/⟨item⟩.md` fragment in the
-templates.md shape; for every finding also write
+shape from
+⟨skill-dir⟩/references/worker/templates/exact-output-fragments-draft-parts-and-draft-assembly.md;
+for every finding also write
 `gerrit-parts/⟨item⟩.md`. Include the canonical `Synthesis item` field in each
 draft fragment, then assemble those bytes without editing them. Copy each
 card's Suggested edit decision exactly. If applicable, put the same
@@ -1055,8 +1135,10 @@ to recheck this card's quoted line/location. Input must be at most
 profile.json:/context_budget/evidence_card_budget_bytes; an
 oversized card is returned for splitting.
 
-Procedure: read synthesis-and-output.md Finding Format, Severity Calibration,
-Output Format, and Tone plus verification-and-fixes.md Gerrit rules. Draft the
+Procedure: read, under ⟨skill-dir⟩/references/worker/synthesis-and-output/,
+the files finding-format.md, severity-calibration.md, output-format.md, and
+tone.md, plus
+⟨skill-dir⟩/references/worker/verification-and-fixes/verdict-alignment-and-gerrit-output-rules.md. Draft the
 finding or question exactly from the reconciled evidence; do not re-adjudicate.
 Include the exact `Synthesis item: ⟨card-ID⟩` field and internal source-row
 trail in the review fragment. For a finding, copy its Suggested edit decision:
@@ -1067,7 +1149,8 @@ keeps the card's specific reason and has no suggestion block.
 Deliverables: exact final-output bytes in
 `draft-parts/⟨card-ID⟩.md`; for a finding, exact target/comment bytes in
 `gerrit-parts/⟨card-ID⟩.md`; and one measured
-`output-coverage/⟨card-ID⟩.tsv` data row in the templates.md schema. A question
+`output-coverage/⟨card-ID⟩.tsv` data row in the schema from
+⟨skill-dir⟩/references/worker/templates/exact-output-fragments-draft-parts-and-draft-assembly.md. A question
 uses `-` for all Gerrit fields. Do not add wrappers or metadata that should not
 appear in the final output.
 
@@ -1125,7 +1208,7 @@ into `output-coverage.tsv`, rejecting duplicate/missing/foreign items and
 remeasuring every byte count/hash. If either root output exceeds the worker input
 budget, also write bounded immutable draft/Gerrit fragments and
 `draft-sections/index.tsv` using the exact dual-path byte/hash schema in
-templates.md. The root outputs must byte-equal the fragments concatenated in
+⟨skill-dir⟩/references/worker/templates/exact-output-fragments-draft-parts-and-draft-assembly.md. The root outputs must byte-equal the fragments concatenated in
 numeric `order` with no inserted separator/newline/normalization; each fragment
 owns its trailing newline. Represent an empty destination explicitly instead
 of dropping it.
@@ -1200,13 +1283,14 @@ ordered headings/digests, verdict summary, and Gerrit target index.
 
 Procedure: first verify every assigned section SHA-256 against
 draft-sections/index.tsv and record the hashes audited. Then read
-⟨skill-dir⟩/references/verification-and-fixes.md — the "Final Synthesis
-Pass" checklist — and audit the draft against it. Read the draft and scoped
+⟨skill-dir⟩/references/worker/verification-and-fixes/final-synthesis-pass.md
+and audit the draft against its checklist. Read the draft and scoped
 cards fully; audit assigned structural rows mechanically and read only
 specific source rows a suspicious disposition cites. Hunt: unaccounted rows,
 contradictions between findings and other caller paths or feature gates,
 miscalibrated severities (check each against the anchor table in
-⟨skill-dir⟩/references/synthesis-and-output.md), verdict/finding
+⟨skill-dir⟩/references/worker/synthesis-and-output/severity-calibration.md),
+verdict/finding
 inconsistencies, gate lines answered untruthfully, and Gerrit-text rule
 violations. Remember the restriction-feature inversion: silently degrading
 to unrestricted behavior is a finding, not graceful fallback.
@@ -1221,6 +1305,17 @@ Return: one line — issue count and the file path.
 ## Brief — Challenge Collector (Phase 8)
 
 Tier: `mechanical` (Model Tiers in `references/scaling-and-indexes.md`).
+
+Canonical path: run
+`python3 ⟨skill-dir⟩/scripts/collect-challenge-round.py ⟨review-dir⟩ ⟨round⟩`
+directly once every planned shard of the round has returned. It verifies the
+shard artifacts, fills the round index's `issues` column, appends the round
+result, and writes the `challenge.md` pointer; a nonzero exit is
+`needs-repair` for the named shards. Do not spawn an agent merely to execute
+this deterministic collection.
+
+The brief below is a degraded wrapper only when the helper cannot execute; it
+must preserve the helper's exact output and exit semantics.
 
 ```text
 Scope: collect challenge shards for draft revision ⟨draft-revision⟩; do not

@@ -24,6 +24,19 @@ excludes neither repeated headers nor reference text: count everything the
 worker must load. Leave the remaining context for code, tool output, reasoning,
 and the deliverable.
 
+Assign the generated per-section worker references
+(`references/worker/⟨stem⟩/⟨slug⟩.md` in the snapshot) rather than whole
+reference files whenever the worker needs only named sections; each section
+file is an immutable packet with its own measurable size, which keeps
+reference overhead out of every worker's 35% budget.
+
+Scoped code enters the same accounting through code packets: the planner's
+`packets/⟨WORK⟩.spec.tsv` is materialized into `packets/⟨WORK⟩-code.md`
+before sealing and manifested as an `assigned` input, so the largest input
+class — the code itself — is measured and budgeted per worker instead of
+re-derived invisibly. A packet that alone approaches the worker budget is a
+sharding signal, exactly like any other oversized assigned input.
+
 If a unit exceeds the budget, shard it by a named natural unit before spawn.
 If an already-running worker discovers deeper-than-profiled work, it writes a
 full-quality partial artifact plus exact remaining scope and yields to a fresh

@@ -1,0 +1,26 @@
+# Golden record of rationale blocks stripped from the
+# canonical references by build_worker_references.py.
+# Regenerate: python3 -m unittest scripts.tests.test_worker_references (see assertion
+# message for the observed value) or update by hand when a rationale block is added/removed on purpose.
+
+inventory-and-planning.md: Measured runs keep paying for omissions: one silently dropped the Tear
+inventory-and-planning.md: recipe and with it the only thread that checks end-of-operation resour
+inventory-and-planning.md: release; another (large CL) omitted the Mode × Host matrix and both
+inventory-and-planning.md: arithmetic techniques — and six of its nine serious misses were cells 
+inventory-and-planning.md: drills those threads own.
+inventory-and-planning.md: A measured weak-model run collapsed the roster into 12 invented thread
+inventory-and-planning.md: names; Data Lineage and Container/View Invalidation vanished in the
+inventory-and-planning.md: collapse, and the two byte-loss P0s those recipes own (discarded `Push
+inventory-and-planning.md: return, short inner `Write`) were the run's marquee misses — found by 
+inventory-and-planning.md: stronger models whose plans kept those rows. Another orchestrator merg
+inventory-and-planning.md: the plan down to a few recipe threads and skipped the section rules
+inventory-and-planning.md: entirely — and the skipped sections accounted for the missed bugs
+inventory-and-planning.md: (fire-and-forget metadata and redundant writes live in the State secti
+inventory-and-planning.md: production-value gates in Integration; guard-bypass scans in mechanica
+inventory-and-planning.md: leads).
+inventory-and-planning.md: A bare "PASS" is how a measured run waved through a diff hunk that
+inventory-and-planning.md: literally wrapped the old truncation check in `if (!new_flag)`.
+synthesis-and-output.md: In a measured run, a P1 candidate recorded by the error-path thread wa
+synthesis-and-output.md: silently dropped between ledger and review; findings reported by sever
+synthesis-and-output.md: threads survived consolidation while single-source rows vanished — the
+synthesis-and-output.md: table exists to protect the single-source rows.

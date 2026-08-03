@@ -119,6 +119,12 @@ python3 -m py_compile scripts/artifact_tables.py scripts/snapshot-skill.py
 python3 -m py_compile scripts/seal-work-unit.py scripts/validate-worker-artifact.py
 python3 -m py_compile scripts/refresh-delivery-gate.py
 python3 -m py_compile scripts/validate-review-dir.py
+python3 -m py_compile scripts/build_worker_references.py
+python3 -m py_compile scripts/report-review-costs.py
+python3 -m py_compile scripts/collect-challenge-round.py
+python3 -m py_compile scripts/build-scope-packets.py
+python3 -m py_compile scripts/build-caller-index.py
+python3 -m py_compile scripts/log-progress.py
 python3 -m unittest discover -s scripts/tests -v
 ```
 

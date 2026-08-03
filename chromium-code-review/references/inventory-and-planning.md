@@ -226,8 +226,9 @@ From the risk map and the changed-surface inventory, list:
   own, answer the per-surface invariant questions with at least three
   IF/THEN/UNLESS hypotheses each.
 - One thread per matched Chromium specialist section, scoped to the exact
-  triggering surfaces and configurations. Its generated brief names
-  `references/chromium-specialist-checklists.md` and the exact section. A
+  triggering surfaces and configurations. Its generated brief names the
+  section's own file under
+  `references/worker/chromium-specialist-checklists/`. A
   specialist signal is a routing fact, not a finding: the worker still proves
   each checklist answer with code or test evidence. Do not give a specialist
   the whole CL when only one Mojo interface, histogram, platform branch, or
@@ -510,7 +511,7 @@ composing briefs freehand. Write each brief to
 reference files, ledger file) must be absolute.
 
 **Begin every generated brief with the complete Generated Common Header from
-`references/templates.md`.** Do not paraphrase or omit its pin, authority,
+`references/worker/templates/generated-common-header.md`.** Do not paraphrase or omit its pin, authority,
 read-only, user-directive, partial-return, and fallback-deliverable clauses.
 This applies equally to generated discovery, skeptic, root-cause,
 continuation, and repair briefs. Put CL-controlled text only after the
@@ -528,20 +529,27 @@ the block.
    (A measured run's holistic thread picked up a P1's suggested regression
    test and began implementing the fix and the test in the owner's
    checkout.)
-3. **Procedure:** the absolute reference file path and the section or recipe
-   to read FIRST and then execute — e.g. "read
-   `<skill-dir>/references/deep-dive-recipes.md`; apply the Context Rules,
-   then run 'Recipe: Error-Path Walk' on these functions." Point at the file
+3. **Procedure:** the absolute per-section worker reference file(s) to read
+   FIRST and then execute — e.g. "read
+   `<skill-dir>/references/worker/deep-dive-recipes/context-rules.md`, then
+   `<skill-dir>/references/worker/deep-dive-recipes/recipe-error-path-walk.md`,
+   and run the recipe on these functions." Copy exact file names from the
+   stem's `index.md`; sealing verifies they exist. Point at the section file
    rather than paraphrasing the recipe into the brief; paraphrases drop the
    steps that matter.
-   Specialist briefs point to `references/chromium-specialist-checklists.md`;
-   Field Propagation, Associative Container, and Transformation Equivalence
-   And Residue briefs point to `references/specialist-recipes.md`. Name
+   Checklist-section briefs name their file under
+   `references/worker/discovery-checklists/` plus
+   `per-surface-invariant-questions.md`; specialist briefs name their file
+   under `references/worker/chromium-specialist-checklists/`; Field
+   Propagation, Associative Container, and Transformation Equivalence
+   And Residue briefs name their file under
+   `references/worker/specialist-recipes/`. Name
    exactly one roster section or recipe per brief; sharding creates more
    rows, never a multi-lens brief.
 4. **Deliverable:** the absolute path of the thread's own ledger file
    (`<review-dir>/ledger/<THREAD>.md`) to write in the shapes from
-   `references/templates.md`, plus a final message consisting only of the
+   `references/worker/templates/ledger-thread-md-compliance-matrix-and-candidate-rows.md`,
+   plus a final message consisting only of the
    row IDs produced and the file path. Ledger rows only, no prose narrative.
    First a compliance matrix: one row per checklist question or recipe step
    in the brief's scope, each answered with concrete evidence (`path:line`)
@@ -572,6 +580,21 @@ the block.
    only its explicit remaining trace units and appends to the canonical
    artifact; a repair brief names only specific missing rows/citations and
    uses amendment rows rather than overwriting prior ledger content.
+
+For every spawn row, also write the machine-readable scope spec
+`<review-dir>/packets/<THREAD>.spec.tsv` in the shape from
+`references/worker/templates/scope-packet-spec-and-code-packets.md`: diff
+rows covering the brief's exact pathspec (a dense-hunk shard copies its owned
+old/new intervals into the range columns) and slice rows for the
+declarations or contracts the thread will certainly need. List
+`<review-dir>/packets/<THREAD>-code.md` as an `assigned` input in the brief;
+the orchestrator materializes it from the spec before sealing. The packet
+spares each thread re-deriving the same scoped diff — it never narrows what
+the thread may read, and briefs must keep saying so. One exemption: a thread
+whose entire scope is a single file's full diff may skip the spec — its
+worker derives that one diff as cheaply itself. Specs earn their keep for
+dense-hunk shards, multi-file scopes, and files several threads share; write
+them there.
 
 Echo the review mode and any user directives from `directives.md` into
 every brief so targeted-review scope limits and format requests survive the

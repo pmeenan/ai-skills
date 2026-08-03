@@ -62,12 +62,18 @@ Modes is only for harnesses with no such tool at all.
 
 1. **Never read the diff, the worktree, `detail.json`, `comments.json`, any
    `ledger/`, `verification/`, or `briefs/` file, or any reference file
-   other than this file, `references/phase-briefs.md`,
+   other than this file, the per-brief section files under
+   `<review-dir>/skill-snapshot/references/worker/phase-briefs/`,
    `references/scaling-and-indexes.md`, and (once Phase 7 starts)
-   `references/synthesis-orchestration.md`.** The small control
+   `references/synthesis-orchestration.md`.** Load phase briefs
+   just-in-time: the Common Header section once, then only the brief file(s)
+   the current phase actually spawns — most reviews never load the sharded
+   planners, TER machinery, or degraded wrappers. The whole
+   `references/phase-briefs.md` is a fallback for the moments before the
+   snapshot exists, not the default read. The small control
    files `pin.md`, `profile.json`, `directives.md`, `input-manifest.tsv`, `orchestration.tsv`,
-   `progress.md`, `plan.md`, and `delivery-gate.md` are the only artifacts it may
-   read before delivery. Everything else arrives as one-line subagent status
+   `progress.md`, `plan.md`, `delivery-gate.md`, and `cost-report.md` are the only
+   artifacts it may read before delivery. Everything else arrives as one-line subagent status
    messages and the compact per-phase returns defined below.
 2. **Check artifacts by existence and size (`ls`, `wc -l`), never by reading
    them.**
@@ -78,7 +84,15 @@ Modes is only for harnesses with no such tool at all.
    re-read it or quote it in later prompts.
 4. **Append a one-line outcome to `progress.md` after every phase and every
    collected thread, and update `orchestration.tsv` after every task state
-   change.** The TSV is the authoritative machine-readable queue, with one
+   change.** Emit every progress line through
+   `scripts/log-progress.py <review-dir> spawned|collected|phase|note …` —
+   it stamps UTC time and enforces the one event grammar
+   (`spawned ⟨WORK⟩ attempt ⟨N⟩`, `collected ⟨WORK⟩ attempt ⟨N⟩: ⟨outcome⟩`,
+   `Phase ⟨label⟩ done: ⟨outcome⟩`) that the cost report parses for
+   per-phase elapsed time and per-attempt spawn-to-collect latency, the only
+   wall-clock evidence the review keeps. Log one `spawned` event per work
+   unit at spawn (even within a batch) and one `collected` event per
+   collection; retried attempts get their own events. The TSV is the authoritative machine-readable queue, with one
    row per attempt and fixed columns `phase`, `work_id`, `attempt`, `state`, `tier`,
    `task_id`, `brief`, `artifact`, `remaining_scope`, and `depends_on`.
    States are `queued`, `running`, `partial`, `retryable`, `needs-repair`,
@@ -131,10 +145,26 @@ Paths below are relative to this skill's directory. **Every path placed in a
 subagent brief must be expanded to an absolute path** — subagents start in
 the repository checkout, where skill-relative paths do not resolve.
 
+**Per-section worker references are generated inside every snapshot.**
+`snapshot-skill.py` runs `build_worker_references.py` while staging, deriving
+`references/worker/⟨stem⟩/⟨slug⟩.md` — one file per `##` section of each
+reference, carrying the source file's preamble, with the skippable indented
+rationale blocks removed — plus a per-stem `index.md` naming every section
+file. A brief that needs one or two sections of a reference names those exact
+section files instead of the whole file; they are immutable, individually
+measurable manifest packets. The canonical reference file remains the input
+for a worker that genuinely needs most of its sections, and stays the only
+file maintainers edit.
+
 Orchestrator-facing (the only skill files the orchestrator loads):
 
 - `references/phase-briefs.md`: a filled-in brief for every phase subagent.
-  Copy the brief, substitute the pin values and absolute paths, spawn.
+  Copy the brief, substitute the pin values and absolute paths, spawn. Once
+  the snapshot exists, load its per-brief section files
+  (`skill-snapshot/references/worker/phase-briefs/`, listed in that
+  directory's `index.md`) just-in-time per phase instead of ingesting this
+  whole file — it is the orchestrator's largest fixed read, and a typical
+  review needs well under half of its briefs.
 - `references/synthesis-orchestration.md`: bounded drafting, challenge, and
   delivery control flow. Load it only when Phase 7 becomes runnable.
 - `references/scaling-and-indexes.md`: effort profiling, agent input budgets,
@@ -166,6 +196,31 @@ Orchestrator-facing (the only skill files the orchestrator loads):
   conservative effort profile and compact fingerprinted planner indexes.
 - `scripts/refresh-delivery-gate.py`: refreshes scalar Gerrit freshness and
   updates only an affirmative Freshness gate; it never judges code deltas.
+- `scripts/build_worker_references.py`: derives the per-section worker
+  reference files; `snapshot-skill.py` runs it automatically while staging,
+  so it is invoked directly only for development or inspection.
+- `scripts/collect-challenge-round.py`: mechanically collects a challenge
+  round — verifies shard artifacts, fills the round index `issues` column,
+  writes `challenge.md`. Run it directly instead of spawning the Challenge
+  Collector agent; the agent brief is a degraded wrapper only.
+- `scripts/build-scope-packets.py`: materializes one work unit's scoped code
+  packet (exact diff plus changed-side slices) from the planner's
+  `packets/<WORK>.spec.tsv`. Run it before sealing any unit that has a spec,
+  so scoped code is a measured `assigned` input rather than a per-worker
+  re-derivation.
+- `scripts/build-caller-index.py`: runs each inventory surface's caller
+  search once over the pinned worktree — repository-wide by default so
+  caller-reachability reasoning can trust it; a `--pathspec`-narrowed run
+  marks every result scope-limited — and writes `callers/` for threads to
+  consult. Run it directly after the Phase 1 index rebuild; re-runs are
+  memoized.
+- `scripts/log-progress.py`: appends one correctly timestamped, normatively
+  shaped event line to `progress.md`. Use it for every spawned / collected /
+  phase event instead of hand-formatting lines.
+- `scripts/report-review-costs.py`: derives `cost-report.md`/`cost-report.tsv`
+  (per-phase and per-work-unit manifested input bytes, artifact bytes,
+  retries, tier mix) from `orchestration.tsv` and `input-manifest.tsv`. Run
+  it at delivery; it never modifies review artifacts.
 
 Worker-facing (loaded by subagents because their briefs point at them; the
 orchestrator never loads these):
@@ -343,6 +398,15 @@ in exactly one shard. Rebuild `indexes/inventory.tsv`; the planner reads that
 compact index first and opens only selected canonical rows. Returns are compact
 counts plus the risk/trigger names.
 
+After the index rebuild, run
+`scripts/build-caller-index.py <review-dir> --worktree <pinned worktree>
+--revision <revision sha from pin.md>`
+directly — a deterministic helper, never an agent. It refuses to run if the
+worktree HEAD does not match the pinned revision. It runs each surface's
+caller search once and writes `callers/index.tsv` plus per-symbol result
+files; discovery threads consult those instead of re-running identical
+searches.
+
 ## Phase 2 — Prior-Feedback Reconciliation (follow-up reviews only)
 
 Write the prior review text (from the conversation or wherever the user
@@ -376,7 +440,11 @@ self-contained discovery brief per spawned thread.
   discovery, skeptic, root-cause, finding-writer, assembly, continuation, and
   repair briefs are not exempt.
 
-Before spawning any planned unit, finish its brief and exact input list, then
+Before spawning any planned unit, finish its brief and exact input list. For
+any unit whose planner wrote `packets/<WORK>.spec.tsv`, first run
+`<review-dir>/skill-snapshot/scripts/build-scope-packets.py <review-dir>
+<WORK> --worktree <pinned worktree> --parent <parent-sha> --revision <sha>`
+so the scoped code packet exists and is hashed as a sealed input. Then
 run `<review-dir>/skill-snapshot/scripts/seal-work-unit.py`. The seal is the
 only supported way to add the queued orchestration row and input-manifest
 rows. Never edit or repoint a sealed brief; archive it as evidence and create
@@ -409,8 +477,12 @@ inherit the session model and continue.
 size.** Reserve one slot for the orchestrator; launch at most
 `min(runnable rows, available child slots)` from the highest-priority
 dependency-ready rows in `orchestration.tsv`. If capacity cannot be queried,
-start with at most three children, reduce the wave after a capacity rejection,
-and refill a slot only after collecting its prior task. Priority remains:
+start with at most eight children, reduce the wave after a capacity rejection,
+and refill a slot only after collecting its prior task.
+
+  Measured day-plus runs were queue-dominated: a three-child default against a
+  30-thread plan left most of the wall clock waiting on scheduling, not
+  analysis. Eight still yields on the first capacity rejection. Priority remains:
 teardown/error paths, boundary arithmetic, cross-sequence handoffs, persisted
 formats, and reentrancy first; renames and plumbing last. Overlap between
 threads is fine — redundant coverage is how disjoint blind spots get closed.
@@ -634,7 +706,15 @@ pass.
 Run `refresh-delivery-gate.py` as Phase 9 directs, then rebuild indexes. Delivery requires
 a fresh scalar Gerrit check, an affirmative validator result, and a passing
 challenge for the exact delivered draft. Material patchset changes restart in
-a new review directory; no new SHA may reuse old ledgers or verdicts. After
+a new review directory; no new SHA may reuse old ledgers or verdicts.
+
+After the delivery gate passes, run
+`scripts/report-review-costs.py <review-dir>` and append its one-line summary
+to `progress.md`. The report is observability for tuning the skill's own
+cost, not a review gate: a failure here is disclosed, never blocks delivery,
+and the orchestrator may read the small `cost-report.md` it writes.
+
+After
 the final artifacts have been read for delivery, run
 `scripts/worktree-lease.py release <review-dir> "review complete"` for every
 pin owned by this review. **This is a mandatory pre-response cleanup gate: do

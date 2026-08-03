@@ -17,6 +17,9 @@ import tempfile
 import time
 from typing import Iterator
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_worker_references  # noqa: E402
+
 
 MANIFEST = "snapshot-manifest.json"
 GUARD_TIMEOUT_ENV = "CHROMIUM_REVIEW_GUARD_SECONDS"
@@ -108,28 +111,37 @@ def create(skill_dir: Path, review_dir: Path, destination: Path) -> None:
     stage = Path(tempfile.mkdtemp(prefix=".skill-snapshot.", dir=review_dir))
     try:
         payloads = {source: source.read_bytes() for source in files}
-        rows = []
         for source in files:
             try:
                 relative = source.relative_to(skill_dir).as_posix()
             except ValueError:
                 fail(f"selected file escapes skill directory: {source}")
-            payload = payloads[source]
             target = stage / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(payload)
+            target.write_bytes(payloads[source])
             try:
                 target.chmod(source.stat().st_mode & 0o777)
             except OSError:
                 pass
-            rows.append({
-                "path": relative,
-                "bytes": len(payload),
-                "sha256": digest(payload),
-            })
         for source, payload in payloads.items():
             if source.read_bytes() != payload:
                 fail(f"source changed while snapshotting: {source}")
+        # Derive the per-section worker reference files inside the stage so
+        # every snapshot carries them and they can never drift from the
+        # canonical references they were split from.
+        staged_references = stage / "references"
+        if staged_references.is_dir():
+            build_worker_references.build(staged_references)
+        rows = [
+            {
+                "path": path.relative_to(stage).as_posix(),
+                "bytes": len(payload),
+                "sha256": digest(payload),
+            }
+            for path in sorted(stage.rglob("*"))
+            if path.is_file()
+            for payload in [path.read_bytes()]
+        ]
         manifest = {
             "schema_version": 1,
             "source_path": str(skill_dir),
