@@ -110,6 +110,7 @@ flowchart TD
 ### Phase 2: Dedicated Worktree Prototyping & Randomized A/B Validation
 * **Dedicated Prototyping Branch:** All prototyping and destructive opportunity-sizing experiments will be conducted directly on the dedicated `speedometer` branch on the bare-metal machine. You can use standard `git diff` and `git status` without worrying about isolated worktrees.
 * **Opportunity Sizing & Feature Breaking:** For each Phase 1 candidate, perform deeper analysis to identify its real optimization potential. Experimentally measure the rough wall-clock impact by breaking features, disabling checks, or bypassing security guardrails if necessary. This destructive testing is purely to validate the maximum theoretical optimization potential on the A/B score before designing a real solution.
+  - *Mitigating Hard Dependencies:* If a candidate (e.g. core Layout or DOM tree creation) cannot be simply dropped/disabled because the benchmark driver physically requires its output to function (such as needing valid geometry to click elements), deploy a **quick-and-dirty pseudo-solution**. Instead of a full fix, implement aggressive un-invalidated caching, intentionally leak memory, bypass all security checks, or hardcode valid dummy states. Your goal is simply to mimic functional correctness enough to pass the interaction hooks without paying the computational cost, ignoring memory bloat or correctness.
 * **Randomized Block-Interleaved A/B Verification:**
   - Run randomized ABBA/BAAB block repetitions using Crossbench:
     ```bash
