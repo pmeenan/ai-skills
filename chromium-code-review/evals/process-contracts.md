@@ -125,8 +125,20 @@ python3 -m py_compile scripts/collect-challenge-round.py
 python3 -m py_compile scripts/build-scope-packets.py
 python3 -m py_compile scripts/build-caller-index.py
 python3 -m py_compile scripts/log-progress.py
+python3 -m py_compile scripts/instrument-command.py
+python3 -m py_compile scripts/archive-review-instrumentation.py
 python3 -m unittest discover -s scripts/tests -v
 ```
+
+Instrumentation fixtures must prove the command wrapper preserves stdout,
+stderr, and exit status; refuses non-opted-in reviews; attributes byte/time
+costs to work ID plus attempt; and never stores command output. Archival must
+exclude code packets, ledgers, findings, drafts, and Gerrit comments. Two
+review directories for the same CL/patchset and skill revision must receive
+distinct UUID-backed archive paths, while repeating archival for one review
+directory is idempotent. Version grouping uses the last commit touching the
+Chromium review skill, not an unrelated repository HEAD change. A review with
+no instrumentation events must not gain a header-only `code-read-costs.tsv`.
 
 The process-tool fixtures must additionally prove that a live canonical skill
 edit cannot change an existing snapshot, snapshot tampering is detected, a

@@ -109,6 +109,16 @@ Modes is only for harnesses with no such tool at all.
    rerun `fetch-cl.sh` with the same CL, patchset, and review directory to
    reacquire and reuse the clean pinned worktree. If a different fresh lease
    owns the pin, stop and ask the user whether to force a restart.
+   When `directives.md` contains `instrumentation: code-reads-v1`, every
+   worker command whose output is consumed as code evidence
+   (for example `git diff/show/grep`, `rg`, or ranged `sed`) runs through
+   `scripts/instrument-command.py`. Deterministic helpers whose output is
+   already manifested by exact bytes do not need wrapping. Instrumentation
+   records command metadata and emitted-byte counts, never emitted source
+   payloads; it does not narrow or cap review work. In an instrumented review,
+   use the wrapped shell path instead of a harness-native file-read/search
+   tool for code evidence, so different models are measured through the same
+   channel. Harness-native reads of small control artifacts remain allowed.
 5. The only large files the orchestrator ever reads are `draft-review.md`
    and `gerrit-comments.md`, once, after the Phase 9 delivery gate passes.
 6. **Honor partial returns and repair narrowly.** Every brief tells workers
@@ -221,6 +231,13 @@ Orchestrator-facing (the only skill files the orchestrator loads):
   (per-phase and per-work-unit manifested input bytes, artifact bytes,
   retries, tier mix) from `orchestration.tsv` and `input-manifest.tsv`. Run
   it at delivery; it never modifies review artifacts.
+- `scripts/instrument-command.py`: opt-in transparent command wrapper for
+  `instrumentation: code-reads-v1` reviews. It preserves stdout, stderr, and
+  exit status while logging per-work-unit emitted bytes and elapsed time.
+- `scripts/archive-review-instrumentation.py`: copies an instrumented run's
+  compact metrics and routing metadata—not code payloads or findings—into
+  `instrumentation/runs/code-reads-v1/<skill-git-hash>/` in the canonical
+  skill directory for later bulk analysis.
 
 Worker-facing (loaded by subagents because their briefs point at them; the
 orchestrator never loads these):
@@ -275,6 +292,17 @@ phase brief echoes it so workers see the user's constraints without the
 orchestrator restating them. A user tier preference overrides the annotated
 tiers, and Verification Notes disclose every phase run below its recommended
 tier.
+
+If the user asks for an instrumented review, code-read instrumentation, or
+review-cost collection, add the exact line `instrumentation: code-reads-v1`
+to `directives.md`. This is opt-in; never enable it merely because an earlier
+review used it. Instrumentation observes the normal review and never changes
+scope, model tier, findings, or gates.
+If the user supplies a model/run label for comparison, also record it as
+`instrumentation-label: <label>`. Each review directory receives a persistent
+UUID-backed run ID, so concurrent runs of the same CL, patchset, and skill
+revision archive as distinct siblings and rerunning archival for one review
+is idempotent.
 
 ## The Review Directory
 
@@ -713,6 +741,15 @@ After the delivery gate passes, run
 to `progress.md`. The report is observability for tuning the skill's own
 cost, not a review gate: a failure here is disclosed, never blocks delivery,
 and the orchestrator may read the small `cost-report.md` it writes.
+
+For a review whose directives contain `instrumentation: code-reads-v1`, then
+run `<review-dir>/skill-snapshot/scripts/archive-review-instrumentation.py
+<review-dir>`. It resolves the canonical skill source from the immutable
+snapshot manifest and atomically archives the compact instrumentation bundle
+under `instrumentation/runs/code-reads-v1/<skill-git-hash>/`. A failure is
+disclosed with its diagnostic and archive target; it does not invalidate the
+code-review verdict or freshness gate. Do not copy source packets, ledgers,
+findings, drafts, Gerrit comments, or command output into the skill checkout.
 
 After
 the final artifacts have been read for delivery, run

@@ -7,12 +7,13 @@ bytes per attempt) — plus the on-disk sizes of each attempt's artifact. It
 writes `cost-report.tsv` (every work unit, no caps) and a compact
 `cost-report.md` summary, and never modifies any review artifact.
 
-The numbers are honest proxies, not billing data: input bytes cover only the
-manifested preassigned inputs (worktree code and tool output a worker read on
-its own are not manifested), and output bytes are artifact sizes, not model
-output tokens. They are comparable across phases and runs of this skill, which
-is what optimization needs. Token estimates use the same conservative
-four-bytes-per-token rule as the input-budget contract.
+The numbers are honest proxies, not billing data: input bytes cover manifested
+preassigned inputs; opt-in code-read logs cover emitted bytes from wrapped
+worktree/tool commands; and artifact sizes are not model output tokens.
+Unwrapped worktree/tool reads remain invisible. The proxies are comparable
+across phases and runs of this skill, which is what optimization needs. Token
+estimates use the same conservative four-bytes-per-token rule as the input-
+budget contract.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import argparse
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+import json
 import re
 import sys
 
@@ -113,6 +115,32 @@ def tokens(byte_count: int) -> str:
     return f"~{byte_count // TOKEN_BYTES:,}"
 
 
+def code_read_costs(review_dir: Path):
+    """Return aggregate instrumented command costs and malformed-log count."""
+    totals: dict[tuple[str, str], dict[str, int]] = defaultdict(
+        lambda: defaultdict(int))
+    malformed = 0
+    root = review_dir / "instrumentation" / "code-reads"
+    if not root.is_dir():
+        return totals, malformed
+    for path in sorted(root.glob("*.jsonl")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                event = json.loads(line)
+                if event.get("schema") != "code-reads-v1":
+                    raise ValueError("wrong schema")
+                key = (str(event["work_id"]), str(event["attempt"]))
+                totals[key]["commands"] += 1
+                totals[key]["stdout_bytes"] += int(event["stdout_bytes"])
+                totals[key]["stderr_bytes"] += int(event["stderr_bytes"])
+                totals[key]["elapsed_ms"] += int(event["elapsed_ms"])
+                if int(event["exit_code"]) != 0:
+                    totals[key]["failed_commands"] += 1
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                malformed += 1
+    return totals, malformed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("review_dir", type=Path)
@@ -191,6 +219,21 @@ def main() -> int:
     total_input = sum(unit["input_bytes"] for unit in units)
     total_output = sum(unit["artifact_bytes"] for unit in units)
     largest = sorted(units, key=lambda unit: -int(unit["input_bytes"]))[:15]
+    read_costs, malformed_read_events = code_read_costs(review_dir)
+    if read_costs or malformed_read_events:
+        read_tsv_path = review_dir / "code-read-costs.tsv"
+        read_tsv_lines = [
+            "work_id\tattempt\tcommands\tfailed_commands\tstdout_bytes\t"
+            "stderr_bytes\telapsed_ms"
+        ]
+        read_tsv_lines += [
+            f"{key[0]}\t{key[1]}\t{stats['commands']}\t"
+            f"{stats['failed_commands']}\t{stats['stdout_bytes']}\t"
+            f"{stats['stderr_bytes']}\t{stats['elapsed_ms']}"
+            for key, stats in sorted(read_costs.items())
+        ]
+        read_tsv_path.write_text("\n".join(read_tsv_lines) + "\n",
+                                 encoding="utf-8")
 
     def phase_sort(key: str):
         try:
@@ -234,6 +277,39 @@ def main() -> int:
         f"| {tier} | {stats['attempts']} | {stats['input_bytes']:,} |"
         for tier, stats in sorted(tier_totals.items())
     ]
+    if read_costs or malformed_read_events:
+        total_commands = sum(value["commands"] for value in read_costs.values())
+        total_stdout = sum(value["stdout_bytes"] for value in read_costs.values())
+        total_stderr = sum(value["stderr_bytes"] for value in read_costs.values())
+        total_elapsed = sum(value["elapsed_ms"] for value in read_costs.values())
+        largest_reads = sorted(
+            read_costs.items(), key=lambda item: -item[1]["stdout_bytes"])
+        md += [
+            "",
+            "## Instrumented code/tool reads",
+            "",
+            f"- Commands: {total_commands:,}",
+            f"- Captured stdout bytes: {total_stdout:,} "
+            f"({tokens(total_stdout)} token proxy)",
+            f"- Captured stderr bytes: {total_stderr:,}",
+            f"- Aggregate command elapsed: {duration(total_elapsed / 1000)}",
+            f"- Malformed log events: {malformed_read_events}",
+            "- These are emitted-byte proxies, not provider token counts;",
+            "  repeated reads are intentionally counted repeatedly.",
+            "",
+            "### Largest 30 work attempts by captured stdout",
+            "",
+            "The uncapped per-attempt data is in `code-read-costs.tsv`.",
+            "",
+            "| work attempt | commands | failed | stdout bytes | elapsed |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        md += [
+            f"| {key[0]}#{key[1]} | {stats['commands']} "
+            f"| {stats['failed_commands']} | {stats['stdout_bytes']:,} "
+            f"| {duration(stats['elapsed_ms'] / 1000)} |"
+            for key, stats in largest_reads[:30]
+        ]
     progress_path = review_dir / "progress.md"
     if progress_path.is_file():
         phase_rows, thread_rows, total_seconds = parse_timeline(progress_path)

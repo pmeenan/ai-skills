@@ -112,6 +112,20 @@ files and prefer line-ranged reads around your scope afterwards; consult
 any worktree file your procedure needs is always allowed — the packet bounds
 nothing; re-deriving its diff is waste.
 
+Instrumentation: if directives.md contains the exact line
+`instrumentation: code-reads-v1`, run every command whose output you consume
+as code evidence through
+`python3 ⟨skill-dir⟩/scripts/instrument-command.py ⟨review-dir⟩ ⟨work-id⟩
+⟨attempt⟩ --cwd ⟨worktree-or-current-directory⟩ -- ⟨command...⟩`.
+This includes `git diff/show/grep`, `rg`, and ranged source reads. Do not wrap
+deterministic helpers whose output is already an exact manifested artifact.
+Use this wrapped shell path instead of a harness-native file-read/search tool
+for code evidence; harness-native reads of small control artifacts are fine.
+For a pipeline, pass `bash -c '<pipeline>'` as the wrapped command so the
+logged stdout byte count measures the final text actually consumed.
+The wrapper preserves command output and status and records only metadata,
+byte counts, and duration; instrumentation never limits a required trace.
+
 If your remaining work will not fit in your context, do not thin it out to
 finish: complete what you can at full rigor, write it to your deliverable,
 and return "partial — remaining: ⟨explicit list of unprocessed scope⟩" so

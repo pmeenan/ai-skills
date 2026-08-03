@@ -142,6 +142,12 @@ Inventory confirms the profile's proof.
 
 ## Compact Indexes
 
+For an opt-in instrumented review, `instrument-command.py` logs code/search
+command output bytes that are otherwise invisible to input manifests. These
+are emitted-byte proxies rather than provider token counts, but they expose
+repeated file/range/query ingestion across workers. Instrumentation observes
+the same review; never sample, cap, or omit evidence to improve its metrics.
+
 Run `scripts/build-review-indexes.py` after each producer phase. Index files are
 derived views, atomically regenerated from canonical artifacts; they never
 replace or amend those artifacts. They live under `indexes/` with a

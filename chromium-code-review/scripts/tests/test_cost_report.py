@@ -64,6 +64,7 @@ class CostReportTests(unittest.TestCase):
         md = (self.review / "cost-report.md").read_text(encoding="utf-8")
         self.assertIn("| 4 | 2 | 1 | 350 | 400 |", md)
         self.assertIn("| frontier | 2 | 350 |", md)
+        self.assertFalse((self.review / "code-read-costs.tsv").exists())
 
     def test_wall_clock_timeline(self) -> None:
         (self.review / "progress.md").write_text(
