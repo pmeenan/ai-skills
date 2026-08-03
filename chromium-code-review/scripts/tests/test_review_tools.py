@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import importlib.util
 import json
@@ -206,7 +207,25 @@ output.write_bytes(pathlib.Path(source).read_bytes())
             "FIXTURE_DETAIL": str(self.detail),
             "FIXTURE_COMMENTS": str(self.comments),
             "CURL_RETRIES": "0",
+            # Pin the holder key so same-pin tests are deterministic no matter
+            # which agent session runs them.
+            "CHROMIUM_REVIEW_HOLDER": "holder-a",
         }
+
+    def lock_root(self) -> Path:
+        return self.base / "checkout" / "codereview" / "locks"
+
+    def pin_dir(self, pin: str = "cl-1-ps2") -> Path:
+        return self.lock_root() / pin
+
+    def holder_log(self, holder: str = "holder-a", pin: str = "cl-1-ps2") -> Path:
+        return self.pin_dir(pin) / f"{holder}.log"
+
+    def live_holders(self, pin: str = "cl-1-ps2") -> list[str]:
+        listed = subprocess.run(
+            [str(LEASE), "holders", str(self.pin_dir(pin))], check=True,
+            text=True, stdout=subprocess.PIPE).stdout
+        return [line.split("\t", 1)[0] for line in listed.splitlines() if line]
 
     def pinned_worktree(self, review: Path) -> Path:
         for line in (review / "pin.md").read_text(encoding="utf-8").splitlines():
@@ -242,7 +261,7 @@ output.write_bytes(pathlib.Path(source).read_bytes())
             ["git", "-C", str(self.repo), "worktree", "remove", str(worktree)],
             check=True)
 
-    def test_rejects_fresh_lease_and_release_allows_audit(self) -> None:
+    def test_rejects_same_holder_and_release_allows_audit(self) -> None:
         first_review = self.base / "first-review"
         first = subprocess.run(
             [str(FETCH), "1", "2", str(first_review)], env=self.environment(),
@@ -257,7 +276,7 @@ output.write_bytes(pathlib.Path(source).read_bytes())
         subprocess.run(
             [str(LEASE), "heartbeat", str(first_review), "planner complete"],
             check=True)
-        lease = self.base / "checkout" / "codereview" / "locks" / "cl-1-ps2.log"
+        lease = self.holder_log()
         events = [json.loads(line) for line in lease.read_text().splitlines()]
         self.assertEqual("heartbeat", events[-1]["event"])
         self.assertEqual("planner complete", events[-1]["message"])
@@ -267,13 +286,13 @@ output.write_bytes(pathlib.Path(source).read_bytes())
             [str(FETCH), "1", "2", str(second_review)], env=self.environment(),
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertNotEqual(contender.returncode, 0)
-        self.assertIn("worktree lease is active", contender.stderr)
+        self.assertIn("already holds this pin", contender.stderr)
+        self.assertIn("distinct --holder", contender.stderr)
         self.assertFalse(second_review.exists())
 
         self.release_lease(first_review)
         self.assertFalse(lease.exists())
-        release_archives = list(
-            lease.parent.glob("cl-1-ps2.released-*.log"))
+        release_archives = list(self.pin_dir().glob("holder-a.released-*.log"))
         self.assertEqual(len(release_archives), 1)
         release_events = [
             json.loads(line)
@@ -292,7 +311,369 @@ output.write_bytes(pathlib.Path(source).read_bytes())
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(audit.returncode, 0, audit.stdout + audit.stderr)
 
-    def test_force_restart_replaces_fresh_lease(self) -> None:
+    def test_distinct_holders_review_one_pin_concurrently(self) -> None:
+        first_review = self.base / "first-review"
+        first = subprocess.run(
+            [str(FETCH), "1", "2", str(first_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+
+        second_review = self.base / "second-review"
+        second = subprocess.run(
+            [str(FETCH), "--holder", "holder-b", "1", "2", str(second_review)],
+            env=self.environment(), text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        # The second holder reuses the materialized worktree rather than
+        # fetching it again, and both reviews pin the same tree.
+        self.assertIn("Reusing clean registered worktree", second.stderr)
+        self.assertEqual(self.pinned_worktree(first_review),
+                         self.pinned_worktree(second_review))
+        self.assertIn("1 peer holder(s)", second.stdout)
+        self.assertEqual(["holder-a", "holder-b"], self.live_holders())
+
+        # Each holder has its own token, so neither can release the other.
+        first_token = next(
+            line.removeprefix("- Worktree lease token: ")
+            for line in (first_review / "pin.md").read_text().splitlines()
+            if line.startswith("- Worktree lease token: "))
+        second_token = next(
+            line.removeprefix("- Worktree lease token: ")
+            for line in (second_review / "pin.md").read_text().splitlines()
+            if line.startswith("- Worktree lease token: "))
+        self.assertNotEqual(first_token, second_token)
+        crossed = subprocess.run(
+            [str(LEASE), "release-token", str(self.holder_log("holder-b")),
+             first_token, "wrong holder"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(crossed.returncode, 0)
+        self.assertIn("refusing to release another review's lease",
+                      crossed.stderr)
+
+        # Both leases stay independently valid, and both stay valid after one
+        # of them releases.
+        for review in (first_review, second_review):
+            validated = subprocess.run(
+                [str(VALIDATE), str(review), "--phase", "pin",
+                 "--require-active-lease"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(validated.returncode, 0,
+                             validated.stdout + validated.stderr)
+
+        worktree = self.pinned_worktree(first_review)
+        self.release_lease(first_review)
+        self.assertEqual(["holder-b"], self.live_holders())
+        still_live = subprocess.run(
+            [str(VALIDATE), str(second_review), "--phase", "pin",
+             "--require-active-lease"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(still_live.returncode, 0,
+                         still_live.stdout + still_live.stderr)
+
+        # A gc triggered by an unrelated pin must not reclaim a worktree that
+        # still has a live holder.
+        third_review = self.base / "third-review"
+        third = subprocess.run(
+            [str(FETCH), "--holder", "holder-c", "2", "2", str(third_review)],
+            env=self.environment(), text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
+        self.assertEqual(third.returncode, 0, third.stdout + third.stderr)
+        self.assertTrue(worktree.is_dir())
+        self.assertEqual(["holder-b"], self.live_holders())
+
+        self.release_lease(second_review)
+        self.assertEqual([], self.live_holders())
+        self.release_lease(third_review)
+
+    def test_simultaneous_holders_materialize_the_worktree_once(self) -> None:
+        holders = ["holder-a", "holder-b", "holder-c", "holder-d"]
+
+        def fetch(holder: str) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [str(FETCH), "--holder", holder, "1", "2",
+                 str(self.base / f"review-{holder}")],
+                env=self.environment(), text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE)
+
+        with concurrent.futures.ThreadPoolExecutor(len(holders)) as pool:
+            runs = list(pool.map(fetch, holders))
+
+        for holder, run in zip(holders, runs):
+            self.assertEqual(run.returncode, 0,
+                             f"{holder}: {run.stdout}{run.stderr}")
+        # Exactly one holder pays for the fetch; the rest wait on the
+        # materialization lock and reuse what it produced.
+        materialized = [run for run in runs if "Fetching refs/" in run.stderr]
+        reused = [run for run in runs
+                  if "Reusing clean registered worktree" in run.stderr]
+        self.assertEqual(1, len(materialized))
+        self.assertEqual(len(holders) - 1, len(reused))
+        self.assertEqual(sorted(holders), self.live_holders())
+        worktrees = {
+            self.pinned_worktree(self.base / f"review-{holder}")
+            for holder in holders
+        }
+        self.assertEqual(1, len(worktrees))
+        for holder in holders:
+            self.release_lease(self.base / f"review-{holder}")
+        self.assertEqual([], self.live_holders())
+
+    def test_failed_repin_keeps_the_reused_lease_alive(self) -> None:
+        review = self.base / "review"
+        first = subprocess.run(
+            [str(FETCH), "1", "2", str(review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        worktree = self.pinned_worktree(review)
+
+        # A dirty shared worktree makes the re-pin fail after the lease was
+        # reused. Failure cleanup must not release a lease it did not create.
+        (worktree / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+        retried = subprocess.run(
+            [str(FETCH), "1", "2", str(review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(retried.returncode, 0)
+        self.assertIn("local or untracked changes", retried.stderr)
+
+        self.assertEqual(["holder-a"], self.live_holders())
+        beat = subprocess.run(
+            [str(LEASE), "heartbeat", str(review), "still working"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(beat.returncode, 0, beat.stderr)
+        (worktree / "untracked.txt").unlink()
+        self.release_lease(review)
+
+    def test_replaced_review_cannot_repin_under_a_new_identity(self) -> None:
+        def session(identity: str) -> dict[str, str]:
+            environment = self.environment()
+            del environment["CHROMIUM_REVIEW_HOLDER"]
+            environment["CLAUDE_CODE_SESSION_ID"] = identity
+            return environment
+
+        old_review = self.base / "old-review"
+        old = subprocess.run(
+            [str(FETCH), "1", "2", str(old_review)], env=session("sessionone"),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(old.returncode, 0, old.stdout + old.stderr)
+        self.assertEqual(["s-sessionone"], self.live_holders())
+
+        # Another review deliberately takes that holder over.
+        replacement = self.base / "replacement-review"
+        forced = subprocess.run(
+            [str(FETCH), "--force-restart", "1", "2", str(replacement)],
+            env=session("sessionone"), text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
+        self.assertEqual(forced.returncode, 0, forced.stdout + forced.stderr)
+
+        # The replaced review re-pins from a new session. It must stop, not
+        # quietly come back as a second holder.
+        resumed = subprocess.run(
+            [str(FETCH), "1", "2", str(old_review)], env=session("sessiontwo"),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(resumed.returncode, 0)
+        self.assertIn("lost ownership", resumed.stderr)
+        self.assertEqual(["s-sessionone"], self.live_holders())
+
+        # Its heartbeat stays refused too, so the review has one consistent
+        # answer however it asks.
+        beat = subprocess.run(
+            [str(LEASE), "heartbeat", str(old_review), "late progress"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(beat.returncode, 0)
+        self.release_lease(replacement)
+
+    def test_expired_review_with_env_holder_cannot_revive_itself(self) -> None:
+        # The fixture's persistent CHROMIUM_REVIEW_HOLDER stays set: an
+        # environment default is not an explicit act and must not skip the
+        # ownership check that an implicit session identity gets.
+        environment = self.environment()
+        environment["CHROMIUM_REVIEW_LEASE_SECONDS"] = "60"
+
+        review = self.base / "review"
+        first = subprocess.run(
+            [str(FETCH), "1", "2", str(review)], env=environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+
+        def pin_token() -> str:
+            return next(
+                line.removeprefix("- Worktree lease token: ")
+                for line in (review / "pin.md").read_text().splitlines()
+                if line.startswith("- Worktree lease token: "))
+
+        original = pin_token()
+        lease = self.holder_log()
+        expired = int(lease.stat().st_mtime) - 70
+        os.utime(lease, (expired, expired))
+
+        stale = subprocess.run(
+            [str(FETCH), "1", "2", str(review)], env=environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertIn("lost ownership", stale.stderr)
+        self.assertEqual(original, pin_token())
+        self.assertEqual(original, json.loads(lease.read_text())["token"])
+        self.assertEqual([], list(self.pin_dir().glob("holder-a.stale-*.log")))
+
+        # A different review may still take that stale holder over — this
+        # guards only the expired review's own silent revival.
+        other = self.base / "other-review"
+        taken = subprocess.run(
+            [str(FETCH), "1", "2", str(other)], env=environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(taken.returncode, 0, taken.stdout + taken.stderr)
+        self.assertEqual(1, len(list(
+            self.pin_dir().glob("holder-a.stale-*.log"))))
+        self.release_lease(other)
+
+    def test_expired_review_cannot_revive_itself_by_repinning(self) -> None:
+        environment = self.environment()
+        del environment["CHROMIUM_REVIEW_HOLDER"]
+        environment["CLAUDE_CODE_SESSION_ID"] = "sessionone"
+        environment["CHROMIUM_REVIEW_LEASE_SECONDS"] = "60"
+
+        review = self.base / "review"
+        first = subprocess.run(
+            [str(FETCH), "1", "2", str(review)], env=environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+
+        def pin_token() -> str:
+            return next(
+                line.removeprefix("- Worktree lease token: ")
+                for line in (review / "pin.md").read_text().splitlines()
+                if line.startswith("- Worktree lease token: "))
+
+        original = pin_token()
+        lease = self.holder_log("s-sessionone")
+        expired = int(lease.stat().st_mtime) - 70
+        os.utime(lease, (expired, expired))
+
+        stale = subprocess.run(
+            [str(FETCH), "1", "2", str(review)], env=environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertIn("lost ownership", stale.stderr)
+        # Nothing was revived: same token, same single holder, no takeover
+        # archive written on its behalf.
+        self.assertEqual(original, pin_token())
+        self.assertEqual(original, json.loads(lease.read_text())["token"])
+        self.assertEqual([], list(self.pin_dir().glob("s-sessionone.stale-*.log")))
+        self.assertEqual(["s-sessionone"], self.live_holders())
+
+        # The documented escape hatch still works: naming the holder is an
+        # explicit restart rather than a silent revival.
+        restarted = subprocess.run(
+            [str(FETCH), "--holder", "s-sessionone", "1", "2", str(review)],
+            env=environment, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
+        self.assertEqual(restarted.returncode, 0,
+                         restarted.stdout + restarted.stderr)
+        self.assertNotEqual(original, pin_token())
+        self.assertEqual(1, len(list(
+            self.pin_dir().glob("s-sessionone.stale-*.log"))))
+        self.release_lease(review)
+
+    def test_released_review_repins_under_its_original_holder(self) -> None:
+        environment = self.environment()
+        del environment["CHROMIUM_REVIEW_HOLDER"]
+        environment["CLAUDE_CODE_SESSION_ID"] = "sessionone"
+
+        review = self.base / "review"
+        first = subprocess.run(
+            [str(FETCH), "1", "2", str(review)], env=environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.release_lease(review)
+        self.assertEqual([], self.live_holders())
+
+        # A review that ended its own lease may come back, and keeps its
+        # identity even though the new session would suggest another.
+        environment["CLAUDE_CODE_SESSION_ID"] = "sessiontwo"
+        again = subprocess.run(
+            [str(FETCH), "1", "2", str(review)], env=environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertEqual(["s-sessionone"], self.live_holders())
+        self.release_lease(review)
+
+    def test_repin_without_session_identity_reuses_one_holder(self) -> None:
+        environment = self.environment()
+        del environment["CHROMIUM_REVIEW_HOLDER"]
+        environment.pop("CLAUDE_CODE_SESSION_ID", None)
+
+        review = self.base / "review"
+        holders_seen = []
+        for attempt in range(2):
+            run = subprocess.run(
+                [str(FETCH), "1", "2", str(review)], env=environment,
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(run.returncode, 0,
+                             f"attempt {attempt}: {run.stdout}{run.stderr}")
+            holders_seen.append(self.live_holders())
+
+        # A re-pin recovers its own identity instead of minting a second one.
+        self.assertEqual(1, len(holders_seen[0]))
+        self.assertEqual(holders_seen[0], holders_seen[1])
+        self.release_lease(review)
+        self.assertEqual([], self.live_holders())
+
+    def test_legacy_lease_operations_share_the_canonical_guard(self) -> None:
+        lock_root = self.lock_root()
+        lock_root.mkdir(parents=True)
+        legacy = lock_root / "cl-1-ps2.log"
+        legacy_review = self.base / "legacy-review"
+        legacy_review.mkdir()
+        legacy.write_text(json.dumps({
+            "at": "2026-08-01T00:00:00Z",
+            "event": "acquired",
+            "review_dir": str(legacy_review),
+            "token": "0" * 32,
+        }) + "\n", encoding="utf-8")
+        (legacy_review / "pin.md").write_text(
+            f"- Worktree lease: {legacy}\n"
+            f"- Worktree lease token: {'0' * 32}\n", encoding="utf-8")
+
+        # A legacy heartbeat migrates and mutates under the same guard every
+        # other lease operation uses, never one derived from the legacy path.
+        beat = subprocess.run(
+            [str(LEASE), "heartbeat", str(legacy_review), "legacy progress"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(beat.returncode, 0, beat.stderr)
+        self.assertTrue((lock_root / ".lease-guard.lock").exists())
+        self.assertFalse((lock_root.parent / ".lease-guard.lock").exists())
+        self.assertFalse(legacy.exists())
+        self.assertEqual(["legacy-00000000"], self.live_holders())
+        self.release_lease(legacy_review)
+
+    def test_same_review_directory_reacquires_its_own_holder(self) -> None:
+        review = self.base / "review"
+        first = subprocess.run(
+            [str(FETCH), "1", "2", str(review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        token = next(
+            line.removeprefix("- Worktree lease token: ")
+            for line in (review / "pin.md").read_text().splitlines()
+            if line.startswith("- Worktree lease token: "))
+
+        # Re-pinning the same review directory is the documented resume path.
+        resumed = subprocess.run(
+            [str(FETCH), "1", "2", str(review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        events = [json.loads(line)
+                  for line in self.holder_log().read_text().splitlines()]
+        self.assertEqual("reacquired", events[-1]["event"])
+        self.assertEqual(
+            token,
+            next(line.removeprefix("- Worktree lease token: ")
+                 for line in (review / "pin.md").read_text().splitlines()
+                 if line.startswith("- Worktree lease token: ")))
+        self.assertEqual(["holder-a"], self.live_holders())
+        self.release_lease(review)
+
+    def test_force_restart_replaces_same_holders_fresh_lease(self) -> None:
         first_review = self.base / "first-review"
         first = subprocess.run(
             [str(FETCH), "1", "2", str(first_review)], env=self.environment(),
@@ -312,13 +693,42 @@ output.write_bytes(pathlib.Path(source).read_bytes())
         self.assertIn("replaced by another review", stale_owner.stderr)
         self.release_lease(second_review)
 
+    def test_force_restart_leaves_peer_holders_untouched(self) -> None:
+        peer_review = self.base / "peer-review"
+        peer = subprocess.run(
+            [str(FETCH), "--holder", "holder-b", "1", "2", str(peer_review)],
+            env=self.environment(), text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
+        self.assertEqual(peer.returncode, 0, peer.stdout + peer.stderr)
+
+        own_review = self.base / "own-review"
+        own = subprocess.run(
+            [str(FETCH), "1", "2", str(own_review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(own.returncode, 0, own.stdout + own.stderr)
+
+        restarted = self.base / "restarted-review"
+        forced = subprocess.run(
+            [str(FETCH), "--force-restart", "1", "2", str(restarted)],
+            env=self.environment(), text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
+        self.assertEqual(forced.returncode, 0, forced.stdout + forced.stderr)
+        # holder-a was taken over; holder-b never noticed.
+        self.assertEqual(["holder-a", "holder-b"], self.live_holders())
+        peer_alive = subprocess.run(
+            [str(LEASE), "heartbeat", str(peer_review), "still working"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(peer_alive.returncode, 0, peer_alive.stderr)
+        self.release_lease(peer_review)
+        self.release_lease(restarted)
+
     def test_stale_lease_is_replaced_without_force(self) -> None:
         first_review = self.base / "first-review"
         first = subprocess.run(
             [str(FETCH), "1", "2", str(first_review)], env=self.environment(),
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
-        lease = self.base / "checkout" / "codereview" / "locks" / "cl-1-ps2.log"
+        lease = self.holder_log()
         old = int(lease.stat().st_mtime) - 3700
         os.utime(lease, (old, old))
 
@@ -330,10 +740,10 @@ output.write_bytes(pathlib.Path(source).read_bytes())
         self.assertIn("Reusing clean registered worktree", second.stderr)
         self.release_lease(second_review)
 
-    def test_empty_same_pin_lease_is_archived_and_replaced(self) -> None:
-        lock_root = self.base / "checkout" / "codereview" / "locks"
-        lock_root.mkdir(parents=True)
-        lease = lock_root / "cl-1-ps2.log"
+    def test_empty_same_holder_lease_is_archived_and_replaced(self) -> None:
+        pin_dir = self.pin_dir()
+        pin_dir.mkdir(parents=True)
+        lease = self.holder_log()
         lease.write_bytes(b"")
 
         review = self.base / "review"
@@ -342,29 +752,74 @@ output.write_bytes(pathlib.Path(source).read_bytes())
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn("archived corrupt lease", run.stderr)
-        self.assertEqual(len(list(lock_root.glob("cl-1-ps2.corrupt-*.log"))), 1)
+        self.assertEqual(len(list(pin_dir.glob("holder-a.corrupt-*.log"))), 1)
         self.assertEqual("acquired", json.loads(lease.read_text())["event"])
         self.release_lease(review)
 
-    def test_corrupt_other_pin_lease_does_not_block_gc(self) -> None:
+    def test_legacy_single_holder_lease_is_migrated(self) -> None:
+        lock_root = self.lock_root()
+        lock_root.mkdir(parents=True)
+        legacy = lock_root / "cl-1-ps2.log"
+        legacy_review = self.base / "legacy-review"
+        legacy_review.mkdir()
+        legacy.write_text(json.dumps({
+            "at": "2026-08-01T00:00:00Z",
+            "event": "acquired",
+            "review_dir": str(legacy_review),
+            "token": "0" * 32,
+        }) + "\n", encoding="utf-8")
+        # A review pinned before the upgrade records the pre-migration path.
+        (legacy_review / "pin.md").write_text(
+            f"- Worktree lease: {legacy}\n"
+            f"- Worktree lease token: {'0' * 32}\n", encoding="utf-8")
+
+        review = self.base / "review"
+        run = subprocess.run(
+            [str(FETCH), "1", "2", str(review)], env=self.environment(),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("migrated single-holder lease", run.stderr)
+        self.assertFalse(legacy.exists())
+        # The legacy review keeps its live claim alongside the new holder.
+        self.assertEqual(["holder-a", "legacy-00000000"], self.live_holders())
+
+        # ... and keeps working: its stale pin.md path resolves to the
+        # migrated holder log by token.
+        beat = subprocess.run(
+            [str(LEASE), "heartbeat", str(legacy_review), "still working"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(beat.returncode, 0, beat.stderr)
+        migrated = self.holder_log("legacy-00000000")
+        events = [json.loads(line)
+                  for line in migrated.read_text().splitlines()]
+        self.assertEqual("heartbeat", events[-1]["event"])
+        released = subprocess.run(
+            [str(LEASE), "release", str(legacy_review), "legacy done"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(released.returncode, 0, released.stderr)
+        self.assertEqual(["holder-a"], self.live_holders())
+        self.release_lease(review)
+
+    def test_corrupt_holder_lease_does_not_block_gc(self) -> None:
         first_review = self.base / "first-review"
         first = subprocess.run(
             [str(FETCH), "1", "2", str(first_review)], env=self.environment(),
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         first_worktree = self.pinned_worktree(first_review)
-        lock_root = self.base / "checkout" / "codereview" / "locks"
-        (lock_root / "cl-1-ps2.log").write_text("not-json\n", encoding="utf-8")
+        self.holder_log().write_text("not-json\n", encoding="utf-8")
 
         second_review = self.base / "second-review"
         second = subprocess.run(
-            [str(FETCH), "2", "2", str(second_review)], env=self.environment(),
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            [str(FETCH), "--holder", "holder-b", "2", "2", str(second_review)],
+            env=self.environment(), text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
         self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
         self.assertIn("archived corrupt lease", second.stderr)
         self.assertIn("takeover cleanup grace", second.stderr)
         self.assertTrue(first_worktree.exists())
-        self.assertEqual(len(list(lock_root.glob("cl-1-ps2.corrupt-*.log"))), 1)
+        self.assertEqual(
+            len(list(self.pin_dir().glob("holder-a.corrupt-*.log"))), 1)
         self.release_lease(second_review)
 
     def test_stale_takeover_has_double_timeout_cleanup_grace(self) -> None:
@@ -376,8 +831,7 @@ output.write_bytes(pathlib.Path(source).read_bytes())
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         first_worktree = self.pinned_worktree(first_review)
-        lock_root = self.base / "checkout" / "codereview" / "locks"
-        lease = lock_root / "cl-1-ps2.log"
+        lease = self.holder_log()
         old = int(lease.stat().st_mtime) - 70
         os.utime(lease, (old, old))
 
@@ -390,7 +844,7 @@ output.write_bytes(pathlib.Path(source).read_bytes())
         self.assertIn("takeover cleanup grace", second.stderr)
         self.release_lease(second_review)
 
-        stale_archive = next(lock_root.glob("cl-1-ps2.stale-*.log"))
+        stale_archive = next(self.pin_dir().glob("holder-a.stale-*.log"))
         expired = int(stale_archive.stat().st_mtime) - 60
         os.utime(stale_archive, (expired, expired))
         cleanup = subprocess.run(
@@ -410,7 +864,7 @@ output.write_bytes(pathlib.Path(source).read_bytes())
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(fetched.returncode, 0, fetched.stdout + fetched.stderr)
 
-        lease = self.base / "checkout" / "codereview" / "locks" / "cl-1-ps2.log"
+        lease = self.holder_log()
         old = int(lease.stat().st_mtime) - 61
         os.utime(lease, (old, old))
         heartbeat = subprocess.run(
@@ -452,8 +906,7 @@ output.write_bytes(pathlib.Path(source).read_bytes())
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         self.release_lease(first_review)
-        lock_root = self.base / "checkout" / "codereview" / "locks"
-        archive = next(lock_root.glob("cl-1-ps2.released-*.log"))
+        archive = next(self.pin_dir().glob("holder-a.released-*.log"))
         old = int(archive.stat().st_mtime) - 31 * 24 * 60 * 60
         os.utime(archive, (old, old))
 

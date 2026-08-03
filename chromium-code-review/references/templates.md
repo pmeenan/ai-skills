@@ -250,7 +250,7 @@ explicit revision name in their artifact contract.
 - Metadata fetched at: 2026-07-01T18:24:11Z
 - Ref: refs/changes/99/9999999/3
 - Worktree: /checkout/chromium/codereview/worktrees/cl-9999999-ps3 (rev-parse verified; clean; active lease required)
-- Worktree lease: /checkout/chromium/codereview/locks/cl-9999999-ps3.log
+- Worktree lease: /checkout/chromium/codereview/locks/cl-9999999-ps3/s-4f2a91c0.log
 - Worktree lease token: 4bf91f071cc24bd3960362c5ef57251a
 - Messages: 12; comment threads: 9 (2 unresolved)
 - Files changed (3):

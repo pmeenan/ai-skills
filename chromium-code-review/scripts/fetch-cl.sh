@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fetch-cl.sh — fetch and pin a Chromium CL patchset for review.
 #
-# Usage: fetch-cl.sh [--force-restart] <cl-number> [patchset] [review-dir]
+# Usage: fetch-cl.sh [--force-restart] [--holder KEY] <cl-number> [patchset] [review-dir]
 #
 # The default review directory is collision-safe:
 #   ${TMPDIR:-/tmp}/cl-<cl>-ps<ps>.<random>/
@@ -10,9 +10,21 @@
 # in a cache beside the depot_tools-managed src directory:
 #   <src-parent>/codereview/worktrees/cl-<cl>-ps<ps>/
 # An existing worktree is reused only when it is registered, clean, and at the
-# exact SHA. A one-hour append-only lease log rejects overlapping reviews while
-# allowing automatic recovery after an abandoned review. --force-restart may
-# replace a fresh lease only after explicit user confirmation.
+# exact SHA.
+#
+# Several independent reviews may share one pinned worktree concurrently. Each
+# holds its own one-hour append-only lease log under
+#   <src-parent>/codereview/locks/cl-<cl>-ps<ps>/<holder>.log
+# keyed by --holder. Without that flag the identity is stable across re-pins of
+# one review directory: the holder an existing pin.md already owns — whose
+# lease must still be valid — else CHROMIUM_REVIEW_HOLDER, else the agent
+# session, else a digest of the resolved review directory. Only an explicit
+# --holder skips that ownership check. The worktree survives until
+# the last holder releases or expires. Materialization — fetch plus worktree
+# add — runs under an exclusive per-pin lock, so exactly one holder pays for
+# it and the rest wait and reuse. --force-restart replaces this holder's own
+# fresh lease and is permitted only after explicit user confirmation; it never
+# evicts a peer holder.
 
 set -euo pipefail
 export LC_ALL=C
@@ -20,13 +32,23 @@ export LC_ALL=C
 die() { echo "fetch-cl.sh: ERROR: $*" >&2; exit 1; }
 
 FORCE_RESTART=0
-if [[ "${1:-}" == "--force-restart" ]]; then
-  FORCE_RESTART=1
-  shift
-fi
+HOLDER=""
+# Only a --holder on this command line is an explicit act. An environment
+# default is not, and must not buy a bypass of ownership validation.
+HOLDER_EXPLICIT=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --force-restart) FORCE_RESTART=1; shift ;;
+    --holder) HOLDER="${2:-}"; [[ -n "$HOLDER" ]] || die "--holder requires a value"; HOLDER_EXPLICIT=1; shift 2 ;;
+    --holder=*) HOLDER="${1#--holder=}"; HOLDER_EXPLICIT=1; shift ;;
+    --) shift; break ;;
+    -*) die "unknown option: $1" ;;
+    *) break ;;
+  esac
+done
 
 CL="${1:-}"
-[[ "$CL" =~ ^[0-9]+$ ]] || die "usage: fetch-cl.sh [--force-restart] <cl-number> [patchset] [review-dir]"
+[[ "$CL" =~ ^[0-9]+$ ]] || die "usage: fetch-cl.sh [--force-restart] [--holder KEY] <cl-number> [patchset] [review-dir]"
 REQ_PS="${2:-current}"
 [[ "$REQ_PS" == "current" || "$REQ_PS" =~ ^[0-9]+$ ]] || die "patchset must be a number or 'current'"
 REQUESTED_REVIEW_DIR="${3:-}"
@@ -37,16 +59,23 @@ CURL_CONNECT_TIMEOUT="${CURL_CONNECT_TIMEOUT:-15}"
 CURL_MAX_TIME="${CURL_MAX_TIME:-90}"
 CURL_RETRIES="${CURL_RETRIES:-3}"
 LEASE_STALE_SECONDS="${CHROMIUM_REVIEW_LEASE_SECONDS:-3600}"
+MATERIALIZE_TIMEOUT="${CHROMIUM_REVIEW_MATERIALIZE_TIMEOUT:-1800}"
 PROJECT_ENC="${GERRIT_PROJECT//\//%2F}"
 
 [[ "$CURL_CONNECT_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "CURL_CONNECT_TIMEOUT must be a positive integer"
 [[ "$CURL_MAX_TIME" =~ ^[1-9][0-9]*$ ]] || die "CURL_MAX_TIME must be a positive integer"
 [[ "$CURL_RETRIES" =~ ^[0-9]+$ ]] || die "CURL_RETRIES must be a non-negative integer"
 [[ "$LEASE_STALE_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "CHROMIUM_REVIEW_LEASE_SECONDS must be a positive integer"
+[[ "$MATERIALIZE_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "CHROMIUM_REVIEW_MATERIALIZE_TIMEOUT must be a positive integer"
 
-for command_name in curl python3 git mktemp; do
+for command_name in curl python3 git mktemp flock; do
   command -v "$command_name" >/dev/null 2>&1 || die "$command_name is required"
 done
+
+if [[ -n "$HOLDER" ]]; then
+  [[ "$HOLDER" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]] \
+    || die "holder key must be 1-64 characters of [A-Za-z0-9_-] starting alphanumeric: $HOLDER"
+fi
 
 REPO="${CHROMIUM_SRC:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
 [[ -n "$REPO" ]] || die "not inside a git checkout and CHROMIUM_SRC is not set"
@@ -72,6 +101,7 @@ RAW_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/fetch-cl.$CL.XXXXXXXX")" || die "mktemp 
 REVIEW_STAGE=""
 REVIEW_DIR=""
 WT=""
+WT_LEASE_DIR=""
 WT_LEASE=""
 WT_LEASE_TOKEN=""
 LEASE_ACQUIRED=0
@@ -84,8 +114,17 @@ cleanup() {
     "$LEASE_HELPER" release-token "$WT_LEASE" "$WT_LEASE_TOKEN" "fetch/setup failed" \
       >/dev/null 2>&1 || true
   fi
-  if (( status != 0 && CREATED_WT == 1 )) && [[ -n "$WT" ]]; then
-    git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1 || true
+  # Our own holder is gone by now, so any remaining holder is a peer review
+  # actively using this worktree. Never remove a worktree out from under one.
+  if (( status != 0 && CREATED_WT == 1 )) && [[ -n "$WT" && -n "$WT_LEASE_DIR" ]]; then
+    local peers
+    peers="$("$LEASE_HELPER" holders "$WT_LEASE_DIR" \
+      --stale-seconds "$LEASE_STALE_SECONDS" 2>/dev/null | grep -c . || true)"
+    if [[ "$peers" == "0" ]]; then
+      git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1 || true
+    else
+      echo "fetch-cl.sh: preserving $WT; $peers other holder(s) still attached" >&2
+    fi
   fi
   [[ -z "$REVIEW_STAGE" ]] || rm -rf -- "$REVIEW_STAGE"
   if (( status != 0 && REMOVE_REVIEW_DIR_ON_FAILURE == 1 )) && [[ -n "$REVIEW_DIR" ]]; then
@@ -228,6 +267,52 @@ else
 fi
 mkdir -p -- "$REVIEW_DIR/ledger" "$REVIEW_DIR/briefs" \
   "$REVIEW_DIR/verification" "$REVIEW_DIR/root-cause"
+
+# The holder key is this review's identity within a shared pin. It must be
+# stable across re-pins of the same review directory — a fresh key each time
+# would strand the previous holder — and distinct between independent
+# concurrent reviews. Resolution runs after REVIEW_DIR is known so an existing
+# pin.md can hand back the identity this review already owns.
+#
+# Recovery from an existing pin.md comes before every implicit default. Only a
+# --holder on this command line may skip it: an environment default or session
+# identity is not an explicit act, and letting one bypass validation would let
+# an expired or replaced review silently revive itself under a fresh key.
+if (( HOLDER_EXPLICIT == 0 )); then
+  if [[ -e "$REVIEW_DIR/pin.md" ]]; then
+    # An existing pin.md is a claim of ownership, so its outcome is
+    # load-bearing: exit 0 hands back this review's own holder, exit 4 means it
+    # never held one, and anything else means it was replaced or expired.
+    # Helper diagnostics reach the terminal on stderr; only stdout is captured.
+    set +e
+    HOLDER_RECOVERED="$("$LEASE_HELPER" holder-of "$REVIEW_DIR" \
+      --stale-seconds "$LEASE_STALE_SECONDS")"
+    HOLDER_RECOVERY_STATUS=$?
+    set -e
+    case "$HOLDER_RECOVERY_STATUS" in
+      0) HOLDER="$HOLDER_RECOVERED" ;;
+      4) : ;;
+      *)
+        die "$REVIEW_DIR lost ownership of its worktree lease (see above); this review must stop. Start a new review directory, or pass an explicit --holder if the user confirms restarting it."
+        ;;
+    esac
+  fi
+  if [[ -z "$HOLDER" ]]; then
+    HOLDER="${CHROMIUM_REVIEW_HOLDER:-}"
+  fi
+  if [[ -z "$HOLDER" && -n "${CLAUDE_CODE_SESSION_ID:-}" ]]; then
+    HOLDER="s-${CLAUDE_CODE_SESSION_ID//[^A-Za-z0-9]/}"
+    HOLDER="${HOLDER:0:22}"
+  fi
+  if [[ -z "$HOLDER" ]]; then
+    # Derived from the review directory, so a re-pin recovers the same holder
+    # even with no session identity and no readable pin.md.
+    HOLDER="r-$(python3 -c 'import hashlib, os, sys; print(hashlib.sha256(os.path.realpath(sys.argv[1]).encode("utf-8", "surrogateescape")).hexdigest()[:16])' "$REVIEW_DIR")" \
+      || die "cannot derive a holder key from $REVIEW_DIR"
+  fi
+fi
+[[ "$HOLDER" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]] \
+  || die "holder key must be 1-64 characters of [A-Za-z0-9_-] starting alphanumeric: $HOLDER"
 REVIEW_STAGE="$(mktemp -d "$REVIEW_DIR/.fetch-stage.XXXXXXXX")" || die "cannot create atomic staging directory"
 cp -- "$RAW_STAGE/detail.json" "$REVIEW_STAGE/detail.json"
 cp -- "$RAW_STAGE/comments.json" "$REVIEW_STAGE/comments.json"
@@ -235,18 +320,31 @@ cp -- "$RAW_STAGE/comments.json" "$REVIEW_STAGE/comments.json"
 LAST2="$(printf '%02d' $((10#$CL % 100)))"
 REF="refs/changes/$LAST2/$CL/$PS"
 WT="$WORKTREE_ROOT/cl-$CL-ps$PS"
-WT_LEASE="$LOCK_ROOT/cl-$CL-ps$PS.log"
+WT_LEASE_DIR="$LOCK_ROOT/cl-$CL-ps$PS"
+WT_LEASE="$WT_LEASE_DIR/$HOLDER.log"
+MATERIALIZE_LOCK="$LOCK_ROOT/cl-$CL-ps$PS.materialize.lock"
 WT_CANON="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$WT")"
 
 LEASE_ARGS=(
-  acquire "$WT_LEASE"
+  acquire "$WT_LEASE_DIR"
   --review-dir "$REVIEW_DIR"
+  --holder "$HOLDER"
   --stale-seconds "$LEASE_STALE_SECONDS"
 )
 (( FORCE_RESTART == 0 )) || LEASE_ARGS+=(--force)
-WT_LEASE_TOKEN="$("$LEASE_HELPER" "${LEASE_ARGS[@]}")" \
+LEASE_RESULT="$("$LEASE_HELPER" "${LEASE_ARGS[@]}")" \
   || die "could not acquire the CL $CL patchset $PS worktree lease"
-LEASE_ACQUIRED=1
+[[ "$LEASE_RESULT" == *$'\t'* ]] \
+  || die "lease helper returned an unrecognized acquire result: $LEASE_RESULT"
+WT_LEASE_TOKEN="${LEASE_RESULT%%$'\t'*}"
+LEASE_STATE="${LEASE_RESULT##*$'\t'}"
+case "$LEASE_STATE" in
+  # Only a lease this invocation created may be released by its own failure
+  # cleanup. A reused lease belongs to a review that was already running.
+  created) LEASE_ACQUIRED=1 ;;
+  reused)  LEASE_ACQUIRED=0 ;;
+  *) die "lease helper returned an unrecognized acquire state: $LEASE_STATE" ;;
+esac
 
 "$LEASE_HELPER" gc \
   --repo "$REPO" \
@@ -264,6 +362,16 @@ registered_worktree() {
   done < <(git -C "$REPO" worktree list --porcelain | sed -n 's/^worktree /worktree /p')
   return 1
 }
+
+# Materialization — the worktree existence decision, the fetch, and the
+# worktree add — is exclusive per pin. Concurrent holders of the same pin
+# queue here; whoever loses the race finds a materialized worktree and takes
+# the reuse path instead of fetching Chromium a second time.
+: >>"$MATERIALIZE_LOCK" || die "cannot create $MATERIALIZE_LOCK"
+exec 9>>"$MATERIALIZE_LOCK" || die "cannot open $MATERIALIZE_LOCK"
+if ! flock -w "$MATERIALIZE_TIMEOUT" 9; then
+  die "timed out after ${MATERIALIZE_TIMEOUT}s waiting for the CL $CL patchset $PS worktree materialization lock: $MATERIALIZE_LOCK"
+fi
 
 if [[ -e "$WT" ]]; then
   [[ -d "$WT" ]] || die "$WT exists but is not a directory"
@@ -294,6 +402,8 @@ if ! git -C "$REPO" cat-file -e "$PARENT^{commit}" 2>/dev/null; then
 fi
 git -C "$REPO" cat-file -e "$PARENT^{commit}" 2>/dev/null \
   || die "parent commit $PARENT is still unavailable after fetch"
+
+exec 9>&-
 
 # Generate pin.md using git for the changed-file list and line statistics so
 # historical (non-current) patchsets are represented just as accurately as
@@ -419,16 +529,26 @@ REVIEW_STAGE=""
 CREATED_WT=0
 REMOVE_REVIEW_DIR_ON_FAILURE=0
 
+PEER_HOLDERS="$("$LEASE_HELPER" holders "$WT_LEASE_DIR" \
+  --stale-seconds "$LEASE_STALE_SECONDS" 2>/dev/null \
+  | grep -v "^$HOLDER	" | grep -c . || true)"
+
 cat <<EOF
 
 Pinned CL $CL patchset $PS
   review dir : $REVIEW_DIR
   worktree   : $WT
+  holder     : $HOLDER
   lease log  : $WT_LEASE
   revision   : $SHA
   parent     : $PARENT
   diff       : git -C "$WT" diff $PARENT $SHA
 EOF
+
+if (( PEER_HOLDERS > 0 )); then
+  echo "  NOTE       : $PEER_HOLDERS peer holder(s) are reviewing this pin concurrently;"
+  echo "               treat their review directories as off-limits evidence."
+fi
 
 if [[ "$PS" != "$CURRENT_PS" ]]; then
   echo "  NOTE       : pinned patchset $PS is NOT current (current is $CURRENT_PS)"
@@ -437,10 +557,14 @@ fi
 cat <<EOF
   validation : scripts/validate-review-dir.py "$REVIEW_DIR" --phase pin --require-active-lease
 
-The worktree is read-only and cached for reuse. Append review progress with:
+Treat the worktree as read-only and never write into it; it is shared with
+every concurrent holder and cached for reuse. Append review progress with:
   "$LEASE_HELPER" heartbeat "$REVIEW_DIR" "<progress>"
 Release it after delivery with:
   "$LEASE_HELPER" release "$REVIEW_DIR" "review complete"
+Releasing drops only this holder; the worktree survives until the last one.
+List live holders with:
+  "$LEASE_HELPER" holders "$WT_LEASE_DIR"
 EOF
 
 LEASE_ACQUIRED=0

@@ -12,4 +12,4 @@ preamble, so its rules travel with every section.
 | --- | --- | --- |
 | Phase 7 — Draft Review | phase-7-draft-review.md | 48 |
 | Phase 8 — Synthesis Challenge | phase-8-synthesis-challenge.md | 41 |
-| Phase 9 — Delivery | phase-9-delivery.md | 46 |
+| Phase 9 — Delivery | phase-9-delivery.md | 48 |

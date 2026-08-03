@@ -105,10 +105,18 @@ Modes is only for harnesses with no such tool at all.
    runnable queue from incomplete manifest rows and their dependencies rather
    than redoing completed work. As the first action on every orchestrator wake
    or check-in, run `scripts/worktree-lease.py heartbeat <review-dir> "resume"`
-   before continuing. If the lease is missing or stale,
-   rerun `fetch-cl.sh` with the same CL, patchset, and review directory to
-   reacquire and reuse the clean pinned worktree. If a different fresh lease
-   owns the pin, stop and ask the user whether to force a restart.
+   before continuing. If the heartbeat reports the lease merely absent because
+   this review released it, rerun `fetch-cl.sh` with the same CL, patchset, and
+   review directory to reacquire and reuse the clean pinned worktree; a re-pin
+   recovers this review's own holder key and lease token rather than minting a
+   second identity. Peer holders reviewing the same pin are expected and are
+   never a reason to stop. **If this review's own lease was taken over or
+   expired, `fetch-cl.sh` refuses the re-pin and this review must stop.** An
+   expired lease may already have been garbage-collected along with the
+   worktree its evidence cites, so reviving it silently is unsound. Never work
+   around the refusal by re-running under a new holder key or a new session.
+   Report the loss and ask the user whether to start a new review directory or
+   confirm restarting this one with an explicit `--holder`.
    When `directives.md` contains `instrumentation: code-reads-v1`, every
    worker command whose output is consumed as code evidence
    (for example `git diff/show/grep`, `rg`, or ranged `sed`) runs through
@@ -186,8 +194,9 @@ Orchestrator-facing (the only skill files the orchestrator loads):
   and writes `pin.md`, `detail.json`, and `comments.json` into the review
   directory. Use it instead of hand-running those steps.
 - `scripts/worktree-lease.py`: atomically acquires, heartbeats, validates,
-  releases, archives, and garbage-collects the one-hour per-pin worktree lease
-  log. Use it for every lease mutation rather than editing the log directly.
+  releases, archives, and garbage-collects this review's one-hour holder lease
+  log, and lists the pin's live holders. Use it for every lease mutation rather
+  than editing the log directly.
 - `scripts/snapshot-skill.py`: atomically creates and verifies the immutable
   per-review skill snapshot. Run it immediately after fetch and use the
   snapshot for every subsequent reference/helper path.
@@ -326,15 +335,33 @@ rather than transcribing their content.
 ## Phase 0 — Fetch And Pin
 
 **Run `scripts/fetch-cl.sh <CL> [patchset] [review-dir]` to fetch, pin, and
-atomically acquire the worktree lease.** The current lease is an append-only
-JSON-lines progress log at
-`<src-parent>/codereview/locks/cl-<CL>-ps<PS>.log`; `pin.md` records both its
-absolute path and an unguessable owner token. A second review of the same pin
-fails immediately while the lease has progress within the last hour. A lease
-older than one hour is archived and replaced automatically. For a fresh lease,
-`--force-restart` is permitted only after the user explicitly confirms the
-takeover; never infer that approval or silently choose another path. A replaced
-review's next heartbeat fails by token mismatch, and it must stop.
+atomically acquire the worktree lease.** Leases are ref-counted per pin: the
+lock directory `<src-parent>/codereview/locks/cl-<CL>-ps<PS>/` holds one
+append-only JSON-lines progress log per holder, `<holder>.log`, and `pin.md`
+records this review's own log path plus an unguessable owner token. Pass
+`--holder <key>` to name the identity explicitly; the default is stable across
+re-pins of one review directory, recovering the holder an existing `pin.md`
+already owns rather than minting a second one.
+
+**Independent concurrent reviews of one pin are supported and expected.**
+Several agents or models may hold the same patchset at once, each with its own
+holder key, review directory, token, and liveness. They share exactly one
+read-only worktree: materialization (ref fetch plus `git worktree add`) runs
+under an exclusive per-pin lock, so the first holder pays for it and the rest
+wait and reuse. Acquisition fails only when *the same holder key* already has
+a live lease from a different review directory — that means two reviews are
+colliding on one identity, and the fix is a distinct `--holder`, not a
+takeover. A holder's lease older than one hour is archived and replaced
+automatically. `--force-restart` replaces this holder's own fresh lease and is
+permitted only after the user explicitly confirms the takeover; it never
+evicts a peer holder. A replaced review's next heartbeat fails by token
+mismatch, and it must stop.
+
+**Peer holders are not evidence.** Other holders' review directories, drafts,
+findings, and lease logs are off-limits: never read, glob, or summarize them,
+and never let a peer's existence change this review's scope, roster, or
+verdicts. The lease log is operational metadata only. Independence is the
+point of running concurrent reviews; reading a peer's work destroys it.
 
 **The orchestrator owns lease liveness.** Run
 `scripts/worktree-lease.py heartbeat <review-dir> "<phase/work-id outcome>"`
@@ -365,15 +392,23 @@ orchestrator nor any worker modifies the checkout, the patchset, or any
 repository file — not to apply a fix, not to add a test, not to experiment —
 regardless of harness prompts that encourage applying or executing changes.
 Propose fixes/tests only in review text; this skill does not implement them.
+This matters more with concurrent holders than it ever did with one: the
+worktree is shared, so a single write contaminates every peer review's
+evidence at once. Nothing enforces this at the filesystem level — a
+`chmod -R` pass over a Chromium checkout is half a million inode updates for
+a guarantee the contract already gives — so treat the ban as absolute and let
+the gate validator catch violations.
+
 The worktree exists for inspection and remains cached after the lease is
-released. Do not remove it at review completion; a later invocation removes
-other released or expired clean cache entries with `git worktree remove`.
-Dirty or unreadable inactive entries are preserved and warned about, never
-force-removed. An expired lease may be taken over after one hour, but its
-worktree is retained for a two-hour cleanup grace so a delayed worker is not
-disrupted merely because another CL starts. Corrupt or empty leases are
-archived and replaced rather than blocking the cache globally; archived lease
-logs older than 30 days are pruned.
+released. Do not remove it at review completion; it survives until its last
+holder releases or expires, and a later invocation removes other fully
+released or expired clean cache entries with `git worktree remove`. A pin with
+any live holder is never reclaimed. Dirty or unreadable inactive entries are
+preserved and warned about, never force-removed. An expired lease may be taken
+over after one hour, but its worktree is retained for a two-hour cleanup grace
+so a delayed worker is not disrupted merely because another CL starts. Corrupt
+or empty holder leases are archived and replaced rather than blocking the
+cache globally; archived lease logs older than 30 days are pruned.
 
 After pinning: the orchestrator reads `pin.md` (it is small and is the one
 per-CL artifact the orchestrator holds in context), writes `directives.md`,
@@ -756,10 +791,12 @@ the final artifacts have been read for delivery, run
 `scripts/worktree-lease.py release <review-dir> "review complete"` for every
 pin owned by this review. **This is a mandatory pre-response cleanup gate: do
 not send or claim completion of the review until every release command
-succeeds.** Release atomically removes the active `cl-<CL>-ps<PS>.log` path and
-retains only a `.released-*` audit archive. If release fails, report the
-cleanup failure and active lease path instead of presenting the review as
-complete. Leave the clean worktree cache in place for reuse.
+succeeds.** Release atomically removes this holder's active `<holder>.log` path
+and retains only a `.released-*` audit archive; peer holders of the same pin
+are unaffected, and the worktree stays until the last of them releases. If
+release fails, report the cleanup failure and active lease path instead of
+presenting the review as complete. Leave the clean worktree cache in place for
+reuse.
 
 ## Degraded Modes
 
