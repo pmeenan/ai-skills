@@ -36,11 +36,11 @@ code, not from memory.
 - Check whether existing tests intentionally codify the observed behavior.
 - Challenge the finding: look for alternate caller paths, wrappers, overrides,
   feature gates, or invariants that make it unreachable or lower its severity.
-- To refute a candidate, name the specific guard (the line) that prevents it,
-  or produce the concrete trace that completes safely. "Looks handled" or
-  "the caller probably checks" is not a refutation — it is the shallow read
-  the candidate exists to challenge. For hypotheses written as
-  IF/THEN/UNLESS, refutation means filling in the UNLESS with a citation.
+- Apply Universal Verification Principles during refutation:
+  - **Documented Intent Overrides Syntactic Omissions:** Adjacent inline comments, docstrings, and header contracts are binding design specifications. An omitted branch or conditional that is explicitly documented in code comments or header docs as intentional design is NOT a defect unless it violates higher-level requirements.
+  - **Burden of Proof Requires Reachable Harm:** A missing `if` check or omitted pre-filter is ONLY a bug if a reachable trace produces a concrete bad state (memory corruption, security bypass, data loss, or broken invariant). Omitting an optional defensive check on a safe or idempotent path (e.g. `std::map::erase` on a key) is not a defect; the reviewer must prove reachable harm, not demand arbitrary defensive guards.
+  - **Producer/Consumer Symmetry (Read vs. Write Scoping):** Query/read paths scope to the key space of stored data, not to the write-side preconditions of the caller. Cache, index, and storage lookup APIs must match the full potential key space of stored data, regardless of caller context.
+- To refute a candidate, name the specific guard (the line) or documented design contract/comment that proves safe behavior, or produce the concrete trace that completes safely. "Looks handled" or "the caller probably checks" is not a refutation — it is the shallow read the candidate exists to challenge. For hypotheses written as IF/THEN/UNLESS, refutation means filling in the UNLESS with a citation.
 - If honest tracing can neither confirm nor refute a candidate, do not drop
   it: convert it into a question for the CL owner in the review's Questions
   section, stating what you traced and what remains unproven. Uncertainty
@@ -79,10 +79,10 @@ evidence fields — a verdict missing its fields is not a verdict:
   the anchor table in `references/synthesis-and-output.md` (name the anchor
   and argue any delta), and an
   origin label (`CL-introduced`, `introduced-in-PS⟨N⟩`, or `pre-existing`).
-- **REFUTED** requires: the guard's `path:line`, or the concrete safe trace
+- **REFUTED** requires: the guard's `path:line`, documented design contract/comment citation, or the concrete safe trace
   that completes without the bad outcome. For IF/THEN/UNLESS hypotheses,
-  refutation means filling the UNLESS with a citation. "Looks handled",
-  "the caller probably checks", and "by design" are not refutations.
+  refutation means filling the UNLESS with a citation. Speculative "looks handled" or
+  "the caller probably checks" are not refutations; explicit code comments, documented invariants, or proof of safe/idempotent execution are valid refutations.
 - **UNPROVEN** requires: what was traced, what remains unproven, and a
   drafted question for the CL owner. UNPROVEN rows go to the review's
   Questions section — never to the bin.
