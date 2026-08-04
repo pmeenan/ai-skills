@@ -97,6 +97,26 @@ if [[ -n "$HOLDER" ]]; then
 fi
 
 REPO="${CHROMIUM_SRC:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
+if [[ -z "${CHROMIUM_SRC:-}" && "$(basename "$REPO")" != "src" ]]; then
+  for candidate_start in "$0" "${BASH_SOURCE[0]}" "$PWD"; do
+    dir="$candidate_start"
+    while [[ -n "$dir" && "$dir" != "/" && "$dir" != "." ]]; do
+      if [[ "$(basename "$dir")" == "src" ]] && git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+        REPO="$dir"
+        break 2
+      fi
+      dir="$(dirname "$dir")"
+    done
+  done
+  if [[ "$(basename "$REPO")" != "src" ]]; then
+    for candidate_src in "$(dirname "$(git rev-parse --show-toplevel 2>/dev/null || echo ".")")/chromium/src" "$HOME/src/chromium/src"; do
+      if [[ -d "$candidate_src" ]] && git -C "$candidate_src" rev-parse --git-dir >/dev/null 2>&1; then
+        REPO="$candidate_src"
+        break
+      fi
+    done
+  fi
+fi
 [[ -n "$REPO" ]] || die "not inside a git checkout and CHROMIUM_SRC is not set"
 git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "$REPO is not a git checkout"
 REPO="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$REPO")"

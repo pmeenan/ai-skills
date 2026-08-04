@@ -22,7 +22,7 @@ preamble, so its rules travel with every section.
 | inventory.md — Changed-Surface Inventory And Risk-Area Map | inventory-md-changed-surface-inventory-and-risk-area-map.md | 145 |
 | plan.md — Thread-Plan Roster | plan-md-thread-plan-roster.md | 107 |
 | Generated Common Header | generated-common-header.md | 95 |
-| Subagent Brief — Discovery Thread | subagent-brief-discovery-thread.md | 101 |
+| Subagent Brief — Discovery Thread | subagent-brief-discovery-thread.md | 102 |
 | ledger/⟨THREAD⟩.md — Compliance Matrix And Candidate Rows | ledger-thread-md-compliance-matrix-and-candidate-rows.md | 62 |
 | ledger/TER.md And verification/VTER.md — Transformation Classes And Gate | ledger-ter-md-and-verification-vter-md-transformation-classes-and-gate.md | 60 |
 | Subagent Brief — TER Gate Skeptic | subagent-brief-ter-gate-skeptic.md | 31 |

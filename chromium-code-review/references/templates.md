@@ -990,8 +990,9 @@ not fixes.
 If the harness denies subagents file access, item 4 changes to: return the
 full matrix and all rows in the final message — never summarized.
 
-For a schema-3 generalist brief, item 4 additionally requires the exact
-`## Specialist escalation assessments` table shown above: all ten specialist
+For a schema-3 generalist brief, item 4 additionally requires:
+1. `## Complexity graph delta` table: `| edge | status | evidence | candidate | next obligation |` where every edge assigned to the shard is listed, `status` is `open`, `resolved`, `candidate`, `unreviewed`, or `disputed`, `evidence` cites code, `candidate` lists candidate IDs (or `-`) found on that edge, and `next obligation` lists any next obligation (or `-`).
+2. `## Specialist escalation assessments` table shown above: all ten specialist
 lenses, the shard's exact `graph:E-...` scope, low/medium/high likelihood, and
 cited signals plus counterevidence. GSS and GAI workers decide independently;
 neither reads the other's ledger before returning.

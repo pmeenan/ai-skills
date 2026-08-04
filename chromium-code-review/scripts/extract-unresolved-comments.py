@@ -188,15 +188,21 @@ def main() -> int:
     parser.add_argument("-o", "--output", type=Path)
     arguments = parser.parse_args()
     try:
-        raw = arguments.comments_json.read_bytes()
+        input_path = arguments.comments_json
+        output_path = arguments.output
+        if input_path.is_dir():
+            if output_path is None:
+                output_path = input_path / "gerrit" / "unresolved-threads.json"
+            input_path = input_path / "comments.json"
+        raw = input_path.read_bytes()
         if raw.startswith(b")]}'"):
             fail("input still has Gerrit's XSSI prefix; run fetch-cl.sh or normalize it first")
         source = json.loads(raw)
         if not isinstance(source, dict):
             fail("comments.json must contain a JSON object")
         result = normalize(source)
-        if arguments.output:
-            atomic_write(arguments.output, result)
+        if output_path:
+            atomic_write(output_path, result)
         else:
             json.dump(result, sys.stdout, indent=2, sort_keys=True, ensure_ascii=False)
             sys.stdout.write("\n")

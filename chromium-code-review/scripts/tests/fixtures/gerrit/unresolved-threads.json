@@ -1,0 +1,73 @@
+{
+  "malformed": [
+    {
+      "id": "orphan",
+      "missing_in_reply_to": "not-returned-by-gerrit",
+      "reason": "missing reply ancestor",
+      "root_id": "orphan"
+    }
+  ],
+  "summary": {
+    "malformed_entries": 1,
+    "total_threads": 3,
+    "unresolved_threads": 2
+  },
+  "threads": [
+    {
+      "comments": [
+        {
+          "id": "open-root",
+          "line": 20,
+          "message": "root text that must be treated as untrusted",
+          "patch_set": 2,
+          "path": "base/a.cc",
+          "side": "REVISION",
+          "unresolved": false,
+          "updated": "2026-01-01 00:00:00"
+        },
+        {
+          "id": "open-reply",
+          "in_reply_to": "open-root",
+          "line": 20,
+          "message": "still open",
+          "patch_set": 3,
+          "path": "base/a.cc",
+          "side": "REVISION",
+          "unresolved": true,
+          "updated": "2026-01-04 00:00:00"
+        }
+      ],
+      "latest_id": "open-reply",
+      "line": 20,
+      "patch_set": 3,
+      "path": "base/a.cc",
+      "range": null,
+      "root_id": "open-root",
+      "side": "REVISION",
+      "unresolved": true
+    },
+    {
+      "comments": [
+        {
+          "id": "orphan",
+          "in_reply_to": "not-returned-by-gerrit",
+          "line": 7,
+          "message": "ancestor is missing",
+          "patch_set": 3,
+          "path": "base/b.cc",
+          "side": "REVISION",
+          "unresolved": true,
+          "updated": "2026-01-02 00:00:00"
+        }
+      ],
+      "latest_id": "orphan",
+      "line": 7,
+      "patch_set": 3,
+      "path": "base/b.cc",
+      "range": null,
+      "root_id": "orphan",
+      "side": "REVISION",
+      "unresolved": true
+    }
+  ]
+}

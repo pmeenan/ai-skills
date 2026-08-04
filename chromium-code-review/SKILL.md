@@ -85,7 +85,10 @@ Modes is only for harnesses with no such tool at all.
 4. **Append a one-line outcome to `progress.md` after every phase and every
    collected thread, and update `orchestration.tsv` after every task state
    change.** Emit every progress line through
-   `scripts/log-progress.py <review-dir> spawned|collected|phase|note …` —
+   `scripts/log-progress.py <review-dir> spawned|collected|phase|note …`
+   (e.g., `scripts/log-progress.py <review-dir> phase 0 "pinned PS3; worktree verified"`,
+   `scripts/log-progress.py <review-dir> spawned EPW 1`,
+   `scripts/log-progress.py <review-dir> collected EPW 1 "9 rows"`) —
    it stamps UTC time and enforces the one event grammar
    (`spawned ⟨WORK⟩ attempt ⟨N⟩`, `collected ⟨WORK⟩ attempt ⟨N⟩: ⟨outcome⟩`,
    `Phase ⟨label⟩ done: ⟨outcome⟩`) that the cost report parses for
