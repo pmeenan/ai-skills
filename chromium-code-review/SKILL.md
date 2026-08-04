@@ -217,8 +217,9 @@ Orchestrator-facing (the only skill files the orchestrator loads):
   per-review skill snapshot. Run it immediately after fetch and use the
   snapshot for every subsequent reference/helper path.
 - `scripts/seal-work-unit.py`: validates the snapshot and input budget, hashes
-  a final brief and its exact inputs, queues the attempt, and makes the brief
-  read-only in one recoverable transaction. Run it before every worker spawn.
+  a final brief and its exact inputs (passed as `--input ROLE=/absolute/path`),
+  queues the attempt, and makes the brief read-only in one recoverable transaction.
+  For attempt N > 1, pass `--depends-on WORK_ID:N-1`. Run it before every worker spawn.
   Rerunning the exact same command after an interruption is idempotent and
   returns `already sealed`; never invent a new attempt merely to recover.
 - `scripts/validate-worker-artifact.py`: applies the same structured table and

@@ -62,10 +62,9 @@ fragments. The section index is the large-draft challenge input.
 
 Partition the draft and record into shards that fit the same agent input
 budget. For a bounded draft requiring only one content/structural shard,
-mechanically render the one-row plan/index and spawn the independent challenger
-directly; no planner or collector agent is needed. The challenger still writes
-an immutable shard artifact; the orchestrator mechanically finalizes the
-one-row index from that artifact/status, then deterministic validation checks it.
+mechanically render the one-row plan/index at `challenge/round-<N>/index.md` (listing reconciliation row tokens `row:<ID>` under `expected coverage`) and spawn the independent challenger
+directly; no planner agent is needed. The challenger still writes
+an immutable shard artifact; then run `collect-challenge-round.py <review-dir> <round>` to mechanically update `challenge.md` and `challenge/round-<N>/index.md`, before deterministic validation checks it.
 For larger inputs, spawn the Synthesis Challenge Planner and one Synthesis
 Challenger per shard in capacity-derived waves.
 

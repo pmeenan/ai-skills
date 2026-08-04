@@ -193,7 +193,12 @@ def main() -> int:
     parser.add_argument("--artifact", required=True, type=Path)
     parser.add_argument("--depends-on", default="-")
     parser.add_argument("--remaining-scope", default="-")
-    parser.add_argument("--input", action="append", default=[])
+    parser.add_argument(
+        "--input",
+        action="append",
+        default=[],
+        help="Input specification as ROLE=/absolute/path (ROLE in " + ", ".join(sorted(ROLES)) + ")",
+    )
     arguments = parser.parse_args()
 
     root = arguments.review_dir.resolve()

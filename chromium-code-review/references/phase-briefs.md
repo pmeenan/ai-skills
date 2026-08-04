@@ -424,7 +424,7 @@ assessments as `low` with cited counterevidence; any medium/high judgment means
 inventory must first add the missing edge.
 
 Residue mode (round two, only after the TER gate ran): read the TER
-ledger and ⟨review-dir⟩/verification/VTER.md. Preserve the collected plan
+ledger and verification/VTER.md (when present). Preserve the collected plan
 prefix and append exactly `## Round-two residue continuation — PLAN attempt
 ⟨attempt⟩` with the exact ordered columns `roster entry | scope | status |
 tier | batch | subagent | outcome`; never rewrite the original rows or append
