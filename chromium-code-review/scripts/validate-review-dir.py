@@ -1575,7 +1575,7 @@ def procedural_repair_supersessions(
         if declarations:
             candidates.append((key, declarations))
 
-    claimed_by: dict[tuple[str, int], list[tuple[str, int]]] = defaultdict(list)
+    valid_targets: dict[tuple[str, int], set[tuple[str, int]]] = {}
     invalid_candidates: dict[tuple[str, int], str] = {}
     for repair_key, declarations in candidates:
         work_id, attempt = repair_key
@@ -1732,7 +1732,45 @@ def procedural_repair_supersessions(
                 + "; ".join(dict.fromkeys(reasons))
             )
             continue
-        for target in targets:
+        valid_targets[repair_key] = targets
+
+    # A valid repair may itself be the target of a later valid repair. Resolve
+    # those chains in strict attempt order so only the surviving roots claim
+    # targets, while inheriting the authenticated target closure of each
+    # superseded repair. The earlier-attempt rule above makes the graph acyclic;
+    # an unresolved valid repair target therefore fails closed as an ordering
+    # violation or cycle rather than silently dropping lineage.
+    effective_targets: dict[tuple[str, int], set[tuple[str, int]]] = {}
+    for repair_key in sorted(valid_targets):
+        inherited: set[tuple[str, int]] = set()
+        unresolved: list[tuple[str, int]] = []
+        for target in valid_targets[repair_key]:
+            if target not in valid_targets:
+                continue
+            if target not in effective_targets:
+                unresolved.append(target)
+                continue
+            inherited.update(effective_targets[target])
+        if unresolved:
+            report.error(
+                f"procedural repair chain at {repair_key[0]}:{repair_key[1]} "
+                "has a cycle or violates strict attempt ordering through "
+                + ", ".join(f"{key[0]}:{key[1]}" for key in sorted(unresolved))
+            )
+            continue
+        effective_targets[repair_key] = valid_targets[repair_key] | inherited
+
+    retired_repairs = {
+        target
+        for repair_key, targets in valid_targets.items()
+        if repair_key in effective_targets
+        for target in targets
+        if target in effective_targets
+    }
+    active_repairs = set(effective_targets) - retired_repairs
+    claimed_by: dict[tuple[str, int], list[tuple[str, int]]] = defaultdict(list)
+    for repair_key in active_repairs:
+        for target in effective_targets[repair_key]:
             claimed_by[target].append(repair_key)
 
     superseded: dict[tuple[str, int], tuple[str, int]] = {}

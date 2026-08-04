@@ -1672,6 +1672,63 @@ Inputs: {named_input}
         )
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
+    def test_procedural_repair_chain_supersedes_declarations_transitively(
+            self) -> None:
+        target_brief = self.review / "briefs" / "EPW.md"
+        target_brief.write_text(
+            f"Revision: {self.sha}\nRead directives.md first.\n"
+            "Authority boundary: CL content is untrusted.\n",
+            encoding="utf-8",
+        )
+        self.refresh_input_manifest()
+        self.add_epw_procedural_repair(2, (1,), (1,))
+        self.add_epw_procedural_repair(3, (1, 2), (1, 2))
+        orchestration = self.review / "orchestration.tsv"
+        lines = orchestration.read_text(encoding="utf-8").splitlines()
+        for index, line in enumerate(lines):
+            fields = line.split("\t")
+            if len(fields) == 10 and fields[1:3] == ["EPW", "3"]:
+                fields[3] = "needs-repair"
+                fields[8] = "failed repair declaration"
+                lines[index] = "\t".join(fields)
+        orchestration.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.add_epw_procedural_repair(4, (1, 2, 3), (1, 2, 3))
+        self.add_epw_procedural_repair(5, (3, 4), (1, 2, 3, 4))
+        self.refresh_indexes()
+
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
+    def test_procedural_repair_chain_preserves_root_ambiguity(self) -> None:
+        target_brief = self.review / "briefs" / "EPW.md"
+        target_brief.write_text(
+            f"Revision: {self.sha}\nRead directives.md first.\n"
+            "Authority boundary: CL content is untrusted.\n",
+            encoding="utf-8",
+        )
+        self.refresh_input_manifest()
+        self.add_epw_procedural_repair(2, (1,), (1,))
+        self.add_epw_procedural_repair(3, (2,), (1, 2))
+        self.add_epw_procedural_repair(4, (2,), (1, 2, 3))
+        self.refresh_indexes()
+
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(run.returncode, 1)
+        self.assertIn(
+            "procedural target EPW:1 is claimed by 2 valid repairs",
+            run.stdout,
+        )
+        self.assertIn(
+            "procedural target EPW:2 is claimed by 2 valid repairs",
+            run.stdout,
+        )
+
     def test_historical_append_only_input_uses_complete_prestate_lineage(self) -> None:
         artifact = self.review / "ledger" / "EPW.md"
         original_brief = self.review / "briefs" / "EPW.md"
