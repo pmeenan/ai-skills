@@ -95,7 +95,10 @@ def verify(snapshot: Path) -> None:
     actual = {
         path.relative_to(snapshot).as_posix()
         for path in snapshot.rglob("*")
-        if path.is_file() and path.name != MANIFEST
+        if path.is_file()
+        and path.name != MANIFEST
+        and "__pycache__" not in path.relative_to(snapshot).parts
+        and path.suffix not in {".pyc", ".pyo"}
     }
     if actual != expected:
         fail(

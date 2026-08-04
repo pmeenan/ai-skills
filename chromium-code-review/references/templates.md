@@ -402,10 +402,21 @@ Columns and roles are exact. `role` is one of `brief`, `control`, `reference`,
 to: its bytes/SHA-256 cover the immutable pre-attempt prefix, and the
 validator verifies the current file still begins with exactly that prefix —
 append-only growth, never a rewrite. Every other role's hash must match the
-file exactly. A path containing spaces is written backtick-quoted in briefs
+file exactly when the attempt is sealed. Later directory validation preserves
+a stale non-`prestate` row only when its bytes/hash match a canonical artifact
+prefix sealed as `prestate` by a later complete same-artifact attempt, or when
+it names a deterministic `indexes/` output whose rebuild is current and its
+historical attempt retains an exact brief self-row and orchestration join.
+No other stale input is compatible. A procedural-only repair of an immutable historical attempt
+also manifests the same canonical artifact as `prestate`, every exact target
+brief, and every absolute input named in each target brief. A path containing
+spaces is written backtick-quoted in briefs
 so the validator can parse it. Each work ID
 includes its brief as a `brief` row and every control, reference, or assigned
-file the worker must load. The generated per-section files under
+file or helper the worker must load. Absolute paths repeated in an explicit
+`Deliverable:` or `Deliverables:` section are outputs and are not input rows;
+declaring an output does not exempt any separate Procedure input/helper path.
+The generated per-section files under
 `references/worker/⟨stem⟩/` exist precisely so a single section is its own
 immutable, measurable packet; name those in briefs and manifests, and use the
 whole canonical reference file only when the worker genuinely needs most of
@@ -656,6 +667,60 @@ The planner assigns a model tier and priority batch per the Model Tiers
 contract in `references/scaling-and-indexes.md`; the orchestrator records the
 subagent/task identifier when spawned, and the outcome when collected.
 
+**Round two is an append-only plan continuation, never a rewrite or a second
+ordinary roster table.** Append exactly one section per Planner attempt using
+the heading `## Round-two residue continuation — PLAN attempt ⟨N⟩` and the
+same exact ordered columns `roster entry | scope | status | tier | batch |
+subagent | outcome`. Every continuation row has status `spawn` and targets an
+earlier effective row whose status is exactly
+`deferred — pending TER gate (round two)`. An unsharded row replaces the one
+earlier unsharded row with the same roster name. Numbered shard rows either
+replace one earlier unsharded deferred row one-to-many, or replace already
+numbered deferred rows one-to-one by base roster name plus shard number; the
+scope text inside a shard label may change. Do not mix sharded and unsharded
+continuation rows for one roster name. Unknown, duplicate, ambiguous,
+non-deferred, and repeated targets are invalid. Raw tables remain immutable
+audit history; parsers, validators, and collectors use the collapsed effective
+roster in the original roster position. A partial attempt may transition a
+disjoint subset, but every deferred row must be transitioned before the
+collection gate.
+
+```markdown
+## Round-two residue continuation — PLAN attempt 2
+
+| roster entry | scope | status | tier | batch | subagent | outcome |
+| --- | --- | --- | --- | --- | --- | --- |
+| Error-Path Walk (shard 1: parse failures) | residue(TC1): parser error paths | spawn | frontier | D03 | — | — |
+| Error-Path Walk (shard 2: consumer failures) | residue(TC1): consumer error paths | spawn | frontier | D03 | — | — |
+```
+
+**A non-deferred not-applicable proof correction uses a distinct append-only
+plan-repair continuation.** It never uses the round-two heading and never
+rewrites the base roster. Append exactly:
+
+```markdown
+## Plan repair continuation — PLAN attempt 4
+
+| roster entry | expected status | scope | status | tier | batch | evidence |
+| --- | --- | --- | --- | --- | --- | --- |
+| Callback And Task Lifetime | not applicable — trigger absence proved by T004 | callback/lifetime edges proved by T001,T003 | spawn | frontier | D06 | T001,T003 |
+| Teardown Order | not applicable — trigger absence proved by T004 | — | not applicable — trigger absence proved by T024 | — | D01 | T024 |
+```
+
+The target is the current effective row's stable roster identity (base name
+plus optional shard number) and must resolve exactly once. `expected status`
+is an exact compare-and-append guard: a stale or repeated repair fails. The
+target must be an existing non-deferred
+`not applicable — trigger absence proved by ...` row. Its replacement status
+is either `spawn` with a concrete non-sentinel scope, concrete tier, and batch,
+or another exact not-applicable proof while preserving scope, tier, and batch.
+The repair never changes roster identity, subagent, or outcome. Evidence is
+mandatory. A table is atomic: any unknown, ambiguous, duplicate, deferred,
+stale, no-op, unsupported-status, or malformed row prevents the whole table
+from taking effect. Round-two and repair continuation headings share one
+strictly increasing, unique PLAN-attempt sequence and are collapsed in source
+order; raw history remains unchanged.
+
 ```markdown
 # Thread plan — CL 9999999 PS3
 
@@ -774,6 +839,24 @@ valid correction.
 The planner substitutes this header verbatim; a generated brief that omits
 directives, authority boundaries, attempt/append semantics, or partial-return
 semantics is invalid and must not be spawned.
+
+To repair only a sealed historical attempt's brief/input/dependency procedure,
+create a later attempt-specific brief with the complete header and exactly one
+line in this form:
+
+```text
+Procedural repair targets: WORK:1, WORK:2
+```
+
+Every target must be an earlier attempt of the same work ID. The repair must
+finish `complete`, use the same canonical artifact as every target, directly
+depend on every prior attempt of that work ID (including terminated targets),
+and carry the `prestate` and historical brief/input rows specified above.
+Only the declared targets' generated-brief contracts, named-input coverage,
+and missing same-work dependency diagnostics are superseded. Artifact bytes,
+content contracts, all manifest hashes, and every unrelated diagnostic remain
+in force. A malformed, incomplete, stale, ambiguous, cross-work, or
+dependency-incomplete declaration repairs nothing.
 
 ## Subagent Brief — Discovery Thread
 

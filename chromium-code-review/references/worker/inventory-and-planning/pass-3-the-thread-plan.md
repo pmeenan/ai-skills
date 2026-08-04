@@ -98,16 +98,30 @@ triggers:
    from the residue. Only a PROVEN verdict per class unlocks residue mode
    for that class.
 3. **Round two** respawns the Planner in residue mode. It reads the now
-   existing TER ledger and `verification/VTER.md`, converts each deferred row
-   to `spawn` with an exact scope — the residue hunks, difference-observing
+   existing TER ledger and `verification/VTER.md`, then appends the exact
+   `## Round-two residue continuation — PLAN attempt <N>` table from
+   `references/templates.md`; it never rewrites the collected roster or
+   appends a second ordinary roster table. Each continuation row transitions
+   a deferred row to `spawn` with an exact scope — the residue hunks, difference-observing
    sites, and collateral files, copied concretely into the brief, never "see
    the TER ledger" — beginning each residue-scoped row's scope cell with
    `residue(TC<ids>): ` so the validator can join class → gate verdict →
    scope, and registers the briefs with their now-hashable inputs in the
-   manifest. For any class the gate REJECTED or left UNPROVEN, the deferred
+   manifest. A deferred parent may become numbered shards in that table; when
+   round-one shard boundaries are already known, record numbered deferred
+   rows then so round two can transition them one-to-one. For any class the gate REJECTED or left UNPROVEN, the deferred
    rows are planned as an ordinary full review of that class's sites. `deferred` is a transient status: every deferred row is converted
    before the collection audit, and the validator rejects a collected plan
    that still contains one.
+
+If a collected non-deferred not-applicable row later proves to cite the wrong
+trigger-absence row, preserve the roster prefix and append the exact
+`## Plan repair continuation — PLAN attempt <N>` table from
+`references/templates.md`. Target the stable roster identity once, guard it
+with its exact effective `expected status`, and either replace only the proof
+status or transition it to a fully scoped `spawn`. This repair form cannot
+target deferred rows; those continue to use the round-two residue table. Both
+heading kinds share one increasing, unique PLAN-attempt sequence.
 
 **Cross-site closure recipes never shrink to residue.** Field Propagation
 Matrix, Associative Container Semantics, and any thread whose procedure must

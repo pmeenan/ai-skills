@@ -83,3 +83,21 @@ valid correction.
 The planner substitutes this header verbatim; a generated brief that omits
 directives, authority boundaries, attempt/append semantics, or partial-return
 semantics is invalid and must not be spawned.
+
+To repair only a sealed historical attempt's brief/input/dependency procedure,
+create a later attempt-specific brief with the complete header and exactly one
+line in this form:
+
+```text
+Procedural repair targets: WORK:1, WORK:2
+```
+
+Every target must be an earlier attempt of the same work ID. The repair must
+finish `complete`, use the same canonical artifact as every target, directly
+depend on every prior attempt of that work ID (including terminated targets),
+and carry the `prestate` and historical brief/input rows specified above.
+Only the declared targets' generated-brief contracts, named-input coverage,
+and missing same-work dependency diagnostics are superseded. Artifact bytes,
+content contracts, all manifest hashes, and every unrelated diagnostic remain
+in force. A malformed, incomplete, stale, ambiguous, cross-work, or
+dependency-incomplete declaration repairs nothing.

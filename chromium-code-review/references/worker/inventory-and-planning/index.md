@@ -14,7 +14,7 @@ preamble, so its rules travel with every section.
 | Gather Context (Pass 1) | gather-context-pass-1.md | 22 |
 | Pass 1 — Changed-Surface Inventory And Risk-Area Map | pass-1-changed-surface-inventory-and-risk-area-map.md | 112 |
 | Pass 2 — Prior-Feedback Reconciliation | pass-2-prior-feedback-reconciliation.md | 28 |
-| Pass 3 — The Thread Plan | pass-3-the-thread-plan.md | 124 |
+| Pass 3 — The Thread Plan | pass-3-the-thread-plan.md | 138 |
 | The Roster | the-roster.md | 21 |
 | Specialist Trigger Decisions | specialist-trigger-decisions.md | 49 |
 | Plan-Construction Rules | plan-construction-rules.md | 84 |

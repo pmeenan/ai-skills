@@ -24,7 +24,11 @@ import subprocess
 import sys
 from typing import Any, Iterable
 
-from artifact_tables import effective_tables
+from artifact_tables import (
+    PLAN_ROSTER_COLUMNS,
+    effective_tables,
+    plan_row_identity,
+)
 
 
 PHASES = {"pin": 0, "collection": 1, "verification": 2,
@@ -203,10 +207,27 @@ INPUT_MANIFEST_ROLES = {
     "brief", "control", "reference", "assigned", "candidate-packet", "card",
     "frame", "section", "prestate",
 }
+BRIEF_REQUIREMENTS = {
+    "directives": re.compile(r"directives\.md", re.I),
+    "pin/revision": re.compile(r"\brevision\b", re.I),
+    "authority boundary": re.compile(r"authority boundary|untrusted", re.I),
+    "append/retry": re.compile(r"append-only|amendment", re.I),
+    "partial return": re.compile(r"\bpartial\b", re.I),
+}
+PROCEDURAL_REPAIR_TARGETS = re.compile(
+    r"(?m)^Procedural repair targets:\s*([^\r\n]+)\s*$"
+)
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROFILE_SCRIPT = SCRIPT_DIR / "profile-review.py"
 INDEX_SCRIPT = SCRIPT_DIR / "build-review-indexes.py"
 SNAPSHOT_SCRIPT = SCRIPT_DIR / "snapshot-skill.py"
+DETERMINISTIC_INDEX_NAMES = {
+    "inventory.tsv",
+    "candidates.tsv",
+    "verdicts.tsv",
+    "reconciliation.tsv",
+    "manifest.json",
+}
 
 
 class Report:
@@ -600,6 +621,32 @@ def table_dicts(text: str) -> Iterable[tuple[str, list[str], list[dict[str, str]
     yield from parsed
 
 
+def effective_plan_roster(
+    root: Path, report: Report
+) -> tuple[list[dict[str, str]], bool]:
+    """Load the plan once; never fall back to raw rows after parser errors."""
+    path = root / "plan.md"
+    text = read_text(path, report)
+    parsed, errors = effective_tables(text, str(path))
+    if errors:
+        # validate_artifact_table_contracts reports the exact diagnostics.
+        return [], False
+    rows: list[dict[str, str]] = []
+    tier_column_seen = False
+    for _, header, table_rows in parsed:
+        if "roster entry" not in header or "status" not in header:
+            continue
+        if tuple(header) != PLAN_ROSTER_COLUMNS:
+            report.error(
+                "plan.md roster table must have exactly the ordered columns "
+                + " | ".join(PLAN_ROSTER_COLUMNS)
+            )
+        if "tier" in header:
+            tier_column_seen = True
+        rows.extend(table_rows)
+    return rows, tier_column_seen
+
+
 def validate_artifact_table_contracts(root: Path, report: Report) -> None:
     paths: set[Path] = set()
     for name in ("inventory.md", "collection.md", "plan.md", "reconciliation.md"):
@@ -630,8 +677,11 @@ def field(text: str, name: str) -> str | None:
     return match.group(1) if match else None
 
 
-def validate_scaling_outputs(root: Path, report: Report) -> dict[str, int]:
-    """Require fresh deterministic helper outputs and return context budgets."""
+def validate_scaling_outputs(
+    root: Path, report: Report
+) -> tuple[dict[str, int], bool]:
+    """Require fresh helper outputs; return budgets and index freshness."""
+    indexes_current = False
     for script in (PROFILE_SCRIPT, INDEX_SCRIPT):
         try:
             result = subprocess.run(
@@ -645,15 +695,17 @@ def validate_scaling_outputs(root: Path, report: Report) -> dict[str, int]:
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).strip()
             report.error(f"{script.name} --check failed: {detail or 'unknown error'}")
+        elif script == INDEX_SCRIPT:
+            indexes_current = True
 
     profile = read_json(root / "profile.json", report)
     budgets: dict[str, int] = {}
     if not isinstance(profile, dict):
-        return budgets
+        return budgets, indexes_current
     context = profile.get("context_budget")
     if not isinstance(context, dict):
         report.error("profile.json lacks context_budget object")
-        return budgets
+        return budgets, indexes_current
     for name in (
         "worker_input_budget_bytes",
         "candidate_packet_budget_bytes",
@@ -678,7 +730,7 @@ def validate_scaling_outputs(root: Path, report: Report) -> dict[str, int]:
     for name in ("candidate_packet_budget_bytes", "evidence_card_budget_bytes"):
         if worker is not None and budgets.get(name, 0) > worker:
             report.error(f"profile.json {name} exceeds worker_input_budget_bytes")
-    return budgets
+    return budgets, indexes_current
 
 
 def validate_skill_snapshot(root: Path, report: Report) -> None:
@@ -781,11 +833,27 @@ def validate_pin(root: Path, report: Report, require_active_lease: bool = False,
     worktree_lease_token = field(pin, "Worktree lease token")
     if bool(worktree_lease) != bool(worktree_lease_token):
         report.error("pin.md must contain both Worktree lease and Worktree lease token")
+    helper = Path(__file__).with_name("worktree-lease.py")
+    lease_state = root / "lease-state.json"
+    lease_state_required = "- Lease state: lease-state.json (required;" in pin
+    if lease_state_required and not lease_state.exists():
+        report.error("pin.md requires authenticated lease-state.json, but it is absent")
+    if lease_state.exists():
+        try:
+            authenticated = subprocess.run(
+                [str(helper), "validate-state", str(root)], text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except OSError as error:
+            report.error(
+                f"cannot validate authenticated mutable lease state: {error}")
+        else:
+            if authenticated.returncode != 0:
+                detail = authenticated.stderr.strip() or authenticated.stdout.strip()
+                report.error(f"mutable lease state validation failed: {detail}")
     if require_active_lease:
         if not worktree_lease or not worktree_lease_token:
             report.error("active worktree lease is required but absent from pin.md")
         else:
-            helper = Path(__file__).with_name("worktree-lease.py")
             try:
                 checked = subprocess.run(
                     [str(helper), "check", str(root), "--stale-seconds",
@@ -914,25 +982,25 @@ def tier_override(root: Path) -> bool:
 
 
 def validate_plan(
-    root: Path, trigger_rows: dict[str, dict[str, str]], report: Report
+    root: Path,
+    trigger_rows: dict[str, dict[str, str]],
+    roster_rows: list[dict[str, str]],
+    tier_column_seen: bool,
+    report: Report,
 ) -> None:
-    text = read_text(root / "plan.md", report)
-    roster_rows: list[dict[str, str]] = []
-    tier_column_seen = False
-    for _, header, rows in table_dicts(text):
-        if "roster entry" in header and "status" in header:
-            if "tier" in header:
-                tier_column_seen = True
-            roster_rows.extend(rows)
     if not roster_rows:
         report.error("plan.md has no roster table")
         return
     if not tier_column_seen:
         report.error("plan.md roster table lacks a tier column")
     counts: Counter[str] = Counter()
+    identity_counts: Counter[tuple[str, int | None]] = Counter()
+    modes: dict[str, set[str]] = defaultdict(set)
     for row in roster_rows:
-        name = re.sub(r"\s+(?:\(shard[^)]*\)|—\s*shard.*)$", "", row["roster entry"], flags=re.I)
+        name, shard_number = plan_row_identity(row["roster entry"])
         counts[name] += 1
+        identity_counts[(name, shard_number)] += 1
+        modes[name].add("sharded" if shard_number is not None else "unsharded")
         status = row.get("status", "")
         if status == "spawn":
             tier = row.get("tier", "").strip()
@@ -1015,6 +1083,19 @@ def validate_plan(
     for name in counts:
         if name not in ROSTER:
             report.error(f"plan.md invents or renames roster entry: {name}")
+    for (name, shard_number), count in identity_counts.items():
+        if count > 1:
+            label = name + (
+                f" shard {shard_number}" if shard_number is not None else ""
+            )
+            report.error(
+                f"plan.md duplicates effective roster identity: {label}"
+            )
+    for name, base_modes in modes.items():
+        if len(base_modes) > 1:
+            report.error(
+                f"plan.md mixes sharded and unsharded effective rows for {name}"
+            )
 
 
 def validate_trigger_inventory(
@@ -1240,28 +1321,480 @@ def validate_root_cause_trigger_accounting(
             )
 
 
-def validate_generated_briefs(root: Path, report: Report) -> None:
+def brief_contract_failures(text: str) -> list[str]:
+    return [
+        label for label, pattern in BRIEF_REQUIREMENTS.items()
+        if not pattern.search(text)
+    ]
+
+
+def named_brief_inputs(brief: Path) -> set[Path]:
+    """Return absolute file inputs named in a brief's input sections."""
+    absolute_path = re.compile(
+        r"(?<![A-Za-z0-9_.-])(/[A-Za-z0-9_.+@{}%=/:-]+)"
+    )
+    active = False
+    deliverables_active = False
+    named_inputs: set[Path] = set()
+    named_deliverables: set[Path] = set()
+    try:
+        lines = brief.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return named_inputs
+    for line in lines:
+        if re.match(r"^(?:Inputs?|Procedure):", line, re.I):
+            active = True
+        elif active and re.match(
+                r"^(?:Scope|Deliverables?|Return|Rules|Precondition):", line,
+                re.I):
+            active = False
+        if re.match(r"^Deliverables?:", line, re.I):
+            deliverables_active = True
+        elif deliverables_active and re.match(
+                r"^(?:Inputs?|Procedure|Scope|Return|Rules|Precondition):",
+                line, re.I):
+            deliverables_active = False
+        if not active and not deliverables_active:
+            continue
+        destination = named_inputs if active else named_deliverables
+        for quoted in re.findall(r"`(/[^`]+)`", line):
+            if quoted.endswith("/"):
+                continue
+            candidate = Path(quoted)
+            if not candidate.is_dir():
+                destination.add(candidate.resolve())
+        bare_line = re.sub(r"`[^`]*`", " ", line)
+        for match in absolute_path.finditer(bare_line):
+            raw = match.group(1)
+            if raw.endswith("/"):
+                continue
+            candidate = Path(raw.rstrip(".,;:)]}"))
+            if not candidate.is_dir():
+                destination.add(candidate.resolve())
+    return named_inputs - named_deliverables
+
+
+def manifest_key(row: dict[str, str]) -> tuple[str, int] | None:
+    try:
+        attempt = int(row.get("attempt", ""))
+    except ValueError:
+        return None
+    work_id = row.get("work_id", "")
+    return (work_id, attempt) if work_id and attempt >= 1 else None
+
+
+def manifest_row_matches(
+    row: dict[str, str], *, prefix: bool = False
+) -> bool:
+    """Authenticate one manifest row against current bytes or their prefix."""
+    path = Path(row.get("input_path", ""))
+    if not path.is_absolute() or not path.is_file():
+        return False
+    try:
+        declared = int(row.get("bytes", ""))
+    except ValueError:
+        return False
+    digest_value = row.get("sha256", "")
+    if declared < 0 or re.fullmatch(r"[0-9a-f]{64}", digest_value) is None:
+        return False
+    payload = path.read_bytes()
+    if prefix:
+        return declared <= len(payload) and hashlib.sha256(
+            payload[:declared]
+        ).hexdigest() == digest_value
+    return declared == len(payload) and hashlib.sha256(payload).hexdigest() == digest_value
+
+
+def authenticated_manifest_keys(
+    input_rows: list[dict[str, str]],
+    orchestration_rows: list[dict[str, str]],
+) -> set[tuple[str, int]]:
+    """Return attempts whose immutable brief self-row and join are intact."""
+    orchestration_by_key: dict[tuple[str, int], list[dict[str, str]]] = defaultdict(list)
+    for row in orchestration_rows:
+        key = manifest_key(row)
+        if key is not None:
+            orchestration_by_key[key].append(row)
+    input_by_key: dict[tuple[str, int], list[dict[str, str]]] = defaultdict(list)
+    for row in input_rows:
+        key = manifest_key(row)
+        if key is not None:
+            input_by_key[key].append(row)
+
+    authenticated: set[tuple[str, int]] = set()
+    for key, orchestration_matches in orchestration_by_key.items():
+        if len(orchestration_matches) != 1:
+            continue
+        orchestration_row = orchestration_matches[0]
+        brief = orchestration_row.get("brief", "")
+        if brief in {"", "—", "-"}:
+            continue
+        self_rows = [
+            row for row in input_by_key.get(key, [])
+            if row.get("role") == "brief"
+            and row.get("brief") == brief
+            and row.get("input_path") == brief
+        ]
+        if len(self_rows) == 1 and manifest_row_matches(self_rows[0]):
+            authenticated.add(key)
+    return authenticated
+
+
+def append_only_manifest_versions(
+    input_rows: list[dict[str, str]],
+    orchestration_rows: list[dict[str, str]],
+) -> set[tuple[str, str, str]]:
+    """Return authenticated historical prefixes of canonical artifacts.
+
+    A prefix is usable only when a complete attempt names the same path as its
+    artifact and seals that exact prefix with role ``prestate``.
+    """
+    authenticated = authenticated_manifest_keys(input_rows, orchestration_rows)
+    orchestration_by_key = {
+        key: row
+        for row in orchestration_rows
+        if (key := manifest_key(row)) is not None
+    }
+    versions: set[tuple[str, str, str]] = set()
+    for row in input_rows:
+        key = manifest_key(row)
+        if key not in authenticated or row.get("role") != "prestate":
+            continue
+        orchestration_row = orchestration_by_key.get(key)
+        if orchestration_row is None or orchestration_row.get("state") != "complete":
+            continue
+        input_path = row.get("input_path", "")
+        if (
+            row.get("brief") != orchestration_row.get("brief")
+            or orchestration_row.get("artifact") != input_path
+        ):
+            continue
+        if manifest_row_matches(row, prefix=True):
+            versions.add((input_path, row.get("bytes", ""), row.get("sha256", "")))
+    return versions
+
+
+def deterministic_historical_rows(
+    root: Path,
+    input_rows: list[dict[str, str]],
+    orchestration_rows: list[dict[str, str]],
+    indexes_current: bool,
+) -> set[int]:
+    """Locate sealed historical rows for currently reproducible indexes."""
+    if not indexes_current:
+        return set()
+    authenticated = authenticated_manifest_keys(input_rows, orchestration_rows)
+    orchestration_briefs = {
+        key: row.get("brief", "")
+        for row in orchestration_rows
+        if (key := manifest_key(row)) is not None
+    }
+    index_root = (root / "indexes").resolve()
+    historical: set[int] = set()
+    for index, row in enumerate(input_rows):
+        key = manifest_key(row)
+        path = Path(row.get("input_path", ""))
+        if (
+            key not in authenticated
+            or row.get("brief") != orchestration_briefs.get(key)
+            or not path.is_absolute()
+            or path.parent.resolve() != index_root
+            or path.name not in DETERMINISTIC_INDEX_NAMES
+            or manifest_row_matches(row)
+            or re.fullmatch(r"[0-9a-f]{64}", row.get("sha256", "")) is None
+        ):
+            continue
+        try:
+            if int(row.get("bytes", "")) < 0:
+                continue
+        except ValueError:
+            continue
+        historical.add(index)
+    return historical
+
+
+def procedural_repair_supersessions(
+    root: Path, report: Report, indexes_current: bool
+) -> dict[tuple[str, int], tuple[str, int]]:
+    """Validate explicit append-only repairs of historical procedures.
+
+    Historical attempt bytes remain immutable. A later attempt may suppress
+    only procedural diagnostics for exact declared targets, and only after it
+    proves a complete, same-artifact, dependency-closed handoff.
+    """
+    orchestration = root / "orchestration.tsv"
+    input_manifest = root / "input-manifest.tsv"
+    try:
+        with orchestration.open(encoding="utf-8", newline="") as stream:
+            orch_reader = csv.DictReader(stream, delimiter="\t")
+            if tuple(orch_reader.fieldnames or ()) != MANIFEST_COLUMNS:
+                return {}
+            orch_rows = list(orch_reader)
+        with input_manifest.open(encoding="utf-8", newline="") as stream:
+            input_reader = csv.DictReader(stream, delimiter="\t")
+            if tuple(input_reader.fieldnames or ()) != INPUT_MANIFEST_COLUMNS:
+                return {}
+            input_rows = list(input_reader)
+    except (OSError, csv.Error):
+        return {}
+
+    rows_by_key: dict[tuple[str, int], dict[str, str]] = {}
+    malformed_keys: set[tuple[str, str]] = set()
+    for row in orch_rows:
+        raw_key = (row.get("work_id", ""), row.get("attempt", ""))
+        try:
+            key = (raw_key[0], int(raw_key[1]))
+        except ValueError:
+            continue
+        if key in rows_by_key:
+            malformed_keys.add(raw_key)
+        rows_by_key[key] = row
+    grouped_inputs: dict[tuple[str, int], list[dict[str, str]]] = defaultdict(list)
+    for row in input_rows:
+        try:
+            key = (row.get("work_id", ""), int(row.get("attempt", "")))
+        except ValueError:
+            continue
+        grouped_inputs[key].append(row)
+    append_only_versions = append_only_manifest_versions(input_rows, orch_rows)
+    deterministic_history = deterministic_historical_rows(
+        root, input_rows, orch_rows, indexes_current
+    )
+
+    candidates: list[tuple[tuple[str, int], list[str]]] = []
+    for key, row in rows_by_key.items():
+        brief_value = row.get("brief", "")
+        if brief_value in {"", "—", "-"}:
+            continue
+        brief = Path(brief_value)
+        try:
+            text = brief.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        declarations = PROCEDURAL_REPAIR_TARGETS.findall(text)
+        if declarations:
+            candidates.append((key, declarations))
+
+    claimed_by: dict[tuple[str, int], list[tuple[str, int]]] = defaultdict(list)
+    invalid_candidates: dict[tuple[str, int], str] = {}
+    for repair_key, declarations in candidates:
+        work_id, attempt = repair_key
+        row = rows_by_key[repair_key]
+        reasons: list[str] = []
+        targets: set[tuple[str, int]] = set()
+        if len(declarations) != 1:
+            reasons.append("must contain exactly one Procedural repair targets line")
+        else:
+            raw_tokens = [token.strip() for token in declarations[0].split(",")]
+            if not raw_tokens or any(not token for token in raw_tokens):
+                reasons.append("has an empty procedural repair target")
+            for token in raw_tokens:
+                match = re.fullmatch(
+                    r"([A-Za-z][A-Za-z0-9-]*):([1-9]\d*)", token
+                )
+                if match is None:
+                    reasons.append(f"has malformed target {token!r}")
+                    continue
+                target = (match.group(1), int(match.group(2)))
+                if target[0] != work_id or target[1] >= attempt:
+                    reasons.append(
+                        f"target {token} is not an earlier {work_id} attempt"
+                    )
+                elif target not in rows_by_key:
+                    reasons.append(f"target {token} does not exist")
+                else:
+                    targets.add(target)
+        if row.get("state") != "complete":
+            reasons.append("repair attempt is not complete")
+        if (work_id, str(attempt)) in malformed_keys:
+            reasons.append("repair orchestration key is duplicated")
+
+        dependencies = {
+            token.strip() for token in row.get("depends_on", "").split(",")
+            if token.strip() not in {"", "—", "-"}
+        }
+        prior_keys = {
+            key for key in rows_by_key
+            if key[0] == work_id and key[1] < attempt
+        }
+        missing_dependencies = sorted(
+            f"{key[0]}:{key[1]}" for key in prior_keys
+            if f"{key[0]}:{key[1]}" not in dependencies
+        )
+        if missing_dependencies:
+            reasons.append(
+                "does not directly depend on all prior attempts: "
+                + ", ".join(missing_dependencies)
+            )
+
+        artifact_value = row.get("artifact", "")
+        artifact = Path(artifact_value) if artifact_value not in {"", "—", "-"} else None
+        for target in targets:
+            if rows_by_key[target].get("artifact") != artifact_value:
+                reasons.append(
+                    f"target {target[0]}:{target[1]} has a different artifact"
+                )
+        brief_value = row.get("brief", "")
+        repair_brief = Path(brief_value)
+        try:
+            repair_text = repair_brief.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            repair_text = ""
+        missing_contracts = brief_contract_failures(repair_text)
+        if missing_contracts:
+            reasons.append(
+                "repair brief lacks " + ", ".join(missing_contracts) + " contract"
+            )
+
+        repair_inputs = grouped_inputs.get(repair_key, [])
+        self_rows = [
+            item for item in repair_inputs
+            if item.get("role") == "brief"
+            and item.get("brief") == brief_value
+            and item.get("input_path") == brief_value
+        ]
+        if len(self_rows) != 1:
+            reasons.append("repair attempt lacks exactly one self brief row")
+        elif repair_brief.is_file():
+            payload = repair_brief.read_bytes()
+            self_row = self_rows[0]
+            if self_row.get("bytes") != str(len(payload)) or self_row.get(
+                    "sha256") != hashlib.sha256(payload).hexdigest():
+                reasons.append("repair self brief row is stale")
+
+        prestate_rows = [
+            item for item in repair_inputs
+            if item.get("role") == "prestate"
+            and artifact is not None
+            and item.get("input_path") == str(artifact)
+        ]
+        if len(prestate_rows) != 1:
+            reasons.append("repair attempt lacks exactly one artifact prestate row")
+        elif artifact is not None and artifact.is_file():
+            payload = artifact.read_bytes()
+            prestate = prestate_rows[0]
+            try:
+                prefix_bytes = int(prestate.get("bytes", ""))
+            except ValueError:
+                prefix_bytes = -1
+            if prefix_bytes < 0 or prefix_bytes > len(payload) or prestate.get(
+                    "sha256") != hashlib.sha256(payload[:prefix_bytes]).hexdigest():
+                reasons.append("repair artifact prestate row is invalid")
+
+        repair_input_paths = {
+            Path(item["input_path"]).resolve()
+            for item in repair_inputs if Path(item.get("input_path", "")).is_absolute()
+        }
+        required_inputs: set[Path] = set()
+        for target in targets:
+            target_brief_value = rows_by_key[target].get("brief", "")
+            if target_brief_value in {"", "—", "-"}:
+                reasons.append(
+                    f"target {target[0]}:{target[1]} has no brief to preserve"
+                )
+                continue
+            target_brief = Path(target_brief_value).resolve()
+            required_inputs.add(target_brief)
+            required_inputs.update(named_brief_inputs(target_brief))
+        missing_inputs = sorted(required_inputs - repair_input_paths)
+        if missing_inputs:
+            reasons.append(
+                "repair input manifest omits "
+                + ", ".join(str(path) for path in missing_inputs)
+            )
+        for required_input in required_inputs & repair_input_paths:
+            matching = [
+                (row_index, item)
+                for row_index, item in enumerate(input_rows)
+                if manifest_key(item) == repair_key
+                and Path(item.get("input_path", "")).is_absolute()
+                and Path(item["input_path"]).resolve() == required_input
+                and item.get("role") != "prestate"
+            ]
+            if not required_input.is_file() or not any(
+                manifest_row_matches(item)
+                or (
+                    (
+                        item.get("input_path", ""),
+                        item.get("bytes", ""),
+                        item.get("sha256", ""),
+                    ) in append_only_versions
+                    and manifest_row_matches(item, prefix=True)
+                )
+                or row_index in deterministic_history
+                for row_index, item in matching
+            ):
+                reasons.append(f"repair input row is stale for {required_input}")
+
+        if reasons:
+            invalid_candidates[repair_key] = (
+                f"procedural repair {work_id}:{attempt} is invalid: "
+                + "; ".join(dict.fromkeys(reasons))
+            )
+            continue
+        for target in targets:
+            claimed_by[target].append(repair_key)
+
+    superseded: dict[tuple[str, int], tuple[str, int]] = {}
+    for target, repairs in claimed_by.items():
+        if len(repairs) != 1:
+            report.error(
+                f"procedural target {target[0]}:{target[1]} is claimed by "
+                f"{len(repairs)} valid repairs"
+            )
+            continue
+        superseded[target] = repairs[0]
+    for repair_key, message in invalid_candidates.items():
+        if repair_key not in superseded:
+            report.error(message)
+    return superseded
+
+
+def brief_attempts(root: Path) -> dict[Path, set[tuple[str, int]]]:
+    result: dict[Path, set[tuple[str, int]]] = defaultdict(set)
+    try:
+        with (root / "orchestration.tsv").open(
+                encoding="utf-8", newline="") as stream:
+            reader = csv.DictReader(stream, delimiter="\t")
+            if tuple(reader.fieldnames or ()) != MANIFEST_COLUMNS:
+                return result
+            for row in reader:
+                try:
+                    key = (row["work_id"], int(row["attempt"]))
+                except ValueError:
+                    continue
+                value = row.get("brief", "")
+                if value not in {"", "—", "-"} and Path(value).is_absolute():
+                    result[Path(value).resolve()].add(key)
+    except (OSError, csv.Error):
+        pass
+    return result
+
+
+def validate_generated_briefs(
+    root: Path, report: Report,
+    superseded: dict[tuple[str, int], tuple[str, int]],
+) -> None:
     brief_root = root / "briefs"
     paths = sorted(brief_root.glob("**/*.md")) if brief_root.exists() else []
     if not paths:
         report.error("no generated briefs/*.md artifacts found")
         return
-    requirements = {
-        "directives": re.compile(r"directives\.md", re.I),
-        "pin/revision": re.compile(r"\brevision\b", re.I),
-        "authority boundary": re.compile(r"authority boundary|untrusted", re.I),
-        "append/retry": re.compile(r"append-only|amendment", re.I),
-        "partial return": re.compile(r"\bpartial\b", re.I),
-    }
+    attempts = brief_attempts(root)
     for path in paths:
         text = read_text(path, report)
-        for label, pattern in requirements.items():
-            if not pattern.search(text):
-                report.error(f"{path}: generated brief lacks {label} contract")
+        keys = attempts.get(path.resolve(), set())
+        if len(keys) == 1 and next(iter(keys)) in superseded:
+            continue
+        for label in brief_contract_failures(text):
+            report.error(f"{path}: generated brief lacks {label} contract")
 
 
-def validate_input_manifest(root: Path, budgets: dict[str, int],
-                            report: Report) -> dict[str, list[dict[str, str]]]:
+def validate_input_manifest(
+    root: Path, budgets: dict[str, int], report: Report,
+    superseded: dict[tuple[str, int], tuple[str, int]],
+    indexes_current: bool,
+) -> dict[str, list[dict[str, str]]]:
     path = root / "input-manifest.tsv"
     if not path.is_file():
         report.error(f"missing required worker input manifest: {path}")
@@ -1277,8 +1810,23 @@ def validate_input_manifest(root: Path, budgets: dict[str, int],
         report.error(f"cannot parse input-manifest.tsv: {error}")
         return {}
 
+    orchestration_rows: list[dict[str, str]] = []
+    try:
+        with (root / "orchestration.tsv").open(
+                encoding="utf-8", newline="") as stream:
+            orchestration_rows = list(csv.DictReader(stream, delimiter="\t"))
+    except (OSError, csv.Error):
+        pass
+    append_only_versions = append_only_manifest_versions(
+        rows, orchestration_rows
+    )
+    deterministic_history = deterministic_historical_rows(
+        root, rows, orchestration_rows, indexes_current
+    )
+
     grouped: dict[tuple[str, int], list[dict[str, str]]] = defaultdict(list)
-    for line_number, row in enumerate(rows, 2):
+    for row_index, row in enumerate(rows):
+        line_number = row_index + 2
         work_id = row["work_id"]
         if not work_id or re.search(r"[\t\r\n]", work_id):
             report.error(f"input-manifest.tsv:{line_number}: invalid work_id")
@@ -1332,13 +1880,31 @@ def validate_input_manifest(root: Path, budgets: dict[str, int],
                         f"hash mismatch for {input_path} — prior content was "
                         "rewritten, not appended")
         else:
-            if declared is not None and declared != len(payload):
+            historical_append = (
+                (
+                    row.get("input_path", ""),
+                    row.get("bytes", ""),
+                    row.get("sha256", ""),
+                ) in append_only_versions
+                and manifest_row_matches(row, prefix=True)
+            )
+            historical_deterministic = row_index in deterministic_history
+            if (
+                declared is not None
+                and declared != len(payload)
+                and not historical_append
+                and not historical_deterministic
+            ):
                 report.error(
                     f"input-manifest.tsv:{line_number}: byte count mismatch for "
                     f"{input_path}: {declared} != {len(payload)}"
                 )
             actual_hash = hashlib.sha256(payload).hexdigest()
-            if row["sha256"] != actual_hash:
+            if (
+                row["sha256"] != actual_hash
+                and not historical_append
+                and not historical_deterministic
+            ):
                 report.error(
                     f"input-manifest.tsv:{line_number}: sha256 mismatch for {input_path}"
                 )
@@ -1468,37 +2034,15 @@ def validate_input_manifest(root: Path, budgets: dict[str, int],
         input_path = Path(row["input_path"])
         if brief.is_absolute() and input_path.is_absolute():
             manifest_inputs_by_brief[brief.resolve()].add(input_path.resolve())
-    absolute_path = re.compile(r"(?<![A-Za-z0-9_.-])(/[A-Za-z0-9_.+@{}%=/:-]+)")
+    attempts_by_brief = brief_attempts(root)
     for brief in sorted(expected_briefs):
         if not brief.is_file():
             continue
-        active = False
-        named_inputs: set[Path] = set()
-        for line in brief.read_text(encoding="utf-8").splitlines():
-            if re.match(r"^(?:Inputs?|Procedure):", line, re.I):
-                active = True
-            elif active and re.match(
-                    r"^(?:Scope|Deliverables?|Return|Rules|Precondition):", line,
-                    re.I):
-                active = False
-            if not active:
-                continue
-            for quoted in re.findall(r"`(/[^`]+)`", line):
-                if quoted.endswith("/"):
-                    continue
-                candidate = Path(quoted)
-                if not candidate.is_dir():
-                    named_inputs.add(candidate.resolve())
-            bare_line = re.sub(r"`[^`]*`", " ", line)
-            for match in absolute_path.finditer(bare_line):
-                raw = match.group(1)
-                if raw.endswith("/"):
-                    continue  # an explicit directory reference
-                candidate = Path(raw.rstrip(".,;:)]}"))
-                if candidate.is_dir():
-                    continue
-                named_inputs.add(candidate.resolve())
-        for omitted in sorted(named_inputs - manifest_inputs_by_brief[brief]):
+        keys = attempts_by_brief.get(brief, set())
+        if len(keys) == 1 and next(iter(keys)) in superseded:
+            continue
+        for omitted in sorted(
+                named_brief_inputs(brief) - manifest_inputs_by_brief[brief]):
             report.error(
                 f"generated analytical brief {brief} names input {omitted} in "
                 "Inputs/Procedure but input-manifest.tsv omits it"
@@ -1509,7 +2053,10 @@ def validate_input_manifest(root: Path, budgets: dict[str, int],
     return merged
 
 
-def validate_manifest(root: Path, report: Report, final: bool) -> None:
+def validate_manifest(
+    root: Path, report: Report, final: bool,
+    superseded: dict[tuple[str, int], tuple[str, int]],
+) -> None:
     path = root / "orchestration.tsv"
     if not path.exists():
         report.error(f"missing required orchestration manifest: {path}")
@@ -1618,7 +2165,7 @@ def validate_manifest(root: Path, report: Report, final: bool) -> None:
             prior_refs = [token for token in tokens
                           if re.fullmatch(rf"{re.escape(work_id)}:\d+", token)
                           and int(token.split(":")[1]) < attempt]
-            if not prior_refs:
+            if not prior_refs and (work_id, attempt) not in superseded:
                 report.error(
                     f"work unit {work_id} attempt {attempt} does not depend "
                     "on a prior attempt of the same unit")
@@ -1657,7 +2204,21 @@ def validate_manifest(root: Path, report: Report, final: bool) -> None:
                     and dependency_row["state"]
                     in {"partial", "retryable", "needs-repair"}
                 )
-                if not is_attempt_handoff:
+                repair_key: tuple[str, int] | None = None
+                try:
+                    repair_key = (row["work_id"], int(row["attempt"]))
+                except ValueError:
+                    pass
+                dependency_key = (
+                    (match.group(1), int(match.group(2)))
+                    if match is not None else None
+                )
+                is_procedural_handoff = (
+                    dependency_key is not None
+                    and repair_key is not None
+                    and superseded.get(dependency_key) == repair_key
+                )
+                if not is_attempt_handoff and not is_procedural_handoff:
                     report.error(
                         f"work unit {row['work_id']} is {row['state']} while dependency "
                         f"{dependency} is {dependency_row['state']}")
@@ -1667,51 +2228,39 @@ def validate_manifest(root: Path, report: Report, final: bool) -> None:
                 report.error(f"work unit {work_id} is non-terminal at final validation: {row['state']}")
 
 
-def validate_collection_coverage(root: Path, report: Report, level: int) -> None:
+def validate_collection_coverage(
+    root: Path,
+    report: Report,
+    level: int,
+    plan_rows: list[dict[str, str]],
+) -> None:
     """Prove spawn -> terminal attempt -> ledger -> collection disposition,
     joined at exact work-unit granularity, plus recorded-tier consistency."""
-    plan_path = root / "plan.md"
-    if not plan_path.is_file():
-        return
-    text = plan_path.read_text(encoding="utf-8")
     spawned: list[tuple[str, str, str]] = []  # (display name, work_id, tier)
     unreviewed: list[tuple[str, str]] = []  # (display name, work_id)
-    for _, header, rows in table_dicts(text):
-        if "roster entry" not in header or "status" not in header:
+    for row in plan_rows:
+        status = row.get("status", "")
+        entry = row["roster entry"]
+        name, shard_number = plan_row_identity(entry)
+        shard_like = re.search(r"\(shard\b|—\s*shard\b", entry, re.I)
+        if shard_like and shard_number is None:
+            report.error(
+                f"plan row '{entry}' has a shard-like label with no "
+                "shard number; it must not alias the unsharded work unit")
             continue
-        for row in rows:
-            status = row.get("status", "")
-            if status.startswith("unreviewed"):
-                entry = row["roster entry"]
-                name = re.sub(r"\s+(?:\(shard[^)]*\)|—\s*shard.*)$", "",
-                              entry, flags=re.I)
-                prefix = ROSTER_PREFIX.get(name)
-                if prefix:
-                    shard = re.search(
-                        r"(?:\((?:shard\s*)?|—\s*shard\s*)(\d+)", entry,
-                        re.I)
-                    unreviewed.append(
-                        (entry, f"{prefix}{shard.group(1)}" if shard
-                         else prefix))
-                continue
-            if status != "spawn":
-                continue
-            entry = row["roster entry"]
-            name = re.sub(r"\s+(?:\(shard[^)]*\)|—\s*shard.*)$", "", entry,
-                          flags=re.I)
-            prefix = ROSTER_PREFIX.get(name)
-            if not prefix:
-                continue
-            shard = re.search(
-                r"(?:\((?:shard\s*)?|—\s*shard\s*)(\d+)", entry, re.I)
-            shard_like = re.search(r"\(shard\b|—\s*shard\b", entry, re.I)
-            if shard_like and not shard:
-                report.error(
-                    f"plan row '{entry}' has a shard-like label with no "
-                    "shard number; it must not alias the unsharded work unit")
-                continue
-            work_id = f"{prefix}{shard.group(1)}" if shard else prefix
-            spawned.append((entry, work_id, row.get("tier", "").strip()))
+        prefix = ROSTER_PREFIX.get(name)
+        if status.startswith("unreviewed"):
+            if prefix:
+                unreviewed.append(
+                    (entry, f"{prefix}{shard_number}"
+                     if shard_number is not None else prefix))
+            continue
+        if status != "spawn" or not prefix:
+            continue
+        work_id = (
+            f"{prefix}{shard_number}" if shard_number is not None else prefix
+        )
+        spawned.append((entry, work_id, row.get("tier", "").strip()))
     if not spawned and not unreviewed:
         return
     work_ids = [work_id for _, work_id, _ in spawned]
@@ -1914,23 +2463,17 @@ def validate_collection_coverage(root: Path, report: Report, level: int) -> None
                 f"Gaps row for {work_id}")
 
 
-def validate_ter_gate(root: Path, report: Report) -> None:
+def validate_ter_gate(
+    root: Path, report: Report, plan_rows: list[dict[str, str]]
+) -> None:
     """TER completeness: spawned TER must produce its gate tables; classes
     need PROVEN/REJECTED/UNPROVEN VTER verdicts with execution provenance;
     class x file membership is reconciled; residue scoping is fail-closed."""
-    plan_path = root / "plan.md"
-    plan_text = plan_path.read_text(encoding="utf-8") if plan_path.is_file() else ""
     ter_spawned = False
-    plan_rows: list[dict[str, str]] = []
-    for _, header, rows in table_dicts(plan_text):
-        if "roster entry" not in header or "status" not in header:
-            continue
-        for row in rows:
-            plan_rows.append(row)
-            name = re.sub(r"\s+(?:\(shard[^)]*\)|—\s*shard.*)$", "",
-                          row.get("roster entry", ""), flags=re.I)
-            if ROSTER_PREFIX.get(name) == "TER" and row.get("status") == "spawn":
-                ter_spawned = True
+    for row in plan_rows:
+        name, _ = plan_row_identity(row.get("roster entry", ""))
+        if ROSTER_PREFIX.get(name) == "TER" and row.get("status") == "spawn":
+            ter_spawned = True
 
     class_files: dict[str, list[str]] = {}
     sentinel_seen = False
@@ -2187,13 +2730,13 @@ def validate_ter_gate(root: Path, report: Report) -> None:
                         f"plan row '{row['roster entry']}' is residue-scoped "
                         f"to {class_id} without a PROVEN VTER gate verdict")
             entry = row["roster entry"]
-            name = re.sub(r"\s+(?:\(shard[^)]*\)|—\s*shard.*)$", "",
-                          entry, flags=re.I)
+            name, shard_number = plan_row_identity(entry)
             prefix = ROSTER_PREFIX.get(name)
             if prefix:
-                shard = re.search(
-                    r"(?:\((?:shard\s*)?|—\s*shard\s*)(\d+)", entry, re.I)
-                residue_unit = f"{prefix}{shard.group(1)}" if shard else prefix
+                residue_unit = (
+                    f"{prefix}{shard_number}"
+                    if shard_number is not None else prefix
+                )
                 dependent = False
                 orchestration = root / "orchestration.tsv"
                 if orchestration.is_file():
@@ -4082,6 +4625,9 @@ def main() -> int:
     input_assignments: dict[str, list[dict[str, str]]] = {}
     surviving: dict[str, tuple[str, str]] = {}
     family_membership: dict[str, str] = {}
+    plan_rows: list[dict[str, str]] = []
+    plan_tier_column_seen = False
+    indexes_current = False
     if level >= PHASES["collection"]:
         if (root / ".work-unit-seal-transaction.json").exists():
             report.error(
@@ -4091,18 +4637,29 @@ def main() -> int:
             )
         validate_skill_snapshot(root, report)
         validate_artifact_table_contracts(root, report)
-        budgets = validate_scaling_outputs(root, report)
+        plan_rows, plan_tier_column_seen = effective_plan_roster(root, report)
+        budgets, indexes_current = validate_scaling_outputs(root, report)
         required_root_cause_scopes, trigger_rows = validate_trigger_inventory(
             root, report
         )
-        validate_plan(root, trigger_rows, report)
-        validate_generated_briefs(root, report)
-        input_assignments = validate_input_manifest(root, budgets, report)
-        validate_manifest(root, report, final=level >= PHASES["final"])
+        validate_plan(
+            root, trigger_rows, plan_rows, plan_tier_column_seen, report
+        )
+        procedural_supersessions = procedural_repair_supersessions(
+            root, report, indexes_current
+        )
+        validate_generated_briefs(root, report, procedural_supersessions)
+        input_assignments = validate_input_manifest(
+            root, budgets, report, procedural_supersessions, indexes_current
+        )
+        validate_manifest(
+            root, report, final=level >= PHASES["final"],
+            superseded=procedural_supersessions,
+        )
         source_ids, candidates, covered = ledger_data(root, report)
         validate_candidate_descriptors(root, candidates, report)
-        validate_collection_coverage(root, report, level)
-        validate_ter_gate(root, report)
+        validate_collection_coverage(root, report, level, plan_rows)
+        validate_ter_gate(root, report, plan_rows)
         for changed in sorted(set(changed_files) - covered):
             report.error(f"per-file floor missing ledger/ORC row for {changed}")
     if level >= PHASES["verification"]:

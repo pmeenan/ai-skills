@@ -90,6 +90,13 @@ Fix failures in a new artifact before collection; for collected prestate use
 an amendment. Never bypass validation with an abbreviated/missing path. If no
 valid correction is expressible, return `needs-repair` with the exact error.
 
+For a procedural-only repair of sealed historical attempts, include exactly
+one `Procedural repair targets: WORK:1, WORK:2` line after this header. Every
+target must be an earlier attempt of the same work ID; directly depend on all
+prior same-work attempts, preserve and manifest each target brief plus every
+absolute input it names, use the same canonical artifact as `prestate`, and
+return complete. This declaration repairs no artifact or content defect.
+
 Extract, don't ingest: when you need only rows, sections, IDs, or fields
 from a large input file, pull them mechanically (grep/sed/jq/awk) instead
 of reading the whole file — ledger files' "## Candidate rows" sections,

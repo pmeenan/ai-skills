@@ -12,7 +12,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-from artifact_tables import effective_tables
+from artifact_tables import (
+    PLAN_DEFERRED_STATUS,
+    PLAN_ROSTER_COLUMNS,
+    effective_tables,
+    plan_row_identity,
+)
 
 
 ROW_ID = re.compile(r"^(?:[A-Z][A-Z0-9]*-\d+|R\d+-RC\d+-\d+)$")
@@ -67,6 +72,13 @@ CONSISTENCY_CHECKS = {
     "reachability termination",
     "repeated local fixes",
 }
+PLAN_NOT_APPLICABLE = re.compile(
+    r"not applicable\s+—\s+trigger absence proved by\s+"
+    r"(?:T\d+|I[A-Z0-9]+-T\d+)"
+    r"(?:\s*,\s*(?:T\d+|I[A-Z0-9]+-T\d+))*",
+    re.IGNORECASE,
+)
+PLAN_UNREVIEWED = re.compile(r"unreviewed\s+—\s+\S.*", re.IGNORECASE)
 
 
 def tokens(value: str) -> set[str]:
@@ -431,13 +443,72 @@ def affinity_check(
             )
 
 
+def plan_check(
+    parsed: list[tuple[str, list[str], list[dict[str, str]]]],
+    artifact: Path,
+) -> None:
+    roster_tables = [
+        (header, rows)
+        for _, header, rows in parsed
+        if "roster entry" in header and "status" in header
+    ]
+    if len(roster_tables) != 1:
+        fail(
+            f"{artifact} has {len(roster_tables)} effective roster tables; "
+            "expected exactly one"
+        )
+    header, rows = roster_tables[0]
+    if tuple(header) != PLAN_ROSTER_COLUMNS:
+        fail(
+            f"{artifact} roster must have exactly the ordered columns "
+            + " | ".join(PLAN_ROSTER_COLUMNS)
+        )
+    if not rows:
+        fail(f"{artifact} roster has no rows")
+
+    identities: set[tuple[str, int | None]] = set()
+    modes: dict[str, set[str]] = {}
+    for row in rows:
+        entry = row.get("roster entry", "").strip()
+        base, shard = plan_row_identity(entry)
+        if not base:
+            fail(f"{artifact} has a blank roster entry")
+        if shard is None and re.search(r"\(shard\b|—\s*shard\b", entry, re.I):
+            fail(f"{artifact} has malformed shard label '{entry}'")
+        identity = (base, shard)
+        if identity in identities:
+            fail(
+                f"{artifact} duplicates effective plan identity {base}"
+                + (f" shard {shard}" if shard is not None else "")
+            )
+        identities.add(identity)
+        modes.setdefault(base, set()).add("sharded" if shard is not None else "unsharded")
+
+        status = row.get("status", "")
+        if status in {"spawn", PLAN_DEFERRED_STATUS}:
+            continue
+        if PLAN_NOT_APPLICABLE.fullmatch(status) or PLAN_UNREVIEWED.fullmatch(status):
+            continue
+        fail(f"{artifact} plan row '{entry}' has invalid status '{status}'")
+
+    for base, base_modes in modes.items():
+        if len(base_modes) > 1:
+            fail(
+                f"{artifact} mixes sharded and unsharded effective rows for "
+                f"{base}"
+            )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("review_dir", type=Path)
     parser.add_argument("artifact", type=Path)
     parser.add_argument(
         "--kind",
-        choices=("auto", "inventory", "ledger", "verdict", "affinity", "generic"),
+        choices=(
+            "auto", "inventory", "plan", "ledger", "verdict", "affinity",
+            "generic",
+        ),
         default="auto",
     )
     arguments = parser.parse_args()
@@ -462,6 +533,8 @@ def main() -> int:
     if kind == "auto":
         if relative.as_posix() == "inventory.md" or relative.parts[:1] == ("inventory",):
             kind = "inventory"
+        elif relative.as_posix() == "plan.md":
+            kind = "plan"
         elif relative.parts[:1] == ("ledger",):
             kind = "ledger"
         elif (
@@ -475,6 +548,8 @@ def main() -> int:
             kind = "generic"
     if kind == "inventory":
         inventory_check(root, artifact)
+    elif kind == "plan":
+        plan_check(parsed, artifact)
     elif kind == "ledger":
         ledger_check(parsed, artifact)
     elif kind == "verdict":

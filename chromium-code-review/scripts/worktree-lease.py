@@ -17,6 +17,7 @@ import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -50,6 +51,7 @@ TAKEOVER_EVENTS = frozenset(
 HOLDER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 HOLDER_LOG_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\.log")
 PIN_DIR_PATTERN = re.compile(r"cl-[0-9]+-ps[0-9]+")
+LEASE_STATE_NAME = "lease-state.json"
 
 
 class LeaseReadError(Exception):
@@ -324,11 +326,176 @@ def pin_field(review_dir: Path, label: str) -> str:
     fail(f"{pin} has no '{label}' field")
 
 
+def pin_identity(review_dir: Path) -> dict[str, str]:
+    """Return the immutable identity and exact byte hash of pin.md."""
+    pin = review_dir / "pin.md"
+    try:
+        payload = pin.read_bytes()
+        text = payload.decode("utf-8")
+    except (OSError, UnicodeError) as error:
+        fail(f"cannot read {pin}: {error}")
+    heading = re.search(
+        r"^# CL ([0-9]+) — patchset ([0-9]+) pin$", text, re.MULTILINE
+    )
+    revision = re.search(
+        r"^- Revision SHA: ([0-9a-fA-F]{40,64})$", text, re.MULTILINE
+    )
+    if heading is None or revision is None:
+        fail(f"{pin} has no mechanically readable pin identity")
+    return {
+        "cl": heading.group(1),
+        "patchset": heading.group(2),
+        "revision_sha": revision.group(1).lower(),
+        "pin_sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def read_lease_state(review_dir: Path) -> dict[str, object] | None:
+    """Read and authenticate mutable lease state against immutable pin.md."""
+    review_dir = review_dir.resolve()
+    path = review_dir / LEASE_STATE_NAME
+    if not path.exists():
+        pin = review_dir / "pin.md"
+        try:
+            requires_state = any(
+                line.startswith("- Lease state: lease-state.json (required;")
+                for line in pin.read_text(encoding="utf-8").splitlines()
+            )
+        except OSError:
+            requires_state = False
+        if requires_state:
+            fail(f"required authenticated lease state is absent: {path}")
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"cannot read authenticated lease state {path}: {error}")
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        fail(f"{path} has an unsupported lease-state schema")
+    identity = pin_identity(review_dir)
+    expected = {
+        "review_dir": str(review_dir),
+        "cl": identity["cl"],
+        "patchset": identity["patchset"],
+        "revision_sha": identity["revision_sha"],
+        "pin_sha256": identity["pin_sha256"],
+    }
+    for key, expected_value in expected.items():
+        if value.get(key) != expected_value:
+            fail(
+                f"{path} {key} does not authenticate against this review/pin: "
+                f"{value.get(key)!r} != {expected_value!r}"
+            )
+    holder = value.get("holder")
+    lease_log = value.get("lease_log")
+    token = value.get("token")
+    if not isinstance(holder, str):
+        fail(f"{path} has no valid holder")
+    validate_holder(holder)
+    if not isinstance(lease_log, str) or not Path(lease_log).is_absolute():
+        fail(f"{path} has no absolute lease_log")
+    lease_path = Path(lease_log)
+    expected_pin_dir = f"cl-{identity['cl']}-ps{identity['patchset']}"
+    initial_lease = Path(pin_field(review_dir, "Worktree lease"))
+    expected_lease_dir = pin_dir_for(initial_lease).resolve()
+    if (
+        lease_path.name != f"{holder}.log"
+        or lease_path.parent.name != expected_pin_dir
+        or lease_path.parent.resolve() != expected_lease_dir
+    ):
+        fail(f"{path} lease_log is not the authenticated holder/pin path")
+    if not isinstance(token, str) or re.fullmatch(r"[0-9a-f]{32}", token) is None:
+        fail(f"{path} has no valid lease token")
+    return value
+
+
 def recorded_lease(review_dir: Path) -> tuple[Path, str]:
-    """The lease path and token exactly as pin.md records them."""
+    """The current mutable lease, with legacy pin.md fallback."""
+    state = read_lease_state(review_dir)
+    if state is not None:
+        return Path(str(state["lease_log"])), str(state["token"])
     recorded = Path(pin_field(review_dir, "Worktree lease"))
     token = pin_field(review_dir, "Worktree lease token")
     return recorded, token
+
+
+def write_state(arguments: argparse.Namespace) -> None:
+    """Atomically bind mutable lease credentials to one immutable pin."""
+    review_dir = arguments.review_dir.resolve()
+    lease_path = arguments.lease.resolve()
+    holder = validate_holder(arguments.holder)
+    token = arguments.token
+    if re.fullmatch(r"[0-9a-f]{32}", token) is None:
+        fail("lease state token must be 32 lowercase hexadecimal characters")
+    identity = pin_identity(review_dir)
+    expected_pin_dir = f"cl-{identity['cl']}-ps{identity['patchset']}"
+    initial_lease = Path(pin_field(review_dir, "Worktree lease"))
+    expected_lease_dir = pin_dir_for(initial_lease).resolve()
+    if (
+        lease_path.name != f"{holder}.log"
+        or lease_path.parent.name != expected_pin_dir
+        or lease_path.parent.resolve() != expected_lease_dir
+    ):
+        fail("lease state path does not match the requested holder and pin")
+
+    with mutation_guard(guard_root_for(lease_path)):
+        migrate_legacy_pin(pin_dir_for(lease_path))
+        if not lease_path.is_file():
+            fail(f"cannot authenticate absent active lease: {lease_path}")
+        owner = owner_or_fail(lease_path)
+        if owner.get("token") != token:
+            fail(f"lease token does not own {lease_path}")
+        if str(owner.get("review_dir", "")) != str(review_dir):
+            fail(f"lease {lease_path} belongs to another review directory")
+        if owner.get("holder") not in {None, holder}:
+            fail(f"lease {lease_path} records another holder")
+
+        value = {
+            "schema_version": 1,
+            "review_dir": str(review_dir),
+            "cl": identity["cl"],
+            "patchset": identity["patchset"],
+            "revision_sha": identity["revision_sha"],
+            "pin_sha256": identity["pin_sha256"],
+            "holder": holder,
+            "lease_log": str(lease_path),
+            "token": token,
+            "updated_at": now_text(),
+        }
+        destination = review_dir / LEASE_STATE_NAME
+        temporary = review_dir / (
+            f".{LEASE_STATE_NAME}.tmp-{os.getpid()}-{secrets.token_hex(4)}"
+        )
+        descriptor = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(value, stream, indent=2, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, destination)
+            os.chmod(destination, 0o600)
+            directory_fd = os.open(review_dir, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+    print(destination)
+
+
+def validate_state(arguments: argparse.Namespace) -> None:
+    state = read_lease_state(arguments.review_dir.resolve())
+    if state is None:
+        fail(
+            f"review has no {LEASE_STATE_NAME}; legacy pin fallback remains valid",
+            code=NO_RECORDED_LEASE,
+        )
+    print(f"valid {arguments.review_dir.resolve() / LEASE_STATE_NAME}")
 
 
 @contextmanager
@@ -512,21 +679,28 @@ def holder_of(arguments: argparse.Namespace) -> None:
     pin = review_dir / "pin.md"
     if not pin.is_file():
         fail(f"review has no pin.md: {pin}", code=NO_RECORDED_LEASE)
-    try:
-        lines = pin.read_text(encoding="utf-8").splitlines()
-    except OSError as error:
-        fail(f"cannot read {pin}: {error}", code=NO_RECORDED_LEASE)
-    fields: dict[str, str] = {}
-    for label in ("Worktree lease", "Worktree lease token"):
-        prefix = f"- {label}: "
-        for line in lines:
-            if line.startswith(prefix):
-                fields[label] = line.removeprefix(prefix)
-                break
-    if len(fields) != 2:
-        fail(f"{pin} records no worktree lease", code=NO_RECORDED_LEASE)
-    recorded = Path(fields["Worktree lease"])
-    token = fields["Worktree lease token"]
+    state = read_lease_state(review_dir)
+    if state is not None:
+        recorded = Path(str(state["lease_log"]))
+        token = str(state["token"])
+        recorded_holder = str(state["holder"])
+    else:
+        try:
+            lines = pin.read_text(encoding="utf-8").splitlines()
+        except OSError as error:
+            fail(f"cannot read {pin}: {error}", code=NO_RECORDED_LEASE)
+        fields: dict[str, str] = {}
+        for label in ("Worktree lease", "Worktree lease token"):
+            prefix = f"- {label}: "
+            for line in lines:
+                if line.startswith(prefix):
+                    fields[label] = line.removeprefix(prefix)
+                    break
+        if len(fields) != 2:
+            fail(f"{pin} records no worktree lease", code=NO_RECORDED_LEASE)
+        recorded = Path(fields["Worktree lease"])
+        token = fields["Worktree lease token"]
+        recorded_holder = ""
 
     with mutation_guard(guard_root_for(recorded)):
         migrate_legacy_pin(pin_dir_for(recorded))
@@ -558,7 +732,7 @@ def holder_of(arguments: argparse.Namespace) -> None:
                         "restarting it.",
                         code=OWNERSHIP_LOST,
                     )
-                print(holder_key_of(path))
+                print(recorded_holder or holder_key_of(path))
                 return
             fail(
                 f"this review's lease at {path} is now held by another review; "
@@ -578,7 +752,7 @@ def holder_of(arguments: argparse.Namespace) -> None:
                 continue
             event = last_event(archive)
             if event == "released":
-                print(holder_key_of(archive))
+                print(recorded_holder or holder_key_of(archive))
                 return
             fail(
                 f"this review's lease ended with '{event}' ({archive}); it was "
@@ -750,6 +924,17 @@ def parser() -> argparse.ArgumentParser:
     acquire_parser.add_argument("--stale-seconds", type=int, default=DEFAULT_STALE_SECONDS)
     acquire_parser.add_argument("--force", action="store_true")
     acquire_parser.set_defaults(handler=acquire)
+
+    write_state_parser = subparsers.add_parser("write-state")
+    write_state_parser.add_argument("review_dir", type=Path)
+    write_state_parser.add_argument("lease", type=Path)
+    write_state_parser.add_argument("token")
+    write_state_parser.add_argument("holder")
+    write_state_parser.set_defaults(handler=write_state)
+
+    validate_state_parser = subparsers.add_parser("validate-state")
+    validate_state_parser.add_argument("review_dir", type=Path)
+    validate_state_parser.set_defaults(handler=validate_state)
 
     heartbeat_parser = subparsers.add_parser("heartbeat")
     heartbeat_parser.add_argument("review_dir", type=Path)

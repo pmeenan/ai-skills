@@ -43,10 +43,21 @@ Columns and roles are exact. `role` is one of `brief`, `control`, `reference`,
 to: its bytes/SHA-256 cover the immutable pre-attempt prefix, and the
 validator verifies the current file still begins with exactly that prefix —
 append-only growth, never a rewrite. Every other role's hash must match the
-file exactly. A path containing spaces is written backtick-quoted in briefs
+file exactly when the attempt is sealed. Later directory validation preserves
+a stale non-`prestate` row only when its bytes/hash match a canonical artifact
+prefix sealed as `prestate` by a later complete same-artifact attempt, or when
+it names a deterministic `indexes/` output whose rebuild is current and its
+historical attempt retains an exact brief self-row and orchestration join.
+No other stale input is compatible. A procedural-only repair of an immutable historical attempt
+also manifests the same canonical artifact as `prestate`, every exact target
+brief, and every absolute input named in each target brief. A path containing
+spaces is written backtick-quoted in briefs
 so the validator can parse it. Each work ID
 includes its brief as a `brief` row and every control, reference, or assigned
-file the worker must load. The generated per-section files under
+file or helper the worker must load. Absolute paths repeated in an explicit
+`Deliverable:` or `Deliverables:` section are outputs and are not input rows;
+declaring an output does not exempt any separate Procedure input/helper path.
+The generated per-section files under
 `references/worker/⟨stem⟩/` exist precisely so a single section is its own
 immutable, measurable packet; name those in briefs and manifests, and use the
 whole canonical reference file only when the worker genuinely needs most of

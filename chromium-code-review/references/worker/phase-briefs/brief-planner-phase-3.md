@@ -56,7 +56,11 @@ statuses. Ambiguous specialist evidence spawns the narrow row; it never
 becomes an unsupported not-applicable status.
 
 Residue mode (round two, only after the TER gate ran): read the TER
-ledger and ⟨review-dir⟩/verification/VTER.md, convert each
+ledger and ⟨review-dir⟩/verification/VTER.md. Preserve the collected plan
+prefix and append exactly `## Round-two residue continuation — PLAN attempt
+⟨attempt⟩` with the exact ordered columns `roster entry | scope | status |
+tier | batch | subagent | outcome`; never rewrite the original rows or append
+a second ordinary roster table. Transition each
 `deferred — pending TER gate (round two)` row to `spawn` with an exact
 concrete scope copied into the brief (never "see the TER ledger"), and
 begin each residue-scoped row's scope cell with `residue(TC⟨ids⟩): ` naming
@@ -65,7 +69,22 @@ that cites a class without a PROVEN gate verdict. Plan REJECTED or
 UNPROVEN classes as ordinary full review, and register the new briefs'
 now-existing inputs in the manifest. Cross-site closure recipes (FPM, ACS,
 per-surface invariants over unchanged callers) keep their full scope
-regardless.
+regardless. An unsharded deferred row may become distinct numbered shard rows;
+otherwise preserve the earlier shard number. Do not mix sharded and unsharded
+continuation rows for one roster entry, and do not target a row already
+transitioned by an earlier attempt.
+
+Proof-repair mode (only for a collected non-deferred not-applicable row):
+preserve the collected plan prefix and append exactly `## Plan repair
+continuation — PLAN attempt ⟨attempt⟩` with the exact ordered columns `roster
+entry | expected status | scope | status | tier | batch | evidence`. Use the
+current effective row's stable roster identity and exact status as the guard.
+Either supply a corrected exact trigger-absence proof while preserving scope,
+tier, and batch, or transition to `spawn` with concrete scope, tier, and batch.
+Never use this form for a deferred row or to change identity, subagent, or
+outcome. The two continuation heading kinds share one increasing attempt
+sequence; any ambiguous, duplicate, stale, or unsupported target blocks the
+whole repair table.
 
 Deliverables:
 - ⟨review-dir⟩/plan.md — the full roster, one row per entry (or shard),
@@ -77,7 +96,11 @@ Deliverables:
   `deferred — pending TER gate (round two)` rows with no briefs yet. Do
   NOT write a gate brief: the orchestrator generates the TER Gate Skeptic
   from its phase brief after the TER ledger exists, so the brief's inputs
-  are complete and hashable at generation time.
+  are complete and hashable at generation time. In residue mode, the
+  deliverable is the append-only round-two continuation table specified
+  above; raw earlier rows remain audit history and the effective plan contains
+  only their transitioned replacements. In proof-repair mode, the deliverable
+  is the separate append-only Plan repair continuation table specified above.
 - ⟨review-dir⟩/briefs/⟨THREAD⟩.md — one self-contained brief per spawn
   row, using the shapes in
   ⟨skill-dir⟩/references/worker/templates/generated-common-header.md and

@@ -27,6 +27,60 @@ The planner assigns a model tier and priority batch per the Model Tiers
 contract in `references/scaling-and-indexes.md`; the orchestrator records the
 subagent/task identifier when spawned, and the outcome when collected.
 
+**Round two is an append-only plan continuation, never a rewrite or a second
+ordinary roster table.** Append exactly one section per Planner attempt using
+the heading `## Round-two residue continuation — PLAN attempt ⟨N⟩` and the
+same exact ordered columns `roster entry | scope | status | tier | batch |
+subagent | outcome`. Every continuation row has status `spawn` and targets an
+earlier effective row whose status is exactly
+`deferred — pending TER gate (round two)`. An unsharded row replaces the one
+earlier unsharded row with the same roster name. Numbered shard rows either
+replace one earlier unsharded deferred row one-to-many, or replace already
+numbered deferred rows one-to-one by base roster name plus shard number; the
+scope text inside a shard label may change. Do not mix sharded and unsharded
+continuation rows for one roster name. Unknown, duplicate, ambiguous,
+non-deferred, and repeated targets are invalid. Raw tables remain immutable
+audit history; parsers, validators, and collectors use the collapsed effective
+roster in the original roster position. A partial attempt may transition a
+disjoint subset, but every deferred row must be transitioned before the
+collection gate.
+
+```markdown
+## Round-two residue continuation — PLAN attempt 2
+
+| roster entry | scope | status | tier | batch | subagent | outcome |
+| --- | --- | --- | --- | --- | --- | --- |
+| Error-Path Walk (shard 1: parse failures) | residue(TC1): parser error paths | spawn | frontier | D03 | — | — |
+| Error-Path Walk (shard 2: consumer failures) | residue(TC1): consumer error paths | spawn | frontier | D03 | — | — |
+```
+
+**A non-deferred not-applicable proof correction uses a distinct append-only
+plan-repair continuation.** It never uses the round-two heading and never
+rewrites the base roster. Append exactly:
+
+```markdown
+## Plan repair continuation — PLAN attempt 4
+
+| roster entry | expected status | scope | status | tier | batch | evidence |
+| --- | --- | --- | --- | --- | --- | --- |
+| Callback And Task Lifetime | not applicable — trigger absence proved by T004 | callback/lifetime edges proved by T001,T003 | spawn | frontier | D06 | T001,T003 |
+| Teardown Order | not applicable — trigger absence proved by T004 | — | not applicable — trigger absence proved by T024 | — | D01 | T024 |
+```
+
+The target is the current effective row's stable roster identity (base name
+plus optional shard number) and must resolve exactly once. `expected status`
+is an exact compare-and-append guard: a stale or repeated repair fails. The
+target must be an existing non-deferred
+`not applicable — trigger absence proved by ...` row. Its replacement status
+is either `spawn` with a concrete non-sentinel scope, concrete tier, and batch,
+or another exact not-applicable proof while preserving scope, tier, and batch.
+The repair never changes roster identity, subagent, or outcome. Evidence is
+mandatory. A table is atomic: any unknown, ambiguous, duplicate, deferred,
+stale, no-op, unsupported-status, or malformed row prevents the whole table
+from taking effect. Round-two and repair continuation headings share one
+strictly increasing, unique PLAN-attempt sequence and are collapsed in source
+order; raw history remains unchanged.
+
 ```markdown
 # Thread plan — CL 9999999 PS3
 

@@ -912,6 +912,33 @@ class ProcessContractToolsTest(unittest.TestCase):
             self.assertNotEqual(0, tampered.returncode)
             self.assertIn("changed after sealing", tampered.stderr)
 
+    def test_snapshot_ignores_runtime_python_bytecode_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = root / "skill"
+            review = root / "review"
+            review.mkdir()
+            write(skill / "SKILL.md", "---\nname: fixture\ndescription: fixture\n---\n")
+            write(skill / "scripts" / "helper.py", "print('one')\n")
+            run("python3", str(SNAPSHOT), str(skill), str(review))
+            snapshot = review / "skill-snapshot"
+            write(
+                snapshot / "scripts" / "__pycache__" / "helper.cpython-312.pyc",
+                "runtime cache\n",
+            )
+            checked = run(
+                "python3", str(SNAPSHOT), str(skill), str(review), "--check"
+            )
+            self.assertIn("current:", checked.stdout)
+
+            write(snapshot / "unexpected.txt", "must fail\n")
+            rejected = run(
+                "python3", str(SNAPSHOT), str(skill), str(review), "--check",
+                check=False,
+            )
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertIn("unexpected=['unexpected.txt']", rejected.stderr)
+
     def test_seal_registers_hashes_and_is_idempotent_for_exact_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1158,6 +1185,43 @@ class ProcessContractToolsTest(unittest.TestCase):
                 "--kind", "ledger",
             )
             self.assertIn("valid ledger", checked.stdout)
+
+    def test_worker_validator_checks_effective_plan_continuation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            review = Path(temporary)
+            plan = review / "plan.md"
+            columns = (
+                "| roster entry | scope | status | tier | batch | subagent | outcome |\n"
+                "| --- | --- | --- | --- | --- | --- | --- |\n"
+            )
+            write(
+                plan,
+                "# Plan\n\n"
+                + columns
+                + "| Error-Path Walk | old | deferred — pending TER gate "
+                "(round two) | frontier | — | — | — |\n\n"
+                "## Round-two residue continuation — PLAN attempt 2\n\n"
+                + columns
+                + "| Error-Path Walk | new | spawn | frontier | D01 | — | — |\n",
+            )
+            checked = run(
+                "python3", str(ARTIFACT_VALIDATE), str(review), str(plan)
+            )
+            self.assertIn("valid plan", checked.stdout)
+
+            plan.write_text(
+                plan.read_text(encoding="utf-8").replace(
+                    "| Error-Path Walk | new | spawn |",
+                    "| Data Lineage | new | spawn |",
+                ),
+                encoding="utf-8",
+            )
+            failed = run(
+                "python3", str(ARTIFACT_VALIDATE), str(review), str(plan),
+                check=False,
+            )
+            self.assertNotEqual(0, failed.returncode)
+            self.assertIn("plan continuation target", failed.stderr)
 
 
 class RefreshDeliveryGateTest(unittest.TestCase):

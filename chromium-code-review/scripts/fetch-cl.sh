@@ -107,6 +107,7 @@ WT_LEASE_TOKEN=""
 LEASE_ACQUIRED=0
 CREATED_WT=0
 REMOVE_REVIEW_DIR_ON_FAILURE=0
+REUSE_EXISTING_ARTIFACTS=0
 
 cleanup() {
   local status=$?
@@ -242,20 +243,25 @@ if [[ -n "$REQUESTED_REVIEW_DIR" ]]; then
   [[ -e "$REVIEW_DIR" ]] || REMOVE_REVIEW_DIR_ON_FAILURE=1
   mkdir -p -- "$REVIEW_DIR" || die "cannot create $REVIEW_DIR"
   if [[ -e "$REVIEW_DIR/pin.md" ]]; then
-    read -r EXISTING_CL EXISTING_PS EXISTING_SHA < <(python3 - "$REVIEW_DIR/pin.md" <<'PYEOF'
+    read -r EXISTING_CL EXISTING_PS EXISTING_SHA EXISTING_PARENT < <(python3 - "$REVIEW_DIR/pin.md" <<'PYEOF'
 import re
 import sys
 
 text = open(sys.argv[1], encoding="utf-8").read()
 heading = re.search(r"^# CL ([0-9]+) — patchset ([0-9]+) pin$", text, re.MULTILINE)
 sha = re.search(r"^- Revision SHA: ([0-9a-fA-F]{40,64})$", text, re.MULTILINE)
-if not heading or not sha:
+parent = re.search(r"^- Parent SHA: ([0-9a-fA-F]{40,64})$", text, re.MULTILINE)
+if not heading or not sha or not parent:
     raise SystemExit("existing pin.md is malformed")
-print(heading.group(1), heading.group(2), sha.group(1))
+print(heading.group(1), heading.group(2), sha.group(1), parent.group(1))
 PYEOF
     ) || die "cannot safely identify the existing explicit review directory"
-    [[ "$EXISTING_CL" == "$CL" && "$EXISTING_PS" == "$PS" && "$EXISTING_SHA" == "$SHA" ]] \
-      || die "$REVIEW_DIR is pinned to CL $EXISTING_CL PS$EXISTING_PS $EXISTING_SHA, not CL $CL PS$PS $SHA"
+    [[ "$EXISTING_CL" == "$CL" && "$EXISTING_PS" == "$PS" \
+        && "$EXISTING_SHA" == "$SHA" && "$EXISTING_PARENT" == "$PARENT" ]] \
+      || die "$REVIEW_DIR is pinned to CL $EXISTING_CL PS$EXISTING_PS $EXISTING_SHA (parent $EXISTING_PARENT), not CL $CL PS$PS $SHA (parent $PARENT)"
+    [[ -f "$REVIEW_DIR/detail.json" && -f "$REVIEW_DIR/comments.json" ]] \
+      || die "$REVIEW_DIR has an existing pin but missing pinned detail.json/comments.json; use a fresh review directory or repair it explicitly"
+    REUSE_EXISTING_ARTIFACTS=1
   elif find "$REVIEW_DIR" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
     die "$REVIEW_DIR is non-empty but has no valid pin.md; use a fresh directory"
   fi
@@ -405,9 +411,10 @@ git -C "$REPO" cat-file -e "$PARENT^{commit}" 2>/dev/null \
 
 exec 9>&-
 
-# Generate pin.md using git for the changed-file list and line statistics so
-# historical (non-current) patchsets are represented just as accurately as
-# the current patchset.
+# Generate pin.md only for a new review. Once any work unit can seal it as an
+# input, same-pin lease resume must leave pin.md/detail.json/comments.json
+# byte-identical. Mutable credentials are written to lease-state.json below.
+if (( REUSE_EXISTING_ARTIFACTS == 0 )); then
 python3 - "$REVIEW_STAGE" "$CL" "$PS" "$CURRENT_PS" "$SHA" "$PARENT" "$REF" "$WT" "$WT_LEASE" "$WT_LEASE_TOKEN" "$REPO" <<'PYEOF'
 import json
 from datetime import datetime, timezone
@@ -492,6 +499,7 @@ lines.extend([
     f"- Metadata fetched at: {fetched_at}",
     f"- Ref: {ref}",
     f"- Worktree: {worktree} (rev-parse verified; clean; active lease required)",
+    "- Lease state: lease-state.json (required; mutable; never a sealed input)",
     f"- Worktree lease: {worktree_lease}",
     f"- Worktree lease token: {lease_token}",
     f"- Messages: {len(detail.get('messages', []))}; published comments: "
@@ -519,13 +527,26 @@ if description:
 (pathlib.Path(stage) / "pin.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 print(f"pin.md staged; {unresolved} unresolved comment thread(s)")
 PYEOF
+fi
 
 # Each rename is atomic because the staging directory is inside REVIEW_DIR.
-for artifact in detail.json comments.json pin.md; do
-  mv -f -- "$REVIEW_STAGE/$artifact" "$REVIEW_DIR/$artifact"
-done
+if (( REUSE_EXISTING_ARTIFACTS == 0 )); then
+  for artifact in detail.json comments.json pin.md; do
+    mv -f -- "$REVIEW_STAGE/$artifact" "$REVIEW_DIR/$artifact"
+  done
+else
+  rm -- "$REVIEW_STAGE/detail.json" "$REVIEW_STAGE/comments.json"
+fi
 rmdir -- "$REVIEW_STAGE"
 REVIEW_STAGE=""
+
+# Authenticate the current (possibly fresh after a voluntary release) token
+# against this exact immutable pin. Legacy reviews without lease-state.json
+# remain readable; their first successful same-pin resume creates it.
+"$LEASE_HELPER" write-state \
+  "$REVIEW_DIR" "$WT_LEASE" "$WT_LEASE_TOKEN" "$HOLDER" >/dev/null \
+  || die "could not persist authenticated mutable lease state"
+
 CREATED_WT=0
 REMOVE_REVIEW_DIR_ON_FAILURE=0
 

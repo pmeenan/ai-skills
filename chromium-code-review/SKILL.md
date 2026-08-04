@@ -108,9 +108,11 @@ Modes is only for harnesses with no such tool at all.
    before continuing. If the heartbeat reports the lease merely absent because
    this review released it, rerun `fetch-cl.sh` with the same CL, patchset, and
    review directory to reacquire and reuse the clean pinned worktree; a re-pin
-   recovers this review's own holder key and lease token rather than minting a
-   second identity. Peer holders reviewing the same pin are expected and are
-   never a reason to stop. **If this review's own lease was taken over or
+   recovers this review's own holder key rather than minting a second identity.
+   A voluntarily released lease receives a fresh token in mutable
+   `lease-state.json`; `pin.md`, `detail.json`, and `comments.json` remain
+   byte-identical so sealed inputs stay valid. Peer holders reviewing the same
+   pin are expected and are never a reason to stop. **If this review's own lease was taken over or
    expired, `fetch-cl.sh` refuses the re-pin and this review must stop.** An
    expired lease may already have been garbage-collected along with the
    worktree its evidence cites, so reviving it silently is unsound. Never work
@@ -144,7 +146,18 @@ Modes is only for harnesses with no such tool at all.
    recovery worker first inspects the brief and artifact and writes a bounded
    repair brief naming the exact missing matrix rows, IDs, files, or trace
    units. Retry that repair brief, never the whole original scope. Collection
-   audit gaps use the same targeted repair path. Only one attempt may write a
+   audit gaps use the same targeted repair path. If the gap is only a sealed
+   historical attempt's brief/input/dependency procedure, preserve that
+   attempt byte-for-byte and create a later complete attempt whose brief has
+   the exact line `Procedural repair targets: ⟨work-id⟩:⟨attempt⟩` (comma-
+   separated for multiple targets). It must use the same canonical artifact,
+   directly depend on every prior attempt of that work ID, manifest every
+   target brief and every absolute input named by those briefs, and manifest
+   the artifact as `prestate`. This repairs only the declared procedural
+   defects; it never excuses artifact/content validation or authorizes
+   reanalysis. An invalid repair declaration remains an error unless a later
+   complete, authenticated repair explicitly targets that failed attempt.
+   Only one attempt may write a
    canonical artifact at a time. Loop until complete or honestly terminated.
    A partial return is a normal handoff, never grounds to mark the phase done
    or fold its remainder into another agent.
@@ -338,10 +351,12 @@ rather than transcribing their content.
 atomically acquire the worktree lease.** Leases are ref-counted per pin: the
 lock directory `<src-parent>/codereview/locks/cl-<CL>-ps<PS>/` holds one
 append-only JSON-lines progress log per holder, `<holder>.log`, and `pin.md`
-records this review's own log path plus an unguessable owner token. Pass
+records the initial pin while mutable `lease-state.json` records the
+authenticated current log path plus an unguessable owner token. The mutable
+state is operational metadata and is never a sealed worker input. Pass
 `--holder <key>` to name the identity explicitly; the default is stable across
-re-pins of one review directory, recovering the holder an existing `pin.md`
-already owns rather than minting a second one.
+re-pins of one review directory, recovering the holder its authenticated lease
+state (or a legacy `pin.md`) already owns rather than minting a second one.
 
 **Independent concurrent reviews of one pin are supported and expected.**
 Several agents or models may hold the same patchset at once, each with its own
@@ -372,11 +387,13 @@ lease log themselves. Before every live phase gate, pass
 `--require-active-lease` to `validate-review-dir.py`; audit and post-mortem
 validation after release intentionally omit that flag.
 
-It fetches `ALL_REVISIONS` metadata and published comments, strips Gerrit's
-XSSI prefix, computes historical file statistics from the selected
+On the first pin it fetches `ALL_REVISIONS` metadata and published comments,
+strips Gerrit's XSSI prefix, computes historical file statistics from the selected
 parent/revision pair, fetches the exact revision ref, creates a detached
 worktree at the explicit SHA, verifies `rev-parse HEAD`, and writes `pin.md`,
-`detail.json`, and `comments.json`. A metadata, comment, ref, parent, or pin
+`detail.json`, `comments.json`, and mutable `lease-state.json`. A same exact
+CL/patchset/revision resume verifies but never rewrites the first three files;
+only authenticated lease state changes. A metadata, comment, ref, parent, or pin
 failure is fatal. Do not recreate this sequence by hand unless the script is
 unavailable; if manual fallback is unavoidable, use separate checked commands
 and preserve the same outputs and validation contracts.
@@ -575,13 +592,25 @@ ordinary verdict pipeline, and counts only with this execution provenance —
 the validator rejects a gate file with no VTER work unit behind it, a VTER
 that does not depend on VTERB, or a VTERB that does not depend on every
 spawned TER shard. When it
-collects, respawn the Planner in residue mode to convert every deferred row
-to a concrete `spawn` row whose scope cites its PROVEN classes
+collects, respawn the Planner in residue mode to transition every deferred
+row through the canonical append-only
+`## Round-two residue continuation — PLAN attempt <N>` table (never an
+in-place rewrite or a second ordinary roster table) to a concrete `spawn` row
+whose scope cites its PROVEN classes
 (`residue(TC…): `) and whose orchestration attempts record `depends_on`
 VTER or the round-two Planner; the validator rejects residue scoping
 without a PROVEN verdict, without that dependency, and any malformed
 residue-like scope. Deferred is transient: no
 deferred row may survive to the collection audit.
+
+If an already collected non-deferred not-applicable roster row cites the wrong
+absence proof, append the separate canonical `## Plan repair continuation —
+PLAN attempt <N>` table from `references/templates.md`. Its stable roster
+identity and exact expected status guard the replacement; it may correct only
+the proof status or transition the row to a concretely scoped spawn. It cannot
+target deferred rows, rename identities, or alter subagent/outcome history.
+Round-two and proof-repair headings share one increasing, unique attempt
+sequence.
 
 **Collect ledger files; never transcribe or compress them.** Collection is:
 confirm the thread's `ledger/<THREAD>.md` exists and is non-trivial
