@@ -80,7 +80,7 @@ flowchart TD
     G --> H[Validate Opportunity Sizing & Correctness Guardrails]
     H -->|Fails Correctness Checks| I[Reject: Broken Work / Invalid Layout]
     H -->|Passes Correctness Checks| J[Randomized ABBA/BAAB Block Verification vs Session A/A Noise Floor]
-    J -->|Provisional Local Delta Found| K[Phase 3: Comprehensive Mechanical Testing & Guardrail Review]
+    J -->|Provisional Local Delta Found| K[Phase 3: Autonomous Multi-Agent Prototyping implementation & adversarial review]
     K -->|Passes Web-Compat, Security, Memory & Oilpan Checks| L[Phase 4: Multi-Candidate Integration Phase]
     L -->|Full-Suite Combined Geometric Lower CI >= +5.0% on Pinpoint| M[Mark VALIDATED & Achieve Goal]
     I --> N[Revert Probes & Verify git status --porcelain]
@@ -118,8 +118,14 @@ flowchart TD
     ```
 * **Clean Working Tree Rule & Assertion:** Document diffs, Crossbench logs, and statistics into the dossier. Save accepted candidate implementations as explicit commits on candidate branches. Revert probes and verify clean state with `git status --porcelain`.
 
-### Phase 3: Mechanical Testing & Correctness Guardrails
-* Combine LLM intent reviews with comprehensive correctness guardrails: WPT tests, lifecycle ordering, MutationObservers, accessibility, focus/selection, custom elements, style invalidation, compositing, and Oilpan GC lifetime checks.
+### Phase 3: Autonomous Multi-Agent Implementation Prototyping
+Incrementally curate, implement, and pipeline candidate optimizations using a multi-agent assembly line on the dedicated `speedometer` branch.
+1. The **Tech Lead** evaluates opportunities and selects a constrained batch (e.g., 15 candidate bottlenecks) for the current pipeline.
+2. The Tech Lead spawns an **Implementation Engineer** subagent for a selected candidate. Their objective is to draft a structurally viable C++ optimization prototype traversing the V8/Blink/Layout pipeline (gated via `base::FeatureList::IsEnabled(blink::features::kSpeedometer3OptimizationSet)`).
+3. The Tech Lead immediately assigns an **Adversarial Review Engineer** subagent upon completion of the implementation. 
+4. The **Adversarial Review Engineer** must validate the patch against memory-safety bugs, threading issues (e.g. static FeatureList initializer locks), and mechanical DOM specifications. The Review Engineer MUST build and execute relevant `blink_unittests` (using the `out/Default` component build) locally to rigorously check edge cases.
+5. If a viable optimization strictly breaks Spec, privacy, or memory bounds without alternative, the candidate must be documented as a dead-end and **fast-failed**. 
+6. Combine these LLM intent reviews and iterative unit testing validations until all candidates in the batch are integrated or fast-failed.
 
 ### Phase 4: Multi-Candidate Integration Phase
 * Maintain a cumulative integration branch (`speedometer-5pct-integration`). Merge accepted candidate commits onto this branch.
@@ -148,5 +154,6 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --brow
 python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --browser=out/perf/chrome --blocks=5 --feature=MyOptimizationFeature
 
 # 6. Clean up transient Crossbench test results post-evaluation
+# CRITICAL: You MUST explicitly ask the user for permission before running any cleanup commands or deleting scratch/results directories!
 rm -rf scratch/results_ab_interleaved_* scratch/results_perf_sampling_*
 ```
