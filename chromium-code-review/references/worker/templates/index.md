@@ -20,7 +20,7 @@ preamble, so its rules travel with every section.
 | context.md | context-md.md | 41 |
 | gerrit/unresolved-threads.json | gerrit-unresolved-threads-json.md | 37 |
 | inventory.md — Changed-Surface Inventory And Risk-Area Map | inventory-md-changed-surface-inventory-and-risk-area-map.md | 145 |
-| plan.md — Thread-Plan Roster | plan-md-thread-plan-roster.md | 137 |
+| plan.md — Thread-Plan Roster | plan-md-thread-plan-roster.md | 107 |
 | Generated Common Header | generated-common-header.md | 95 |
 | Subagent Brief — Discovery Thread | subagent-brief-discovery-thread.md | 101 |
 | ledger/⟨THREAD⟩.md — Compliance Matrix And Candidate Rows | ledger-thread-md-compliance-matrix-and-candidate-rows.md | 62 |

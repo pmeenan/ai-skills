@@ -41,9 +41,7 @@ agent to estimate effort from prose.
 Use the resulting `micro`, `standard`, `high-risk`, or `large` class only
 to choose budgets, sharding, and mechanical fast paths. Micro requires affirmative
 absence evidence for every semantic exclusion; missing or unknown evidence
-falls back to standard or the signaled higher-risk class. In schema 3 the
-typed complexity graph selects analytical fan-out; schema 2 keeps the legacy
-complete roster. Verification and reconciliation gates remain mandatory.
+falls back to standard or the signaled higher-risk class. The typed complexity graph selects analytical fan-out. Verification and reconciliation gates remain mandatory.
 
 Profile signals also seed specialist routing, but they never remove the
 Inventory agent's obligation to evaluate every hard trigger in

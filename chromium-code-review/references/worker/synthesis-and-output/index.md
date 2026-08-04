@@ -15,5 +15,5 @@ preamble, so its rules travel with every section.
 | Finding Format | finding-format.md | 28 |
 | Severity Calibration | severity-calibration.md | 54 |
 | Output Format | output-format.md | 81 |
-| Pre-Output Gate | pre-output-gate.md | 67 |
+| Pre-Output Gate | pre-output-gate.md | 66 |
 | Tone | tone.md | 6 |

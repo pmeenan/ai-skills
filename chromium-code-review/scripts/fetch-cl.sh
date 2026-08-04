@@ -42,6 +42,25 @@ while [[ $# -gt 0 ]]; do
     --holder) HOLDER="${2:-}"; [[ -n "$HOLDER" ]] || die "--holder requires a value"; HOLDER_EXPLICIT=1; shift 2 ;;
     --holder=*) HOLDER="${1#--holder=}"; HOLDER_EXPLICIT=1; shift ;;
     --) shift; break ;;
+    -h|--help)
+      cat <<'HELP_EOF'
+usage: fetch-cl.sh [--force-restart] [--holder <key>] <CL> [patchset] [review-dir]
+
+Lease, fetch, and pin a Chromium CL patchset into a review directory.
+Creates a read-only detached worktree and writes pin.md, detail.json, comments.json, and lease-state.json.
+
+positional arguments:
+  CL               Gerrit CL number
+  patchset         Patchset number or 'current' (default: current)
+  review-dir       Path to write pin artifacts (default: current directory)
+
+options:
+  -h, --help       show this help message and exit
+  --holder <key>   explicit lease holder identity
+  --force-restart  replace an existing fresh lease owned by this holder
+HELP_EOF
+      exit 0
+      ;;
     -*) die "unknown option: $1" ;;
     *) break ;;
   esac

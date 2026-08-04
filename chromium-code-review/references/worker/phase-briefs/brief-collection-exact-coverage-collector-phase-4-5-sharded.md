@@ -45,7 +45,7 @@ and observed-file lists.
 Procedure: enforce the deterministic collection contract in templates.md:
 every entry required by the active plan topology is present (both complete
 generalist edge partitions plus required routing continuations for
-`evidence-graph-v1`, or the exact full roster for a legacy plan); every N/A
+`evidence-graph-v1`); every N/A
 proof resolves to complete
 trigger-index scope; every spawned thread and expected shard occurs exactly
 once; no foreign thread; union observed files; exact diff against the pinned

@@ -155,9 +155,7 @@ agent to estimate effort from prose.
 Use the resulting `micro`, `standard`, `high-risk`, or `large` class only
 to choose budgets, sharding, and mechanical fast paths. Micro requires affirmative
 absence evidence for every semantic exclusion; missing or unknown evidence
-falls back to standard or the signaled higher-risk class. In schema 3 the
-typed complexity graph selects analytical fan-out; schema 2 keeps the legacy
-complete roster. Verification and reconciliation gates remain mandatory.
+falls back to standard or the signaled higher-risk class. The typed complexity graph selects analytical fan-out. Verification and reconciliation gates remain mandatory.
 
 Profile signals also seed specialist routing, but they never remove the
 Inventory agent's obligation to evaluate every hard trigger in
@@ -457,10 +455,7 @@ sequence; any ambiguous, duplicate, stale, or unsupported target blocks the
 whole repair table.
 
 Deliverables:
-- ⟨review-dir⟩/plan.md — schema 3: two initial generalist passes (sharded when
-  required) plus append-only
-  graph-routed rows; schema 2: the full roster, one row per entry (or shard),
-  status `spawn` or
+- ⟨review-dir⟩/plan.md — two initial generalist passes (sharded when required) plus append-only graph-routed rows, status `spawn` or
   `not applicable — trigger absence proved by ⟨T IDs⟩`, priority batch assignments, in
   the shape from
   ⟨skill-dir⟩/references/worker/templates/plan-md-thread-plan-roster.md. When Transformation
@@ -474,7 +469,7 @@ Deliverables:
   only their transitioned replacements. In proof-repair mode, the deliverable
   is the separate append-only Plan repair continuation table specified above.
 - ⟨review-dir⟩/briefs/⟨THREAD⟩.md — one self-contained brief per spawn
-  row, using the shapes in
+  row, generated mechanically with `python3 ⟨skill-dir⟩/scripts/build-discovery-brief.py ⟨review-dir⟩ --work-id ⟨THREAD⟩ --entry "⟨roster entry⟩" --procedure "⟨procedure path⟩" [--pathspec "⟨pathspec⟩"]` instead of hand-composing scripts or markdown. Use the shapes in
   ⟨skill-dir⟩/references/worker/templates/generated-common-header.md and
   ⟨skill-dir⟩/references/worker/templates/subagent-brief-discovery-thread.md
   verbatim (including directives, untrusted-input authority,
@@ -484,7 +479,7 @@ Deliverables:
   ⟨skill-dir⟩/scripts/mechanical-leads.sh.
 - Each brief names exactly one roster entry and points its Procedure at the
   exact per-section worker reference file(s) for that entry from
-  ⟨skill-dir⟩/references/worker/ — recipe threads name the recipe's file plus
+  ⟨skill-dir⟩/references/worker/ — for `Generalist Semantic And State Discovery`, point Procedure at `worker/discovery-checklists/state-persistence-and-cache.md` (or the primary matching checklist file under worker/discovery-checklists/); for `Generalist Adversarial And Integration Discovery`, point Procedure at `worker/discovery-checklists/integration-and-feature-control.md` (or the primary matching checklist file under worker/discovery-checklists/); recipe threads name the recipe's file plus
   context-rules.md under worker/deep-dive-recipes/; checklist sections name
   their file under worker/discovery-checklists/ plus
   per-surface-invariant-questions.md; specialist sections name their file
@@ -504,8 +499,7 @@ Deliverables:
   declarations/contracts worth pre-cutting. List the packet path
   ⟨review-dir⟩/packets/⟨THREAD⟩-code.md as an `assigned` input in the
   brief — the orchestrator materializes it from your spec before sealing.
-- Register every generated brief and all its exact inputs in root
-  input-manifest.tsv before returning; no discovery brief may spawn first.
+- Do not edit orchestration.tsv or input-manifest.tsv; the orchestrator seals and registers each generated brief after collection before spawning.
 - Priority scheduling batches use D01, D02, ...; never an unqualified number.
 
 Return: the spawn list only — one line per thread: name, brief path,
@@ -579,7 +573,7 @@ Procedure and checks:
 1. The plan covers every entry required by the active topology. For
    `evidence-graph-v1`, both generalist passes cover the same complete edge
    partition (or both use `graph:none`) and every required graph-routing
-   continuation is present. A legacy plan enumerates the exact full roster.
+   continuation is present.
    Every not-applicable row cites
    trigger-inventory IDs whose evidence covers every deterministic signal for
    that roster entry, whose `surface` associates the ID with that exact row,
@@ -653,7 +647,7 @@ and observed-file lists.
 Procedure: enforce the deterministic collection contract in templates.md:
 every entry required by the active plan topology is present (both complete
 generalist edge partitions plus required routing continuations for
-`evidence-graph-v1`, or the exact full roster for a legacy plan); every N/A
+`evidence-graph-v1`); every N/A
 proof resolves to complete
 trigger-index scope; every spawned thread and expected shard occurs exactly
 once; no foreign thread; union observed files; exact diff against the pinned

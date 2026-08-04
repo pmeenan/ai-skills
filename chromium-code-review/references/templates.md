@@ -717,13 +717,12 @@ block every planner and fast path that depends on that index.
 
 ## plan.md — Thread-Plan Roster
 
-For schema 3, the initial table contains the two named generalist passes. Use
+The initial table contains the two named generalist passes. Use
 one `spawn` row per pass scoped to `graph:all-inventory-edges` only when it
 fits; otherwise use matching numbered shards with exact `graph:E-...` scopes,
 covering every edge exactly once per pass. If there are zero edges, use one
 unsharded `graph:none` row per pass. Catalog lenses are
-added only through graph-routing continuations. Schema 2 retains every roster
-entry. Statuses are `spawn`,
+added only through graph-routing continuations. Statuses are `spawn`,
 `not applicable — trigger absence proved by ⟨T IDs⟩`,
 `unreviewed — ⟨reason⟩`, or — during round one of a TER review only, never
 in a collected plan — the transient
@@ -813,37 +812,8 @@ order; raw history remains unchanged.
 
 | roster entry | scope | status | tier | batch | subagent | outcome |
 | --- | --- | --- | --- | --- | --- | --- |
-| Desk-Check Simulation + Arithmetic Drills | Push/Flush size math, delay_buffer.cc | spawn | frontier | D01 | task-a1 | 9 rows |
-| Data Lineage | bytes: caller → buffer → socket | spawn | frontier | D01 | task-a2 | 4 rows |
-| Callback And Task Lifetime | timer_ + flush callback | spawn | frontier | D01 | task-a3 | 6 rows |
-| Container And View Invalidation | spans into buffer_ | spawn | frontier | D02 | task-a4 | 3 rows |
-| Error-Path Walk | Push/Flush/OnTimer error branches | spawn | frontier | D01 | task-a5 | 7 rows |
-| State × Method Matrix | DelayBuffer implicit states | spawn | frontier | D02 | task-a6 | matrix + 5 rows |
-| Mode × Host-Capability Matrix | — | not applicable — trigger absence proved by T007 | — | — | — | — |
-| Teardown Order | ~DelayBuffer, Abort() | spawn | frontier | D02 | task-a7 | 4 rows |
-| Field Propagation Matrix | pending_ and buffer_ propagation/reset sites | spawn | frontier | D02 | task-a8 | matrix + 2 rows |
-| Associative Container Semantics | — | not applicable — trigger absence proved by T009 | — | — | — | — |
-| Transformation Equivalence And Residue | — | not applicable — trigger absence proved by T010 | — | — | — | — |
-| Mechanical Leads | script + manual leads, whole diff | spawn | standard | D02 | task-b1 | 11 rows |
-| Per-Surface Invariants | DelayBuffer public API | spawn | frontier | D03 | task-b2 | 6 rows |
-| Async And Lifecycle | timer, posted flush, cancellation | spawn | frontier | D03 | task-b3 | 8 rows |
-| State/Persistence/Cache | — | not applicable — trigger absence proved by T012 | — | — | — | — |
-| Integration And Feature Control | kDelayBufferFeature wiring | spawn | frontier | D03 | task-b4 | 5 rows |
-| Security And Trust Boundaries | — | not applicable — trigger absence proved by T014 | — | — | — | — |
-| Contracts And API Shape | delay_buffer.h contracts, Socket base clauses | spawn | frontier | D03 | task-b5 | 6 rows |
-| Tests As Specifications | delay_buffer_unittest.cc coverage map | spawn | frontier | D04 | task-b6 | 7 rows |
-| Changed-Lines Polish | all changed lines | spawn | standard | D04 | task-b7 | 5 rows |
-| Threading And Synchronization | timer/task-runner shared state and sequence use | spawn | frontier | D01 | task-c1 | 6 rows |
-| Ownership And Blink Lifecycle | — | not applicable — trigger absence proved by T020 | — | — | — | — |
-| Mojo IPC Authorization And Sandbox | — | not applicable — trigger absence proved by T021 | — | — | — | — |
-| Performance And Resource Scaling | queued bytes, wakeups, per-stream multiplication | spawn | frontier | D02 | task-c2 | 5 rows |
-| Platform And Language Semantics | — | not applicable — trigger absence proved by T023 | — | — | — | — |
-| Build API And Generated Assets | delay_buffer target source/dependency wiring | spawn | frontier | D03 | task-c3 | 3 rows |
-| Privacy And Telemetry | — | not applicable — trigger absence proved by T025 | — | — | — | — |
-| Accessibility And Internationalization | — | not applicable — trigger absence proved by T026 | — | — | — | — |
-| Network Semantics | socket error/retry and request-boundary behavior | spawn | frontier | D02 | task-c4 | 5 rows |
-| Fuzzing And Test Strategy | stateful network input; unit/fuzz target decision | spawn | frontier | D04 | task-c5 | 4 rows |
-| Holistic-and-polish thread | bug alignment, scope, description coverage | spawn | frontier | D04 | task-b8 | 4 rows |
+| Generalist Semantic And State Discovery | graph:all-inventory-edges | spawn | frontier | D01 | task-a1 | 9 rows |
+| Generalist Adversarial And Integration Discovery | graph:all-inventory-edges | spawn | frontier | D01 | task-a2 | 7 rows |
 ```
 
 For each spawned specialist row, the generated brief's Procedure names

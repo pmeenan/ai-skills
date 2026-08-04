@@ -36,7 +36,7 @@ it from intuition. Micro requires affirmative absence proof; unknown evidence
 fails closed.
 
 For schema 3 the profile supplies budgets while the discovered complexity
-graph selects topology. Schema 2 retains the full roster. Neither mode removes
+graph selects topology. This mode never removes
 candidate verification, root-cause-required scopes, reconciliation,
 independent challenge, or freshness gates. Count every required header,
 reference, and artifact against the profile budget; split or continue rather
@@ -228,13 +228,19 @@ over that shard's exact edge set. Rebuild `indexes/topology.tsv` and
 `indexes/specialist-priors.tsv`, then select from the lens catalog below using
 the hard-trigger and soft-likelihood rules under Specialist Trigger Decisions,
 as well as unresolved/disputed edges, candidate obligations, and required
-splits. A zero-edge inventory instead uses one unsharded `graph:none` row per
+splits. When building discovery briefs for these generalist passes with
+`build-discovery-brief.py`, pass
+`--procedure "worker/discovery-checklists/state-persistence-and-cache.md"` for
+`Generalist Semantic And State Discovery` and
+`--procedure "worker/discovery-checklists/integration-and-feature-control.md"`
+for `Generalist Adversarial And Integration Discovery` (or the primary
+matching checklist file under `worker/discovery-checklists/`). A zero-edge inventory instead uses one unsharded `graph:none` row per
 pass; all ten assessments must be `low` with cited counterevidence, because a
 higher likelihood proves the inventory omitted an edge. Append routed rows
 under `## Graph routing continuation — PLAN attempt <N>` and cite
 `graph:<edge-id(s)>` in every
 scope. The following list is the catalog for schema 3 and the mandatory legacy
-roster for schema 2:
+specialist roster (added only via graph routing):
 
 - One thread per deep-dive recipe whose trigger matches, scoped to the
   surfaces that triggered it (e.g. "Mode × Host-Capability Matrix for
@@ -357,7 +363,7 @@ and least obvious files — the per-file ledger floor depends on it.
 For a targeted review, retain complete active-topology coverage. Under schema
 3, keep both generalist passes and route catalog rows only for the user-scoped
 surfaces plus immediately adjacent contracts, callers, and serious-blocker
-traces; under the legacy contract, retain the full roster. State the scope
+traces. State the scope
 boundary in every plan row. Do not use targeted mode to hide a serious nearby
 blocker already found; do not silently expand a format-only or subsystem
 request into an unrelated full-tree audit.
@@ -503,15 +509,10 @@ member counts as the trigger evidence.
 
 ## Plan-Construction Rules
 
-Write the initial plan into `plan.md` before any thread is spawned. Under
-schema 3 it has the two generalist passes, sharded when required; later graph-routed work is append-only.
-Under schema 2 it has one line per thread with name, scope, and status (`spawn` /
-`not applicable — trigger absence proved by <T IDs>`), in the roster shape from
-`references/templates.md`. Hard rules, each learned from a measured failure:
+Write the initial plan into `plan.md` before any thread is spawned. It has the two generalist passes, sharded when required; later graph-routed work is append-only, in the roster shape from `references/templates.md`. Hard rules, each learned from a measured failure:
 
 **Every graph obligation appears in topology and every effective plan row has
-a status.** Schema 2 additionally requires every roster line. An omitted edge
-or legacy line is invisible; a wrong not-applicable proof is catchable.
+a status.** An omitted edge is invisible; a wrong not-applicable proof is catchable.
 
   Measured runs keep paying for omissions: one silently dropped the Teardown
   recipe and with it the only thread that checks end-of-operation resource
@@ -612,7 +613,7 @@ not an answer.
 Subagents start cold: no conversation memory and no loaded skill. A thread
 is only as good as its brief, so fill in the template in
 `references/templates.md` (Subagent Brief — Discovery Thread) rather than
-composing briefs freehand. Write each brief to
+composing briefs freehand. Always generate discovery briefs mechanically using `python3 ⟨skill-dir⟩/scripts/build-discovery-brief.py ⟨review-dir⟩ --work-id ⟨THREAD⟩ --entry "⟨roster entry⟩" --procedure "⟨procedure path⟩" [--pathspec "⟨pathspec⟩"]` instead of composing markdown or writing custom template scripts. For `Generalist Semantic And State Discovery` and `Generalist Adversarial And Integration Discovery`, pass `--procedure "worker/discovery-checklists/state-persistence-and-cache.md"` and `--procedure "worker/discovery-checklists/integration-and-feature-control.md"` respectively (or the primary matching checklist file under `worker/discovery-checklists/`). Write each brief to
 `<review-dir>/briefs/<THREAD>.md`. Every path in a brief (worktree,
 reference files, ledger file) must be absolute.
 

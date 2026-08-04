@@ -14,6 +14,26 @@ export LC_ALL=C
 
 die() { echo "mechanical-leads.sh: ERROR: $*" >&2; exit 1; }
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'HELP_EOF'
+usage: mechanical-leads.sh <parent-sha> <revision-sha> [worktree-dir] [-- <pathspec>...]
+
+Emit mechanical discovery leads (unbounded regex scans) for a changed surface.
+Output format: Markdown table of matched leads with file paths, line numbers, and snippets.
+
+positional arguments:
+  parent-sha    Parent commit SHA
+  revision-sha  Revision commit SHA
+  worktree-dir  Path to repository checkout or worktree (default: current dir)
+  pathspec      Optional file paths to restrict the scan
+
+options:
+  -h, --help    show this help message and exit
+HELP_EOF
+  exit 0
+fi
+
+
 (( $# >= 2 )) || die "usage: mechanical-leads.sh <parent-sha> <revision-sha> [worktree-dir] [-- <pathspec>...]"
 PARENT="$1"
 REV="$2"

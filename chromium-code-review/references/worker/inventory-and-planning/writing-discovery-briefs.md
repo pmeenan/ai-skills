@@ -20,7 +20,7 @@ only the user directives and skill brief.
 Subagents start cold: no conversation memory and no loaded skill. A thread
 is only as good as its brief, so fill in the template in
 `references/templates.md` (Subagent Brief — Discovery Thread) rather than
-composing briefs freehand. Write each brief to
+composing briefs freehand. Always generate discovery briefs mechanically using `python3 ⟨skill-dir⟩/scripts/build-discovery-brief.py ⟨review-dir⟩ --work-id ⟨THREAD⟩ --entry "⟨roster entry⟩" --procedure "⟨procedure path⟩" [--pathspec "⟨pathspec⟩"]` instead of composing markdown or writing custom template scripts. For `Generalist Semantic And State Discovery` and `Generalist Adversarial And Integration Discovery`, pass `--procedure "worker/discovery-checklists/state-persistence-and-cache.md"` and `--procedure "worker/discovery-checklists/integration-and-feature-control.md"` respectively (or the primary matching checklist file under `worker/discovery-checklists/`). Write each brief to
 `<review-dir>/briefs/<THREAD>.md`. Every path in a brief (worktree,
 reference files, ledger file) must be absolute.
 

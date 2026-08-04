@@ -11,13 +11,13 @@ preamble, so its rules travel with every section.
 | section | file | source lines |
 | --- | --- | --- |
 | Common Header | common-header.md | 104 |
-| Adaptive Topology Preflight (mechanical) | adaptive-topology-preflight-mechanical.md | 27 |
+| Adaptive Topology Preflight (mechanical) | adaptive-topology-preflight-mechanical.md | 25 |
 | Brief — Context (Phase 1, always separate from inventory when spawned) | brief-context-phase-1-always-separate-from-inventory-when-spawned.md | 34 |
 | Brief — Inventory (Phase 1, unsharded) | brief-inventory-phase-1-unsharded.md | 46 |
 | Brief — Inventory Shard (Phase 1, one per file group or dense hunk range) | brief-inventory-shard-phase-1-one-per-file-group-or-dense-hunk-range.md | 52 |
 | Brief — Gerrit Thread Normalizer (after Phase 0, all review modes) | brief-gerrit-thread-normalizer-after-phase-0-all-review-modes.md | 34 |
 | Brief — Prior Feedback (Phase 2, follow-up reviews only) | brief-prior-feedback-phase-2-follow-up-reviews-only.md | 37 |
-| Brief — Planner (Phase 3) | brief-planner-phase-3.md | 140 |
+| Brief — Planner (Phase 3) | brief-planner-phase-3.md | 136 |
 | Brief — TER Gate-Brief Builder (Phase 4, only after the TER thread collects) | brief-ter-gate-brief-builder-phase-4-only-after-the-ter-thread-collects.md | 40 |
 | Brief — Collection Audit (Phase 4.5) | brief-collection-audit-phase-4-5.md | 59 |
 | Brief — Collection-Audit Shard (Phase 4.5, when indexed) | brief-collection-audit-shard-phase-4-5-when-indexed.md | 25 |

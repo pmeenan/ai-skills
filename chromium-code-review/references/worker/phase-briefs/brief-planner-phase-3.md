@@ -113,10 +113,7 @@ sequence; any ambiguous, duplicate, stale, or unsupported target blocks the
 whole repair table.
 
 Deliverables:
-- ⟨review-dir⟩/plan.md — schema 3: two initial generalist passes (sharded when
-  required) plus append-only
-  graph-routed rows; schema 2: the full roster, one row per entry (or shard),
-  status `spawn` or
+- ⟨review-dir⟩/plan.md — two initial generalist passes (sharded when required) plus append-only graph-routed rows, status `spawn` or
   `not applicable — trigger absence proved by ⟨T IDs⟩`, priority batch assignments, in
   the shape from
   ⟨skill-dir⟩/references/worker/templates/plan-md-thread-plan-roster.md. When Transformation
@@ -130,7 +127,7 @@ Deliverables:
   only their transitioned replacements. In proof-repair mode, the deliverable
   is the separate append-only Plan repair continuation table specified above.
 - ⟨review-dir⟩/briefs/⟨THREAD⟩.md — one self-contained brief per spawn
-  row, using the shapes in
+  row, generated mechanically with `python3 ⟨skill-dir⟩/scripts/build-discovery-brief.py ⟨review-dir⟩ --work-id ⟨THREAD⟩ --entry "⟨roster entry⟩" --procedure "⟨procedure path⟩" [--pathspec "⟨pathspec⟩"]` instead of hand-composing scripts or markdown. Use the shapes in
   ⟨skill-dir⟩/references/worker/templates/generated-common-header.md and
   ⟨skill-dir⟩/references/worker/templates/subagent-brief-discovery-thread.md
   verbatim (including directives, untrusted-input authority,
@@ -140,7 +137,7 @@ Deliverables:
   ⟨skill-dir⟩/scripts/mechanical-leads.sh.
 - Each brief names exactly one roster entry and points its Procedure at the
   exact per-section worker reference file(s) for that entry from
-  ⟨skill-dir⟩/references/worker/ — recipe threads name the recipe's file plus
+  ⟨skill-dir⟩/references/worker/ — for `Generalist Semantic And State Discovery`, point Procedure at `worker/discovery-checklists/state-persistence-and-cache.md` (or the primary matching checklist file under worker/discovery-checklists/); for `Generalist Adversarial And Integration Discovery`, point Procedure at `worker/discovery-checklists/integration-and-feature-control.md` (or the primary matching checklist file under worker/discovery-checklists/); recipe threads name the recipe's file plus
   context-rules.md under worker/deep-dive-recipes/; checklist sections name
   their file under worker/discovery-checklists/ plus
   per-surface-invariant-questions.md; specialist sections name their file
@@ -160,8 +157,7 @@ Deliverables:
   declarations/contracts worth pre-cutting. List the packet path
   ⟨review-dir⟩/packets/⟨THREAD⟩-code.md as an `assigned` input in the
   brief — the orchestrator materializes it from your spec before sealing.
-- Register every generated brief and all its exact inputs in root
-  input-manifest.tsv before returning; no discovery brief may spawn first.
+- Do not edit orchestration.tsv or input-manifest.tsv; the orchestrator seals and registers each generated brief after collection before spawning.
 - Priority scheduling batches use D01, D02, ...; never an unqualified number.
 
 Return: the spawn list only — one line per thread: name, brief path,

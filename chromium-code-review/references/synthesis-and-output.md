@@ -360,8 +360,7 @@ delivery is blocked while any line is pending or blank.
 3. **Plan topology:** every entry required by the active topology appears in
    `plan.md`. For `evidence-graph-v1`, both generalist passes cover the same
    complete edge partition (or both use `graph:none`) and every required graph
-   continuation is present. A legacy plan accounts for every roster entry as
-   spawned, not-applicable-with-trigger proof, or unreviewed-with-reason. No
+   continuation is present. No
    required entry is missing, bundled, or renamed.
 4. **Collection:** every spawned thread has a collected `ledger/<THREAD>.md`,
    or is disclosed as terminated/interrupted with its partial rows preserved.

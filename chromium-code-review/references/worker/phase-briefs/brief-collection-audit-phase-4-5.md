@@ -55,7 +55,7 @@ Procedure and checks:
 1. The plan covers every entry required by the active topology. For
    `evidence-graph-v1`, both generalist passes cover the same complete edge
    partition (or both use `graph:none`) and every required graph-routing
-   continuation is present. A legacy plan enumerates the exact full roster.
+   continuation is present.
    Every not-applicable row cites
    trigger-inventory IDs whose evidence covers every deterministic signal for
    that roster entry, whose `surface` associates the ID with that exact row,

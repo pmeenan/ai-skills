@@ -517,8 +517,7 @@ for an explicit changed-contract/boundary `<PREFIX> hard` trigger, high from
 either pass, or medium from both; exactly one
 medium gets a bounded probe by default. It also appends catalog lenses demanded
 by unresolved/disputed edges, typed candidate obligations, or graph split
-thresholds. Older profile schemas
-retain the legacy full-roster plan. It writes one self-contained discovery
+thresholds. It writes one self-contained discovery
 brief per spawned row.
 
 - Deliverables: `plan.md` and `briefs/<THREAD>.md` for every `spawn` row.

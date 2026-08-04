@@ -38,13 +38,19 @@ over that shard's exact edge set. Rebuild `indexes/topology.tsv` and
 `indexes/specialist-priors.tsv`, then select from the lens catalog below using
 the hard-trigger and soft-likelihood rules under Specialist Trigger Decisions,
 as well as unresolved/disputed edges, candidate obligations, and required
-splits. A zero-edge inventory instead uses one unsharded `graph:none` row per
+splits. When building discovery briefs for these generalist passes with
+`build-discovery-brief.py`, pass
+`--procedure "worker/discovery-checklists/state-persistence-and-cache.md"` for
+`Generalist Semantic And State Discovery` and
+`--procedure "worker/discovery-checklists/integration-and-feature-control.md"`
+for `Generalist Adversarial And Integration Discovery` (or the primary
+matching checklist file under `worker/discovery-checklists/`). A zero-edge inventory instead uses one unsharded `graph:none` row per
 pass; all ten assessments must be `low` with cited counterevidence, because a
 higher likelihood proves the inventory omitted an edge. Append routed rows
 under `## Graph routing continuation — PLAN attempt <N>` and cite
 `graph:<edge-id(s)>` in every
 scope. The following list is the catalog for schema 3 and the mandatory legacy
-roster for schema 2:
+specialist roster (added only via graph routing):
 
 - One thread per deep-dive recipe whose trigger matches, scoped to the
   surfaces that triggered it (e.g. "Mode × Host-Capability Matrix for
@@ -167,7 +173,7 @@ and least obvious files — the per-file ledger floor depends on it.
 For a targeted review, retain complete active-topology coverage. Under schema
 3, keep both generalist passes and route catalog rows only for the user-scoped
 surfaces plus immediately adjacent contracts, callers, and serious-blocker
-traces; under the legacy contract, retain the full roster. State the scope
+traces. State the scope
 boundary in every plan row. Do not use targeted mode to hide a serious nearby
 blocker already found; do not silently expand a format-only or subsystem
 request into an unrelated full-tree audit.

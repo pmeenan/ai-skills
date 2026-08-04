@@ -71,6 +71,22 @@ def append_event(path: Path, event: dict[str, object]) -> None:
 
 def main() -> int:
     raw = sys.argv[1:]
+    if not raw or any(arg in {"-h", "--help"} for arg in raw):
+        print(
+            "usage: instrument-command.py [-h] [--cwd CWD] review_dir "
+            "work_id attempt -- command [args ...]\n\n"
+            "Execute a worker command transparently while logging "
+            "code-read instrumentation.\n\n"
+            "positional arguments:\n"
+            "  review_dir      Path to the review directory\n"
+            "  work_id         Work unit identifier (e.g. CVI)\n"
+            "  attempt         Attempt number\n\n"
+            "options:\n"
+            "  -h, --help      show this help message and exit\n"
+            "  --cwd CWD       Working directory to execute command in\n"
+            "  --              Separate wrapper arguments from command to execute"
+        )
+        return 0
     try:
         divider = raw.index("--")
     except ValueError:
