@@ -150,8 +150,19 @@ def main() -> int:
     if not orchestration_path.is_file():
         fail(f"missing {orchestration_path}")
     attempts = read_tsv(orchestration_path)
+    attempt_rows: dict[tuple[str, str], dict[str, str]] = {}
+    for row in attempts:
+        key = (row.get("work_id", ""), row.get("attempt", ""))
+        if key in attempt_rows:
+            fail(
+                f"{orchestration_path}: duplicate work_id/attempt "
+                f"{key[0]}:{key[1]}"
+            )
+        attempt_rows[key] = row
     manifest_path = review_dir / "input-manifest.tsv"
     manifest = read_tsv(manifest_path) if manifest_path.is_file() else []
+    topology_path = review_dir / "indexes" / "topology.tsv"
+    topology = read_tsv(topology_path) if topology_path.is_file() else []
 
     # Manifested input bytes per (work_id, attempt): unique paths count once,
     # matching the budget rule that multi-role paths count once per worker.
@@ -223,10 +234,11 @@ def main() -> int:
     if read_costs or malformed_read_events:
         read_tsv_path = review_dir / "code-read-costs.tsv"
         read_tsv_lines = [
-            "work_id\tattempt\tcommands\tfailed_commands\tstdout_bytes\t"
+            "phase\twork_id\tattempt\tcommands\tfailed_commands\tstdout_bytes\t"
             "stderr_bytes\telapsed_ms"
         ]
         read_tsv_lines += [
+            f"{attempt_rows.get(key, {}).get('phase', 'unjoined')}\t"
             f"{key[0]}\t{key[1]}\t{stats['commands']}\t"
             f"{stats['failed_commands']}\t{stats['stdout_bytes']}\t"
             f"{stats['stderr_bytes']}\t{stats['elapsed_ms']}"
@@ -277,6 +289,48 @@ def main() -> int:
         f"| {tier} | {stats['attempts']} | {stats['input_bytes']:,} |"
         for tier, stats in sorted(tier_totals.items())
     ]
+    if topology:
+        topology_status: dict[str, int] = defaultdict(int)
+        topology_kind: dict[str, int] = defaultdict(int)
+        observations = 0
+        observed_edges = 0
+        dual_observed_edges = 0
+        candidate_edges = 0
+        open_obligations = 0
+        for row in topology:
+            topology_status[row.get("status", "unknown")] += 1
+            topology_kind[row.get("kind", "unknown")] += 1
+            try:
+                count = int(row.get("observation_count", "0") or 0)
+            except ValueError:
+                fail(
+                    f"{topology_path}: non-numeric observation_count for "
+                    f"{row.get('edge', '?')}"
+                )
+            observations += count
+            observed_edges += count >= 1
+            dual_observed_edges += count >= 2
+            candidate_edges += row.get("candidate", "") not in {"", "-", "—"}
+            open_obligations += row.get("next_obligation", "") not in {
+                "", "-", "—"
+            }
+        md += [
+            "",
+            "## Evidence-graph routing",
+            "",
+            f"- Edges: {len(topology):,}",
+            f"- Edges with observations: {observed_edges:,}",
+            f"- Edges with at least two observations: {dual_observed_edges:,}",
+            f"- Total observations: {observations:,}",
+            f"- Candidate-bearing edges: {candidate_edges:,}",
+            f"- Edges with open next obligations: {open_obligations:,}",
+            "- Statuses: " + ", ".join(
+                f"{key}={value}" for key, value in sorted(topology_status.items())
+            ),
+            "- Kinds: " + ", ".join(
+                f"{key}={value}" for key, value in sorted(topology_kind.items())
+            ),
+        ]
     if read_costs or malformed_read_events:
         total_commands = sum(value["commands"] for value in read_costs.values())
         total_stdout = sum(value["stdout_bytes"] for value in read_costs.values())
@@ -284,6 +338,15 @@ def main() -> int:
         total_elapsed = sum(value["elapsed_ms"] for value in read_costs.values())
         largest_reads = sorted(
             read_costs.items(), key=lambda item: -item[1]["stdout_bytes"])
+        read_phases: dict[str, dict[str, int]] = defaultdict(
+            lambda: defaultdict(int))
+        for key, stats in read_costs.items():
+            phase = attempt_rows.get(key, {}).get("phase", "unjoined")
+            read_phases[phase]["attempts"] += 1
+            for field in ("commands", "failed_commands", "stdout_bytes",
+                          "stderr_bytes", "elapsed_ms"):
+                read_phases[phase][field] += stats[field]
+        unjoined = read_phases.get("unjoined", {}).get("attempts", 0)
         md += [
             "",
             "## Instrumented code/tool reads",
@@ -294,8 +357,23 @@ def main() -> int:
             f"- Captured stderr bytes: {total_stderr:,}",
             f"- Aggregate command elapsed: {duration(total_elapsed / 1000)}",
             f"- Malformed log events: {malformed_read_events}",
+            f"- Unjoined work attempts: {unjoined}",
             "- These are emitted-byte proxies, not provider token counts;",
             "  repeated reads are intentionally counted repeatedly.",
+            "",
+            "### Per orchestration phase",
+            "",
+            "| phase | attempts | commands | failed | stdout bytes | elapsed |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+        md += [
+            f"| {phase} | {stats['attempts']} | {stats['commands']} "
+            f"| {stats['failed_commands']} | {stats['stdout_bytes']:,} "
+            f"| {duration(stats['elapsed_ms'] / 1000)} |"
+            for phase, stats in sorted(
+                read_phases.items(), key=lambda item: phase_sort(item[0]))
+        ]
+        md += [
             "",
             "### Largest 30 work attempts by captured stdout",
             "",

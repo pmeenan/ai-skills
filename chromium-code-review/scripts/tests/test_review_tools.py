@@ -2089,7 +2089,7 @@ Procedure: inspect {index_manifest} before collection.
         inventory = self.review / "inventory.md"
         inventory.write_text(
             inventory.read_text(encoding="utf-8").replace(
-                "| OBL absent |", "| OBL |", 1
+                "| OBL absent |", "| OBL hard |", 1
             ),
             encoding="utf-8",
         )
@@ -2100,11 +2100,26 @@ Procedure: inspect {index_manifest} before collection.
         self.assertEqual(run.returncode, 1)
         self.assertIn("does not carry required 'OBL absent' proof", run.stdout)
 
+    def test_specialist_trigger_requires_hard_or_absent_marker(self) -> None:
+        inventory = self.review / "inventory.md"
+        inventory.write_text(
+            inventory.read_text(encoding="utf-8").replace(
+                "| OBL absent |", "| OBL |", 1
+            ),
+            encoding="utf-8",
+        )
+        self.refresh_indexes()
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "collection"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("must be 'OBL hard' or 'OBL absent'", run.stdout)
+
     def test_plan_rejects_positive_trigger_in_another_shard(self) -> None:
         inventory = self.review / "inventory.md"
         inventory.write_text(
             inventory.read_text(encoding="utf-8") +
-            "| I3-T9 | active ownership edge | OBL | required: active in shard | "
+            "| I3-T9 | active ownership edge | OBL hard | required: active in shard | "
             "a.cc:1 |\n",
             encoding="utf-8",
         )

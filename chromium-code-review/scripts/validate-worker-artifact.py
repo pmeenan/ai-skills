@@ -79,6 +79,18 @@ PLAN_NOT_APPLICABLE = re.compile(
     re.IGNORECASE,
 )
 PLAN_UNREVIEWED = re.compile(r"unreviewed\s+—\s+\S.*", re.IGNORECASE)
+SPECIALIST_LENSES = {
+    "Threading And Synchronization",
+    "Ownership And Blink Lifecycle",
+    "Mojo IPC Authorization And Sandbox",
+    "Performance And Resource Scaling",
+    "Platform And Language Semantics",
+    "Build API And Generated Assets",
+    "Privacy And Telemetry",
+    "Accessibility And Internationalization",
+    "Network Semantics",
+    "Fuzzing And Test Strategy",
+}
 
 
 def tokens(value: str) -> set[str]:
@@ -224,6 +236,111 @@ def ledger_check(parsed: list[tuple[str, list[str], list[dict[str, str]]]],
                 identifier = row.get("id", "").strip()
                 if identifier and ROW_ID.fullmatch(identifier) is None:
                     fail(f"{artifact} has invalid row ID '{identifier}'")
+    if re.fullmatch(r"(?:GSS|GAI)\d*", artifact.stem.upper()):
+        assessment_tables = [
+            (header, rows) for heading, header, rows in parsed
+            if heading == "Specialist escalation assessments"
+        ]
+        if len(assessment_tables) != 1:
+            fail(
+                f"{artifact} must have exactly one "
+                "'Specialist escalation assessments' table"
+            )
+        header, rows = assessment_tables[0]
+        required = {
+            "lens", "graph scope", "likelihood", "signals",
+            "counterevidence",
+        }
+        if not required.issubset(header):
+            fail(f"{artifact} specialist assessment table has wrong columns")
+        by_lens: dict[str, dict[str, str]] = {}
+        for row in rows:
+            lens = row.get("lens", "").strip()
+            if lens in by_lens:
+                fail(f"{artifact} duplicates specialist assessment for {lens}")
+            by_lens[lens] = row
+        missing = SPECIALIST_LENSES - set(by_lens)
+        unknown = set(by_lens) - SPECIALIST_LENSES
+        if missing or unknown:
+            fail(
+                f"{artifact} specialist assessments have missing/unknown lenses: "
+                f"missing={','.join(sorted(missing)) or '-'}; "
+                f"unknown={','.join(sorted(unknown)) or '-'}"
+            )
+        graph_scopes = {
+            row.get("graph scope", "").strip().upper()
+            for row in by_lens.values()
+        }
+        if len(graph_scopes) != 1:
+            fail(
+                f"{artifact} specialist assessments must share one exact "
+                "assigned graph scope"
+            )
+        for lens, row in by_lens.items():
+            likelihood = row.get("likelihood", "").strip().lower()
+            signals = row.get("signals", "").strip()
+            counterevidence = row.get("counterevidence", "").strip()
+            if likelihood not in {"low", "medium", "high"}:
+                fail(f"{artifact} {lens} must use low, medium, or high")
+            graph_scope = row.get("graph scope", "").strip()
+            empty_scope = graph_scope.lower() == "graph:none"
+            if not empty_scope and not re.fullmatch(
+                r"(?i)graph:(?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*",
+                graph_scope,
+            ):
+                fail(f"{artifact} {lens} has invalid exact graph scope")
+            if not signals or not counterevidence or not (
+                CITATION.search(f"{signals} {counterevidence}")
+                or ARTIFACT_POINTER.search(f"{signals} {counterevidence}")
+                or re.search(r"\bE-[A-Z0-9-]+\b", f"{signals} {counterevidence}")
+            ):
+                fail(f"{artifact} {lens} lacks cited signals/counterevidence")
+            if likelihood == "low" and not (
+                CITATION.search(counterevidence)
+                or ARTIFACT_POINTER.search(counterevidence)
+                or re.search(r"\bE-[A-Z0-9-]+\b", counterevidence)
+            ):
+                fail(f"{artifact} {lens} low likelihood lacks cited counterevidence")
+            if likelihood in {"medium", "high"} and not (
+                CITATION.search(signals)
+                or ARTIFACT_POINTER.search(signals)
+                or re.search(r"\bE-[A-Z0-9-]+\b", signals)
+            ):
+                fail(f"{artifact} {lens} likelihood lacks cited positive signals")
+            if empty_scope and likelihood != "low":
+                fail(
+                    f"{artifact} {lens} graph:none assessment must be low; "
+                    "a higher likelihood requires an inventory edge"
+                )
+    probe_tables = [
+        (header, rows) for heading, header, rows in parsed
+        if heading == "Specialist probe outcome"
+    ]
+    if probe_tables:
+        if len(probe_tables) != 1:
+            fail(f"{artifact} has duplicate Specialist probe outcome tables")
+        header, rows = probe_tables[0]
+        required = {
+            "lens", "graph scope", "result", "evidence", "remaining scope",
+        }
+        if not required.issubset(header) or len(rows) != 1:
+            fail(f"{artifact} has malformed Specialist probe outcome")
+        row = rows[0]
+        result = row.get("result", "").strip().lower()
+        evidence = row.get("evidence", "")
+        remaining = row.get("remaining scope", "").strip()
+        if result not in {"clean", "escalate"}:
+            fail(f"{artifact} probe result must be clean or escalate")
+        if not (CITATION.search(evidence) or ARTIFACT_POINTER.search(evidence)):
+            fail(f"{artifact} probe outcome lacks cited evidence")
+        if result == "clean" and remaining not in {"", "-", "—"}:
+            fail(f"{artifact} clean probe must have no remaining scope")
+        if result == "escalate" and not re.search(
+            r"(?i)specialist:full.*graph:(?:E-[A-Z0-9-]+)"
+            r"(?:,E-[A-Z0-9-]+)*",
+            remaining,
+        ):
+            fail(f"{artifact} escalated probe lacks full remaining graph scope")
     descriptor_check(parsed, artifact)
 
 

@@ -128,8 +128,12 @@ This includes `git diff/show/grep`, `rg`, and ranged source reads. Do not wrap
 deterministic helpers whose output is already an exact manifested artifact.
 Use this wrapped shell path instead of a harness-native file-read/search tool
 for code evidence; harness-native reads of small control artifacts are fine.
-For a pipeline, pass `bash -c '<pipeline>'` as the wrapped command so the
-logged stdout byte count measures the final text actually consumed.
+For a pipeline, pass the entire pipeline as exactly one quoted argument after
+`bash -c`; trailing arguments are rejected because they become shell
+positional parameters and can silently drop the intended path/filter. Never
+run unscoped `rg --files` in the Chromium root: use the inventory/caller
+indexes or an explicit path scope. The logged stdout byte count measures the
+final text actually consumed.
 The wrapper preserves command output and status and records only metadata,
 byte counts, and duration; instrumentation never limits a required trace.
 
@@ -148,17 +152,19 @@ Reject a stale pin, malformed signal, unsorted/duplicate hunk ID, or
 classification that does not follow the template precedence. Do not ask an
 agent to estimate effort from prose.
 
-Use the resulting `micro`, `standard`, `high-risk`, or `large` topology only
-to choose sharding and mechanical fast paths. Micro requires affirmative
+Use the resulting `micro`, `standard`, `high-risk`, or `large` class only
+to choose budgets, sharding, and mechanical fast paths. Micro requires affirmative
 absence evidence for every semantic exclusion; missing or unknown evidence
-falls back to standard or the signaled higher-risk class. The complete roster
-and all analytical gates remain mandatory in every class.
+falls back to standard or the signaled higher-risk class. In schema 3 the
+typed complexity graph selects analytical fan-out; schema 2 keeps the legacy
+complete roster. Verification and reconciliation gates remain mandatory.
 
 Profile signals also seed specialist routing, but they never remove the
-Inventory agent's obligation to evaluate every deterministic trigger in
-`inventory-and-planning.md`. A matched specialist signal scopes a roster row;
-an absent signal is only one part of the cited negative evidence needed for
-not-applicable status.
+Inventory agent's obligation to evaluate every hard trigger in
+`inventory-and-planning.md`. A profile/subsystem proximity signal is only a
+soft likelihood amplifier unless it proves the hard column's changed contract
+or boundary. An absent signal is only one part of the cited negative evidence
+needed for not-applicable status.
 
 Every worker packet obeys `profile.json`'s context budget and the complete
 counting rules in `references/scaling-and-indexes.md`. Measure required
@@ -227,11 +233,13 @@ name list, never one detailed row per member, and never a caller grep for an
 aggregated group member. Surfaces keeping individual rows —
 production/contract surfaces, fixtures, stateful helpers/mocks,
 production-reachable test utilities — get their normal fields, including
-caller searches where the schema asks. Evaluate every recipe,
-base-checklist, and specialist trigger, including the deterministic path,
-symbol, and surface signals under "Specialist Trigger Decisions"; emit one
+caller searches where the schema asks. Evaluate every recipe and base-checklist
+trigger plus only the hard specialist column under "Specialist Trigger
+Decisions"; emit one
 trigger-inventory row per recipe/checklist roster entry, including proved
-absence rows. The always-run holistic row needs no trigger row.
+absence rows. A positive specialist row uses `<PREFIX> hard`; broad proximity
+signals belong to later generalist likelihood assessments and never become
+positive trigger rows. The always-run holistic row needs no trigger row.
 Use context.md if present, but do not block on it and do not edit it.
 
 Deliverable: ⟨review-dir⟩/inventory.md — changed surfaces, risk-area map,
@@ -277,7 +285,11 @@ caller grep for an aggregated group member. Individually-rowed surfaces
 every recipe,
 base-checklist, and specialist trigger under "Specialist
 Trigger Decisions." Emit one trigger row per recipe/checklist roster entry for
-this shard, including complete negative evidence. The deterministic collector
+this shard, including complete negative evidence. Evaluate only the hard
+specialist column here: positive specialist rows use `<PREFIX> hard`; soft
+amplifiers are deferred to both generalists. Under schema 3, every positive
+Chromium specialist trigger maps to its exact `graph:E-...` slice; negative
+specialist rows use `—`. The deterministic collector
 checks the union of file-group
 paths or dense hunk IDs and the earliest-changed-line surface ownership rule;
 silently omitting or duplicating scope is invalid.
@@ -367,11 +379,12 @@ Return: one line — counts by resolution (fixed / partial / open / obsolete
 Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
 
 ```text
-Scope: build the complete thread plan and write every discovery brief.
+Scope: build the graph-driven thread plan and write every spawned discovery brief.
 
 Inputs: ⟨review-dir⟩/pin.md, ⟨review-dir⟩/directives.md,
 ⟨review-dir⟩/profile.json, ⟨review-dir⟩/context.md, and
-⟨review-dir⟩/indexes/inventory.tsv plus its fresh fingerprint in
+⟨review-dir⟩/indexes/inventory.tsv, `indexes/topology.tsv`,
+`indexes/specialist-priors.tsv`, plus fresh fingerprints in
 indexes/manifest.json. Read the compact index first. Extract only
 the indexed narrative blocks needed to resolve a triggered or ambiguous row;
 do not ingest every inventory file.
@@ -384,8 +397,33 @@ them. Read the Context Rules and every recipe trigger line in
 ⟨skill-dir⟩/references/specialist-recipes.md. Skim the matched sections
 of ⟨skill-dir⟩/references/discovery-checklists.md and
 ⟨skill-dir⟩/references/chromium-specialist-checklists.md before deciding
-statuses. Ambiguous specialist evidence spawns the narrow row; it never
-becomes an unsupported not-applicable status.
+statuses. Ambiguous specialist evidence uses the two-pass likelihood contract
+below; it never becomes an unsupported not-applicable status.
+
+For `evidence-graph-v1`, first plan the two passes `Generalist Semantic And
+State Discovery` and `Generalist Adversarial And Integration Discovery`. Use
+one `graph:all-inventory-edges` row per pass only when it fits; otherwise give
+both passes the same connected-component/budget shards, with every edge
+assigned exactly once per pass. Every generalist shard emits `Specialist
+escalation assessments` for all ten specialist lenses over its exact edge
+slice, using low/medium/high plus cited signals and counterevidence. Rate the
+residual chance that a full sweep will discover additional specialist edges,
+not the mere presence of specialist-flavored constructs. One isolated local
+construct with closed ownership/uses/exits can be low. The
+semantic/state and adversarial/integration passes decide independently. After
+every generalist-shard ledger exists, rebuild topology and specialist priors,
+then
+append `## Graph routing continuation — PLAN attempt ⟨N⟩`; each row must cite
+`graph:<edge-id(s)>`. For specialist lenses, a `<PREFIX> hard` trigger or high from
+either pass selects `specialist:full`; medium from both selects
+`specialist:full`; exactly one medium selects `specialist:probe` by default
+(full is allowed). Two lows with affirmative counterevidence add no
+likelihood-driven row. Other catalog lenses remain driven by an
+unresolved/disputed edge, candidate obligation, or required graph split. Do
+not enumerate absent catalog lenses in the plan. If inventory produced zero
+edges, plan one unsharded `graph:none` row per pass. Each still emits all ten
+assessments as `low` with cited counterevidence; any medium/high judgment means
+inventory must first add the missing edge.
 
 Residue mode (round two, only after the TER gate ran): read the TER
 ledger and ⟨review-dir⟩/verification/VTER.md. Preserve the collected plan
@@ -419,7 +457,9 @@ sequence; any ambiguous, duplicate, stale, or unsupported target blocks the
 whole repair table.
 
 Deliverables:
-- ⟨review-dir⟩/plan.md — the full roster, one row per entry (or shard),
+- ⟨review-dir⟩/plan.md — schema 3: two initial generalist passes (sharded when
+  required) plus append-only
+  graph-routed rows; schema 2: the full roster, one row per entry (or shard),
   status `spawn` or
   `not applicable — trigger absence proved by ⟨T IDs⟩`, priority batch assignments, in
   the shape from
@@ -536,7 +576,11 @@ location column across all ledgers and diff that set against pin.md's file
 list instead of holding all ledgers in context.
 
 Procedure and checks:
-1. The plan enumerates the exact full roster. Every not-applicable row cites
+1. The plan covers every entry required by the active topology. For
+   `evidence-graph-v1`, both generalist passes cover the same complete edge
+   partition (or both use `graph:none`) and every required graph-routing
+   continuation is present. A legacy plan enumerates the exact full roster.
+   Every not-applicable row cites
    trigger-inventory IDs whose evidence covers every deterministic signal for
    that roster entry, whose `surface` associates the ID with that exact row,
    and whose `discovery triggers` says exactly `<PREFIX> absent`; unsupported,
@@ -607,7 +651,10 @@ collection/shards/CA*.md. Extract only IDs, declared thread coverage, gaps,
 and observed-file lists.
 
 Procedure: enforce the deterministic collection contract in templates.md:
-the exact full roster is present; every N/A proof resolves to complete
+every entry required by the active plan topology is present (both complete
+generalist edge partitions plus required routing continuations for
+`evidence-graph-v1`, or the exact full roster for a legacy plan); every N/A
+proof resolves to complete
 trigger-index scope; every spawned thread and expected shard occurs exactly
 once; no foreign thread; union observed files; exact diff against the pinned
 changed-file list. Write
@@ -635,9 +682,11 @@ Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
 ```text
 Scope: plan verification; do not issue verdicts yourself.
 
-Inputs: ⟨review-dir⟩/indexes/candidates.tsv with its fresh
-indexes/manifest.json fingerprint, ⟨review-dir⟩/collection.md, and
-⟨review-dir⟩/plan.md. Read the compact candidate index first and extract each
+Inputs: ⟨review-dir⟩/indexes/candidates.tsv and
+⟨review-dir⟩/indexes/topology.tsv with their fresh indexes/manifest.json
+fingerprints, ⟨review-dir⟩/collection.md, and ⟨review-dir⟩/plan.md. Read the
+compact topology and candidate indexes first; reject any candidate lacking a
+graph-edge membership. Extract each
 full candidate row from its indexed artifact/anchor only when assigning it.
 In delta mode, filter the index to exactly the explicitly named reopened-round
 IDs. Compliance matrices and unrelated ledger prose are not inputs.
@@ -659,8 +708,10 @@ rows are context and must not be scheduled again. Then:
 2. Validate each candidate's descriptor row. Preserve every semantic field
    and typed obligation in the inline packet; reject a plan that omits a
    class-required obligation.
-3. Group every remaining candidate into skeptic batches, sized by trace
-   cost rather than row count: a serious candidate whose refutation needs
+3. Form candidate-bearing connected components from topology. Keep each
+   component together unless a cited graph articulation point or the packet
+   budget requires a split; candidate row count alone never creates a batch.
+   Within that constraint, size skeptic batches by trace cost: a serious candidate whose refutation needs
    caller sweeps or interleaving analysis gets its own batch (or shares
    with 1–2 closely related rows); mid-weight candidates ~3–5 per batch;
    only cheap/cosmetic rows (naming, punctuation, description nits) go up

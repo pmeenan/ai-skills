@@ -10,19 +10,19 @@ preamble, so its rules travel with every section.
 
 | section | file | source lines |
 | --- | --- | --- |
-| Common Header | common-header.md | 100 |
-| Adaptive Topology Preflight (mechanical) | adaptive-topology-preflight-mechanical.md | 25 |
+| Common Header | common-header.md | 104 |
+| Adaptive Topology Preflight (mechanical) | adaptive-topology-preflight-mechanical.md | 27 |
 | Brief — Context (Phase 1, always separate from inventory when spawned) | brief-context-phase-1-always-separate-from-inventory-when-spawned.md | 34 |
-| Brief — Inventory (Phase 1, unsharded) | brief-inventory-phase-1-unsharded.md | 44 |
-| Brief — Inventory Shard (Phase 1, one per file group or dense hunk range) | brief-inventory-shard-phase-1-one-per-file-group-or-dense-hunk-range.md | 48 |
+| Brief — Inventory (Phase 1, unsharded) | brief-inventory-phase-1-unsharded.md | 46 |
+| Brief — Inventory Shard (Phase 1, one per file group or dense hunk range) | brief-inventory-shard-phase-1-one-per-file-group-or-dense-hunk-range.md | 52 |
 | Brief — Gerrit Thread Normalizer (after Phase 0, all review modes) | brief-gerrit-thread-normalizer-after-phase-0-all-review-modes.md | 34 |
 | Brief — Prior Feedback (Phase 2, follow-up reviews only) | brief-prior-feedback-phase-2-follow-up-reviews-only.md | 37 |
-| Brief — Planner (Phase 3) | brief-planner-phase-3.md | 112 |
+| Brief — Planner (Phase 3) | brief-planner-phase-3.md | 140 |
 | Brief — TER Gate-Brief Builder (Phase 4, only after the TER thread collects) | brief-ter-gate-brief-builder-phase-4-only-after-the-ter-thread-collects.md | 40 |
-| Brief — Collection Audit (Phase 4.5) | brief-collection-audit-phase-4-5.md | 55 |
+| Brief — Collection Audit (Phase 4.5) | brief-collection-audit-phase-4-5.md | 59 |
 | Brief — Collection-Audit Shard (Phase 4.5, when indexed) | brief-collection-audit-shard-phase-4-5-when-indexed.md | 25 |
-| Brief — Collection Exact-Coverage Collector (Phase 4.5, sharded) | brief-collection-exact-coverage-collector-phase-4-5-sharded.md | 34 |
-| Brief — Verification Planner (Phase 5) | brief-verification-planner-phase-5.md | 75 |
+| Brief — Collection Exact-Coverage Collector (Phase 4.5, sharded) | brief-collection-exact-coverage-collector-phase-4-5-sharded.md | 37 |
+| Brief — Verification Planner (Phase 5) | brief-verification-planner-phase-5.md | 79 |
 | Brief — Verification-Planning Shard (Phase 5, VPLAN⟨shard⟩) | brief-verification-planning-shard-phase-5-vplan-shard.md | 37 |
 | Brief — Verification-Plan Exact Collector (Phase 5) | brief-verification-plan-exact-collector-phase-5.md | 29 |
 | Brief — Invariant Affinity Reconciler (Phase 5.25) | brief-invariant-affinity-reconciler-phase-5-25.md | 37 |

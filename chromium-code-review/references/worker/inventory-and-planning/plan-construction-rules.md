@@ -17,13 +17,15 @@ only the user directives and skill brief.
 
 ## Plan-Construction Rules
 
-Write the complete plan into `plan.md` before any thread is spawned — one
-line per thread with name, scope, and status (`spawn` /
+Write the initial plan into `plan.md` before any thread is spawned. Under
+schema 3 it has the two generalist passes, sharded when required; later graph-routed work is append-only.
+Under schema 2 it has one line per thread with name, scope, and status (`spawn` /
 `not applicable — trigger absence proved by <T IDs>`), in the roster shape from
 `references/templates.md`. Hard rules, each learned from a measured failure:
 
-**Every roster line appears in the plan with a status.** An omitted line is
-invisible; a wrong not-applicable proof is catchable.
+**Every graph obligation appears in topology and every effective plan row has
+a status.** Schema 2 additionally requires every roster line. An omitted edge
+or legacy line is invisible; a wrong not-applicable proof is catchable.
 
 **"Not applicable" requires proof; "unreviewed" means work was skipped.**
 A recipe or section whose trigger genuinely matches nothing in this CL is

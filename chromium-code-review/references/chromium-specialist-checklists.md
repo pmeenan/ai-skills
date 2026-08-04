@@ -1,6 +1,7 @@
 # Chromium Specialist Checklists
 
-Load only the sections activated by deterministic inventory triggers. Treat
+Load only the sections activated by deterministic inventory triggers or the
+soft-likelihood routing contract. Treat
 these as discovery supplements: record every anomaly as a ledger candidate and
 leave severity/disposition to verification. Close a row clean only with a
 `path:line` citation to the relevant guard, owner, bound, metadata, or test.
@@ -32,9 +33,36 @@ Do not infer safety from comments, DCHECKs in release-only paths, type names, or
 the CL description. Trace the concrete producer, consumer, owner, boundary, and
 teardown/version state.
 
+A `specialist:full` scope executes the whole assigned section. A
+`specialist:probe` scope executes at most three cited risk units: the deepest
+or highest-fanout applicable path, one teardown/error/boundary path, and one
+test-defense path. Escalate by returning `partial` with the unreviewed full
+scope when the probe confirms a section trigger, creates a candidate,
+discovers a new relevant graph obligation, or leaves high residual risk; the next
+attempt continues the same work ID and ledger. A clean probe must still cite
+the guards, owners, bounds, compatibility mechanisms, or tests that reduced
+the likelihood. "Looks risky" without those signals is neither escalation nor
+closure.
+
+Every probe writes `## Specialist probe outcome` with columns `lens | graph
+scope | result | evidence | remaining scope`. `result` is `clean` or
+`escalate`; an escalated row retains `specialist:full; graph:...` as remaining
+scope. The validator rejects a clean result with a candidate or open graph
+obligation and rejects escalation without a later complete same-work-ID
+continuation whose attempt-specific brief retains the full graph scope and
+directly depends on the escalated attempt.
+
+When generalists estimate this section's likelihood, ask whether a full sweep
+is likely to discover additional relevant edges. Amplify for interactions
+among soft patterns, unresolved graph depth/fanout, boundary crossings, and
+missing defenses or adversarial tests. One isolated, fully traced local
+pattern can be `low`; it is not automatically `medium`. Several interacting
+patterns or an unguarded deep chain can be `high`. Use `low` only with
+affirmative cited counterevidence.
+
 ## Threading And Synchronization (TSY)
 
-Trigger on locks, condition variables, waitable events, atomics,
+Within a routed scope, inspect locks, condition variables, waitable events, atomics,
 `SequenceChecker`, `ThreadChecker`, cross-sequence callbacks, `ThreadPool`, task
 traits, or mutable state reached from multiple sequences.
 
@@ -64,7 +92,7 @@ required order`, a lock-order graph, wait/post/cancel/destroy timelines, and
 
 ## Ownership And Blink Lifecycle (OBL)
 
-Trigger on owning/non-owning pointers, `raw_ptr`, reference cycles, external
+Within a routed scope, inspect owning/non-owning pointers, `raw_ptr`, reference cycles, external
 handles, `GarbageCollected`, `Member`, `WeakMember`, `Persistent`, `Trace`, DOM
 or event mutation, script-capable bindings, navigation, BFCache, prerender,
 freeze/resume, detach, or execution-context destruction.
@@ -96,7 +124,7 @@ rows citing the ownership/trace edge and teardown guard.
 
 ## Mojo IPC Authorization And Sandbox (MIS)
 
-Trigger on `.mojom`, generated bindings, remotes/receivers, `ReceiverSet`,
+Within a routed scope, inspect `.mojom`, generated bindings, remotes/receivers, `ReceiverSet`,
 associated interfaces, binder registration, messages crossing a process,
 process/frame/document identity, handle transfer, broker calls, sandbox policy,
 allowlists, handle inheritance, syscalls, or entitlements.
@@ -132,7 +160,7 @@ binder-to-implementation flow, sandbox capability delta, and `MIS-*` rows.
 
 ## Performance And Resource Scaling (PRS)
 
-Trigger on hot/startup code, per-frame/tab/process state, unbounded loops or
+Within a routed scope, inspect hot/startup code, per-frame/tab/process state, unbounded loops or
 inputs, caches/queues, allocations/copies, task hops, timers/wakeups, GPU
 resources, benchmarks, or claimed performance/memory effects.
 
@@ -159,7 +187,7 @@ before/after evidence, and `PRS-*` rows citing bounds and measurements.
 
 ## Platform And Language Semantics (PLS)
 
-Trigger on build/platform guards, OS APIs, paths/handles, packed or serialized
+Within a routed scope, inspect build/platform guards, OS APIs, paths/handles, packed or serialized
 data, CPU-specific code, architecture-sized types, or Java/Kotlin, Objective-C,
 Rust, JavaScript/TypeScript, Python, GN, Mojo, or proto sources.
 
@@ -194,7 +222,7 @@ language boundary hazards/tools, and `PLS-*` rows with build/test citations.
 
 ## Build API And Generated Assets (BAG)
 
-Trigger on added/moved/deleted files, public headers, targets, component
+Within a routed scope, inspect added/moved/deleted files, public headers, targets, component
 boundaries, `BUILD.gn`, `.gni`, `DEPS`, `OWNERS`, export macros, `.grd`, `.grdp`,
 `.xtb`, `.mojom`, `.proto`, WebUI bundles, or generated files.
 
@@ -223,7 +251,7 @@ and `BAG-*` rows citing metadata and source-of-truth inputs.
 
 ## Privacy And Telemetry (PAT)
 
-Trigger on identity, permissions, secrets/credentials/tokens, user/profile data,
+Within a routed scope, inspect identity, permissions, secrets/credentials/tokens, user/profile data,
 paths, incognito/storage partitions, consent/retention/deletion, crypto/random,
 logging, histogram macros/XML, UKM, source IDs, metric emission changes, or
 enterprise policy surfaces (`components/policy`, `policy_templates.json`,
@@ -262,7 +290,7 @@ timeline, `metric | site | population/frequency | value/unit | metadata`, and
 
 ## Accessibility And Internationalization (AXI)
 
-Trigger on UI controls, focus/input, DOM/AX trees, roles/names/states/actions,
+Within a routed scope, inspect UI controls, focus/input, DOM/AX trees, roles/names/states/actions,
 announcements, color/animation, user-visible strings, GRIT, locale/time zone,
 plurals, formatting, text direction, or layout mirroring.
 
@@ -293,7 +321,7 @@ direction`, representative mode/locale evidence, and `AXI-*` rows.
 
 ## Network Semantics (NET)
 
-Trigger on URLs, requests/responses, redirects, auth/proxy, cookies/credentials,
+Within a routed scope, inspect URLs, requests/responses, redirects, auth/proxy, cookies/credentials,
 caching/retries, fetch/navigation policy, headers, DNS, TLS/certificates,
 NetworkIsolationKey/partition keys, or profile-bound network contexts.
 
@@ -324,7 +352,7 @@ context ownership, and `NET-*` rows citing canonicalization/policy/isolation.
 
 ## Fuzzing And Test Strategy (FTS)
 
-Trigger on parser/decoder/deserializer/decompressor/protocol/state-machine/
+Within a routed scope, inspect parser/decoder/deserializer/decompressor/protocol/state-machine/
 structured untrusted input; fuzz targets/corpora; disabled/flaky/expectation
 changes; or behavior crossing web-standard, process, profile, or platform
 boundaries where the faithful test level is genuinely ambiguous. Ordinary

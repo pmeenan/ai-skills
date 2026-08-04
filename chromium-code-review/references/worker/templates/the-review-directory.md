@@ -27,6 +27,8 @@ verdicts into a real review.
   context.md              # Phase 1: bug/design context, scope-relevance notes
   inventory.md            # Phase 1: inventory + risk map (inventory/<shard>.md when sharded)
   indexes/inventory.tsv   # compact derived surface/trigger index
+  indexes/topology.tsv    # effective typed evidence graph
+  indexes/specialist-priors.tsv # independent generalist risk assessments
   indexes/manifest.json   # source fingerprints for every derived index
   prior-feedback-input.md # Phase 2 input (follow-up reviews only)
   plan.md                 # Phase 3: thread-plan roster with statuses

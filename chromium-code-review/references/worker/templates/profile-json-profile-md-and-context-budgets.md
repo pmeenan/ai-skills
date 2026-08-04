@@ -17,9 +17,13 @@ shape excerpt. `profile.md` renders the same fields for workers and humans.
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "effort": "high-risk",
   "context_fast_path_eligible": false,
+  "topology": {"policy": "evidence-graph-v1", "initial_generalists": 2,
+               "generalist_unit": "independent-pass",
+               "generalist_sharding": "matching-connected-component-budget-slices",
+               "size_role": "budget-prior-only"},
   "effort_reasons": ["risk signal: async_or_lifecycle"],
   "micro_eligibility": {"eligible": false, "proof": [], "failed": []},
   "pin": {"revision_sha": "4f2a09c1...", "parent_sha": "8b1d77e..."},
@@ -55,4 +59,5 @@ N/A; Inventory must apply the full rules in `inventory-and-planning.md`.
 35% of known capacity (conservatively four bytes per token) or the 128 KiB
 fallback. The derived packet/card values partition that ceiling; exceeding any
 value requires sharding or continuation, never truncation. Profile class
-changes topology only and never removes roster or gate obligations.
+controls budgets and sharding. In schema 3, discovered graph edges control
+fan-out; strict candidate verification and reconciliation gates remain unchanged.

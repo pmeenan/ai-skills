@@ -2,14 +2,15 @@
 
 # Chromium Specialist Checklists
 
-Load only the sections activated by deterministic inventory triggers. Treat
+Load only the sections activated by deterministic inventory triggers or the
+soft-likelihood routing contract. Treat
 these as discovery supplements: record every anomaly as a ledger candidate and
 leave severity/disposition to verification. Close a row clean only with a
 `path:line` citation to the relevant guard, owner, bound, metadata, or test.
 
 ## Performance And Resource Scaling (PRS)
 
-Trigger on hot/startup code, per-frame/tab/process state, unbounded loops or
+Within a routed scope, inspect hot/startup code, per-frame/tab/process state, unbounded loops or
 inputs, caches/queues, allocations/copies, task hops, timers/wakeups, GPU
 resources, benchmarks, or claimed performance/memory effects.
 

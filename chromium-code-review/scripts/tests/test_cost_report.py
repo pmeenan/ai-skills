@@ -40,6 +40,16 @@ class CostReportTests(unittest.TestCase):
             f"EPW\t1\t4\tb\t{self.review}/refs/recipe.md\tcontrol\t250\tbeef\n"
             f"V001\t1\t5\tb\t{self.review}/briefs/V001.md\tbrief\t80\tfeed\n",
             encoding="utf-8")
+        indexes = self.review / "indexes"
+        indexes.mkdir()
+        (indexes / "topology.tsv").write_text(
+            "edge\tfrom\tto\tkind\tstatus\tcitations\tevidence_excerpt\t"
+            "candidate\tnext_obligation\tobservation_count\tobservations\tsource\n"
+            "E-STATE-1\tS1\tS2\tstate-transition\tcandidate\ta.cc:1\t"
+            "state\tEPW-1\ttrace error\t2\tGSS=resolved; GAI=candidate\t"
+            "inventory.md\n",
+            encoding="utf-8",
+        )
 
     def run_report(self) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -64,6 +74,9 @@ class CostReportTests(unittest.TestCase):
         md = (self.review / "cost-report.md").read_text(encoding="utf-8")
         self.assertIn("| 4 | 2 | 1 | 350 | 400 |", md)
         self.assertIn("| frontier | 2 | 350 |", md)
+        self.assertIn("## Evidence-graph routing", md)
+        self.assertIn("- Edges with at least two observations: 1", md)
+        self.assertIn("- Candidate-bearing edges: 1", md)
         self.assertFalse((self.review / "code-read-costs.tsv").exists())
 
     def test_wall_clock_timeline(self) -> None:
@@ -132,6 +145,14 @@ class CostReportTests(unittest.TestCase):
         result = self.run_report()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing", result.stderr)
+
+    def test_duplicate_orchestration_attempt_fails(self) -> None:
+        path = self.review / "orchestration.tsv"
+        rows = path.read_text(encoding="utf-8").splitlines()
+        path.write_text("\n".join(rows + [rows[1]]) + "\n", encoding="utf-8")
+        result = self.run_report()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("duplicate work_id/attempt EPW:1", result.stderr)
 
 
 if __name__ == "__main__":

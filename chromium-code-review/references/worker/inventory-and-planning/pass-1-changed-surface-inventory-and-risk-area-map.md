@@ -98,7 +98,8 @@ output goes to
   Specialist Trigger Decisions below; record the matched changed paths,
   symbols, profile signals, and surfaces, or the complete negative evidence.
   This is evidence for planning, not the final plan; the Planner must still
-  enumerate the full roster. Include counts that let it shard by natural trace
+  account for every obligation required by the active plan topology. Include
+  counts that let it shard by natural trace
   unit: functions/entry points, callbacks, lineages, states/modes/cells,
   ownership nodes/edges, shared-state operations, schemas/interfaces,
   configurations/languages, and files/changed lines. Assign stable

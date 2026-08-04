@@ -57,6 +57,13 @@ def repair(
     ))
 
 
+def graph_route(text: str, attempt: int, rows: list[str]) -> str:
+    return text + "\n" + "\n".join((
+        f"## Graph routing continuation — PLAN attempt {attempt}",
+        "", COLUMNS, SEPARATOR, *rows, "",
+    ))
+
+
 def repair_row(
     entry: str,
     expected_status: str,
@@ -84,6 +91,27 @@ def roster_rows(text: str) -> tuple[list[dict[str, str]], list[str]]:
 
 
 class PlanContinuationTest(unittest.TestCase):
+    def test_graph_routing_appends_new_effective_identity(self) -> None:
+        text = plan([
+            row("Generalist Semantic And State Discovery",
+                "graph:all-inventory-edges", "spawn")
+        ], [])
+        text = graph_route(text, 2, [
+            row("Error-Path Walk", "graph:E-ERR-1", "spawn")
+        ])
+        effective, errors = roster_rows(text)
+        self.assertEqual([], errors)
+        self.assertEqual(
+            ["Generalist Semantic And State Discovery", "Error-Path Walk"],
+            [item["roster entry"] for item in effective],
+        )
+
+    def test_graph_routing_rejects_scope_without_edge(self) -> None:
+        text = plan([row("Generalist Semantic And State Discovery",
+                         "graph:all-inventory-edges", "spawn")], [])
+        text = graph_route(text, 2, [row("Error-Path Walk", "all errors", "spawn")])
+        self.assert_plan_error(text, "must cite graph:<edge-id(s)>")
+
     def test_one_to_one_transition_preserves_raw_history(self) -> None:
         text = plan(
             [row("Error-Path Walk", "old", PLAN_DEFERRED_STATUS)],

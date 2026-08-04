@@ -17,8 +17,9 @@ only the user directives and skill brief.
 
 ## The Roster
 
-The plan enumerates the **full roster**, copied verbatim with one line each —
-never derived from memory:
+The schema-3 catalog is copied verbatim when an edge routes to it; absent
+lenses do not become rows. The legacy schema-2 plan enumerates the **full
+roster**, copied verbatim with one line each — never derived from memory:
 
 - Recipes: Desk-Check Simulation + Arithmetic Drills, Data Lineage,
   Callback And Task Lifetime, Container And View Invalidation,

@@ -11,9 +11,13 @@ verdicts into a real review.
 
 ## plan.md — Thread-Plan Roster
 
-Every roster entry appears, one line each, copied verbatim from
-`references/inventory-and-planning.md` (The Roster) — never derived from
-memory. Statuses are `spawn`,
+For schema 3, the initial table contains the two named generalist passes. Use
+one `spawn` row per pass scoped to `graph:all-inventory-edges` only when it
+fits; otherwise use matching numbered shards with exact `graph:E-...` scopes,
+covering every edge exactly once per pass. If there are zero edges, use one
+unsharded `graph:none` row per pass. Catalog lenses are
+added only through graph-routing continuations. Schema 2 retains every roster
+entry. Statuses are `spawn`,
 `not applicable — trigger absence proved by ⟨T IDs⟩`,
 `unreviewed — ⟨reason⟩`, or — during round one of a TER review only, never
 in a collected plan — the transient
@@ -26,6 +30,23 @@ file, and audit row are all `⟨PREFIX⟩⟨N⟩`.
 The planner assigns a model tier and priority batch per the Model Tiers
 contract in `references/scaling-and-indexes.md`; the orchestrator records the
 subagent/task identifier when spawned, and the outcome when collected.
+
+```markdown
+## Graph routing continuation — PLAN attempt 2
+
+| roster entry | scope | status | tier | batch | subagent | outcome |
+| --- | --- | --- | --- | --- | --- | --- |
+| Error-Path Walk | graph:E-ERR-2,E-STATE-1 | spawn | frontier | D02 | — | — |
+| Threading And Synchronization | specialist:probe; graph:E-ASYNC-1 | spawn | frontier | D02 | — | — |
+```
+
+Graph-routing rows add new effective identities, have status `spawn`, and cite
+their exact edge IDs. Specialist rows also declare `specialist:full` or
+`specialist:probe`; high/either, medium/both, and concrete-trigger routes are
+validated against `indexes/specialist-priors.tsv` and explicit `<PREFIX> hard`
+trigger inventory.
+Retry/continuation attempts retain only unresolved edge
+IDs and direct dependencies; they never replay the whole catalog.
 
 **Round two is an append-only plan continuation, never a rewrite or a second
 ordinary roster table.** Append exactly one section per Planner attempt using

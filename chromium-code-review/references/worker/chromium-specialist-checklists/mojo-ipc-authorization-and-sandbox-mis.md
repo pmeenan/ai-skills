@@ -2,14 +2,15 @@
 
 # Chromium Specialist Checklists
 
-Load only the sections activated by deterministic inventory triggers. Treat
+Load only the sections activated by deterministic inventory triggers or the
+soft-likelihood routing contract. Treat
 these as discovery supplements: record every anomaly as a ledger candidate and
 leave severity/disposition to verification. Close a row clean only with a
 `path:line` citation to the relevant guard, owner, bound, metadata, or test.
 
 ## Mojo IPC Authorization And Sandbox (MIS)
 
-Trigger on `.mojom`, generated bindings, remotes/receivers, `ReceiverSet`,
+Within a routed scope, inspect `.mojom`, generated bindings, remotes/receivers, `ReceiverSet`,
 associated interfaces, binder registration, messages crossing a process,
 process/frame/document identity, handle transfer, broker calls, sandbox policy,
 allowlists, handle inheritance, syscalls, or entitlements.

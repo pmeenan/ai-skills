@@ -64,7 +64,11 @@ caller grep for an aggregated group member. Individually-rowed surfaces
 every recipe,
 base-checklist, and specialist trigger under "Specialist
 Trigger Decisions." Emit one trigger row per recipe/checklist roster entry for
-this shard, including complete negative evidence. The deterministic collector
+this shard, including complete negative evidence. Evaluate only the hard
+specialist column here: positive specialist rows use `<PREFIX> hard`; soft
+amplifiers are deferred to both generalists. Under schema 3, every positive
+Chromium specialist trigger maps to its exact `graph:E-...` slice; negative
+specialist rows use `—`. The deterministic collector
 checks the union of file-group
 paths or dense hunk IDs and the earliest-changed-line surface ownership rule;
 silently omitting or duplicating scope is invalid.

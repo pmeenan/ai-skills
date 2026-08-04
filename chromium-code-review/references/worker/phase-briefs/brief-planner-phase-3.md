@@ -35,11 +35,12 @@ and rules."
 Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
 
 ```text
-Scope: build the complete thread plan and write every discovery brief.
+Scope: build the graph-driven thread plan and write every spawned discovery brief.
 
 Inputs: ⟨review-dir⟩/pin.md, ⟨review-dir⟩/directives.md,
 ⟨review-dir⟩/profile.json, ⟨review-dir⟩/context.md, and
-⟨review-dir⟩/indexes/inventory.tsv plus its fresh fingerprint in
+⟨review-dir⟩/indexes/inventory.tsv, `indexes/topology.tsv`,
+`indexes/specialist-priors.tsv`, plus fresh fingerprints in
 indexes/manifest.json. Read the compact index first. Extract only
 the indexed narrative blocks needed to resolve a triggered or ambiguous row;
 do not ingest every inventory file.
@@ -52,8 +53,33 @@ them. Read the Context Rules and every recipe trigger line in
 ⟨skill-dir⟩/references/specialist-recipes.md. Skim the matched sections
 of ⟨skill-dir⟩/references/discovery-checklists.md and
 ⟨skill-dir⟩/references/chromium-specialist-checklists.md before deciding
-statuses. Ambiguous specialist evidence spawns the narrow row; it never
-becomes an unsupported not-applicable status.
+statuses. Ambiguous specialist evidence uses the two-pass likelihood contract
+below; it never becomes an unsupported not-applicable status.
+
+For `evidence-graph-v1`, first plan the two passes `Generalist Semantic And
+State Discovery` and `Generalist Adversarial And Integration Discovery`. Use
+one `graph:all-inventory-edges` row per pass only when it fits; otherwise give
+both passes the same connected-component/budget shards, with every edge
+assigned exactly once per pass. Every generalist shard emits `Specialist
+escalation assessments` for all ten specialist lenses over its exact edge
+slice, using low/medium/high plus cited signals and counterevidence. Rate the
+residual chance that a full sweep will discover additional specialist edges,
+not the mere presence of specialist-flavored constructs. One isolated local
+construct with closed ownership/uses/exits can be low. The
+semantic/state and adversarial/integration passes decide independently. After
+every generalist-shard ledger exists, rebuild topology and specialist priors,
+then
+append `## Graph routing continuation — PLAN attempt ⟨N⟩`; each row must cite
+`graph:<edge-id(s)>`. For specialist lenses, a `<PREFIX> hard` trigger or high from
+either pass selects `specialist:full`; medium from both selects
+`specialist:full`; exactly one medium selects `specialist:probe` by default
+(full is allowed). Two lows with affirmative counterevidence add no
+likelihood-driven row. Other catalog lenses remain driven by an
+unresolved/disputed edge, candidate obligation, or required graph split. Do
+not enumerate absent catalog lenses in the plan. If inventory produced zero
+edges, plan one unsharded `graph:none` row per pass. Each still emits all ten
+assessments as `low` with cited counterevidence; any medium/high judgment means
+inventory must first add the missing edge.
 
 Residue mode (round two, only after the TER gate ran): read the TER
 ledger and ⟨review-dir⟩/verification/VTER.md. Preserve the collected plan
@@ -87,7 +113,9 @@ sequence; any ambiguous, duplicate, stale, or unsupported target blocks the
 whole repair table.
 
 Deliverables:
-- ⟨review-dir⟩/plan.md — the full roster, one row per entry (or shard),
+- ⟨review-dir⟩/plan.md — schema 3: two initial generalist passes (sharded when
+  required) plus append-only
+  graph-routed rows; schema 2: the full roster, one row per entry (or shard),
   status `spawn` or
   `not applicable — trigger absence proved by ⟨T IDs⟩`, priority batch assignments, in
   the shape from

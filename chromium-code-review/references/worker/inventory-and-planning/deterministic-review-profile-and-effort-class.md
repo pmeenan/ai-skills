@@ -25,7 +25,8 @@ lower bound: Inventory may escalate with cited evidence, but may not downgrade
 it from intuition. Micro requires affirmative absence proof; unknown evidence
 fails closed.
 
-The profile changes topology only. It never removes the full roster,
+For schema 3 the profile supplies budgets while the discovered complexity
+graph selects topology. Schema 2 retains the full roster. Neither mode removes
 candidate verification, root-cause-required scopes, reconciliation,
 independent challenge, or freshness gates. Count every required header,
 reference, and artifact against the profile budget; split or continue rather

@@ -88,7 +88,9 @@ class InstrumentationTests(unittest.TestCase):
         self.assertIn("| EPW#1 | 1 | 1 | 7 |", text)
         read_tsv = (self.review / "code-read-costs.tsv").read_text(
             encoding="utf-8")
-        self.assertIn("EPW\t1\t1\t1\t7\t5\t", read_tsv)
+        self.assertIn("4\tEPW\t1\t1\t1\t7\t5\t", read_tsv)
+        self.assertIn("- Unjoined work attempts: 0", text)
+        self.assertIn("| 4 | 1 | 1 | 1 | 7 |", text)
 
     def test_wrapper_requires_opt_in(self) -> None:
         (self.review / "directives.md").write_text("mode: full\n",
@@ -96,6 +98,23 @@ class InstrumentationTests(unittest.TestCase):
         result = self.instrument(sys.executable, "-c", "print('x')")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b"lacks 'instrumentation: code-reads-v1'", result.stderr)
+
+    def test_rejects_unscoped_repo_file_enumeration(self) -> None:
+        result = self.instrument("rg", "--files")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"unscoped 'rg --files'", result.stderr)
+        self.assertFalse((self.review / "instrumentation" / "code-reads").exists())
+
+    def test_rejects_split_shell_pipeline(self) -> None:
+        result = self.instrument(
+            "bash", "-c", "rg -n class", "path/to/file | sed -n 1,20p")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"must be one quoted command argument", result.stderr)
+
+    def test_accepts_one_argument_shell_pipeline(self) -> None:
+        result = self.instrument("bash", "-c", "printf source | sed -n 1p")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b"source")
 
     def test_archive_is_versioned_and_excludes_review_content(self) -> None:
         self.instrument(sys.executable, "-c", "print('code bytes')")

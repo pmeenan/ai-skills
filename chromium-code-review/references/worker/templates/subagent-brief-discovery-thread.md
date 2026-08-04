@@ -81,3 +81,31 @@ not fixes.
 
 If the harness denies subagents file access, item 4 changes to: return the
 full matrix and all rows in the final message — never summarized.
+
+For a schema-3 generalist brief, item 4 additionally requires the exact
+`## Specialist escalation assessments` table shown above: all ten specialist
+lenses, the shard's exact `graph:E-...` scope, low/medium/high likelihood, and
+cited signals plus counterevidence. GSS and GAI workers decide independently;
+neither reads the other's ledger before returning.
+
+For a `specialist:probe` brief, item 3 names the three-unit probe bound from
+the specialist Shared Execution Contract. If escalation criteria are met, the
+worker appends completed probe evidence and returns `partial — remaining:
+specialist:full; graph:...`; the next attempt retains the same work ID and
+ledger and does not repeat the probe.
+
+Every specialist probe ledger contains this exact structured gate:
+
+```markdown
+## Specialist probe outcome
+
+| lens | graph scope | result | evidence | remaining scope |
+| --- | --- | --- | --- | --- |
+| Ownership And Blink Lifecycle | graph:E-ASYNC-1 | escalate | callback ownership is unresolved at net/foo.cc:81-96 | specialist:full; graph:E-ASYNC-1 |
+```
+
+`result` is `clean` or `escalate`. A clean result uses `—` for remaining
+scope. A candidate, open/disputed graph obligation, confirmed hard trigger,
+or high residual likelihood requires `escalate`; the orchestration manifest
+must then show a partial attempt with that full remaining scope and a later
+complete attempt under the same work ID.

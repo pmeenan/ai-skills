@@ -142,6 +142,27 @@ ROSTER_PREFIX = {
     "Fuzzing And Test Strategy": "FTS",
     "Holistic-and-polish thread": "HOL",
 }
+GENERALIST_ROSTER = (
+    "Generalist Semantic And State Discovery",
+    "Generalist Adversarial And Integration Discovery",
+)
+SPECIALIST_LENSES = (
+    "Threading And Synchronization",
+    "Ownership And Blink Lifecycle",
+    "Mojo IPC Authorization And Sandbox",
+    "Performance And Resource Scaling",
+    "Platform And Language Semantics",
+    "Build API And Generated Assets",
+    "Privacy And Telemetry",
+    "Accessibility And Internationalization",
+    "Network Semantics",
+    "Fuzzing And Test Strategy",
+)
+SPECIALIST_PRIOR_ASSESSORS = {"semantic-state", "adversarial-integration"}
+ROSTER_PREFIX.update({
+    GENERALIST_ROSTER[0]: "GSS",
+    GENERALIST_ROSTER[1]: "GAI",
+})
 TRIGGER_ID_TEXT = r"(?:T\d+|I[A-Z0-9]+-T\d+)"
 TRIGGER_ID = re.compile(rf"^{TRIGGER_ID_TEXT}$", re.IGNORECASE)
 MANIFEST_COLUMNS = (
@@ -223,6 +244,8 @@ INDEX_SCRIPT = SCRIPT_DIR / "build-review-indexes.py"
 SNAPSHOT_SCRIPT = SCRIPT_DIR / "snapshot-skill.py"
 DETERMINISTIC_INDEX_NAMES = {
     "inventory.tsv",
+    "topology.tsv",
+    "specialist-priors.tsv",
     "candidates.tsv",
     "verdicts.tsv",
     "reconciliation.tsv",
@@ -965,6 +988,13 @@ def trigger_positively_activates_roster(
     roster_name: str, trigger_row: dict[str, str]
 ) -> bool:
     prefix = ROSTER_PREFIX[roster_name]
+    if roster_name in SPECIALIST_LENSES:
+        return re.search(
+            rf"(?<![A-Za-z0-9]){re.escape(prefix)}\s+hard"
+            rf"(?![A-Za-z0-9])",
+            trigger_row["discovery_triggers"],
+            re.IGNORECASE,
+        ) is not None
     return re.search(
         rf"(?<![A-Za-z0-9]){re.escape(prefix)}"
         rf"(?![A-Za-z0-9]|\s+absent\b)",
@@ -981,6 +1011,177 @@ def tier_override(root: Path) -> bool:
                           directives.read_text(encoding="utf-8")))
 
 
+def validate_specialist_probe_execution(
+    root: Path, plan_row: dict[str, str], report: Report
+) -> None:
+    """Require an auditable outcome and continuation for an executed probe."""
+    lens, shard = plan_row_identity(plan_row["roster entry"])
+    work_id = ROSTER_PREFIX[lens] + (str(shard) if shard is not None else "")
+    artifact = root / "ledger" / f"{work_id}.md"
+    if not artifact.is_file():
+        nested = sorted((root / "ledger").glob(f"**/{work_id}.md")) \
+            if (root / "ledger").is_dir() else []
+        if nested:
+            report.error(
+                f"{nested[0]}: specialist probe ledger is noncanonical; "
+                f"expected {artifact}"
+            )
+        return
+    plan_match = re.search(
+        r"(?i)graph:((?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*)",
+        plan_row.get("scope", ""),
+    )
+    if not plan_match:
+        return
+    planned_edges = frozenset(plan_match.group(1).upper().split(","))
+    parsed = list(table_dicts(read_text(artifact, report)))
+    outcome_tables = [
+        (header, rows) for heading, header, rows in parsed
+        if heading == "Specialist probe outcome"
+    ]
+    if len(outcome_tables) != 1:
+        report.error(
+            f"{artifact}: specialist probe requires exactly one "
+            "Specialist probe outcome table"
+        )
+        return
+    header, rows = outcome_tables[0]
+    required = {
+        "lens", "graph scope", "result", "evidence", "remaining scope",
+    }
+    if not required.issubset(header) or len(rows) != 1:
+        report.error(
+            f"{artifact}: Specialist probe outcome must have the required "
+            "columns and exactly one row"
+        )
+        return
+    outcome = rows[0]
+    if outcome.get("lens", "") != lens:
+        report.error(f"{artifact}: probe outcome names the wrong specialist lens")
+    scope_match = re.fullmatch(
+        r"(?i)graph:((?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*)",
+        outcome.get("graph scope", ""),
+    )
+    outcome_edges = (
+        frozenset(scope_match.group(1).upper().split(","))
+        if scope_match else frozenset()
+    )
+    if outcome_edges != planned_edges:
+        report.error(f"{artifact}: probe outcome graph scope differs from plan")
+    result = outcome.get("result", "").lower()
+    if result not in {"clean", "escalate"}:
+        report.error(f"{artifact}: probe result must be clean or escalate")
+        return
+    evidence = outcome.get("evidence", "")
+    if not (CITATION.search(evidence) or ARTIFACT_POINTER.search(evidence)):
+        report.error(f"{artifact}: probe outcome lacks cited evidence")
+    candidate_or_obligation = False
+    for heading, _, table_rows in parsed:
+        if heading == "Candidate rows" and any(
+            "candidate" in row.get("status", "").lower()
+            or "reopened" in row.get("status", "").lower()
+            for row in table_rows
+        ):
+            candidate_or_obligation = True
+        if heading == "Complexity graph delta" and any(
+            row.get("status", "").lower() in {"candidate", "disputed", "open"}
+            or row.get("next obligation", "").strip() not in {"", "-", "—"}
+            for row in table_rows
+        ):
+            candidate_or_obligation = True
+    if result == "clean":
+        if candidate_or_obligation:
+            report.error(
+                f"{artifact}: clean probe has a candidate or open graph obligation"
+            )
+        if outcome.get("remaining scope", "").strip() not in {"", "-", "—"}:
+            report.error(f"{artifact}: clean probe must have no remaining scope")
+        return
+    remaining = outcome.get("remaining scope", "")
+    remaining_match = re.search(
+        r"(?i)specialist:full.*graph:"
+        r"((?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*)",
+        remaining,
+    )
+    if not remaining_match or not planned_edges.issubset(
+        set(remaining_match.group(1).upper().split(","))
+    ):
+        report.error(
+            f"{artifact}: escalated probe must retain specialist:full graph scope"
+        )
+        return
+    orchestration = root / "orchestration.tsv"
+    attempts: list[dict[str, str]] = []
+    if orchestration.is_file():
+        try:
+            with orchestration.open(encoding="utf-8", newline="") as stream:
+                attempts = [
+                    row for row in csv.DictReader(stream, delimiter="\t")
+                    if row.get("work_id") == work_id
+                ]
+        except OSError as error:
+            report.error(f"cannot read probe orchestration: {error}")
+    partial_attempts = [
+        row for row in attempts
+        if row.get("state") == "partial"
+        and "specialist:full" in row.get("remaining_scope", "").lower()
+        and all(edge in row.get("remaining_scope", "").upper()
+                for edge in planned_edges)
+    ]
+    def full_scope_brief(row: dict[str, str]) -> bool:
+        brief_value = row.get("brief", "")
+        if brief_value in {"", "-", "—"}:
+            return False
+        brief = Path(brief_value)
+        if not brief.is_file():
+            return False
+        matches = re.findall(
+            r"(?im)^Scope:\s*specialist:full;\s*graph:"
+            r"((?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*)\s*$",
+            read_text(brief, report),
+        )
+        return bool(
+            len(matches) == 1 and planned_edges.issubset(
+                set(matches[0].upper().split(","))
+            )
+        )
+
+    continued = False
+    for partial in partial_attempts:
+        partial_value = partial.get("attempt", "")
+        if not partial_value.isdigit():
+            continue
+        dependency = f"{work_id}:{partial_value}"
+        partial_number = int(partial_value)
+        for complete in attempts:
+            complete_value = complete.get("attempt", "")
+            dependencies = {
+                item.strip() for item in complete.get("depends_on", "").split(",")
+            }
+            artifact_value = complete.get("artifact", "")
+            same_artifact = (
+                artifact_value not in {"", "-", "—"}
+                and Path(artifact_value).resolve() == artifact.resolve()
+            )
+            if (
+                complete.get("state") == "complete"
+                and complete_value.isdigit()
+                and int(complete_value) > partial_number
+                and dependency in dependencies
+                and same_artifact
+                and full_scope_brief(complete)
+            ):
+                continued = True
+                break
+        if continued:
+            break
+    if not continued:
+        report.error(
+            f"{artifact}: escalated probe lacks a later complete same-work-ID "
+            "specialist:full continuation"
+        )
+
+
 def validate_plan(
     root: Path,
     trigger_rows: dict[str, dict[str, str]],
@@ -993,6 +1194,22 @@ def validate_plan(
         return
     if not tier_column_seen:
         report.error("plan.md roster table lacks a tier column")
+    profile = read_json(root / "profile.json", report)
+    # A schema-3 profile may be regenerated while resuming a sealed legacy
+    # full-roster plan. The first generalist row is the append-only migration
+    # marker; once present, the adaptive contract is mandatory.
+    plan_names = {
+        plan_row_identity(row.get("roster entry", ""))[0]
+        for row in roster_rows
+    }
+    adaptive_graph = (
+        isinstance(profile, dict)
+        and profile.get("schema_version", 0) >= 3
+        and isinstance(profile.get("topology"), dict)
+        and profile["topology"].get("policy") == "evidence-graph-v1"
+        and bool(plan_names & set(GENERALIST_ROSTER))
+    )
+    allowed_names = set(ROSTER) | (set(GENERALIST_ROSTER) if adaptive_graph else set())
     counts: Counter[str] = Counter()
     identity_counts: Counter[tuple[str, int | None]] = Counter()
     modes: dict[str, set[str]] = defaultdict(set)
@@ -1011,7 +1228,7 @@ def validate_plan(
                 report.error(
                     f"plan row '{row['roster entry']}' assigns mechanical tier "
                     "to a discovery thread")
-            elif name in ROSTER and tier in TIER_ORDER:
+            elif name in allowed_names and tier in TIER_ORDER:
                 floor = "standard" if name in TIER_FLOOR_STANDARD else "frontier"
                 if TIER_ORDER[tier] < TIER_ORDER[floor]:
                     if tier_override(root):
@@ -1077,11 +1294,329 @@ def validate_plan(
         if re.fullmatch(r"unreviewed\s+—\s+\S.*", status, re.I):
             continue
         report.error(f"plan row '{row['roster entry']}' has invalid status '{status}'")
-    for name in ROSTER:
+    required_names = GENERALIST_ROSTER if adaptive_graph else ROSTER
+    for name in required_names:
         if counts[name] == 0:
             report.error(f"plan.md omits roster entry: {name}")
+    if adaptive_graph:
+        topology_edges: set[str] = set()
+        topology_rows: list[dict[str, str]] = []
+        topology_path = root / "indexes" / "topology.tsv"
+        if topology_path.is_file():
+            try:
+                with topology_path.open(encoding="utf-8", newline="") as stream:
+                    topology_rows = list(csv.DictReader(stream, delimiter="\t"))
+                    topology_edges = {
+                        row.get("edge", "")
+                        for row in topology_rows
+                        if row.get("edge")
+                    }
+            except OSError as error:
+                report.error(f"cannot read adaptive topology index: {error}")
+        generalist_partitions: dict[str, dict[int | None, frozenset[str]]] = {}
+        for name in GENERALIST_ROSTER:
+            matching = [
+                row for row in roster_rows
+                if plan_row_identity(row["roster entry"])[0] == name
+            ]
+            if not matching or any(row.get("status") != "spawn" for row in matching):
+                report.error(
+                    f"adaptive graph plan requires spawned rows for {name}"
+                )
+                continue
+            identities = [
+                plan_row_identity(row["roster entry"])[1] for row in matching
+            ]
+            all_scope = [
+                row for row in matching
+                if "graph:all-inventory-edges" in row.get("scope", "").lower()
+            ]
+            empty_scope = [
+                row for row in matching
+                if re.search(r"(?i)(?:^|[; ]+)graph:none(?:[; ]+|$)",
+                             row.get("scope", ""))
+            ]
+            if (
+                not topology_edges and len(matching) == 1
+                and identities == [None] and empty_scope
+            ):
+                generalist_partitions[name] = {None: frozenset()}
+                continue
+            if (
+                topology_edges and len(matching) == 1
+                and identities == [None] and all_scope
+            ):
+                generalist_partitions[name] = {None: frozenset(topology_edges)}
+                continue
+            if any(shard is None for shard in identities) or all_scope or empty_scope:
+                report.error(
+                    f"adaptive graph generalist {name} must be either one "
+                    "unsharded graph:all-inventory-edges row, one unsharded "
+                    "graph:none row for a zero-edge inventory, or only "
+                    "numbered exact-edge shards"
+                )
+                continue
+            assigned: Counter[str] = Counter()
+            partition: dict[int | None, frozenset[str]] = {}
+            for row in matching:
+                match = re.search(
+                    r"(?i)graph:((?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*)",
+                    row.get("scope", ""),
+                )
+                if not match:
+                    report.error(
+                        f"adaptive graph generalist shard "
+                        f"'{row['roster entry']}' must cite graph:<edge-id(s)>"
+                    )
+                    continue
+                edges = frozenset(match.group(1).upper().split(","))
+                assigned.update(edges)
+                partition[plan_row_identity(row["roster entry"])[1]] = edges
+            unknown = set(assigned) - topology_edges
+            missing = topology_edges - set(assigned)
+            duplicate = {edge for edge, count in assigned.items() if count != 1}
+            if unknown:
+                report.error(
+                    f"adaptive graph generalist {name} cites unknown edge(s): "
+                    + ", ".join(sorted(unknown))
+                )
+            if missing:
+                report.error(
+                    f"adaptive graph generalist {name} omits edge(s): "
+                    + ", ".join(sorted(missing))
+                )
+            if duplicate:
+                report.error(
+                    f"adaptive graph generalist {name} duplicates edge(s): "
+                    + ", ".join(sorted(duplicate))
+                )
+            generalist_partitions[name] = partition
+        if len(generalist_partitions) == len(GENERALIST_ROSTER):
+            left = generalist_partitions[GENERALIST_ROSTER[0]]
+            right = generalist_partitions[GENERALIST_ROSTER[1]]
+            if left != right:
+                report.error(
+                    "adaptive graph generalist passes must use the same "
+                    "numbered edge partition"
+                )
+        prior_path = root / "indexes" / "specialist-priors.tsv"
+        prior_rows: list[dict[str, str]] = []
+        if prior_path.is_file():
+            try:
+                with prior_path.open(encoding="utf-8", newline="") as stream:
+                    prior_rows = list(csv.DictReader(stream, delimiter="\t"))
+            except OSError as error:
+                report.error(f"cannot read specialist prior index: {error}")
+        generalist_ledgers_exist = any(
+            re.fullmatch(r"(?:GSS|GAI)\d*", path.stem.upper())
+            for path in ((root / "ledger").glob("**/*.md")
+                         if (root / "ledger").is_dir() else [])
+        )
+        specialist_plan_rows = [
+            row for row in roster_rows
+            if plan_row_identity(row["roster entry"])[0] in SPECIALIST_LENSES
+            and row.get("status") == "spawn"
+        ]
+        if prior_rows or generalist_ledgers_exist or specialist_plan_rows:
+            expected_scopes: set[frozenset[str]] = set()
+            if len(generalist_partitions) == len(GENERALIST_ROSTER):
+                expected_scopes = set(
+                    generalist_partitions[GENERALIST_ROSTER[0]].values()
+                )
+            assessments: dict[
+                tuple[str, frozenset[str]], dict[str, str]
+            ] = defaultdict(dict)
+            for prior in prior_rows:
+                lens = prior.get("lens", "")
+                assessor = prior.get("assessor", "")
+                likelihood = prior.get("likelihood", "")
+                graph_scope = prior.get("graph_scope", "")
+                match = re.fullmatch(
+                    r"(?i)graph:((?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*)",
+                    graph_scope,
+                )
+                prior_empty = graph_scope.lower() == "graph:none"
+                if (lens not in SPECIALIST_LENSES
+                        or assessor not in SPECIALIST_PRIOR_ASSESSORS
+                        or likelihood not in {"low", "medium", "high"}
+                        or (not match and not prior_empty)
+                        or (prior_empty and likelihood != "low")):
+                    report.error(
+                        "specialist-priors.tsv contains a malformed assessment"
+                    )
+                    continue
+                scope = (
+                    frozenset(match.group(1).upper().split(","))
+                    if match else frozenset()
+                )
+                key = (lens, scope)
+                if assessor in assessments[key]:
+                    report.error(
+                        f"specialist prior duplicates {assessor} for {lens} "
+                        f"graph:{','.join(sorted(scope))}"
+                    )
+                assessments[key][assessor] = likelihood
+            expected_keys = {
+                (lens, scope)
+                for lens in SPECIALIST_LENSES for scope in expected_scopes
+            }
+            for lens, scope in sorted(
+                expected_keys - set(assessments),
+                key=lambda item: (item[0], sorted(item[1])),
+            ):
+                report.error(
+                    f"specialist prior missing both assessments for {lens} "
+                    f"graph:{','.join(sorted(scope))}"
+                )
+            for (lens, scope), by_assessor in sorted(
+                assessments.items(), key=lambda item: (item[0][0], sorted(item[0][1]))
+            ):
+                if scope not in expected_scopes:
+                    report.error(
+                        f"specialist prior uses an unassigned graph scope for "
+                        f"{lens}: graph:{','.join(sorted(scope))}"
+                    )
+                missing = SPECIALIST_PRIOR_ASSESSORS - set(by_assessor)
+                if missing:
+                    report.error(
+                        f"specialist prior for {lens} graph:{','.join(sorted(scope))} "
+                        "lacks assessor(s): " + ", ".join(sorted(missing))
+                    )
+
+            def routed(lens: str, scope: frozenset[str], mode: str) -> bool:
+                for planned in specialist_plan_rows:
+                    planned_lens, _ = plan_row_identity(planned["roster entry"])
+                    planned_scope = planned.get("scope", "")
+                    graph_match = re.search(
+                        r"(?i)graph:((?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*)",
+                        planned_scope,
+                    )
+                    if planned_lens != lens or not graph_match:
+                        continue
+                    planned_edges = set(graph_match.group(1).upper().split(","))
+                    if scope.issubset(planned_edges) and re.search(
+                        rf"(?i)(?:^|[; ]+)specialist:{mode}(?:[; ]+|$)",
+                        planned_scope,
+                    ):
+                        return True
+                return False
+
+            for (lens, scope), by_assessor in assessments.items():
+                if set(by_assessor) != SPECIALIST_PRIOR_ASSESSORS:
+                    continue
+                levels = list(by_assessor.values())
+                full_required = (
+                    "high" in levels or levels.count("medium") == 2
+                )
+                probe_required = levels.count("medium") == 1 and not full_required
+                label = f"{lens} graph:{','.join(sorted(scope))}"
+                if full_required and not routed(lens, scope, "full"):
+                    report.error(
+                        f"specialist likelihood requires specialist:full for {label}"
+                    )
+                elif probe_required and not (
+                    routed(lens, scope, "probe")
+                    or routed(lens, scope, "full")
+                ):
+                    report.error(
+                        f"specialist likelihood requires specialist:probe or "
+                        f"specialist:full for {label}"
+                    )
+            for lens in SPECIALIST_LENSES:
+                for trigger_id, trigger_row in trigger_rows.items():
+                    if not trigger_positively_activates_roster(lens, trigger_row):
+                        continue
+                    trigger_match = re.fullmatch(
+                        r"(?i)graph:((?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*)",
+                        trigger_row.get("graph_scope", ""),
+                    )
+                    if not trigger_match:
+                        report.error(
+                            f"positive {ROSTER_PREFIX[lens]} trigger {trigger_id} "
+                            "must cite exact graph scope"
+                        )
+                        continue
+                    trigger_scope = frozenset(
+                        trigger_match.group(1).upper().split(",")
+                    )
+                    unknown_trigger_edges = trigger_scope - topology_edges
+                    if unknown_trigger_edges:
+                        report.error(
+                            f"positive {ROSTER_PREFIX[lens]} trigger {trigger_id} "
+                            "cites unknown graph edge(s): "
+                            + ", ".join(sorted(unknown_trigger_edges))
+                        )
+                        continue
+                    if not routed(lens, trigger_scope, "full"):
+                        report.error(
+                            f"positive {ROSTER_PREFIX[lens]} trigger {trigger_id} "
+                            f"requires specialist:full coverage of graph:"
+                            f"{','.join(sorted(trigger_scope))}"
+                        )
+        candidates_path = root / "indexes" / "candidates.tsv"
+        if candidates_path.is_file():
+            try:
+                with candidates_path.open(encoding="utf-8", newline="") as stream:
+                    candidate_ids = {
+                        row.get("id", "")
+                        for row in csv.DictReader(stream, delimiter="\t")
+                        if row.get("id")
+                    }
+            except OSError as error:
+                report.error(f"cannot read adaptive candidate index: {error}")
+                candidate_ids = set()
+            routed_candidates = {
+                candidate.strip()
+                for row in topology_rows
+                for candidate in row.get("candidate", "").split(",")
+                if candidate.strip() not in {"", "-", "—"}
+            }
+            missing_candidates = candidate_ids - routed_candidates
+            unknown_candidates = routed_candidates - candidate_ids
+            if missing_candidates:
+                report.error(
+                    "adaptive topology omits candidate edge membership: "
+                    + ", ".join(sorted(missing_candidates))
+                )
+            if unknown_candidates:
+                report.error(
+                    "adaptive topology cites unknown candidate(s): "
+                    + ", ".join(sorted(unknown_candidates))
+                )
+        for row in roster_rows:
+            name, _ = plan_row_identity(row["roster entry"])
+            if name in ROSTER and row.get("status") == "spawn":
+                match = re.search(
+                    r"(?i)graph:((?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*)",
+                    row.get("scope", ""),
+                )
+                if not match:
+                    report.error(
+                        f"adaptive targeted row '{row['roster entry']}' scope "
+                        "must cite graph:<edge-id(s)>"
+                    )
+                else:
+                    unknown = set(match.group(1).upper().split(",")) - topology_edges
+                    if unknown:
+                        report.error(
+                            f"adaptive targeted row '{row['roster entry']}' cites "
+                            "unknown graph edge(s): " + ", ".join(sorted(unknown))
+                        )
+                if name in SPECIALIST_LENSES and not re.search(
+                    r"(?i)(?:^|[; ]+)specialist:(?:full|probe)(?:[; ]+|$)",
+                    row.get("scope", ""),
+                ):
+                    report.error(
+                        f"adaptive specialist row '{row['roster entry']}' scope "
+                        "must declare specialist:full or specialist:probe"
+                    )
+                elif name in SPECIALIST_LENSES and re.search(
+                    r"(?i)(?:^|[; ]+)specialist:probe(?:[; ]+|$)",
+                    row.get("scope", ""),
+                ):
+                    validate_specialist_probe_execution(root, row, report)
     for name in counts:
-        if name not in ROSTER:
+        if name not in allowed_names:
             report.error(f"plan.md invents or renames roster entry: {name}")
     for (name, shard_number), count in identity_counts.items():
         if count > 1:
@@ -1134,7 +1669,28 @@ def validate_trigger_inventory(
                 trigger_rows[scope] = {
                     "surface": row.get("surface", ""),
                     "discovery_triggers": row.get("discovery triggers", ""),
+                    "graph_scope": row.get("graph scope", ""),
                 }
+                discovery = row.get("discovery triggers", "")
+                for lens in SPECIALIST_LENSES:
+                    prefix = ROSTER_PREFIX[lens]
+                    if not re.search(
+                        rf"(?<![A-Za-z0-9]){re.escape(prefix)}"
+                        rf"(?![A-Za-z0-9])",
+                        discovery,
+                        re.IGNORECASE,
+                    ):
+                        continue
+                    if not re.search(
+                        rf"(?<![A-Za-z0-9]){re.escape(prefix)}\s+"
+                        rf"(?:hard|absent)(?![A-Za-z0-9])",
+                        discovery,
+                        re.IGNORECASE,
+                    ):
+                        report.error(
+                            f"{path}: {scope} specialist token {prefix} must "
+                            f"be '{prefix} hard' or '{prefix} absent'"
+                        )
                 if not re.match(r"(?i)^(required|not required):\s*\S", trigger):
                     report.error(f"{path}: {scope} has invalid root-cause trigger '{trigger}'")
                 elif trigger.lower().startswith("required:"):

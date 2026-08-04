@@ -38,17 +38,19 @@ Reject a stale pin, malformed signal, unsorted/duplicate hunk ID, or
 classification that does not follow the template precedence. Do not ask an
 agent to estimate effort from prose.
 
-Use the resulting `micro`, `standard`, `high-risk`, or `large` topology only
-to choose sharding and mechanical fast paths. Micro requires affirmative
+Use the resulting `micro`, `standard`, `high-risk`, or `large` class only
+to choose budgets, sharding, and mechanical fast paths. Micro requires affirmative
 absence evidence for every semantic exclusion; missing or unknown evidence
-falls back to standard or the signaled higher-risk class. The complete roster
-and all analytical gates remain mandatory in every class.
+falls back to standard or the signaled higher-risk class. In schema 3 the
+typed complexity graph selects analytical fan-out; schema 2 keeps the legacy
+complete roster. Verification and reconciliation gates remain mandatory.
 
 Profile signals also seed specialist routing, but they never remove the
-Inventory agent's obligation to evaluate every deterministic trigger in
-`inventory-and-planning.md`. A matched specialist signal scopes a roster row;
-an absent signal is only one part of the cited negative evidence needed for
-not-applicable status.
+Inventory agent's obligation to evaluate every hard trigger in
+`inventory-and-planning.md`. A profile/subsystem proximity signal is only a
+soft likelihood amplifier unless it proves the hard column's changed contract
+or boundary. An absent signal is only one part of the cited negative evidence
+needed for not-applicable status.
 
 Every worker packet obeys `profile.json`'s context budget and the complete
 counting rules in `references/scaling-and-indexes.md`. Measure required

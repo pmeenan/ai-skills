@@ -374,10 +374,10 @@ class BuildReviewIndexesTest(unittest.TestCase):
 
 ## Trigger inventory
 
-| scope ID | surface | discovery triggers | root-cause trigger | evidence |
-| --- | --- | --- | --- | --- |
-| T001 | Foo state | CTL, SMM | required: async | foo.cc:10 |
-| T002 | No trust boundary | STB | not required: token scan empty | profile.json:/risk_signals |
+| scope ID | surface | discovery triggers | root-cause trigger | evidence | graph scope |
+| --- | --- | --- | --- | --- | --- |
+| T001 | Foo state | CTL, SMM | required: async | foo.cc:10 | graph:E-A,E-B |
+| T002 | No trust boundary | STB | not required: token scan empty | profile.json:/risk_signals | — |
 """,
         )
         write(
@@ -461,6 +461,7 @@ class BuildReviewIndexesTest(unittest.TestCase):
         self.assertEqual("S0001", surface["id"])
         trigger = next(row for row in inventory if row["kind"] == "trigger")
         self.assertIn("root-cause-required=yes", trigger["tags"])
+        self.assertIn("graph-scope=graph:E-A,E-B", trigger["tags"].split(";"))
         trigger_two = next(row for row in inventory if row["id"] == "T002")
         self.assertEqual("profile.json:/risk_signals", trigger_two["citations"])
         self.assertIn("root-cause-required=no", trigger_two["tags"])
@@ -490,6 +491,165 @@ class BuildReviewIndexesTest(unittest.TestCase):
         self.assertEqual("ledger/EPW.md", manifest["indexes"]["candidates.tsv"]["sources"][0]["path"])
         self.assertEqual(64, len(manifest["indexes"]["candidates.tsv"]["output_sha256"]))
         self.assertIn("current:", run("python3", str(INDEXES), str(root), "--check").stdout)
+
+    def test_builds_effective_topology_from_inventory_and_ledger_delta(self) -> None:
+        temporary, root = self.make_review()
+        self.addCleanup(temporary.cleanup)
+        inventory = root / "inventory.md"
+        write(inventory, inventory.read_text(encoding="utf-8") + """
+
+## Complexity graph edges
+
+| edge | from | to | kind | status | evidence |
+| --- | --- | --- | --- | --- | --- |
+| E-STATE-1 | S0001 | Foo::Run | state-transition | open | foo.cc:11 |
+""")
+        ledger = root / "ledger" / "EPW.md"
+        write(ledger, ledger.read_text(encoding="utf-8") + """
+
+## Complexity graph delta
+
+| edge | status | evidence | candidate | next obligation |
+| --- | --- | --- | --- | --- |
+| E-STATE-1 | candidate | caller.cc:20 | EPW-1 | trace cancellation |
+""")
+        run("python3", str(INDEXES), str(root))
+        rows = self.read_tsv(root / "indexes" / "topology.tsv")
+        self.assertEqual("candidate", rows[0]["status"])
+        self.assertEqual("EPW-1", rows[0]["candidate"])
+        self.assertEqual("inventory.md", rows[0]["source"])
+        self.assertEqual("ledger/EPW.md", rows[0]["effective_source"])
+        self.assertEqual("ledger/EPW.md=candidate", rows[0]["observations"])
+
+    def test_builds_independent_specialist_prior_index(self) -> None:
+        temporary, root = self.make_review()
+        self.addCleanup(temporary.cleanup)
+        inventory = root / "inventory.md"
+        write(inventory, inventory.read_text(encoding="utf-8") + """
+
+## Complexity graph edges
+
+| edge | from | to | kind | status | evidence |
+| --- | --- | --- | --- | --- | --- |
+| E-ASYNC-1 | S0001 | Foo::Reply | cross-sequence | open | foo.cc:11 |
+""")
+        table_header = """
+# Generalist
+
+## Specialist escalation assessments
+
+| lens | graph scope | likelihood | signals | counterevidence |
+| --- | --- | --- | --- | --- |
+"""
+        lenses = (
+            "Threading And Synchronization",
+            "Ownership And Blink Lifecycle",
+            "Mojo IPC Authorization And Sandbox",
+            "Performance And Resource Scaling",
+            "Platform And Language Semantics",
+            "Build API And Generated Assets",
+            "Privacy And Telemetry",
+            "Accessibility And Internationalization",
+            "Network Semantics",
+            "Fuzzing And Test Strategy",
+        )
+        table = table_header + "".join(
+            f"| {lens} | graph:E-ASYNC-1 | medium | "
+            "cross-sequence reply at foo.cc:11 | cancellation guard at foo.cc:18 |\n"
+            for lens in lenses
+        )
+        write(root / "ledger" / "GSS.md", table)
+        write(root / "ledger" / "GAI.md", table.replace("medium", "low"))
+        run("python3", str(INDEXES), str(root))
+        rows = self.read_tsv(root / "indexes" / "specialist-priors.tsv")
+        self.assertEqual(20, len(rows))
+        self.assertEqual(
+            {"semantic-state", "adversarial-integration"},
+            {row["assessor"] for row in rows},
+        )
+        self.assertEqual("graph:E-ASYNC-1", rows[0]["graph_scope"])
+
+    def test_builds_zero_edge_specialist_priors_with_none_scope(self) -> None:
+        temporary, root = self.make_review()
+        self.addCleanup(temporary.cleanup)
+        lenses = (
+            "Threading And Synchronization",
+            "Ownership And Blink Lifecycle",
+            "Mojo IPC Authorization And Sandbox",
+            "Performance And Resource Scaling",
+            "Platform And Language Semantics",
+            "Build API And Generated Assets",
+            "Privacy And Telemetry",
+            "Accessibility And Internationalization",
+            "Network Semantics",
+            "Fuzzing And Test Strategy",
+        )
+        table = """# Generalist
+
+## Specialist escalation assessments
+
+| lens | graph scope | likelihood | signals | counterevidence |
+| --- | --- | --- | --- | --- |
+""" + "".join(
+            f"| {lens} | graph:none | low | no applicable edge at foo.cc:10 | "
+            "changed behavior remains local at foo.cc:10 |\n"
+            for lens in lenses
+        )
+        write(root / "ledger" / "GSS.md", table)
+        write(root / "ledger" / "GAI.md", table)
+        run("python3", str(INDEXES), str(root))
+        topology = self.read_tsv(root / "indexes" / "topology.tsv")
+        priors = self.read_tsv(root / "indexes" / "specialist-priors.tsv")
+        self.assertEqual([], topology)
+        self.assertEqual(20, len(priors))
+        self.assertEqual({"graph:none"}, {item["graph_scope"] for item in priors})
+        self.assertEqual({"low"}, {item["likelihood"] for item in priors})
+
+    def test_rejects_numeric_specialist_likelihood(self) -> None:
+        temporary, root = self.make_review()
+        self.addCleanup(temporary.cleanup)
+        inventory = root / "inventory.md"
+        write(inventory, inventory.read_text(encoding="utf-8") + """
+
+## Complexity graph edges
+
+| edge | from | to | kind | status | evidence |
+| --- | --- | --- | --- | --- | --- |
+| E-ASYNC-1 | S0001 | Foo::Reply | cross-sequence | open | foo.cc:11 |
+""")
+        write(root / "ledger" / "GSS.md", """
+## Specialist escalation assessments
+
+| lens | graph scope | likelihood | signals | counterevidence |
+| --- | --- | --- | --- | --- |
+| Threading And Synchronization | graph:E-ASYNC-1 | 80% | foo.cc:11 | foo.cc:18 |
+""")
+        result = run("python3", str(INDEXES), str(root), check=False)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("use low, medium, or high", result.stderr)
+
+    def test_rejects_uncited_low_counterevidence(self) -> None:
+        temporary, root = self.make_review()
+        self.addCleanup(temporary.cleanup)
+        inventory = root / "inventory.md"
+        write(inventory, inventory.read_text(encoding="utf-8") + """
+
+## Complexity graph edges
+
+| edge | from | to | kind | status | evidence |
+| --- | --- | --- | --- | --- | --- |
+| E-ASYNC-1 | S0001 | Foo::Reply | cross-sequence | open | foo.cc:11 |
+""")
+        write(root / "ledger" / "GSS.md", """
+## Specialist escalation assessments
+
+| lens | graph scope | likelihood | signals | counterevidence |
+| --- | --- | --- | --- | --- |
+| Threading And Synchronization | graph:E-ASYNC-1 | low | inspected foo.cc:11 | no risk |
+""")
+        result = run("python3", str(INDEXES), str(root), check=False)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("low likelihood lacks cited counterevidence", result.stderr)
 
     def test_duplicate_candidate_fails_without_replacing_existing_index(self) -> None:
         temporary, root = self.make_review()
@@ -805,6 +965,36 @@ class WorkerArtifactClosureTest(unittest.TestCase):
             self.assertEqual(
                 0, repaired.returncode, repaired.stdout + repaired.stderr
             )
+
+    def test_generalist_ledger_requires_every_specialist_assessment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = root / "ledger" / "GSS.md"
+            write(artifact, """# Generalist
+
+## Compliance matrix
+
+| question | answer | evidence |
+| --- | --- | --- |
+| edge accounted? | yes | foo.cc:10 |
+
+## Candidate rows
+
+| id | claim | location | evidence / hypothesis | origin | severity | status |
+| --- | --- | --- | --- | --- | --- | --- |
+
+## Specialist escalation assessments
+
+| lens | graph scope | likelihood | signals | counterevidence |
+| --- | --- | --- | --- | --- |
+| Threading And Synchronization | graph:E-A | medium | foo.cc:10 | foo.cc:11 |
+""")
+            result = run(
+                "python3", str(ARTIFACT_VALIDATE), str(root), str(artifact),
+                check=False,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("missing/unknown lenses", result.stderr)
 
     def test_complete_async_refutation_passes(self) -> None:
         obligations = (

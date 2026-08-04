@@ -29,9 +29,12 @@ delivery is blocked while any line is pending or blank.
    and restarts in a new pin.
    Reconciliation and drafting record this as `pending-delivery`; only Phase 9
    may finalize it.
-3. **Roster:** every roster entry appears in `plan.md` as spawned,
-   not-applicable-with-trigger proof, or unreviewed-with-reason; no entry is
-   missing, bundled, or renamed.
+3. **Plan topology:** every entry required by the active topology appears in
+   `plan.md`. For `evidence-graph-v1`, both generalist passes cover the same
+   complete edge partition (or both use `graph:none`) and every required graph
+   continuation is present. A legacy plan accounts for every roster entry as
+   spawned, not-applicable-with-trigger proof, or unreviewed-with-reason. No
+   required entry is missing, bundled, or renamed.
 4. **Collection:** every spawned thread has a collected `ledger/<THREAD>.md`,
    or is disclosed as terminated/interrupted with its partial rows preserved.
 5. **Matrices:** no compliance-matrix row is blank or a citation-free PASS;

@@ -2,14 +2,15 @@
 
 # Chromium Specialist Checklists
 
-Load only the sections activated by deterministic inventory triggers. Treat
+Load only the sections activated by deterministic inventory triggers or the
+soft-likelihood routing contract. Treat
 these as discovery supplements: record every anomaly as a ledger candidate and
 leave severity/disposition to verification. Close a row clean only with a
 `path:line` citation to the relevant guard, owner, bound, metadata, or test.
 
 ## Ownership And Blink Lifecycle (OBL)
 
-Trigger on owning/non-owning pointers, `raw_ptr`, reference cycles, external
+Within a routed scope, inspect owning/non-owning pointers, `raw_ptr`, reference cycles, external
 handles, `GarbageCollected`, `Member`, `WeakMember`, `Persistent`, `Trace`, DOM
 or event mutation, script-capable bindings, navigation, BFCache, prerender,
 freeze/resume, detach, or execution-context destruction.

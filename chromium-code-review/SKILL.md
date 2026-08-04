@@ -464,7 +464,7 @@ Keep Context and Inventory ownership separate:
   deterministic empty-source context skeleton; the holistic lens still audits
   description alignment. Deliverable: `context.md`.
 - One or more **Inventory agents** build the changed-surface inventory,
-  risk-area map, and trigger inventory. Shard whenever file, changed-line,
+  risk-area map, trigger inventory, and typed complexity graph. Shard whenever file, changed-line,
   dense-file hunk/surface, natural trace-unit, or predicted input exceeds the
   profile budget; otherwise write `inventory.md`.
 
@@ -474,8 +474,8 @@ It inventories only `parent..revision`, never the worker checkout's ambient
 HEAD or current Gerrit patchset. Every changed/new/removed function, method,
 constructor, destructor, lambda with stateful behavior, and helper — public,
 protected, private, anonymous-namespace, test-only, or generated — must occur
-in exactly one shard. Rebuild `indexes/inventory.tsv`; the planner reads that
-compact index first and opens only selected canonical rows. Returns are compact
+in exactly one shard. Rebuild `indexes/inventory.tsv` and `indexes/topology.tsv`; the planner reads those
+compact indexes first and opens only selected canonical rows. Returns are compact
 counts plus the risk/trigger names.
 
 After the index rebuild, run
@@ -503,12 +503,23 @@ every prior finding, reconciliation against unresolved Gerrit threads in
 
 ## Phase 3 — Thread Planning
 
-Spawn the **Planner agent** (brief in `phase-briefs.md`). It reads the
-inventory, skims the recipe trigger lines and checklist sections, and builds
-the full thread plan under the roster rules in
-`references/inventory-and-planning.md` — every roster entry present with a
-status, no folding, sharding where scopes are large. It then writes one
-self-contained discovery brief per spawned thread.
+Spawn the **Planner agent** (brief in `phase-briefs.md`). For profile schema 3
+`evidence-graph-v1`, it starts two independent bounded generalist **passes**
+over all inventory graph edges. Each pass is one row only when it fits; large
+graphs shard both passes over the same connected-component/budget partition,
+so every edge is assigned exactly once in each pass. Each pass independently
+records low/medium/high specialist escalation likelihoods with cited signals
+and counterevidence. A zero-edge inventory uses one `graph:none` row per pass;
+all ten assessments must be low with cited counterevidence. After their ledgers
+rebuild `indexes/topology.tsv` and
+`indexes/specialist-priors.tsv`, the Planner adds a full specialist sweep only
+for an explicit changed-contract/boundary `<PREFIX> hard` trigger, high from
+either pass, or medium from both; exactly one
+medium gets a bounded probe by default. It also appends catalog lenses demanded
+by unresolved/disputed edges, typed candidate obligations, or graph split
+thresholds. Older profile schemas
+retain the legacy full-roster plan. It writes one self-contained discovery
+brief per spawned row.
 
 - Deliverables: `plan.md` and `briefs/<THREAD>.md` for every `spawn` row.
 - Return: the spawn list — thread name, brief path, priority — plus the
@@ -539,11 +550,18 @@ pattern across models: a single agent sustains real depth on only one or
 two threads per pass — whichever grab its attention — and everything else
 gets a shallow read. So discovery is never one agent.
 
-**Spawn one subagent per triggered roster entry, with the spawn prompt
+**Spawn one subagent per spawned effective plan row, with the spawn prompt
 "Read and execute the brief at ⟨absolute path to briefs/THREAD.md⟩. It
-defines your pin, scope, procedure, deliverable, and rules." Never run
-discovery as a single agent, and never inline a brief's body into the spawn
-prompt.** Run threads in parallel where the harness allows, and record each
+defines your pin, scope, procedure, deliverable, and rules." Never inline a
+brief's body into the spawn prompt.** The two generalist passes are independent;
+their shards may run in parallel, but every shard covers one pass's exact edge
+slice and the two passes use the same partition. Collect all generalist shards,
+rebuild `indexes/topology.tsv` and `indexes/specialist-priors.tsv`, then respawn
+the Planner to append the graph-routing continuation before launching any
+targeted lens. This fan-in is mandatory even when the next continuation is
+empty. The targeted fan-out occurs only after their graph deltas and specialist
+priors are indexed. Run threads
+in parallel where the harness allows, and record each
 thread's subagent/task identifier in `plan.md`.
 
 **Spawn every worker at its annotated model tier** — phase briefs carry a
@@ -604,8 +622,9 @@ residue-like scope. Deferred is transient: no
 deferred row may survive to the collection audit.
 
 If an already collected non-deferred not-applicable roster row cites the wrong
-absence proof, append the separate canonical `## Plan repair continuation —
-PLAN attempt <N>` table from `references/templates.md`. Its stable roster
+absence proof, append the separate canonical
+`## Plan repair continuation — PLAN attempt <N>` table from
+`references/templates.md`. Its stable roster
 identity and exact expected status guard the replacement; it may correct only
 the proof status or transition the row to a concretely scoped spawn. It cannot
 target deferred rows, rename identities, or alter subagent/outcome history.
@@ -657,7 +676,11 @@ Then rebuild the compact indexes.
 If fresh `indexes/candidates.tsv` proves zero candidates, write the canonical
 empty `verification/batches.md` and skip planner/skeptics. Otherwise spawn one
 bounded **Verification-Planner** or sharded planners over index slices. They
-open only selected canonical rows, propose duplicate merges (as
+open `indexes/topology.tsv` first and require every candidate to belong to at
+least one graph edge. Candidate-bearing connected components, not candidate
+row count, define the semantic batching units; split a component only at a
+cited articulation point or input-budget boundary. They open only selected
+canonical rows, propose duplicate merges (as
 dispositions for reconciliation, never deletions), group candidates into
 skeptic batches — serious candidates individually or in small related
 groups, per `references/verification-and-fixes.md` — and write one skeptic

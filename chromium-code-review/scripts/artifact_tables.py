@@ -27,6 +27,10 @@ PLAN_REPAIR_HEADING = re.compile(
     r"^Plan repair continuation — PLAN attempt ([1-9][0-9]*)$"
 )
 PLAN_REPAIR_PREFIX = "Plan repair continuation"
+PLAN_GRAPH_HEADING = re.compile(
+    r"^Graph routing continuation — PLAN attempt ([1-9][0-9]*)$"
+)
+PLAN_GRAPH_PREFIX = "Graph routing continuation"
 PLAN_NOT_APPLICABLE_PREFIX = "not applicable — trigger absence proved by "
 PLAN_SPAWN_TIERS = {"mechanical", "standard", "frontier"}
 
@@ -57,11 +61,15 @@ def _plan_continuation_kind(heading: str) -> str | None:
         return "residue"
     if PLAN_REPAIR_HEADING.fullmatch(heading):
         return "repair"
+    if PLAN_GRAPH_HEADING.fullmatch(heading):
+        return "graph"
     return None
 
 
 def _plan_continuation_attempt(heading: str) -> int | None:
-    for pattern in (PLAN_CONTINUATION_HEADING, PLAN_REPAIR_HEADING):
+    for pattern in (
+        PLAN_CONTINUATION_HEADING, PLAN_REPAIR_HEADING, PLAN_GRAPH_HEADING
+    ):
         match = pattern.fullmatch(heading)
         if match:
             return int(match.group(1))
@@ -273,16 +281,19 @@ def _apply_plan_continuations(
         if not line.startswith("## "):
             continue
         heading = line[3:].strip()
-        if not heading.startswith((PLAN_CONTINUATION_PREFIX, PLAN_REPAIR_PREFIX)):
+        if not heading.startswith((
+            PLAN_CONTINUATION_PREFIX, PLAN_REPAIR_PREFIX, PLAN_GRAPH_PREFIX
+        )):
             continue
         kind = _plan_continuation_kind(heading)
         attempt = _plan_continuation_attempt(heading)
         if kind is None or attempt is None:
-            expected = (
-                "'Round-two residue continuation — PLAN attempt <N>'"
-                if heading.startswith(PLAN_CONTINUATION_PREFIX)
-                else "'Plan repair continuation — PLAN attempt <N>'"
-            )
+            if heading.startswith(PLAN_CONTINUATION_PREFIX):
+                expected = "'Round-two residue continuation — PLAN attempt <N>'"
+            elif heading.startswith(PLAN_REPAIR_PREFIX):
+                expected = "'Plan repair continuation — PLAN attempt <N>'"
+            else:
+                expected = "'Graph routing continuation — PLAN attempt <N>'"
             errors.append(
                 f"{source}:{line_number}: non-canonical plan continuation "
                 f"heading; expected {expected}"
@@ -355,6 +366,43 @@ def _apply_plan_continuations(
             continue
         if not continuation_rows:
             errors.append(f"{source}: plan continuation '{heading}' has no rows")
+            continue
+
+        if PLAN_GRAPH_HEADING.fullmatch(heading):
+            table_error_count = len(errors)
+            effective_identities = {
+                plan_row_identity(row.get("roster entry", ""))
+                for row in base_rows
+            }
+            additions: list[dict[str, str]] = []
+            for row in continuation_rows:
+                entry = row.get("roster entry", "")
+                identity = plan_row_identity(entry)
+                if not identity[0]:
+                    errors.append(
+                        f"{source}: graph routing continuation '{heading}' "
+                        "has a blank roster entry"
+                    )
+                    continue
+                if identity in effective_identities:
+                    errors.append(
+                        f"{source}: graph routing continuation '{heading}' "
+                        f"duplicates effective identity {entry}"
+                    )
+                effective_identities.add(identity)
+                if row.get("status", "") != "spawn":
+                    errors.append(
+                        f"{source}: graph routing row '{entry}' must have "
+                        "status 'spawn'"
+                    )
+                if "graph:" not in row.get("scope", "").lower():
+                    errors.append(
+                        f"{source}: graph routing row '{entry}' scope must "
+                        "cite graph:<edge-id(s)>"
+                    )
+                additions.append(dict(row))
+            if len(errors) == table_error_count:
+                base_rows.extend(additions)
             continue
 
         table_error_count = len(errors)

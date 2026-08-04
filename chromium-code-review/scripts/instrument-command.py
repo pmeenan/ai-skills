@@ -39,6 +39,25 @@ def enabled(review_dir: Path) -> bool:
                directives.read_text(encoding="utf-8").splitlines())
 
 
+def validate_command_shape(command: list[str]) -> None:
+    """Reject measured command shapes known to emit accidental repo-wide data."""
+    operation = Path(command[0]).name
+    if operation in {"bash", "sh"} and "-c" in command:
+        script_index = command.index("-c") + 1
+        if script_index >= len(command):
+            fail(f"{operation} -c lacks a script argument")
+        if len(command) > script_index + 1:
+            fail(
+                f"{operation} -c pipeline must be one quoted command argument; "
+                "trailing argv would become shell positional parameters"
+            )
+    if operation == "rg" and command[1:] == ["--files"]:
+        fail(
+            "unscoped 'rg --files' is forbidden in a Chromium worktree; use "
+            "the inventory/caller indexes or add an explicit path scope"
+        )
+
+
 def append_event(path: Path, event: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as stream:
@@ -75,6 +94,7 @@ def main() -> int:
         fail("attempt must be positive")
     if not command:
         fail("missing command after --")
+    validate_command_shape(command)
     cwd = (arguments.cwd or Path.cwd()).resolve()
     if not cwd.is_dir():
         fail(f"no command working directory: {cwd}")

@@ -18,6 +18,29 @@ from artifact_tables import effective_tables
 
 
 ROW_ID_RE = re.compile(r"(?:[A-Z][A-Z0-9]*-\d+|R\d+-RC\d+-\d+)")
+GRAPH_EDGE_KINDS = {
+    "caller", "ownership", "lifetime", "state-transition", "data-format",
+    "error-flow", "persistence", "cross-sequence", "test-coverage",
+    "candidate-affinity",
+}
+GRAPH_EDGE_STATUSES = {"open", "resolved", "candidate", "unreviewed", "disputed"}
+SPECIALIST_LENSES = (
+    "Threading And Synchronization",
+    "Ownership And Blink Lifecycle",
+    "Mojo IPC Authorization And Sandbox",
+    "Performance And Resource Scaling",
+    "Platform And Language Semantics",
+    "Build API And Generated Assets",
+    "Privacy And Telemetry",
+    "Accessibility And Internationalization",
+    "Network Semantics",
+    "Fuzzing And Test Strategy",
+)
+SPECIALIST_PRIOR_ASSESSORS = {
+    "GSS": "semantic-state",
+    "GAI": "adversarial-integration",
+}
+SPECIALIST_PRIOR_LEVELS = {"low", "medium", "high"}
 
 def fail(message: str) -> "NoReturn":
     raise SystemExit(f"build-review-indexes.py: {message}")
@@ -187,10 +210,13 @@ def inventory_rows(root: Path) -> list[list[str]]:
                     required = explicit_required or (
                         "yes" if re.match(r"(?i)^required\b", root_trigger) else "no"
                     )
+                    graph_scope = clean(row.get("graph scope", "")) or "-"
+                    discovery_tags = clean(row.get("discovery triggers", ""))
                     output.append([
                         "trigger", trigger_id, clean(row.get("surface", "")),
                         root_trigger,
-                        clean(row.get("discovery triggers", "")) + f",root-cause-required={required}",
+                        f"triggers={discovery_tags};"
+                        f"root-cause-required={required};graph-scope={graph_scope}",
                         citations(row.get("evidence", "")), relative(path, root),
                     ])
     if profile_hunk_paths:
@@ -202,6 +228,239 @@ def inventory_rows(root: Path) -> list[list[str]]:
             for hunk_id in sorted(set(profile_hunk_paths) - set(hunk_owners)):
                 fail(f"sharded inventory leaves hunk {hunk_id} with no "
                      "owning surface row")
+    return sorted(output, key=lambda row: (row[0], row[1], row[2], row[-1]))
+
+
+def topology_rows(root: Path) -> list[list[str]]:
+    """Build the effective evidence graph from inventory plus ledger deltas."""
+    inventory = ([root / "inventory.md"] if (root / "inventory.md").is_file() else [])
+    inventory += sorted((root / "inventory").glob("*.md")) if (root / "inventory").is_dir() else []
+    producers = sorted((root / "ledger").glob("**/*.md")) if (root / "ledger").is_dir() else []
+    if (root / "collection.md").is_file():
+        producers.append(root / "collection.md")
+    edges: dict[str, dict[str, str]] = {}
+    for path in inventory:
+        for heading, header, rows in tables(read(path), relative(path, root)):
+            if heading != "Complexity graph edges":
+                continue
+            required = {"edge", "from", "to", "kind", "status", "evidence"}
+            if not required.issubset(header):
+                fail(f"{relative(path, root)}: Complexity graph edges lacks required columns")
+            for row in rows:
+                edge = clean(row.get("edge", ""))
+                kind = clean(row.get("kind", "")).lower()
+                status = clean(row.get("status", "")).lower()
+                evidence = clean(row.get("evidence", ""))
+                if not re.fullmatch(r"E-[A-Z0-9][A-Z0-9-]*", edge):
+                    fail(f"{relative(path, root)}: invalid graph edge ID '{edge}'")
+                if edge in edges:
+                    fail(f"duplicate graph edge {edge}")
+                if kind not in GRAPH_EDGE_KINDS:
+                    fail(f"{relative(path, root)}: graph edge {edge} has invalid kind '{kind}'")
+                if status not in GRAPH_EDGE_STATUSES:
+                    fail(f"{relative(path, root)}: graph edge {edge} has invalid status '{status}'")
+                if not evidence or evidence in {"-", "—"}:
+                    fail(f"{relative(path, root)}: graph edge {edge} lacks evidence")
+                edges[edge] = {
+                    "from": clean(row.get("from", "")), "to": clean(row.get("to", "")),
+                    "kind": kind, "status": status, "evidence": evidence,
+                    "candidate": "-", "next_obligation": "-",
+                    "source": relative(path, root),
+                    "effective_source": relative(path, root),
+                    "observations": [],
+                }
+    for path in producers:
+        for heading, header, rows in tables(read(path), relative(path, root)):
+            if heading != "Complexity graph delta":
+                continue
+            required = {"edge", "status", "evidence", "candidate", "next obligation"}
+            if not required.issubset(header):
+                fail(f"{relative(path, root)}: Complexity graph delta lacks required columns")
+            for row in rows:
+                edge = clean(row.get("edge", ""))
+                if edge not in edges:
+                    fail(f"{relative(path, root)}: graph delta targets unknown edge {edge}")
+                status = clean(row.get("status", "")).lower()
+                evidence = clean(row.get("evidence", ""))
+                if status not in GRAPH_EDGE_STATUSES:
+                    fail(f"{relative(path, root)}: graph delta {edge} has invalid status '{status}'")
+                if not evidence or evidence in {"-", "—"}:
+                    fail(f"{relative(path, root)}: graph delta {edge} lacks evidence")
+                observation = {
+                    "status": status, "evidence": evidence,
+                    "candidate": clean(row.get("candidate", "")) or "-",
+                    "next_obligation": clean(row.get("next obligation", "")) or "-",
+                    "source": relative(path, root),
+                }
+                edges[edge]["observations"].append(observation)
+                effective = {
+                    key: value for key, value in observation.items()
+                    if key != "source"
+                }
+                edges[edge]["effective_source"] = observation["source"]
+                if path.name == "collection.md":
+                    edges[edge].update(effective)
+                else:
+                    observations = edges[edge]["observations"]
+                    statuses = {item["status"] for item in observations}
+                    edges[edge].update(effective)
+                    if len(statuses) > 1:
+                        edges[edge]["status"] = "disputed"
+                    edges[edge]["candidate"] = ",".join(sorted({
+                        item["candidate"] for item in observations
+                        if item["candidate"] != "-"
+                    })) or "-"
+                    edges[edge]["next_obligation"] = "; ".join(dict.fromkeys(
+                        item["next_obligation"] for item in observations
+                        if item["next_obligation"] != "-"
+                    )) or "-"
+    return [[
+        edge, value["from"], value["to"], value["kind"], value["status"],
+        citations(value["evidence"]), value["evidence"], value["candidate"],
+        value["next_obligation"], str(len(value["observations"])),
+        "; ".join(
+            f"{item['source']}={item['status']}" for item in value["observations"]
+        ) or "-", value["source"], value["effective_source"],
+    ] for edge, value in sorted(edges.items())]
+
+
+def specialist_prior_rows(
+    root: Path, inventory_edges: set[str]
+) -> list[list[str]]:
+    """Build independent soft-risk assessments from generalist ledgers."""
+    paths = sorted((root / "ledger").glob("**/*.md")) \
+        if (root / "ledger").is_dir() else []
+    output: list[list[str]] = []
+    seen: dict[tuple[str, tuple[str, ...], str], str] = {}
+    for path in paths:
+        match = re.fullmatch(r"(GSS|GAI)\d*", path.stem.upper())
+        if not match:
+            continue
+        assessor = SPECIALIST_PRIOR_ASSESSORS[match.group(1)]
+        source = relative(path, root)
+        found = False
+        path_lenses: set[str] = set()
+        path_scopes: set[tuple[str, ...]] = set()
+        for heading, header, rows in tables(read(path), source):
+            if heading != "Specialist escalation assessments":
+                continue
+            found = True
+            required = {
+                "lens", "graph scope", "likelihood", "signals",
+                "counterevidence",
+            }
+            if not required.issubset(header):
+                fail(
+                    f"{source}: Specialist escalation assessments lacks "
+                    "required columns"
+                )
+            for row in rows:
+                lens = clean(row.get("lens", ""))
+                likelihood = clean(row.get("likelihood", "")).lower()
+                scope = clean(row.get("graph scope", "")).upper()
+                signals = clean(row.get("signals", ""))
+                counterevidence = clean(row.get("counterevidence", ""))
+                if lens not in SPECIALIST_LENSES:
+                    fail(f"{source}: unknown specialist lens '{lens}'")
+                if likelihood not in SPECIALIST_PRIOR_LEVELS:
+                    fail(
+                        f"{source}: {lens} has invalid likelihood "
+                        f"'{likelihood}'; use low, medium, or high"
+                    )
+                scope_match = re.fullmatch(
+                    r"GRAPH:((?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*)", scope
+                )
+                empty_scope = scope == "GRAPH:NONE"
+                if not scope_match and not empty_scope:
+                    fail(
+                        f"{source}: {lens} graph scope must be exact "
+                        "graph:E-... edge IDs, or graph:none for a zero-edge "
+                        "inventory"
+                    )
+                if empty_scope and inventory_edges:
+                    fail(
+                        f"{source}: {lens} may use graph:none only when the "
+                        "inventory has zero graph edges"
+                    )
+                edges = (
+                    tuple(sorted(scope_match.group(1).split(",")))
+                    if scope_match else tuple()
+                )
+                if len(edges) != len(set(edges)):
+                    fail(f"{source}: {lens} graph scope repeats an edge")
+                unknown = set(edges) - inventory_edges
+                if unknown:
+                    fail(
+                        f"{source}: {lens} cites unknown graph edge(s): "
+                        + ", ".join(sorted(unknown))
+                    )
+                if not signals or signals in {"-", "—"}:
+                    fail(f"{source}: {lens} lacks assessed signals")
+                if not counterevidence or counterevidence in {"-", "—"}:
+                    fail(f"{source}: {lens} lacks assessed counterevidence")
+                evidence = f"{signals} {counterevidence}"
+                if not (citations(evidence) or re.search(r"\bE-[A-Z0-9-]+\b", evidence)):
+                    fail(
+                        f"{source}: {lens} likelihood lacks cited evidence"
+                    )
+                if likelihood == "low" and not (
+                    citations(counterevidence)
+                    or re.search(r"\bE-[A-Z0-9-]+\b", counterevidence)
+                ):
+                    fail(
+                        f"{source}: {lens} low likelihood lacks cited "
+                        "counterevidence"
+                    )
+                if likelihood in {"medium", "high"} and not (
+                    citations(signals)
+                    or re.search(r"\bE-[A-Z0-9-]+\b", signals)
+                ):
+                    fail(
+                        f"{source}: {lens} {likelihood} likelihood lacks cited "
+                        "positive signals"
+                    )
+                if likelihood in {"medium", "high"} and re.fullmatch(
+                    r"(?i)(?:none(?: found)?|no signals?)", signals
+                ):
+                    fail(
+                        f"{source}: {lens} {likelihood} likelihood lacks a "
+                        "positive signal"
+                    )
+                if empty_scope and likelihood != "low":
+                    fail(
+                        f"{source}: {lens} graph:none assessment must be low; "
+                        "a higher likelihood requires an inventory edge"
+                    )
+                key = (lens, edges, assessor)
+                if key in seen:
+                    fail(
+                        f"duplicate {assessor} specialist assessment for "
+                        f"{lens} {scope} in {seen[key]} and {source}"
+                    )
+                seen[key] = source
+                path_lenses.add(lens)
+                path_scopes.add(edges)
+                output.append([
+                    lens, (f"graph:{','.join(edges)}" if edges else "graph:none"),
+                    assessor, likelihood,
+                    signals, counterevidence, citations(evidence), source,
+                ])
+        if not found:
+            fail(
+                f"{source}: generalist ledger lacks "
+                "## Specialist escalation assessments"
+            )
+        missing = set(SPECIALIST_LENSES) - path_lenses
+        if missing:
+            fail(
+                f"{source}: generalist ledger lacks specialist assessment(s): "
+                + ", ".join(sorted(missing))
+            )
+        if len(path_scopes) != 1:
+            fail(
+                f"{source}: generalist specialist assessments must share one "
+                "exact assigned graph scope"
+            )
     return sorted(output, key=lambda row: (row[0], row[1], row[2], row[-1]))
 
 
@@ -536,6 +795,10 @@ def source_paths(root: Path) -> dict[str, list[Path]]:
     candidates = sorted((root / "ledger").glob("**/*.md")) if (root / "ledger").is_dir() else []
     if (root / "collection.md").is_file():
         candidates.append(root / "collection.md")
+    specialist_priors = [
+        path for path in candidates
+        if re.fullmatch(r"(?:GSS|GAI)\d*", path.stem.upper())
+    ]
     verdicts = [p for p in (sorted((root / "verification").glob("V*.md")) if (root / "verification").is_dir() else []) if p.name != "VTER.md"]
     affinity = root / "verification" / "affinity.md"
     if affinity.is_file():
@@ -549,6 +812,8 @@ def source_paths(root: Path) -> dict[str, list[Path]]:
         reconciliation.append(root / "reconciliation.md")
     return {
         "inventory.tsv": inventory,
+        "topology.tsv": sorted(dict.fromkeys(inventory + candidates)),
+        "specialist-priors.tsv": specialist_priors,
         "candidates.tsv": candidates,
         "verdicts.tsv": verdicts,
         "reconciliation.tsv": reconciliation,
@@ -584,9 +849,27 @@ def main() -> int:
     if not root.is_dir():
         fail(f"review directory does not exist: {root}")
     destination = args.output_dir.resolve() if args.output_dir else root / "indexes"
+    topology = topology_rows(root)
+    topology_edges = {row[0] for row in topology}
     payloads = {
         "inventory.tsv": encode(
             ["kind", "id", "subject", "scope", "tags", "citations", "source"], inventory_rows(root)
+        ),
+        "topology.tsv": encode(
+            [
+                "edge", "from", "to", "kind", "status", "citations",
+                "evidence_excerpt", "candidate", "next_obligation",
+                "observation_count", "observations", "source",
+                "effective_source",
+            ],
+            topology,
+        ),
+        "specialist-priors.tsv": encode(
+            [
+                "lens", "graph_scope", "assessor", "likelihood", "signals",
+                "counterevidence", "citations", "source",
+            ],
+            specialist_prior_rows(root, topology_edges),
         ),
         "candidates.tsv": encode(
             [

@@ -2,14 +2,15 @@
 
 # Chromium Specialist Checklists
 
-Load only the sections activated by deterministic inventory triggers. Treat
+Load only the sections activated by deterministic inventory triggers or the
+soft-likelihood routing contract. Treat
 these as discovery supplements: record every anomaly as a ledger candidate and
 leave severity/disposition to verification. Close a row clean only with a
 `path:line` citation to the relevant guard, owner, bound, metadata, or test.
 
 ## Network Semantics (NET)
 
-Trigger on URLs, requests/responses, redirects, auth/proxy, cookies/credentials,
+Within a routed scope, inspect URLs, requests/responses, redirects, auth/proxy, cookies/credentials,
 caching/retries, fetch/navigation policy, headers, DNS, TLS/certificates,
 NetworkIsolationKey/partition keys, or profile-bound network contexts.
 

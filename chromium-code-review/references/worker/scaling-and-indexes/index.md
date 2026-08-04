@@ -12,7 +12,7 @@ preamble, so its rules travel with every section.
 | --- | --- | --- |
 | Agent Input Budget | agent-input-budget.md | 29 |
 | Model Tiers | model-tiers.md | 71 |
-| Review Profile | review-profile.md | 27 |
-| Compact Indexes | compact-indexes.md | 42 |
+| Review Profile | review-profile.md | 33 |
+| Compact Indexes | compact-indexes.md | 99 |
 | Safe Fast Paths | safe-fast-paths.md | 23 |
 | Sharded Aggregation | sharded-aggregation.md | 23 |

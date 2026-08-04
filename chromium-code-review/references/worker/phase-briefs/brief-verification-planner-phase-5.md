@@ -37,9 +37,11 @@ Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
 ```text
 Scope: plan verification; do not issue verdicts yourself.
 
-Inputs: ⟨review-dir⟩/indexes/candidates.tsv with its fresh
-indexes/manifest.json fingerprint, ⟨review-dir⟩/collection.md, and
-⟨review-dir⟩/plan.md. Read the compact candidate index first and extract each
+Inputs: ⟨review-dir⟩/indexes/candidates.tsv and
+⟨review-dir⟩/indexes/topology.tsv with their fresh indexes/manifest.json
+fingerprints, ⟨review-dir⟩/collection.md, and ⟨review-dir⟩/plan.md. Read the
+compact topology and candidate indexes first; reject any candidate lacking a
+graph-edge membership. Extract each
 full candidate row from its indexed artifact/anchor only when assigning it.
 In delta mode, filter the index to exactly the explicitly named reopened-round
 IDs. Compliance matrices and unrelated ledger prose are not inputs.
@@ -61,8 +63,10 @@ rows are context and must not be scheduled again. Then:
 2. Validate each candidate's descriptor row. Preserve every semantic field
    and typed obligation in the inline packet; reject a plan that omits a
    class-required obligation.
-3. Group every remaining candidate into skeptic batches, sized by trace
-   cost rather than row count: a serious candidate whose refutation needs
+3. Form candidate-bearing connected components from topology. Keep each
+   component together unless a cited graph articulation point or the packet
+   budget requires a split; candidate row count alone never creates a batch.
+   Within that constraint, size skeptic batches by trace cost: a serious candidate whose refutation needs
    caller sweeps or interleaving analysis gets its own batch (or shares
    with 1–2 closely related rows); mid-weight candidates ~3–5 per batch;
    only cheap/cosmetic rows (naming, punctuation, description nits) go up

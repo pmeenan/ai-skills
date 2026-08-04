@@ -10,7 +10,7 @@ preamble, so its rules travel with every section.
 
 | section | file | source lines |
 | --- | --- | --- |
-| Shared Execution Contract | shared-execution-contract.md | 13 |
+| Shared Execution Contract | shared-execution-contract.md | 40 |
 | Threading And Synchronization (TSY) | threading-and-synchronization-tsy.md | 30 |
 | Ownership And Blink Lifecycle (OBL) | ownership-and-blink-lifecycle-obl.md | 32 |
 | Mojo IPC Authorization And Sandbox (MIS) | mojo-ipc-authorization-and-sandbox-mis.md | 36 |

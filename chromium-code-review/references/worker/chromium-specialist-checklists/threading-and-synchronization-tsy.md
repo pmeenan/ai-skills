@@ -2,14 +2,15 @@
 
 # Chromium Specialist Checklists
 
-Load only the sections activated by deterministic inventory triggers. Treat
+Load only the sections activated by deterministic inventory triggers or the
+soft-likelihood routing contract. Treat
 these as discovery supplements: record every anomaly as a ledger candidate and
 leave severity/disposition to verification. Close a row clean only with a
 `path:line` citation to the relevant guard, owner, bound, metadata, or test.
 
 ## Threading And Synchronization (TSY)
 
-Trigger on locks, condition variables, waitable events, atomics,
+Within a routed scope, inspect locks, condition variables, waitable events, atomics,
 `SequenceChecker`, `ThreadChecker`, cross-sequence callbacks, `ThreadPool`, task
 traits, or mutable state reached from multiple sequences.
 

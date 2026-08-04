@@ -523,6 +523,8 @@ def markdown(profile: dict[str, Any]) -> str:
         f"# Review profile — {profile['pin']['revision_sha'][:12]}",
         "",
         f"- Effort: **{profile['effort']}**",
+        f"- Topology policy: **{profile['topology']['policy']}** "
+        f"(size is {profile['topology']['size_role']})",
         f"- Files / changed lines / hunks: {counts['files']} / {counts['changed_lines']} / {counts['hunks']}",
         f"- Approximate changed surfaces: {counts['approximate_changed_surfaces']}",
         f"- Unresolved / malformed comment threads: {profile['prior_context']['unresolved_threads']} / {profile['prior_context']['malformed_entries']}",
@@ -643,7 +645,7 @@ def main() -> int:
             "changed_lines": sum(item["changed_lines"] for item in matching),
         }
     profile = {
-        "schema_version": 2,
+        "schema_version": 3,
         "effort": effort,
         "effort_reasons": reasons,
         "micro_eligibility": micro,
@@ -673,6 +675,36 @@ def main() -> int:
             and context["external_context"]["available"]
             and context["external_context"]["count"] == 0
         ),
+        "topology": {
+            "policy": "evidence-graph-v1",
+            "initial_generalists": 2,
+            "generalist_unit": "independent-pass",
+            "generalist_sharding": "matching-connected-component-budget-slices",
+            "size_role": "budget-prior-only",
+            "expand_on": [
+                "unresolved-or-disputed-edge",
+                "candidate-with-open-obligation",
+                "cross-boundary-edge",
+                "node-degree-at-least-4",
+                "caller-fanout-over-8",
+                "trace-depth-over-3",
+                "graph-slice-over-35-percent-worker-budget",
+                "uncovered-changed-surface-or-hunk",
+            ],
+            "collapse_when": {
+                "same_connected_component_and_invariant_owner": True,
+                "max_worker_budget_fraction": 0.8,
+                "max_path_walks": 8,
+                "max_matrix_cells": 40,
+            },
+            "discovery_stop": [
+                "two-generalist-observations-per-inventory-edge",
+                "every-edge-resolved-candidate-or-explicitly-unreviewed",
+                "no-unresolved-generalist-disagreement",
+                "no-candidate-without-descriptors-and-typed-obligations",
+                "exact-collection-coverage-passes",
+            ],
+        },
     }
     tier_budgets = {}
     tier_tokens = {}

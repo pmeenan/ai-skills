@@ -2,14 +2,15 @@
 
 # Chromium Specialist Checklists
 
-Load only the sections activated by deterministic inventory triggers. Treat
+Load only the sections activated by deterministic inventory triggers or the
+soft-likelihood routing contract. Treat
 these as discovery supplements: record every anomaly as a ledger candidate and
 leave severity/disposition to verification. Close a row clean only with a
 `path:line` citation to the relevant guard, owner, bound, metadata, or test.
 
 ## Platform And Language Semantics (PLS)
 
-Trigger on build/platform guards, OS APIs, paths/handles, packed or serialized
+Within a routed scope, inspect build/platform guards, OS APIs, paths/handles, packed or serialized
 data, CPU-specific code, architecture-sized types, or Java/Kotlin, Objective-C,
 Rust, JavaScript/TypeScript, Python, GN, Mojo, or proto sources.
 

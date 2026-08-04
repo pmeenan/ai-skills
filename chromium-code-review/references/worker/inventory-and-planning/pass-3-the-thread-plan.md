@@ -26,7 +26,25 @@ a skim of the matched sections in `references/discovery-checklists.md` and
 `references/chromium-specialist-checklists.md`. The plan is only as good as
 the planner's grasp of what each thread is for.
 
-From the risk map and the changed-surface inventory, list:
+For `evidence-graph-v1`, first list exactly two independent passes:
+`Generalist Semantic And State Discovery` and `Generalist Adversarial And
+Integration Discovery`. Use one row per pass scoped to
+`graph:all-inventory-edges` only when both fit. Otherwise partition by
+connected component and budget, then emit matching numbered shards for both
+passes; every edge occurs exactly once per pass. Each shard must emit a
+`Complexity graph delta` for every assigned edge and an independent
+`Specialist escalation assessments` row for every Chromium specialist lens
+over that shard's exact edge set. Rebuild `indexes/topology.tsv` and
+`indexes/specialist-priors.tsv`, then select from the lens catalog below using
+the hard-trigger and soft-likelihood rules under Specialist Trigger Decisions,
+as well as unresolved/disputed edges, candidate obligations, and required
+splits. A zero-edge inventory instead uses one unsharded `graph:none` row per
+pass; all ten assessments must be `low` with cited counterevidence, because a
+higher likelihood proves the inventory omitted an edge. Append routed rows
+under `## Graph routing continuation — PLAN attempt <N>` and cite
+`graph:<edge-id(s)>` in every
+scope. The following list is the catalog for schema 3 and the mandatory legacy
+roster for schema 2:
 
 - One thread per deep-dive recipe whose trigger matches, scoped to the
   surfaces that triggered it (e.g. "Mode × Host-Capability Matrix for
@@ -146,9 +164,10 @@ fixed wave size: the orchestrator schedules dependency-ready rows from this
 priority using live harness capacity. Ensure some thread owns the smallest
 and least obvious files — the per-file ledger floor depends on it.
 
-For a targeted review, retain the complete roster but trigger section/recipe
-rows only for the user-scoped surfaces plus immediately adjacent contracts,
-callers, and serious-blocker traces. State the scope boundary in every plan
-row. Do not use targeted mode to hide a serious nearby blocker already found;
-do not silently expand a format-only or subsystem request into an unrelated
-full-tree audit.
+For a targeted review, retain complete active-topology coverage. Under schema
+3, keep both generalist passes and route catalog rows only for the user-scoped
+surfaces plus immediately adjacent contracts, callers, and serious-blocker
+traces; under the legacy contract, retain the full roster. State the scope
+boundary in every plan row. Do not use targeted mode to hide a serious nearby
+blocker already found; do not silently expand a format-only or subsystem
+request into an unrelated full-tree audit.

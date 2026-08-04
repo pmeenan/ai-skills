@@ -2,14 +2,15 @@
 
 # Chromium Specialist Checklists
 
-Load only the sections activated by deterministic inventory triggers. Treat
+Load only the sections activated by deterministic inventory triggers or the
+soft-likelihood routing contract. Treat
 these as discovery supplements: record every anomaly as a ledger candidate and
 leave severity/disposition to verification. Close a row clean only with a
 `path:line` citation to the relevant guard, owner, bound, metadata, or test.
 
 ## Privacy And Telemetry (PAT)
 
-Trigger on identity, permissions, secrets/credentials/tokens, user/profile data,
+Within a routed scope, inspect identity, permissions, secrets/credentials/tokens, user/profile data,
 paths, incognito/storage partitions, consent/retention/deletion, crypto/random,
 logging, histogram macros/XML, UKM, source IDs, metric emission changes, or
 enterprise policy surfaces (`components/policy`, `policy_templates.json`,

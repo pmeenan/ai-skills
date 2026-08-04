@@ -28,7 +28,13 @@ escalate but never downgrade without cited proof.
   lens, 8–10 path walks, 40 matrix cells, or any estimated input above the
   agent budget. Record high-risk signals independently when both apply.
 
-Profile class changes topology, not review truth. The full roster decision,
-per-file floor, reconciliation, independent challenge, and delivery freshness
-remain mandatory. A micro profile may use the fast paths below only after
-Inventory confirms the profile's proof.
+Profile class is a budget and sharding prior, not the topology selector.
+Schema-3 profiles use `evidence-graph-v1`: inventory records typed edges and
+two bounded generalist passes independently inspect them. Shard both passes
+over the same connected-component/budget partition when a whole-graph pass
+would exceed budget; unresolved evidence then
+selects catalog lenses and shards mechanically. Per-file/hunk coverage,
+reconciliation, independent challenge of every surviving candidate, and
+delivery freshness remain mandatory. Legacy schema-2 reviews retain the full
+roster. A micro profile may use the fast paths below only after Inventory
+confirms the profile's proof.

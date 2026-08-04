@@ -2,14 +2,15 @@
 
 # Chromium Specialist Checklists
 
-Load only the sections activated by deterministic inventory triggers. Treat
+Load only the sections activated by deterministic inventory triggers or the
+soft-likelihood routing contract. Treat
 these as discovery supplements: record every anomaly as a ledger candidate and
 leave severity/disposition to verification. Close a row clean only with a
 `path:line` citation to the relevant guard, owner, bound, metadata, or test.
 
 ## Accessibility And Internationalization (AXI)
 
-Trigger on UI controls, focus/input, DOM/AX trees, roles/names/states/actions,
+Within a routed scope, inspect UI controls, focus/input, DOM/AX trees, roles/names/states/actions,
 announcements, color/animation, user-visible strings, GRIT, locale/time zone,
 plurals, formatting, text direction, or layout mirroring.
 

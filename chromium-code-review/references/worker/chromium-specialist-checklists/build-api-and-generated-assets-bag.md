@@ -2,14 +2,15 @@
 
 # Chromium Specialist Checklists
 
-Load only the sections activated by deterministic inventory triggers. Treat
+Load only the sections activated by deterministic inventory triggers or the
+soft-likelihood routing contract. Treat
 these as discovery supplements: record every anomaly as a ledger candidate and
 leave severity/disposition to verification. Close a row clean only with a
 `path:line` citation to the relevant guard, owner, bound, metadata, or test.
 
 ## Build API And Generated Assets (BAG)
 
-Trigger on added/moved/deleted files, public headers, targets, component
+Within a routed scope, inspect added/moved/deleted files, public headers, targets, component
 boundaries, `BUILD.gn`, `.gni`, `DEPS`, `OWNERS`, export macros, `.grd`, `.grdp`,
 `.xtb`, `.mojom`, `.proto`, WebUI bundles, or generated files.
 

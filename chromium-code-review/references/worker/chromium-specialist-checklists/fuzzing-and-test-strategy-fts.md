@@ -2,14 +2,15 @@
 
 # Chromium Specialist Checklists
 
-Load only the sections activated by deterministic inventory triggers. Treat
+Load only the sections activated by deterministic inventory triggers or the
+soft-likelihood routing contract. Treat
 these as discovery supplements: record every anomaly as a ledger candidate and
 leave severity/disposition to verification. Close a row clean only with a
 `path:line` citation to the relevant guard, owner, bound, metadata, or test.
 
 ## Fuzzing And Test Strategy (FTS)
 
-Trigger on parser/decoder/deserializer/decompressor/protocol/state-machine/
+Within a routed scope, inspect parser/decoder/deserializer/decompressor/protocol/state-machine/
 structured untrusted input; fuzz targets/corpora; disabled/flaky/expectation
 changes; or behavior crossing web-standard, process, profile, or platform
 boundaries where the faithful test level is genuinely ambiguous. Ordinary

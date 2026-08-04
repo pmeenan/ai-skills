@@ -118,8 +118,12 @@ This includes `git diff/show/grep`, `rg`, and ranged source reads. Do not wrap
 deterministic helpers whose output is already an exact manifested artifact.
 Use this wrapped shell path instead of a harness-native file-read/search tool
 for code evidence; harness-native reads of small control artifacts are fine.
-For a pipeline, pass `bash -c '<pipeline>'` as the wrapped command so the
-logged stdout byte count measures the final text actually consumed.
+For a pipeline, pass the entire pipeline as exactly one quoted argument after
+`bash -c`; trailing arguments are rejected because they become shell
+positional parameters and can silently drop the intended path/filter. Never
+run unscoped `rg --files` in the Chromium root: use the inventory/caller
+indexes or an explicit path scope. The logged stdout byte count measures the
+final text actually consumed.
 The wrapper preserves command output and status and records only metadata,
 byte counts, and duration; instrumentation never limits a required trace.
 

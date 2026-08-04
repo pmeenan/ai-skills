@@ -58,11 +58,13 @@ name list, never one detailed row per member, and never a caller grep for an
 aggregated group member. Surfaces keeping individual rows —
 production/contract surfaces, fixtures, stateful helpers/mocks,
 production-reachable test utilities — get their normal fields, including
-caller searches where the schema asks. Evaluate every recipe,
-base-checklist, and specialist trigger, including the deterministic path,
-symbol, and surface signals under "Specialist Trigger Decisions"; emit one
+caller searches where the schema asks. Evaluate every recipe and base-checklist
+trigger plus only the hard specialist column under "Specialist Trigger
+Decisions"; emit one
 trigger-inventory row per recipe/checklist roster entry, including proved
-absence rows. The always-run holistic row needs no trigger row.
+absence rows. A positive specialist row uses `<PREFIX> hard`; broad proximity
+signals belong to later generalist likelihood assessments and never become
+positive trigger rows. The always-run holistic row needs no trigger row.
 Use context.md if present, but do not block on it and do not edit it.
 
 Deliverable: ⟨review-dir⟩/inventory.md — changed surfaces, risk-area map,
