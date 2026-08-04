@@ -433,7 +433,7 @@ cache globally; archived lease logs older than 30 days are pruned.
 
 After pinning: the orchestrator reads `pin.md` (it is small and is the one
 per-CL artifact the orchestrator holds in context), writes `directives.md`,
-and initializes `progress.md` and `orchestration.tsv`. If the user requested
+and initializes `progress.md`, `orchestration.tsv` (with line `phase\twork_id\tattempt\tstate\ttier\ttask_id\tbrief\tartifact\tremaining_scope\tdepends_on`), and `input-manifest.tsv` (with line `work_id\tattempt\tphase\tbrief\tinput_path\trole\tbytes\tsha256`). If the user requested
 a non-current patchset, pass that exact patchset to `fetch-cl.sh`, record
 `mode: historical patchset` in `directives.md`, and do not silently substitute
 the current revision. Otherwise the initial pin must be Gerrit's current
@@ -874,3 +874,8 @@ output format, the pre-output gate, and tone norms live in
 `references/synthesis-and-output.md`. They bind the workers that produce
 verdicts and review text; the orchestrator does not restate or override
 them.
+
+## Troubleshooting Orchestration Bottlenecks
+- **`seal-work-unit.py` crashes on float/division by zero:** Fixed in `scripts/seal-work-unit.py`, it now safely handles small or negative byte calculations when summing bounds.
+- **`seal-work-unit.py` crashes with "attempt already exists but does not match":** Subagents (like Planners) often improperly append lines to `input-manifest.tsv` directly. Strip the newly generated lines out of `input-manifest.tsv`, run `seal-work-unit.py` locally to properly instantiate the batch's `input-manifest` row and `orchestration.tsv` footprint.
+- **Missing Phase Brief Generation scripts:** For phases after Phase 4 (e.g. Verification Planners, Root-Cause Planners, Challengers), you must extract the worker brief manually from `references/phase-briefs.md` since there isn't a dedicated shell script. You can use the newly added `scripts/build-phase-brief.py <review-dir> <WORK-ID> "<Brief Name>"` helper for this.

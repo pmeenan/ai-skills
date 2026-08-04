@@ -594,7 +594,7 @@ def main() -> int:
     if args.context_window_tokens is not None and args.context_window_tokens <= 0:
         fail("--context-window-tokens must be positive")
     if args.context_window_tokens is None:
-        worker_budget = 131072
+        worker_budget = 256 * 1024
         estimation = {
             "basis": "conservative default when worker context capacity is unknown",
             "context_window_tokens": None,

@@ -156,13 +156,14 @@ def validate_budget(root: Path, tier: str,
     total = sum(unique.values())
     limits = []
     global_limit = context.get("worker_input_budget_bytes")
-    if isinstance(global_limit, int):
-        limits.append(global_limit)
     tier_limit = context.get("tier_worker_input_budget_bytes", {}).get(tier)
+    limit = None
     if isinstance(tier_limit, int):
-        limits.append(tier_limit)
-    if limits and total > min(limits):
-        fail(f"work unit inputs exceed budget ({total} > {min(limits)} bytes)")
+        limit = tier_limit
+    elif isinstance(global_limit, int):
+        limit = global_limit
+    if limit is not None and total > limit:
+        fail(f"work unit inputs exceed budget ({total} > {limit} bytes)")
     candidate_limit = context.get("candidate_packet_budget_bytes")
     candidate_total = sum(
         len(payload) for role, _, payload in inputs if role == "candidate-packet"
