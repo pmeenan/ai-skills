@@ -1,7 +1,7 @@
 ---
 name: optimize-speedometer
 description: >-
-  Definitive runbook for discovering, micro-profiling, prototyping, A/B validating, and auditing CPU performance optimizations in Desktop Chromium for Speedometer 3. Enforces Phase 0 preflight checks, cpu-clock -k mono sampling profiler ground truth with V8 basic-prof symbolization, genuine A/A noise floor benchmarking, opportunity-sizing plausibility checks, multi-candidate integration, and mechanical test verification.
+  Definitive runbook for discovering, micro-profiling, prototyping, A/B validating, and auditing CPU performance optimizations in Desktop Chromium for Speedometer 3. Enforces Phase 0 preflight checks, cpu-clock -k mono sampling profiler ground truth with V8 basic-prof symbolization, genuine A/A noise floor benchmarking, multi-pass candidate integration, and mechanical test verification.
 ---
 
 # Speedometer 3 Autonomous Optimization Runbook
@@ -15,26 +15,17 @@ This skill defines the methodology, measurement protocols, statistical guardrail
 1. **Environment Constraints (Bare-Metal with PMU):**
    * The test environment is a physical bare-metal machine with fully functional hardware PMU counters.
    * All sampling `perf record` invocations SHOULD explicitly use `-e cycles -F 997 -k mono`.
-   * Microarchitectural mechanisms (cache misses, stalls) can now be measured locally.
-2. **In-Repo Scope & Ownership Boundaries:** All code modifications must reside within Chromium main repository tracking (e.g., `//third_party/blink/`, `//base/allocator/`, `//content/`). Submodule/externally owned components (`//v8/*`, `//third_party/angle/*`, etc.) are strictly out of scope based on path and repository ownership boundaries.
+2. **In-Repo Scope & Ownership Boundaries:** All code modifications must reside within Chromium main repository tracking (e.g., `//third_party/blink/`, `//base/allocator/`, `//content/`). Submodule/externally owned components (`//v8/*`, `//third_party/angle/*`, etc.) are strictly out of scope.
 3. **Full-Suite Scope & Headless Screening:**
-   * **Full Suite Scope:** Phase 1 profiling and feasibility scope-gate decisions MUST be based on a representative profile across the **full Speedometer 3 suite** (`--stories=all`). Single-story profiles are used strictly for localized candidate discovery.
-   * **Headless vs Desktop:** Local VM profiling and verification runs execute headless (`--headless=new`). Local runs serve as relative A/B screening evidence. Desktop-mode Pinpoint trybots or bare-metal desktop runs are the authoritative ground truth for candidate promotion and final validation.
+   * **Full Suite Scope:** Phase 1 profiling decisions MUST be based on a representative profile across the **full Speedometer 3 suite** (`--stories=all`). 
+   * **Headless vs Desktop:** Local VM profiling executes headless (`--headless=new`). Desktop-mode Pinpoint trybots or bare-metal desktop runs are the authoritative ground truth for final validation.
 4. **Full Chrome Process Tree Profiling & PID Manifest:**
-   * Baselines specify system-wide `sudo perf record -e cycles -F 997 -k mono -g -a` with `--no-sandbox --js-flags=--perf-basic-prof` on an official build (`out/perf/chrome`). The build is unmodified except for the two documented profiling probes (§3: `performance.cc` timestamp log, `benchmark-runner.mjs` mark emission).
-   * Partition samples across ALL Chrome process roles: Browser, Renderers, GPU, and Utility processes. Generate two reports: (1) Full process tree, and (2) Renderer deep-dive.
-   * Symbol map files (`/tmp/perf-*.map`) must survive in `/tmp` until all `perf report` and `perf script` flame graph generation steps are complete.
-   * Filter process noise: Filter renderer analyses with renderer PID/TIDs to isolate renderer CPU execution.
-   * Quality Rejection Gate: Reject profiles with unmatched marks, poor unwinding, overall `[unknown]` frames >15%, concentrated `[unknown]` frames >10% within any dominant call stack, or insufficient samples (<5,000 samples).
-5. **Session A/A Calibration & Genuine A/A Mode (`--aa`):**
-   - **Session A/A Calibration:** Measure local VM noise floor per session using `run_ab_benchmark.py --browser=out/perf/chrome --blocks=5 --aa` (both arms execute identical binaries and identical flags).
-   - **Randomized Block-Interleaved Harness:** Run A/B comparisons in randomized ABBA/BAAB block order with fresh browser state per rep.
-   - **Block Log-Difference Statistics:** Evaluate $d_b = \text{mean}(\ln B) - \text{mean}(\ln A)$ per block, paired 95% confidence intervals, and session MDE.
-6. **Multi-Candidate Integration Phase & Per-Story Regression Limits:**
-   - Speedometer 3 uses geometric mean aggregation across sub-scores ($\exp(\frac{1}{K}\sum \ln(1+\Delta_k)) - 1$). Individual candidate gains are non-additive.
-   - Promising candidates MUST be evaluated in combination on a cumulative integration branch (`speedometer-5pct-integration`) across the full suite before declaring the 5% overall goal achieved.
-   - Per-story regression limit: $\text{CI}_{\text{lower}} \ge \ln(0.98) \approx -2.0\%$ (lower bound must not fall below $-2.0\%$).
-   - Goal achievement bar: Overall full-suite lower bound $\text{CI}_{\text{lower}} \ge \ln(1.05) \approx +5.0\%$.
+   * Baselines specify system-wide `sudo perf record -e cycles -F 997 -k mono -g -a` with `--no-sandbox --js-flags=--perf-basic-prof` on an official build (`out/perf/chrome`).
+   * Quality Rejection Gate: Reject profiles with poor unwinding, overall `[unknown]` frames >15%, concentrated `[unknown]` frames >10% within any dominant call stack, or insufficient samples (<5,000 samples).
+5. **Multi-Candidate Integration Phase & Per-Story Regression Limits:**
+   * Promising candidates MUST be evaluated in combination on a cumulative integration branch (`speedometer-5pct-integration`) across the full suite before declaring the overall goal achieved.
+   * Individual candidate gains are non-additive.
+   * Per-story regression limit: $\text{CI}_{\text{lower}} \ge \ln(0.98) \approx -2.0\%$.
 
 ---
 
@@ -61,7 +52,7 @@ perf report -i /tmp/preflight-jit.data --stdio | head -50
 # 4. Interleaved 10-rep Genuine A/A Baseline Calibration (--aa mode)
 python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --browser=out/perf/chrome --blocks=5 --aa
 
-# 5. End-to-End Phase 1 Script Validation (Run AFTER applying profiling probes)
+# 5. End-to-End Phase 1 Script Validation
 python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --browser=out/perf/chrome --stories=NewsSite-Next
 ```
 
@@ -71,67 +62,33 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
 
 ```mermaid
 flowchart TD
-    A[Phase 0: Execute 5-Step Preflight Checklist & Session A/A Calibration] --> B[Phase 1: Apply Profiling Probes in Disposable Worktree & Run Full-Suite perf cpu-clock -k mono -a]
-    B --> C[Parse MONOTONIC Timestamps & Full Process-Tree PID Manifest]
-    C --> D{Post-Phase 1 Feasibility Gate: Sensitivity Ranges}
-    D -->|Plausible Range Insufficient for 5%| E[Document Explicit Infeasibility Result / Re-scope Goal]
+    A[Phase 0: Preflight Checklist] --> B[Phase 1: Profiling Probes & Full-Suite perf]
+    B --> C[Parse MONOTONIC Timestamps]
+    C --> D{Post-Phase 1 Feasibility Gate}
+    D -->|Plausible Range Insufficient| E[Document Explicit Infeasibility]
     D -->|In-Scope Bottlenecks Found| F[Synthesize Actionable Dossier in .agents/scratch/speedometer3_candidates/]
-    F --> G[Phase 2: Dedicated Worktree Prototyping & Opportunity Sizing Check]
-    G --> H[Validate Opportunity Sizing & Correctness Guardrails]
-    H -->|Fails Correctness Checks| I[Reject: Broken Work / Invalid Layout]
-    H -->|Passes Correctness Checks| J[Randomized ABBA/BAAB Block Verification vs Session A/A Noise Floor]
-    J -->|Provisional Local Delta Found| K[Phase 3: Autonomous Multi-Agent Prototyping implementation & adversarial review]
-    K -->|Passes Web-Compat, Security, Memory & Oilpan Checks| L[Phase 4: Multi-Candidate Integration Phase]
-    L -->|Full-Suite Combined Geometric Lower CI >= +5.0% on Pinpoint| M[Mark VALIDATED & Achieve Goal]
-    I --> N[Revert Probes & Verify git status --porcelain]
-    J -->|Inconclusive after 15 blocks| N
+    F --> K[Phase 2: Autonomous Multi-Agent Multi-Pass Implementation & Adversarial Review]
+    K -->|Passes Web-Compat, Security, GC Checks| L[Phase 3: Multi-Candidate Integration Phase]
+    L -->|Full-Suite Combined Geometric CI| M[Mark VALIDATED & Achieve Goal]
 ```
 
 ### Phase 1: Sampler-Based Hot Spot Discovery & Feasibility Exit
-1. **Disposable Worktree Setup & Probes:**
-   - Launch Phase 1 in disposable git worktree (`git worktree add ../perf-profile-phase1`). Commit probes on disposable branch (`git commit -m "Phase 1 profiling probes"`).
-   - Mark emission: Verify `performance.mark("sp3-measurement-start")` and `performance.mark("sp3-measurement-end")` in `third_party/speedometer/v3.0/resources/benchmark-runner.mjs`.
-   - C++ MONOTONIC probe: In `Performance::mark()` (`third_party/blink/renderer/core/timing/performance.cc`), query `clock_gettime(CLOCK_MONOTONIC, &ts)` when encountering measurement start/end marks, logging `[SP3_MONO_TIME] sp3-measurement-start: <sec>` to `stderr`.
-2. **Run Full-Suite System-Wide Sampling:**
-   ```bash
-   python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --browser=out/perf/chrome --stories=all
-   ```
-3. **Parse Process Manifest & Slice Intervals:**
-   - Extract MONOTONIC timestamps and full Chrome process-tree PIDs/TIDs (Browser, Renderer, GPU, Utility).
-   - Generate two reports: (1) Full process tree, and (2) Renderer deep-dive via `perf script --time <start_sec>,<end_sec> --pid <renderer_pid>`.
-4. **Quality Rejection Gate:** Reject profiles with unmatched measurement marks, poor call stack unwinding, overall `[unknown]` frames >15%, concentrated `[unknown]` frames >10% within any dominant call stack, or insufficient total samples (<5,000 samples).
-5. **Post-Phase 1 Feasibility Gate:** Calculate sensitivity ranges (Optimistic, Plausible, Conservative). If the plausible scenario range does not support a 5% full-suite improvement, corroborate with wall-time traces before documenting an explicit infeasibility result or renegotiating target.
-6. **Exhaustive Hotspot Inventory:** Author candidate dossiers in `.agents/scratch/speedometer3_candidates/` for EVERY in-scope call stack consuming ≥ 0.5% of the total inclusive CPU profile. 
-   - **EXCLUDE:** Pure V8 compilation/execution (`v8::`, `[JIT]`), Angle (`angle::`), OS primitives (`libc`, `__GI`), and thread wrappers (`pthread`).
-   - **INCLUDE:** Blink's generated V8 bindings (`third_party/blink/renderer/bindings/`), Mojo IPC serialization (`mojo::`), and all shared container/memory primitives (`WTF::`, `partition_alloc`).
-   - Do NOT prematurely filter for 'actionability' or 'risk' at this stage. Phase 1 must produce a complete, unfiltered inventory of all time spent outside the raw `v8` engine and `angle`.
-7. **Cleanup Worktree:** Remove disposable profiling worktree (`git worktree remove ../perf-profile-phase1`).
+1. **Disposable Worktree Setup & Probes:** Launch Phase 1 in disposable git worktree. Commit probes on disposable branch.
+2. **Run Full-Suite System-Wide Sampling:** Run `run_cycle_benchmark.py --browser=out/perf/chrome --stories=all`
+3. **Feasibility Gate & Hotspot Inventory:** Calculate sensitivity ranges. Author candidate dossiers in `.agents/scratch/speedometer3_candidates/` for EVERY in-scope call stack consuming ≥ 0.5% of the total inclusive CPU profile. Group them by related sub-systems (e.g. Layout, Parsers, CSS).
 
-### Phase 2: Dedicated Worktree Prototyping & Randomized A/B Validation
-* **Dedicated Prototyping Branch:** All prototyping and destructive opportunity-sizing experiments will be conducted directly on the dedicated `speedometer` branch on the bare-metal machine. You can use standard `git diff` and `git status` without worrying about isolated worktrees.
-* **Opportunity Sizing & Feature Breaking:** For each Phase 1 candidate, perform deeper analysis to identify its real optimization potential. Experimentally measure the rough wall-clock impact by breaking features, disabling checks, or bypassing security guardrails if necessary. This destructive testing is purely to validate the maximum theoretical optimization potential on the A/B score before designing a real solution.
-  - *Mitigating Hard Dependencies:* If a candidate (e.g. core Layout or DOM tree creation) cannot be simply dropped/disabled because the benchmark driver physically requires its output to function (such as needing valid geometry to click elements), deploy a **quick-and-dirty pseudo-solution**. Instead of a full fix, implement aggressive un-invalidated caching, intentionally leak memory, bypass all security checks, or hardcode valid dummy states. Your goal is simply to mimic functional correctness enough to pass the interaction hooks without paying the computational cost, ignoring memory bloat or correctness.
-* **Randomized Block-Interleaved A/B Verification:**
-  - Run randomized ABBA/BAAB block repetitions using Crossbench:
-    ```bash
-    python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --browser=out/perf/chrome --blocks=5 --feature=YourOptimizationFeature
-    ```
-* **Clean Working Tree Rule & Assertion:** Document diffs, Crossbench logs, and statistics into the dossier. Save accepted candidate implementations as explicit commits on candidate branches. Revert probes and verify clean state with `git status --porcelain`.
+### Phase 2: Autonomous Multi-Agent Implementation (Multi-Pass & Documentation)
+Instead of prototyping destructively first, we directly build secure, integrated fast-paths using structured AI subagents.
+1. **Targeting by Opportunity:** The Tech Lead selects candidate bottlenecks to tackle, maintaining an incremental quota (e.g. 20 target integrations).
+2. **MULTI-PASS MAXIMAL YIELD Implementation:** Spawns an **Implementation Engineer** subagent for the target. Instead of making a single quick-fix, the subagent MUST holistically analyze the function and deploy **multiple simultaneous optimizations** within the same iteration (e.g. short-circuit logic, Bloom filters, linear scans, MRU caches etc.) to squeeze every cycle out of the bottleneck.
+   - **Feature Flag Constraint:** Changes must be gated via `blink::features::kSpeedometer3OptimizationSet`. Fast-path atomic state caches MUST ONLY use a single `std::atomic<int>` state machine (0=unchecked, 1=false, 2=true) utilizing `std::memory_order_relaxed`.
+3. **Adversarial Review:** Instantly assigns an **Adversarial Review Engineer** to audit the patch against memory-safety and mechanical DOM specifications. The Review Engineer MUST compile and run relevant `blink_unittests` locally (`autoninja -C out/Default blink_unittests --gtest_filter=...`).
+4. **Document Artifact Enforcement:** Upon integrating an accepted patch, you MUST log a detailed markdown report into `.agents/scratch/speedometer/reports/<Candidate_Number>_<Name>.md`. The report must include three sections: *Profile Opportunity*, *Exact Implementation Changes*, and *Why it is Safe (Review Engineer Verification)*.
 
-### Phase 3: Autonomous Multi-Agent Implementation Prototyping
-Incrementally curate, implement, and pipeline candidate optimizations using a multi-agent assembly line on the dedicated `speedometer` branch.
-1. The **Tech Lead** evaluates opportunities and selects a constrained batch (e.g., 15 candidate bottlenecks) for the current pipeline.
-2. The Tech Lead spawns an **Implementation Engineer** subagent for a selected candidate. Their objective is to draft a structurally viable C++ optimization prototype traversing the V8/Blink/Layout pipeline (gated via `base::FeatureList::IsEnabled(blink::features::kSpeedometer3OptimizationSet)`).
-3. The Tech Lead immediately assigns an **Adversarial Review Engineer** subagent upon completion of the implementation. 
-4. The **Adversarial Review Engineer** must validate the patch against memory-safety bugs, threading issues (e.g. static FeatureList initializer locks), and mechanical DOM specifications. The Review Engineer MUST build and execute relevant `blink_unittests` (using the `out/Default` component build) locally to rigorously check edge cases.
-5. If a viable optimization strictly breaks Spec, privacy, or memory bounds without alternative, the candidate must be documented as a dead-end and **fast-failed**. 
-6. Combine these LLM intent reviews and iterative unit testing validations until all candidates in the batch are integrated or fast-failed.
-
-### Phase 4: Multi-Candidate Integration Phase
-* Maintain a cumulative integration branch (`speedometer-5pct-integration`). Merge accepted candidate commits onto this branch.
-* Benchmark candidates both individually and in combination across the full Speedometer 3 suite.
-* Enforce per-story regression limits ($\text{CI}_{\text{lower}} \ge \ln(0.98) \approx -2.0\%$).
-* Declare the overall 5% objective achieved ONLY when the **final combined patch** demonstrates lower 95% confidence bound $\text{CI}_{\text{lower}} \ge +5.0\%$ on desktop Pinpoint trybots or bare-metal hardware.
+### Phase 3: Multi-Candidate Integration Phase
+* Maintain a cumulative integration branch (`speedometer-5pct-integration`). Merge accepted candidate commits sequentially onto this branch.
+* Benchmark candidates in combination across the full Speedometer 3 suite natively.
+* Declare the overall objective achieved ONLY when the **final combined patch** hits the CI target margin.
 
 ---
 
@@ -139,7 +96,7 @@ Incrementally curate, implement, and pipeline candidate optimizations using a mu
 
 ```bash
 # 1. Compile fast component build for checking syntax
-autoninja -C out/Default chrome
+autoninja -C out/Default blink_core
 
 # 2. Compile authoritative official PGO/LTO production binary
 autoninja -C out/perf chrome
@@ -149,11 +106,4 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
 
 # 4. Genuine A/A noise floor calibration run (--aa mode)
 python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --browser=out/perf/chrome --blocks=5 --aa
-
-# 5. Randomized ABBA/BAAB block verification benchmark (5 blocks = 10 paired reps)
-python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --browser=out/perf/chrome --blocks=5 --feature=MyOptimizationFeature
-
-# 6. Clean up transient Crossbench test results post-evaluation
-# CRITICAL: You MUST explicitly ask the user for permission before running any cleanup commands or deleting scratch/results directories!
-rm -rf scratch/results_ab_interleaved_* scratch/results_perf_sampling_*
 ```
