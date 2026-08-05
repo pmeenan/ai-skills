@@ -1033,7 +1033,7 @@ Scope: DelayBuffer::Push, ::Flush, ::OnTimer (net/streams/delay_buffer.cc)
 
 ## Compliance matrix
 
-| # | step / question | answer | evidence | candidate |
+| # | question | answer | evidence | candidate |
 | --- | --- | --- | --- | --- |
 | 1 | Push: cleanup skipped on early return? | ERR_ABORTED path leaves `pending_` set | net/streams/delay_buffer.cc:141 | EPW-1 |
 | 2 | Push: completion callback invoked on every path? | yes — all three returns run `std::move(callback_)` | net/streams/delay_buffer.cc:120,133,144 | — |

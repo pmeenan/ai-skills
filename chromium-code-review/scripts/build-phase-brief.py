@@ -1,85 +1,141 @@
 #!/usr/bin/env python3
+"""Mechanically generate a phase brief from Common Header and templates."""
+
+from __future__ import annotations
+
+import argparse
+import re
 import sys
 from pathlib import Path
-import argparse
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("review_dir", type=Path)
-    parser.add_argument("work_id", type=str)
-    parser.add_argument("brief_name", type=str)
+
+def fail(msg: str) -> None:
+    print(f"build-phase-brief.py: ERROR: {msg}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def extract_fenced_block(text: str) -> str:
+    match = re.search(r"```text\s+(.*?)\s+```", text, re.DOTALL)
+    if not match:
+        fail("could not find fenced ```text block in template")
+    return match.group(1).strip()
+
+
+def parse_pin(pin_md: Path) -> dict[str, str]:
+    if not pin_md.is_file():
+        fail(f"missing pin.md at {pin_md}")
+    text = pin_md.read_text(encoding="utf-8")
+    cl_match = re.search(r"# CL (\d+) — patchset (\d+) pin", text)
+    if not cl_match:
+        fail("could not parse CL/patchset from pin.md")
+    cl, ps = cl_match.group(1), cl_match.group(2)
+
+    rev_match = re.search(r"- Revision SHA:\s*([0-9a-fA-F]+)", text)
+    parent_match = re.search(r"- Parent SHA:\s*([0-9a-fA-F]+)", text)
+    wt_match = re.search(r"- Worktree:\s*(\S+)", text)
+
+    if not (rev_match and parent_match and wt_match):
+        fail("could not parse SHA/worktree fields from pin.md")
+
+    return {
+        "CL": cl,
+        "PS": ps,
+        "sha": rev_match.group(1),
+        "parent-sha": parent_match.group(1),
+        "worktree": wt_match.group(1),
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Mechanically generate a Chromium review phase brief."
+    )
+    parser.add_argument("review_dir", type=Path, help="Path to review directory")
+    parser.add_argument("work_id", type=str, help="Work unit ID (e.g. CVI, PLAN)")
+    parser.add_argument("brief_name", type=str, help="Heading or name of the brief in phase-briefs.md")
+    parser.add_argument("--attempt", type=int, default=1, help="Attempt number")
+    parser.add_argument("--shard", default="", help="Optional shard index/name")
+    parser.add_argument("--thread", default="", help="Optional thread name")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Output file path (default: stdout)",
+    )
+
     args = parser.parse_args()
 
     review_dir = args.review_dir.resolve()
-    skill_dir = (review_dir / "skill-snapshot").resolve()
-    print(f"review_dir: {review_dir}, skill_dir: {skill_dir}", file=sys.stderr)
-    
-    phase_briefs = (skill_dir / "references/phase-briefs.md").read_text()
+    skill_dir = review_dir / "skill-snapshot"
+    if not skill_dir.is_dir():
+        fail(f"missing skill-snapshot at {skill_dir}")
 
-    lines = phase_briefs.split('\n')
+    pin_info = parse_pin(review_dir / "pin.md")
+
+    header_tmpl = skill_dir / "references/worker/phase-briefs/common-header.md"
+    if not header_tmpl.is_file():
+        header_tmpl = skill_dir / "references/worker/templates/generated-common-header.md"
+    if not header_tmpl.is_file():
+        fail(f"missing required common header template in {skill_dir}")
+
+    header_text = extract_fenced_block(header_tmpl.read_text(encoding="utf-8"))
+
+    phase_briefs_path = skill_dir / "references/phase-briefs.md"
+    if not phase_briefs_path.is_file():
+        fail(f"missing phase-briefs.md at {phase_briefs_path}")
+
+    phase_briefs_text = phase_briefs_path.read_text(encoding="utf-8")
+    lines = phase_briefs_text.split('\n')
     start = -1
     end = -1
     for i, line in enumerate(lines):
-        if args.brief_name in line:
+        if line.startswith("## ") and args.brief_name in line:
             start = i
         if start != -1 and line == "```":
             end = i
             break
 
     if start == -1 or end == -1:
-        print(f"Could not find template for {args.brief_name}", file=sys.stderr)
-        sys.exit(1)
+        fail(f"Could not find template for {args.brief_name} in phase-briefs.md")
 
-    template = "\n".join(lines[start:end+1]).split("```text\n")[1].split("```")[0]
+    template_block = "\n".join(lines[start:end+1])
+    body_text = extract_fenced_block(template_block)
 
-    common_header = f"""You are one worker in an orchestrated Chromium CL review. Execute only this
-brief. Pin: CL 8192418, patchset 5, revision 09e17456dd74d707d0a90ebb0487bbeac99bd2d9, parent 5f72d48650bcb229f5b898e9e63c31dac699a160.
-Review directory: {review_dir}. Read-only worktree: /usr/local/google/home/pmeenan/src/chromium/codereview/worktrees/cl-8192418-ps5. Verify
-`git -C /usr/local/google/home/pmeenan/src/chromium/codereview/worktrees/cl-8192418-ps5 rev-parse HEAD` equals 09e17456dd74d707d0a90ebb0487bbeac99bd2d9 before reading code.
-Read {review_dir}/directives.md first and honor it.
-Verify the rows for work ID {args.work_id} in
-{review_dir}/input-manifest.tsv before analysis. This brief and every
-preassigned artifact/reference input must have a current byte size and SHA-256
-and fit the work-kind budgets; reject stale, missing, globbed, or undeclared
-artifact inputs.
+    combined = f"{header_text}\n\n{body_text}\n"
 
-If directives.md contains `instrumentation: code-reads-v1`, wrap every
-code-evidence read/search command with `python3
-{skill_dir}/scripts/instrument-command.py {review_dir} {args.work_id} 1
---cwd <directory> -- <command...>`. The wrapper preserves output and exit
-status; it records metadata and emitted-byte counts, never source payloads.
-Use the wrapped shell path instead of a harness-native file-read/search tool
-for code evidence. For a pipeline, pass its full text as exactly one quoted
-argument after `bash -c`; trailing argv is rejected because it can silently
-discard the intended path/filter. Never run unscoped `rg --files` in the
-Chromium root; use the inventory/caller indexes or an explicit path scope.
-Do not wrap tools like `cat` unless their target is the worktree.
+    replacements = {
+        "⟨CL⟩": pin_info["CL"],
+        "⟨PS⟩": pin_info["PS"],
+        "⟨sha⟩": pin_info["sha"],
+        "⟨parent-sha⟩": pin_info["parent-sha"],
+        "⟨review-dir⟩": str(review_dir),
+        "⟨skill-dir⟩": str(skill_dir),
+        "⟨worktree⟩": pin_info["worktree"],
+        "⟨work-id⟩": args.work_id,
+        "⟨attempt⟩": str(args.attempt),
+        "CL 9999999": f"CL {pin_info['CL']}",
+        "patchset 3": f"patchset {pin_info['PS']}",
+        "/tmp/scratch/cl-9999999-ps3": str(review_dir),
+        "/checkout/chromium/codereview/worktrees/cl-9999999-ps3": pin_info["worktree"],
+    }
+    if args.shard:
+        replacements["⟨SHARD⟩"] = args.shard
+        replacements["⟨shard⟩"] = args.shard
+    if args.thread:
+        replacements["⟨THREAD⟩"] = args.thread
+        replacements["⟨thread⟩"] = args.thread
 
-Report findings immediately upon discovery. Do not hold or accumulate them
-expecting a single bulk write. Output is streaming: process one candidate
-fully, write its deliverables, flush, and move to the next. If interrupted,
-preserve full rigor, append completed
-work, and return `partial — remaining: ...`; never thin the analysis to finish.
+    for k, v in replacements.items():
+        combined = combined.replace(k, v)
 
-Write only to the exact absolute deliverable paths named below. If a write
-fails, never redirect output into your own conversation, brain, scratch, or
-workspace directory. Retry the named path once, then use the full-payload
-fallback for one file or return `blocked — cannot write <exact path>` for a
-multi-file deliverable.
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(combined, encoding="utf-8")
+        print(args.output)
+    else:
+        print(combined, end="")
+    return 0
 
-Before returning complete or partial, run
-`{skill_dir}/scripts/validate-worker-artifact.py {review_dir} <each-row-bearing-deliverable>`.
-Fix failures while this attempt still owns a new artifact. For a collected
-prestate, append a structured amendment; never exploit a parser omission,
-abbreviate a repo-relative path, or rewrite the collected prefix. Return
-`needs-repair` with the exact validator error if the contract cannot express a
-valid correction.
-"""
-
-    template = template.replace('⟨review-dir⟩', str(review_dir))
-    template = template.replace('⟨skill-dir⟩', str(skill_dir))
-
-    print(common_header + "\n" + template)
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

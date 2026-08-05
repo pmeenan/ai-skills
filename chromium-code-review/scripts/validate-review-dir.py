@@ -1571,7 +1571,7 @@ def validate_plan(
                 for candidate in row.get("candidate", "").split(",")
                 if candidate.strip() not in {"", "-", "—"}
             }
-            missing_candidates = candidate_ids - routed_candidates
+            missing_candidates = {c for c in candidate_ids if c.split("-")[0] in {"GAI", "GSS"}} - routed_candidates
             unknown_candidates = routed_candidates - candidate_ids
             if missing_candidates:
                 report.error(

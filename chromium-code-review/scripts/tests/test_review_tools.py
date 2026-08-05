@@ -1233,7 +1233,7 @@ Return partial with explicit remaining scope when needed.
 
 ## Compliance matrix
 
-| # | step / question | answer | evidence | candidate |
+| # | question | answer | evidence | candidate |
 | --- | --- | --- | --- | --- |
 | 1 | value changed safely? | yes | a.cc:1 | EPW-1 |
 
@@ -2371,7 +2371,7 @@ Procedure: inspect {index_manifest} before collection.
 
 ## Compliance matrix
 
-| # | step / question | answer | evidence | candidate |
+| # | question | answer | evidence | candidate |
 | --- | --- | --- | --- | --- |
 | 1 | classes identified? | yes | a.cc:1 | — |
 
@@ -2399,7 +2399,7 @@ Procedure: inspect {index_manifest} before collection.
 
 ## Compliance matrix
 
-| # | step / question | answer | evidence | candidate |
+| # | question | answer | evidence | candidate |
 | --- | --- | --- | --- | --- |
 | 1 | classes identified? | yes | a.cc:1 | — |
 
@@ -2450,7 +2450,7 @@ none
 
 ## Compliance matrix
 
-| # | step / question | answer | evidence | candidate |
+| # | question | answer | evidence | candidate |
 | --- | --- | --- | --- | --- |
 | 1 | scanned? | yes | a.cc:1 | — |
 

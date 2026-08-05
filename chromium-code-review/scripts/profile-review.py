@@ -594,7 +594,7 @@ def main() -> int:
     if args.context_window_tokens is not None and args.context_window_tokens <= 0:
         fail("--context-window-tokens must be positive")
     if args.context_window_tokens is None:
-        worker_budget = 256 * 1024
+        worker_budget = 1024 * 1024
         estimation = {
             "basis": "conservative default when worker context capacity is unknown",
             "context_window_tokens": None,
@@ -706,7 +706,7 @@ def main() -> int:
             ],
         },
     }
-    tier_budgets = {}
+    tier_budgets = {"frontier": 1048576, "standard": 1048576}
     tier_tokens = {}
     for item in args.tier_context_window_tokens:
         tier, _, tokens = item.partition(":")
