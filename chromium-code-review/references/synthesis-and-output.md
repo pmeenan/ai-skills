@@ -68,7 +68,7 @@ Cross-checks while building the table:
 
 For each promoted finding and owner question, write one immutable bounded
 evidence card under `synthesis/<ROW-ID>.md` in the templates.md shape and add a
-manifest row to `synthesis/index.md`. A card is at most
+manifest row to `synthesis/index.md`. Write each card using harness-native file creation tools or write a standalone script file (`cat << 'EOF' > gen_cards.py` with a quoted `'EOF'` delimiter) to avoid shell command-substitution errors on verbatim code lines containing backticks. A card is at most
 `profile.json:/context_budget/evidence_card_budget_bytes`. It
 contains the effective candidate row, verdict, root-cause result, merge
 support, severity/origin, Gerrit-thread target, verbatim line, and caveats

@@ -80,7 +80,7 @@ rows are context and must not be scheduled again. Then:
    exactly one batch or one merge line.
 4. Assign the next unused zero-padded IDs V001, V002, ... (including in delta
    mode) and write one skeptic brief per batch
-   to ⟨review-dir⟩/briefs/V⟨batch⟩.md
+   to briefs/V⟨batch⟩.md
    in the shape from
    ⟨skill-dir⟩/references/worker/templates/subagent-brief-verification-skeptic.md,
    prepending the Generated Common Header from
@@ -88,13 +88,13 @@ rows are context and must not be scheduled again. Then:
    verbatim (directives, untrusted-input authority, append/retry, and
    partial semantics), with the batch's full candidate
    rows inline, verdict IDs V⟨batch⟩-⟨n⟩, deliverable file
-   ⟨review-dir⟩/verification/V⟨batch⟩.md, and the anchor-table reference
+   verification/V⟨batch⟩.md, and the anchor-table reference
    pointing at
    ⟨skill-dir⟩/references/worker/synthesis-and-output/severity-calibration.md.
-   Also write ⟨review-dir⟩/packets/V⟨batch⟩.spec.tsv (shape in
+   Also write packets/V⟨batch⟩.spec.tsv (shape in
    ⟨skill-dir⟩/references/worker/templates/scope-packet-spec-and-code-packets.md)
    with one diff row per file the batch's candidates cite, and list
-   ⟨review-dir⟩/packets/V⟨batch⟩-code.md as an assigned input in the brief;
+   packets/V⟨batch⟩-code.md as an assigned input in the brief;
    the orchestrator materializes it before sealing. Register each
    brief and its exact candidate/reference/control inputs in input-manifest.tsv.
 

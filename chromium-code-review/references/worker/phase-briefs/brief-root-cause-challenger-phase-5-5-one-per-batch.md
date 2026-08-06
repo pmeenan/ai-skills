@@ -59,14 +59,14 @@ otherwise record the concrete eligibility condition that fails. Put only
 the lossless code.
 
 Deliverables:
-- ⟨review-dir⟩/root-cause/RC⟨batch⟩.md — RC⟨batch⟩-⟨n⟩ rows in the shape
+- root-cause/RC⟨batch⟩.md — RC⟨batch⟩-⟨n⟩ rows in the shape
   from
   ⟨skill-dir⟩/references/worker/templates/root-cause-plan-root-cause-rows-and-reopened-rows.md:
   better-owner hypotheses,
   callsite gaps, duplicated-state risks, stale-fix risks, and
   refutations, each with path:line evidence.
 - If your pass opens new candidates, write them first as canonical rows in
-  ⟨review-dir⟩/ledger/reopened/round-⟨round⟩-RC⟨batch⟩.md with IDs
+  ledger/reopened/round-⟨round⟩-RC⟨batch⟩.md with IDs
   R⟨round⟩-RC⟨batch⟩-1, -2, ... and the Reopened Candidates shape from the
   same root-cause shape file. A status-line-only or brief-only candidate does
   not exist.

@@ -66,12 +66,12 @@ Procedure and checks:
 2. Every plan row with status spawn has a ledger file whose compliance
    matrix covers its brief's scope, with no blank rows and no
    citation-free PASS — an answer without a path:line citation is
-   unanswered.
+   unanswered (if N/A, provide the primary file path:line).
 3. Any anomaly recorded inside a matrix answer (success-shaped return
    after failure cleanup, duplicated cleanup, skipped check, unawaited
    write) has a corresponding candidate row; if a thread adjudicated one
    benign inline without a row, flag it as a gap.
-4. Per-file floor: every changed file in pin.md has at least one ledger
+4. Per-file floor: every changed file in pin.md (including headers, tests, and build files) has at least one explicit ledger
    row. For files with none, read the file's diff yourself and append an
    explicit ORC-⟨n⟩ clean-or-candidate row to ⟨review-dir⟩/collection.md
    in the Per-File Floor shape from

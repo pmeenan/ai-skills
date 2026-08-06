@@ -38,7 +38,7 @@ Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
 Scope: perform one global semantic-affinity and consistency pass after every
 skeptic batch has collected; do not issue verdicts or draft comments.
 
-Inputs: fresh ⟨review-dir⟩/indexes/{candidates,verdicts}.tsv and manifest
+Inputs: fresh ⟨review-dir⟩/indexes/candidates.tsv, ⟨review-dir⟩/indexes/verdicts.tsv and manifest
 fingerprints, ⟨review-dir⟩/verification/batches.md, and only the indexed Trace
 closure / Verified affinity blocks needed to resolve conflicts.
 

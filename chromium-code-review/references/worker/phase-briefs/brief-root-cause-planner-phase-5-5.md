@@ -65,7 +65,7 @@ all prior batch files.
 Deliverables:
 - ⟨review-dir⟩/root-cause/batches.md in the exact shape from
   ⟨skill-dir⟩/references/worker/templates/root-cause-plan-root-cause-rows-and-reopened-rows.md.
-- ⟨review-dir⟩/briefs/RC⟨batch⟩.md per scheduled batch, using the Generated
+- briefs/RC⟨batch⟩.md per scheduled batch, using the Generated
   Common Header verbatim and embedding the exact candidate/verdict rows;
   register each brief and exact inputs in input-manifest.tsv.
 

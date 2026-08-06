@@ -10,7 +10,7 @@ preamble, so its rules travel with every section.
 
 | section | file | source lines |
 | --- | --- | --- |
-| Common Header | common-header.md | 104 |
+| Common Header | common-header.md | 108 |
 | Adaptive Topology Preflight (mechanical) | adaptive-topology-preflight-mechanical.md | 25 |
 | Brief — Context (Phase 1, always separate from inventory when spawned) | brief-context-phase-1-always-separate-from-inventory-when-spawned.md | 34 |
 | Brief — Inventory (Phase 1, unsharded) | brief-inventory-phase-1-unsharded.md | 46 |

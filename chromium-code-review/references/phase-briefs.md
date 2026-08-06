@@ -137,6 +137,10 @@ final text actually consumed.
 The wrapper preserves command output and status and records only metadata,
 byte counts, and duration; instrumentation never limits a required trace.
 
+Tool & Script Execution Safety:
+- Multi-line file writes: When generating multi-line file deliverables (such as synthesis evidence cards or markdown drafts containing verbatim code lines with backticks or quotes), write them using harness-native file creation tools or write to a dedicated script file (e.g. `cat << 'EOF' > generate_cards.py` with a quoted `'EOF'` delimiter) and execute `python3 generate_cards.py`. Never pass inline Python scripts with backtick-containing strings via `python3 -c "..."` inside shell commands, as `bash` attempts command substitution on backticks before Python executes.
+- Background execution: Inspect command output and exit status synchronously. Never enter unconditional wait states or block on crashed/aborted background processes.
+
 If your remaining work will not fit in your context, do not thin it out to
 finish: complete what you can at full rigor, write it to your deliverable,
 and return "partial — remaining: ⟨explicit list of unprocessed scope⟩" so
@@ -719,7 +723,7 @@ rows are context and must not be scheduled again. Then:
    exactly one batch or one merge line.
 4. Assign the next unused zero-padded IDs V001, V002, ... (including in delta
    mode) and write one skeptic brief per batch
-   to ⟨review-dir⟩/briefs/V⟨batch⟩.md
+   to briefs/V⟨batch⟩.md
    in the shape from
    ⟨skill-dir⟩/references/worker/templates/subagent-brief-verification-skeptic.md,
    prepending the Generated Common Header from
@@ -727,13 +731,13 @@ rows are context and must not be scheduled again. Then:
    verbatim (directives, untrusted-input authority, append/retry, and
    partial semantics), with the batch's full candidate
    rows inline, verdict IDs V⟨batch⟩-⟨n⟩, deliverable file
-   ⟨review-dir⟩/verification/V⟨batch⟩.md, and the anchor-table reference
+   verification/V⟨batch⟩.md, and the anchor-table reference
    pointing at
    ⟨skill-dir⟩/references/worker/synthesis-and-output/severity-calibration.md.
-   Also write ⟨review-dir⟩/packets/V⟨batch⟩.spec.tsv (shape in
+   Also write packets/V⟨batch⟩.spec.tsv (shape in
    ⟨skill-dir⟩/references/worker/templates/scope-packet-spec-and-code-packets.md)
    with one diff row per file the batch's candidates cite, and list
-   ⟨review-dir⟩/packets/V⟨batch⟩-code.md as an assigned input in the brief;
+   packets/V⟨batch⟩-code.md as an assigned input in the brief;
    the orchestrator materializes it before sealing. Register each
    brief and its exact candidate/reference/control inputs in input-manifest.tsv.
 
@@ -822,7 +826,7 @@ Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
 Scope: perform one global semantic-affinity and consistency pass after every
 skeptic batch has collected; do not issue verdicts or draft comments.
 
-Inputs: fresh ⟨review-dir⟩/indexes/{candidates,verdicts}.tsv and manifest
+Inputs: fresh ⟨review-dir⟩/indexes/candidates.tsv, ⟨review-dir⟩/indexes/verdicts.tsv and manifest
 fingerprints, ⟨review-dir⟩/verification/batches.md, and only the indexed Trace
 closure / Verified affinity blocks needed to resolve conflicts.
 
@@ -886,7 +890,7 @@ all prior batch files.
 Deliverables:
 - ⟨review-dir⟩/root-cause/batches.md in the exact shape from
   ⟨skill-dir⟩/references/worker/templates/root-cause-plan-root-cause-rows-and-reopened-rows.md.
-- ⟨review-dir⟩/briefs/RC⟨batch⟩.md per scheduled batch, using the Generated
+- briefs/RC⟨batch⟩.md per scheduled batch, using the Generated
   Common Header verbatim and embedding the exact candidate/verdict rows;
   register each brief and exact inputs in input-manifest.tsv.
 
@@ -997,14 +1001,14 @@ otherwise record the concrete eligibility condition that fails. Put only
 the lossless code.
 
 Deliverables:
-- ⟨review-dir⟩/root-cause/RC⟨batch⟩.md — RC⟨batch⟩-⟨n⟩ rows in the shape
+- root-cause/RC⟨batch⟩.md — RC⟨batch⟩-⟨n⟩ rows in the shape
   from
   ⟨skill-dir⟩/references/worker/templates/root-cause-plan-root-cause-rows-and-reopened-rows.md:
   better-owner hypotheses,
   callsite gaps, duplicated-state risks, stale-fix risks, and
   refutations, each with path:line evidence.
 - If your pass opens new candidates, write them first as canonical rows in
-  ⟨review-dir⟩/ledger/reopened/round-⟨round⟩-RC⟨batch⟩.md with IDs
+  ledger/reopened/round-⟨round⟩-RC⟨batch⟩.md with IDs
   R⟨round⟩-RC⟨batch⟩-1, -2, ... and the Reopened Candidates shape from the
   same root-cause shape file. A status-line-only or brief-only candidate does
   not exist.

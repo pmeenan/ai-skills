@@ -30,7 +30,7 @@ a second specialist merely because an active checklist mentions its concern
 (for example, MIS queue bounds do not alone trigger PRS); keep such incidental
 checks in the active thread unless the second row's rule independently matches.
 Set positive Chromium specialist rows' `discovery triggers` to exactly
-`<PREFIX> hard`; a bare prefix is invalid (for multiple, separate them fully: `<PREFIX1> hard, <PREFIX2> hard`, do not share the word "hard"). Set a negative row to exactly
+`<PREFIX> hard`; a bare prefix is invalid. Set a negative row to exactly
 `<PREFIX> absent` for that entry and use the exact roster name as `surface`.
 Soft amplifiers appear only in the later generalist assessments. An N/A plan row may cite only
 associated rows carrying that explicit absence marker; an unrelated or

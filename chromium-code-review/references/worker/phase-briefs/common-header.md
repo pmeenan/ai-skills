@@ -127,6 +127,10 @@ final text actually consumed.
 The wrapper preserves command output and status and records only metadata,
 byte counts, and duration; instrumentation never limits a required trace.
 
+Tool & Script Execution Safety:
+- Multi-line file writes: When generating multi-line file deliverables (such as synthesis evidence cards or markdown drafts containing verbatim code lines with backticks or quotes), write them using harness-native file creation tools or write to a dedicated script file (e.g. `cat << 'EOF' > generate_cards.py` with a quoted `'EOF'` delimiter) and execute `python3 generate_cards.py`. Never pass inline Python scripts with backtick-containing strings via `python3 -c "..."` inside shell commands, as `bash` attempts command substitution on backticks before Python executes.
+- Background execution: Inspect command output and exit status synchronously. Never enter unconditional wait states or block on crashed/aborted background processes.
+
 If your remaining work will not fit in your context, do not thin it out to
 finish: complete what you can at full rigor, write it to your deliverable,
 and return "partial — remaining: ⟨explicit list of unprocessed scope⟩" so
