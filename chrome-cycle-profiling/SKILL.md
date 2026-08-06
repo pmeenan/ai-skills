@@ -1,6 +1,6 @@
 ---
 name: chrome-cycle-profiling
-description: High-precision performance profiling in Desktop Chromium utilizing software cpu-clock sampling profilers (perf/pprof) with V8 JIT basic-prof symbolization for authoritative ground truth, complemented by exclusive self-time C++ cycle instrumentation and randomized block-interleaved A/B verification.
+description: High-precision Desktop Chromium profiling with hardware-cycle perf sampling, V8 JIT basic-prof symbolization, exclusive self-time C++ cycle instrumentation, and randomized block-interleaved A/B verification.
 ---
 
 # Performance Profiling & Verification in Desktop Chromium
@@ -26,7 +26,7 @@ This skill provides the authoritative runbook, instrumentation resources, and ve
    * **Two Profiling Reports:** Phase 1 full-suite sampling requires two reports:
      1. Full Chrome process-tree report partitioned into Browser, Renderer, GPU, and Utility roles.
      2. Renderer-specific deep-dive report for candidate investigation.
-   * **Structured PID/Timestamp Manifest:** Extract structured PID/TID manifests from Crossbench logs: `{"run_id": "...", "story": "...", "repetition": 0, "phase": "measurement", "pid": 1234, "tid": 5678, "role": "renderer", "timestamp_mono_ns": 123456789000}`.
+   * **Structured PID/Timestamp Manifest:** Poll the launched command's descendants while profiling and record every Chrome PID with its browser, renderer, GPU, or utility role. Preserve every matched measurement start/end interval; never replace disjoint scored intervals with one first-start/last-end envelope.
    * **Quality Rejection Gate:** Reject profiles with unmatched measurement marks, poor call stack unwinding, overall `[unknown]` frames >15%, concentrated `[unknown]` frames >10% within any dominant call stack, or insufficient total samples (<5,000 samples).
 
 ---
@@ -39,8 +39,8 @@ Execute these 5 preflight steps in order before Phase 1 profiling. All 5 must pa
 # Step 1: Software sampling check
 perf stat -e cycles true
 
-# Step 2: System-wide permissions check (must use sudo & -a)
-sudo perf record -e cycles -F 997 -k mono -g -a -o /tmp/preflight-a.data -- sleep 2 && sudo perf report -i /tmp/preflight-a.data --stdio | head -5
+# Step 2: Process-scoped perf permissions check (matches the capture pipeline)
+perf record -e cycles -F 997 -k mono -g -o /tmp/preflight-process.data -- sleep 2 && perf report -i /tmp/preflight-process.data --stdio | head -5
 
 # Step 3: Symbolization smoke test against live Chrome (using -k mono, --no-sandbox, & --js-flags=--perf-basic-prof)
 out/perf/chrome --user-data-dir=/tmp/perf-profile --no-first-run --no-sandbox --headless=new --js-flags=--perf-basic-prof https://example.com &
@@ -54,7 +54,10 @@ perf report -i /tmp/preflight-jit.data --stdio | head -50
 # Step 4: Interleaved 10-rep Genuine A/A Baseline Calibration (--aa mode)
 python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --browser=out/perf/chrome --blocks=5 --aa
 
-# Step 5: End-to-End Phase 1 Probed Pipeline Validation (Run AFTER applying profiling probes)
+# Step 5: Apply the bundled probe and validate the end-to-end Phase 1 pipeline
+git apply --check .agents/skills/optimize-speedometer/resources/performance_mark_monotonic_probe.patch
+git apply .agents/skills/optimize-speedometer/resources/performance_mark_monotonic_probe.patch
+autoninja -C out/perf chrome
 python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --browser=out/perf/chrome --stories=NewsSite-Next
 ```
 
@@ -66,15 +69,15 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
 5. **Phase 1 Conformance Verification:**
    - (a) `blink::`/`content::` C++ frames symbolized.
    - (b) Named JS frames (`JS:^runSync`, `JS:^layout`) present.
-   - (c) Both `[SP3_MONO_TIME]` start/end timestamps found in `browser.stdout.log`.
-   - (d) `scratch/perf_run_manifest.json` written with process PIDs and sliced timestamps.
-   - (e) Sliced window duration is plausible (~5--15 seconds for `NewsSite-Next`).
+   - (c) Every `[SP3_MONO_TIME]` start has a matched end in `browser.stdout.log`.
+   - (d) `scratch/perf_run_manifest.json` contains Chrome process roles and the complete interval list.
+   - (e) The sum of scored interval durations is plausible; do not validate against the broader envelope that includes gaps.
 
 ---
 
 ## 3. Opportunity-Sizing & Correctness Guardrails
 
-1. **Opportunity-Sizing Plausibility Check & Sensitivity Ranges:** CPU-clock sample share is an **opportunity-sizing plausibility check**, not a rigid rejection invariant. On-CPU sample time differs from wall-clock score duration; removing small critical-path CPU work can unblock wall-clock score by more than its sample share. Use sensitivity ranges (Optimistic: 100% unblocked, Plausible: 50-70% unblocked, Conservative: 25% unblocked) as explicit sensitivity assumptions for feasibility estimation, corroborated by wall-time trace events.
+1. **Opportunity-Sizing Plausibility Check & Sensitivity Ranges:** Hardware-cycle sample share is an **opportunity-sizing plausibility check**, not a rigid rejection invariant. On-CPU sampled cycles differ from wall-clock score duration; removing small critical-path CPU work can unblock wall-clock score by more than its sample share. Use sensitivity ranges (Optimistic: 100% unblocked, Plausible: 50-70% unblocked, Conservative: 25% unblocked) as explicit sensitivity assumptions for feasibility estimation, corroborated by wall-time trace events.
 2. **Correctness Guardrails:** Oracles are opportunity-sizing experiments. Candidate implementations must pass comprehensive correctness checks:
    - Layout geometry & element node count smoke tests.
    - Event listeners & lifecycle ordering.
@@ -101,9 +104,9 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
 ## 5. Worktree Isolation & Candidate Transfer
 
 * **Disposable Worktree Rule:** Phase 1 profiling MUST run in a dedicated disposable worktree (`git worktree add ../perf-profile-phase1`). Apply probes, commit on disposable branch (`git commit -m "Phase 1 profiling probes"`), run sampling, and remove worktree (`git worktree remove ../perf-profile-phase1`). Broad `git clean -fd` across repo root is strictly forbidden.
-* **Targeted Probe Revert:** When working in local branches, revert ONLY the two specific profiling probe files:
+* **Targeted Probe Revert:** When working in local branches, revert only the bundled probe's target:
   ```bash
-  git checkout -- third_party/blink/renderer/core/timing/performance.cc third_party/speedometer/v3.0/resources/benchmark-runner.mjs
+  git checkout -- third_party/blink/renderer/core/timing/performance.cc
   git status --porcelain
   ```
 * **Candidate Integration Transfer:** Save accepted candidate implementations as explicit git commits on candidate branches. Merge accepted candidate commits into the `speedometer-5pct-integration` integration branch for Phase 4 multi-candidate evaluation.
@@ -113,7 +116,7 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
 
 ## 6. Automation Scripts
 
-* **Full-Suite Perf Sampling Run:** `python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --browser=out/perf/chrome --stories=all`
+* **Full-Suite Perf Sampling and Tree Analysis:** `python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --browser=out/perf/chrome --stories=all --repetitions=2` (defaults to `Speedometer3OptimizationSet`; pass `--enable-features=` for baseline)
 * **Randomized Block A/B Benchmark:** `python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --browser=out/perf/chrome --blocks=5 --feature=FeatureName`
 * **Workspace Cleanup:** Delete only explicitly created output directories:
   ```bash

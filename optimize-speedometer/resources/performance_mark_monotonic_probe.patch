@@ -1,0 +1,22 @@
+diff --git a/third_party/blink/renderer/core/timing/performance.cc b/third_party/blink/renderer/core/timing/performance.cc
+--- a/third_party/blink/renderer/core/timing/performance.cc
++++ b/third_party/blink/renderer/core/timing/performance.cc
+@@ -31,2 +31,3 @@
+ #include <algorithm>
++#include <cstdio>
+ #include <optional>
+@@ -879,6 +880,14 @@ PerformanceMark* Performance::mark(ScriptState* script_state,
+                                    const AtomicString& mark_name,
+                                    PerformanceMarkOptions* mark_options,
+                                    ExceptionState& exception_state) {
++  if (mark_name == "sp3-measurement-start" ||
++      mark_name == "sp3-measurement-end") {
++    std::fprintf(stderr, "[SP3_MONO_TIME] %s: %.9f\n",
++                 mark_name.Utf8().c_str(),
++                 base::TimeTicks::Now().since_origin().InSecondsF());
++    std::fflush(stderr);
++  }
++
+   DEFINE_THREAD_SAFE_STATIC_LOCAL(const AtomicString, mark_fully_loaded,
+                                   ("mark_fully_loaded"));
+   DEFINE_THREAD_SAFE_STATIC_LOCAL(const AtomicString, mark_fully_visible,
