@@ -63,10 +63,13 @@ Write the full report to the given path. Return to the tech lead (≤15 lines):
 
 FAIL requires concrete findings the implementer can act on. PASS with
 unresolved doubts is not available to you — park doubts as findings and
-fail, or resolve them yourself. You may build the staged diff as-is and run
-tests, benchmarks, and local profiles against it — but request build access
-from the tech lead first (one `autoninja` at a time; the adversary may also
-need to build), and you are **strictly read-only on the working tree**: no edits, including temporary counters —
+fail, or resolve them yourself. You may run tests, benchmarks, and local
+profiles against the staged diff — `out/Default` already contains the
+implementer's build of it, so you usually need no build at all. Request
+build access from the tech lead only if you must compile *additional*
+targets (a test suite the implementer didn't build); one `autoninja` at a
+time, and the adversary may also need it. You are **strictly read-only on
+the working tree**: no edits, including temporary counters —
 the tree you review must be byte-identical to the tree that lands. If the
 evidence you need requires instrumentation the implementer didn't run,
 that's a FAIL finding requesting it.

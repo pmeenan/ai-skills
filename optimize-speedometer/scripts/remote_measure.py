@@ -46,6 +46,12 @@ import tempfile
 
 LOCK_FILE = "/tmp/sp3-measure.lock"
 LOCK_BUSY_EXIT = 75
+# Remote builds and multi-block runs stay silent for long stretches;
+# keepalives stop idle-timeout middleboxes from dropping the session mid-job.
+SSH_KEEPALIVE_OPTS = (
+    "-o", "ServerAliveInterval=30",
+    "-o", "ServerAliveCountMax=10",
+)
 REMOTE_DIRTY_EXIT = 4
 SKILLS_SYNC_EXIT = 5
 ANALYSIS_REJECTED_EXIT_CODE = 3
@@ -95,6 +101,7 @@ def push_ref(root, host, remote_src, sha, ref_name):
         ["git", "-C", str(root), "push", "--force", "--quiet", url,
          f"{sha}:refs/campaign/{ref_name}"],
         check=True,
+        env={**os.environ, "GIT_SSH_COMMAND": "ssh " + " ".join(SSH_KEEPALIVE_OPTS)},
     )
 
 
@@ -322,13 +329,18 @@ def send_stdin(proc, data):
             pass
 
 
-def run_remote(host, script):
-    """Run the job script on the remote host under the measurement lock."""
-    cmd = [
+def remote_job_command(host):
+    return [
         "ssh",
+        *SSH_KEEPALIVE_OPTS,
         host,
         f"flock -n -E {LOCK_BUSY_EXIT} {LOCK_FILE} bash -s",
     ]
+
+
+def run_remote(host, script):
+    """Run the job script on the remote host under the measurement lock."""
+    cmd = remote_job_command(host)
     print(f"+ ssh {host} flock ... bash -s  # job script:\n{script}", file=sys.stderr)
     proc = subprocess.Popen(
         cmd,

@@ -21,6 +21,10 @@ aggregate at flag on/off checkpoints.
   with PMU access, full Chromium checkout sharing upstream history,
   configured `out/perf` (PGO/LTO, frame pointers, symbols), and `perf`,
   `vpython3`, `autoninja`, `gn` on the PATH of a non-interactive ssh shell.
+  Budget disk generously: binary-vs-binary comparisons (`ab2` mode — used
+  for bisects and candidate screens) maintain two additional official build
+  dirs (`out/perf_a`, `out/perf_b`) beside `out/perf`, so plan on the order
+  of 200 GB free in the remote checkout.
 - **Skills synced on both machines**: the skill scripts are gitignored in
   Chromium and are never transferred by the tooling. Sync this skills repo
   to the remote host before a session; every remote job verifies a content
@@ -84,7 +88,17 @@ diminishing-returns curve), and parked/rejected opportunities with reasons.
 ## When the agent stops and asks for help
 
 - **Remote lock busy (exit 75)** — another measurement is running; it
-  retries or waits. No action needed unless a stale lock persists.
+  retries or waits. The lock releases automatically when its holder exits,
+  so a *persistent* 75 means a hung job, not a stale file. To recover, kill
+  the processes holding the lock open:
+
+  ```bash
+  ssh linux "fuser -v /tmp/sp3-measure.lock; fuser -k /tmp/sp3-measure.lock"
+  ```
+
+  Never `rm` the lock file: flock is held on the open file descriptor, so
+  deleting it doesn't release anything — it lets the next invocation lock a
+  fresh inode and run concurrently with the hung job.
 - **Remote tree dirty (exit 4)** — tracked modifications on the remote
   checkout; clean or stash them there.
 - **Skills out of sync (exit 5)** — re-sync this skills repo on the remote

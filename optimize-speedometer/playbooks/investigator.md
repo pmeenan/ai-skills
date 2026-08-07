@@ -41,6 +41,10 @@ production optimizations.
    before writing up — instrumentation never reaches the campaign branch.
    The lease also covers builds: never run `autoninja` (in any out dir)
    without holding it — concurrent builds in one build directory conflict.
+   Direct every temporary script, log, counter dump, and profile you
+   generate to `scratch/` (gitignored) or `/tmp`, never the repo root —
+   stray untracked files hard-fail the next review entry and STAGED
+   measurement until someone cleans them up.
 4. **Oracle sizing (optional but preferred; requires the tree lease).** The
    smallest deliberately incorrect bypass of the mechanism, on your local
    diff only, to bound the

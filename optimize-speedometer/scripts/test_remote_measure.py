@@ -230,6 +230,17 @@ class SkillsDigestTest(unittest.TestCase):
                         script.index("git checkout"))
 
 
+class RemoteJobCommandTest(unittest.TestCase):
+    def test_keepalives_and_lock_present(self):
+        cmd = rm.remote_job_command("linux")
+        self.assertEqual("ssh", cmd[0])
+        self.assertIn("ServerAliveInterval=30", cmd)
+        self.assertIn("ServerAliveCountMax=10", cmd)
+        self.assertIn("linux", cmd)
+        self.assertIn(f"flock -n -E {rm.LOCK_BUSY_EXIT} {rm.LOCK_FILE} bash -s",
+                      cmd[-1])
+
+
 class SendStdinTest(unittest.TestCase):
     def test_broken_pipe_does_not_mask_exit_code(self):
         # Peer exits immediately without reading; a large write hits EPIPE.

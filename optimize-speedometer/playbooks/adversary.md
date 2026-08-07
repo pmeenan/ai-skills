@@ -57,7 +57,9 @@ Write the full report to the given path. Return to the tech lead (≤15 lines):
 ```
 
 Each FAIL finding must be a concrete scenario (input/state → wrong observable
-outcome), not a vague concern. You may build and run tests to confirm or
-dismiss a suspicion — prefer confirming over speculating — but request build
-access from the tech lead first (one `autoninja` at a time; the skeptic may
-also need to build), and never modify the working tree.
+outcome), not a vague concern. You may run tests to confirm or dismiss a
+suspicion — prefer confirming over speculating. `out/Default` already
+contains the implementer's build of the staged diff; request build access
+from the tech lead only when you must compile *additional* targets (e.g. a
+WPT or unittest binary the implementer didn't build) — one `autoninja` at a
+time, and the skeptic may also need it. Never modify the working tree.

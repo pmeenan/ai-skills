@@ -153,40 +153,55 @@ Repeat until a stopping rule fires:
 
 1. **Frontier fresh?** If a re-profiling trigger fired (below), send the
    profiler for ≥2 independent full-suite captures **with the flag enabled**
-   (so the frontier reflects work already landed) and rebuild the punch list:
-   `campaign.py add` recurrent frontier entries above the floor; `park` stale
-   ledger candidates whose subtrees shrank.
+   (so the frontier reflects work already landed) and rebuild the punch
+   list: `campaign.py add` recurrent frontier entries above the floor;
+   `campaign.py park --opp N --reason "..."` stale ledger candidates whose
+   subtrees shrank; `campaign.py reopen --opp N` a previously parked or
+   reverted candidate that re-emerges in the fresh frontier (never `add` a
+   duplicate).
 2. **Investigate ahead.** Keep 2–3 investigations in flight so a sized
-   dossier is always ready — their source-analysis phases overlap freely,
-   but their instrumentation/oracle steps take turns holding the tree lease
-   (and wait while an implementer holds it). Record results:
-   `advance --to sized --ceiling X --evidence "..."` or `reject --reason`.
-3. **Implement one opportunity** (`advance --to implementing`). The
-   implementer squeezes the anchor fully — refinements until two consecutive
-   rounds add no mechanistic benefit — then leaves the diff uncommitted
-   (staged with `git add -A`) and reports. Record each refinement round with
+   dossier is always ready — mark each one
+   `campaign.py advance --opp N --to investigating` when you dispatch its
+   investigator so STATUS.md shows it in flight. Source-analysis phases
+   overlap freely, but instrumentation/oracle steps take turns holding the
+   tree lease (and wait while an implementer holds it). Record results:
+   `campaign.py advance --opp N --to sized --ceiling X --evidence "..."` or
+   `campaign.py reject --opp N --reason "..."`.
+3. **Implement one opportunity**
+   (`campaign.py advance --opp N --to implementing`). The implementer
+   squeezes the anchor fully — refinements until two consecutive rounds add
+   no mechanistic benefit — then leaves the diff uncommitted (staged with
+   `git add -A`) and reports. Record each refinement round with
    `campaign.py squeeze --opp N --note "..."`.
-4. **Review in parallel** (`advance --to review --tests "..."` — this
-   records the current HEAD and a digest of the staged diff, freezing what
-   is under review): skeptic + adversary on that diff; optionally a
-   story-targeted A/B from the measurer when samples concentrate (it can run
-   concurrently with reviews) — measure the *candidate itself* with
+4. **Review in parallel**
+   (`campaign.py advance --opp N --to review --tests "..."` — this records
+   the current HEAD and a digest of the staged diff, freezing what is under
+   review): skeptic + adversary on that diff; optionally a story-targeted
+   A/B from the measurer when samples concentrate (it can run concurrently
+   with reviews) — measure the *candidate itself* with
    `remote_measure.py --mode ab2 --ref-a HEAD --ref-b STAGED
    --enable-features <Flag>`, which builds a provisional commit from the
    staged tree; a plain flag A/B would measure the whole cumulative campaign
-   instead. Record verdicts: `campaign.py review --role ... --verdict ...`.
+   instead. Record verdicts:
+   `campaign.py review --opp N --role skeptic|adversary --verdict PASS|FAIL
+   [--report <path>]`.
    - Both PASS → commit yourself: `git add -A && git commit` (message format
-     below), then `advance --to landed --commit <sha>`. Landing verifies the
-     commit sits directly on the reviewed base and its content matches the
-     reviewed digest — if it refuses, something changed after review;
-     re-review rather than reaching for `--skip-review-verification`.
-   - Any FAIL → `advance --to implementing` (rework, findings attached).
-     The ledger blocks a third rework round; at that point `reject` and move
-     on — the findings stay recorded.
+     below), then `campaign.py advance --opp N --to landed --commit <sha>`.
+     Landing verifies the commit sits directly on the reviewed base and its
+     content matches the reviewed digest — if it refuses, something changed
+     after review; re-review rather than reaching for
+     `--skip-review-verification`.
+   - Any FAIL → `campaign.py advance --opp N --to implementing` (rework,
+     findings attached). The ledger blocks a third rework round; at that
+     point `campaign.py reject --opp N --reason "..."` and move on — the
+     findings stay recorded.
 5. **Checkpoint every 3–5 landings** (measurer, `--mode ab` on branch head).
    Record with `campaign.py checkpoint`. On any stat-sig regression:
-   confirm (targeted rerun), then bisect (`--mode ab2`) across the batch and
-   fix or revert the guilty commit before continuing.
+   confirm (targeted rerun), then bisect (`--mode ab2`) across the batch,
+   then either fix forward (a new opportunity through the normal gates) or
+   `git revert` the guilty commit and record it with
+   `campaign.py revert --opp N --revert-commit <sha> --reason "..."` —
+   which removes it from the landed count — before continuing.
 6. Reassess stopping rules; update the human via `STATUS.md` (regenerated
    automatically by every ledger mutation).
 
