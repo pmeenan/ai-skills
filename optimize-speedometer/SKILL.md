@@ -279,10 +279,11 @@ The wrapper pushes shas to the remote checkout over ssh (`refs/campaign/*`,
 never upstream), builds `out/perf` there, runs under a lock, and returns
 summary JSON. The remote tree must stay clean — anything that needs code
 present must be committed on the branch (or staged, for `STAGED`) first.
-Skill scripts are **not** transferred: they are pre-synced to both machines,
-and the job verifies a content digest before running. Exit codes: 75 = lock
-busy (retry later), 4 = remote tree dirty (human intervention), 5 = skill
-scripts out of sync (re-sync the skills repo on the remote host).
+Skill scripts are **not** transferred: the human keeps them synced on both
+machines, and the job verifies a content digest before running. Exit codes:
+75 = lock busy (retry later), 4 = remote tree dirty (human intervention),
+5 = skill scripts out of sync — **stop and ask the human to sync; never
+rsync/scp/git-push the skills repo yourself**, in either direction.
 
 ## Resuming a campaign
 

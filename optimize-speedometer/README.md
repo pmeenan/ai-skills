@@ -27,8 +27,10 @@ aggregate at flag on/off checkpoints.
   of 200 GB free in the remote checkout.
 - **Skills synced on both machines**: the skill scripts are gitignored in
   Chromium and are never transferred by the tooling. Sync this skills repo
-  to the remote host before a session; every remote job verifies a content
-  digest and refuses to run (exit 5) on mismatch.
+  to the remote host before a session — this is a **human** operation;
+  agents are instructed to stop and ask rather than sync it themselves.
+  Every remote job verifies a content digest and refuses to run (exit 5)
+  on mismatch.
 - **Start the agent in the Chromium `src` root** — repo and campaign-ledger
   discovery are cwd-based.
 

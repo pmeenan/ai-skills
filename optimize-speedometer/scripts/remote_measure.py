@@ -166,7 +166,9 @@ def skills_digest(root):
         if not base.is_dir():
             print(
                 f"error: skill directory missing locally: {base} — the local "
-                "checkout is incomplete; nothing was pushed or run remotely",
+                "checkout is incomplete (broken .agents/skills symlink?); "
+                "nothing was pushed or run remotely. STOP and report this to "
+                "the human; do not attempt to recreate or sync it yourself.",
                 file=sys.stderr,
             )
             raise SystemExit(1)
@@ -197,8 +199,9 @@ def sync_gate_lines(expected_digest):
     for skill_dir in SKILL_DIRS:
         lines += [
             f"if [ ! -d {q(skill_dir)} ]; then",
-            f'  echo "REMOTE SKILL DIRECTORY MISSING: {skill_dir}; sync the'
-            ' skills repo on the remote host." >&2',
+            f'  echo "REMOTE SKILL DIRECTORY MISSING: {skill_dir}; STOP and'
+            ' ask the human to sync the skills repo — do not sync it'
+            ' yourself." >&2',
             f"  exit {SKILLS_SYNC_EXIT}",
             "fi",
         ]
@@ -207,8 +210,8 @@ def sync_gate_lines(expected_digest):
         f'{{ echo "REMOTE SKILL DIGEST COMPUTATION FAILED" >&2; exit {SKILLS_SYNC_EXIT}; }}',
         f'if [ "$actual_digest" != {q(expected_digest)} ]; then',
         '  echo "REMOTE SKILL SCRIPTS OUT OF SYNC with the local checkout'
-        ' (digest $actual_digest); sync the skills repo on the remote host'
-        ' before measuring." >&2',
+        ' (digest $actual_digest); STOP and ask the human to sync the skills'
+        ' repo — do not sync it yourself." >&2',
         f"  exit {SKILLS_SYNC_EXIT}",
         "fi",
     ]
@@ -547,8 +550,10 @@ def main(argv=None):
         return REMOTE_DIRTY_EXIT
     if rc == SKILLS_SYNC_EXIT:
         print(
-            "error: remote skill scripts differ from local; sync the skills "
-            "repo on the remote host, then retry",
+            "error: remote skill scripts differ from local. STOP and report "
+            "this to the human — syncing the skills repo is a human "
+            "operation; never rsync/scp/git-push it yourself. Retry only "
+            "after the human confirms the sync.",
             file=sys.stderr,
         )
         return SKILLS_SYNC_EXIT
