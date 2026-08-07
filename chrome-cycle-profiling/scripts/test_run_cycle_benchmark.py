@@ -31,6 +31,50 @@ class RunCycleBenchmarkTest(unittest.TestCase):
     def test_process_polling_is_not_high_frequency(self):
         self.assertGreaterEqual(MODULE.PROCESS_POLL_INTERVAL_SECONDS, 0.25)
 
+    def test_snapshot_chrome_processes_space_and_null_delimited(self):
+        stat_perf = "100 (perf) S 1 100 100 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0"
+        stat_browser = "200 (chrome) S 100 100 100 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0"
+        stat_renderer = "300 (chrome) S 200 100 100 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0"
+
+        entry1 = mock.Mock()
+        entry1.name = "100"
+        entry2 = mock.Mock()
+        entry2.name = "200"
+        entry3 = mock.Mock()
+        entry3.name = "300"
+        scandir_mock = [entry1, entry2, entry3]
+
+        def fake_open(path, mode="r"):
+            if path == "/proc/100/stat":
+                return mock.mock_open(read_data=stat_perf)()
+            elif path == "/proc/100/cmdline":
+                return mock.mock_open(read_data=b"perf\0record\0")()
+            elif path == "/proc/200/stat":
+                return mock.mock_open(read_data=stat_browser)()
+            elif path == "/proc/200/cmdline":
+                # Space-delimited cmdline as seen when process title is modified
+                return mock.mock_open(
+                    read_data=b"/home/user/chrome --enable-features=X --headless\0"
+                )()
+            elif path == "/proc/300/stat":
+                return mock.mock_open(read_data=stat_renderer)()
+            elif path == "/proc/300/cmdline":
+                # Space-delimited cmdline for renderer
+                return mock.mock_open(
+                    read_data=b"/home/user/chrome --type=renderer --js-flags=--perf-basic-prof\0"
+                )()
+            raise FileNotFoundError(path)
+
+        with mock.patch("os.scandir", return_value=scandir_mock), mock.patch(
+            "builtins.open", side_effect=fake_open
+        ):
+            procs = MODULE.snapshot_chrome_processes(100, "chrome")
+            self.assertEqual(2, len(procs))
+            self.assertIn(200, procs)
+            self.assertEqual("browser", procs[200]["role"])
+            self.assertIn(300, procs)
+            self.assertEqual("renderer", procs[300]["role"])
+
 
 if __name__ == "__main__":
     unittest.main()

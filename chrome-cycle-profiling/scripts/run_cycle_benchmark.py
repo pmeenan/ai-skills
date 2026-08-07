@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -32,11 +33,18 @@ def snapshot_chrome_processes(root_pid, browser_name):
             close_paren = stat.rfind(")")
             parent_by_pid[pid] = int(stat[close_paren + 2 :].split()[1])
             with open(f"/proc/{pid}/cmdline", "rb") as cmdline_file:
-                cmdline_by_pid[pid] = [
+                raw_items = [
                     item.decode(errors="replace")
                     for item in cmdline_file.read().split(b"\0")
                     if item
                 ]
+                if len(raw_items) == 1 and " " in raw_items[0]:
+                    try:
+                        cmdline_by_pid[pid] = shlex.split(raw_items[0])
+                    except ValueError:
+                        cmdline_by_pid[pid] = raw_items[0].split()
+                else:
+                    cmdline_by_pid[pid] = raw_items
         except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError):
             continue
 
