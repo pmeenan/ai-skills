@@ -109,15 +109,19 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
   git checkout -- third_party/blink/renderer/core/timing/performance.cc
   git status --porcelain
   ```
-* **Candidate Integration Transfer:** Save accepted candidate implementations as explicit git commits on candidate branches. Merge accepted candidate commits into the `speedometer-5pct-integration` integration branch for Phase 4 multi-candidate evaluation.
+* **Candidate Integration Transfer:** Save accepted candidate implementations as explicit git commits on the campaign branch named in the campaign ledger (`campaign.py show`), one commit per opportunity. Do not invent per-candidate integration branches.
 * **Safe Result Directory Cleanup:** Create results under explicit `mktemp -d` directories and delete ONLY those resolved absolute directory paths.
 
 ---
 
 ## 6. Automation Scripts
 
-* **Full-Suite Perf Sampling and Tree Analysis:** `python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --browser=out/perf/chrome --stories=all --repetitions=2` (defaults to `Speedometer3OptimizationSet`; pass `--enable-features=` for baseline)
+* **Full-Suite Perf Sampling and Tree Analysis:** `python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --browser=out/perf/chrome --stories=all --repetitions=2` (defaults to enabling the campaign feature; pass `--enable-features=` for a true baseline capture)
 * **Randomized Block A/B Benchmark:** `python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --browser=out/perf/chrome --blocks=5 --feature=FeatureName`
+  - `--aa` for A/A calibration; `--browser-a=... --browser-b=...` for binary-vs-binary comparison (bisecting a batch regression). In aa/two-binary modes, `--enable-features=<flags>` applies identically to BOTH arms — required when comparing flag-gated campaign builds, which are otherwise baseline-identical.
+  - `--feature` refuses feature names not defined in the source tree (Chrome silently ignores unknown features); `--skip-feature-check` overrides.
+  - The manifest (`scratch/ab_results_manifest.json`) includes per-story block statistics; with ~30 stories at 95% CI, expect ~1 false-positive stat-sig story per run — confirm flagged stories with a targeted `--stories` rerun before acting.
+* **Remote Execution:** On the development machine, do not run these directly — use `python3 .agents/skills/optimize-speedometer/scripts/remote_measure.py`, which pushes a committed sha to the measurement host, builds `out/perf` there, and runs these scripts under a lock.
 * **Workspace Cleanup:** Delete only explicitly created output directories:
   ```bash
   rm -rf scratch/results_ab_interleaved_* scratch/results_perf_sampling_*

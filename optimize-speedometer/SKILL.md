@@ -1,326 +1,253 @@
 ---
 name: optimize-speedometer
 description: >-
-  Discover, prototype, and validate CPU performance optimizations in Desktop
-  Chromium for Speedometer 3. Use for full-suite profiling, tree-based and
-  cross-context candidate discovery, opportunity sizing, responsive flamegraph
-  inspection, randomized A/B verification, and cumulative integration. Ranks
-  optimization regions by overlap-aware sample coverage instead of leaf-node
-  self time.
+  Run a long-horizon Speedometer 3 optimization campaign in Desktop Chromium
+  as a tech lead orchestrating subagents: remote profile capture,
+  overlap-aware candidate discovery, a gated per-opportunity lifecycle
+  (investigate, implement, skeptic + adversary review, land), a single
+  campaign feature flag, batch checkpoints on a remote bare-metal machine,
+  and explicit re-profiling and stopping rules. Also covers one-off use of
+  the profiling/analysis pipeline.
 ---
 
-# Speedometer 3 Optimization Runbook
+# Speedometer 3 Optimization Campaign
 
-## Non-negotiable principles
+You are the **tech lead** of a long-running optimization campaign. You
+coordinate subagents that do all reading, implementation, and review; you own
+the punch list, the gates, and the decisions. The campaign lands many small
+optimizations — each individually **below the score noise floor** — behind
+one feature flag, and measures them in aggregate.
 
-1. Treat a sample as a complete call stack. Never turn a flat self-time or leaf
-   list directly into an implementation queue.
-2. Treat inclusive sampled cycles as an opportunity bound, not a predicted
-   Speedometer score improvement. Establish eliminability with an intervention
-   before writing production code.
-3. Aggregate both context-sensitive subtrees and context-merged functions or
-   classes. The latter finds common work repeated under otherwise separate
-   trees.
-4. Track both raw inclusive opportunity and deepest-owner-exclusive cost at
-   V8/ANGLE/Skia boundaries. A Blink parent retains descendant engine cycles in
-   its opportunity bound when avoiding that parent would avoid the whole tree;
-   its owner-exclusive field does not charge those cycles to Blink. When JS
-   calls back into Blink, start a new Chromium-owned segment for attribution.
-5. Rank a candidate by its marginal, previously-uncovered sample set. Nested
-   frames are competing explanations of the same cycles, not additive wins.
-6. Keep no more than three unmeasured production candidates in flight. Measure
-   candidates individually, then measure small cumulative batches.
-7. Restrict production changes to Chromium-owned code. Do not modify V8,
-   ANGLE, or other separately owned repositories.
-8. Local headless results are screening evidence. Bare-metal desktop or
-   Pinpoint runs are authoritative.
-9. Optimize analysis for fidelity, not processing latency or modest memory use.
-   A single capture may direct days of engineering, so retain inline frames,
-   full recorded stacks, exact sample membership, and the complete inventory.
+## Roles
 
-## Phase 0: Preflight
+| Role | Playbook | Does |
+| --- | --- | --- |
+| Tech lead (you) | this file | punch list, gates, ledger, commits, decisions |
+| Profiler | `playbooks/profiler.md` | remote captures → candidate frontier |
+| Investigator | `playbooks/investigator.md` | one candidate → dossier + sizing evidence |
+| Implementer | `playbooks/implementer.md` | dossier → uncommitted production diff |
+| Skeptic | `playbooks/skeptic.md` | effectiveness review of the diff |
+| Adversary | `playbooks/adversary.md` | spec/correctness/security/privacy review |
+| Measurer | `playbooks/measurer.md` | remote A/A, A/B, checkpoints, bisects |
 
-Use an official PGO/LTO build with frame pointers and symbols. Confirm hardware
-sampling and JIT symbolization:
+Spawn each subagent with: its playbook path, the specific inputs listed
+there, and the instruction to honor its output contract.
 
-```bash
-perf stat -e cycles true
-out/perf/chrome --user-data-dir=/tmp/sp3-preflight-profile \
-  --no-first-run --no-sandbox --headless=new \
-  --js-flags=--perf-basic-prof https://example.com
-```
+**The working tree is a single exclusive resource.** Chromium's DEPS-managed
+checkout makes fresh worktrees expensive (each needs a `gclient sync`), so
+all agents share one tree, and only one agent at a time may dirty it — the
+implementer, or an investigator running its instrumentation/oracle step. You
+grant that "tree lease" explicitly and expect the tree back clean (verified
+by `git status`) before granting it again. Read-only work parallelizes
+freely, with one rule about *what* is read: while the tree is dirty,
+non-reviewer agents must read source from the last commit (`git show
+HEAD:path`, `git grep <pattern> HEAD`) so dossiers are never built against
+another agent's provisional diff; only the reviewers read the dirty tree —
+that diff is their review subject — and reviewers are strictly read-only (no
+edits, not even temporary instrumentation). Implementation is additionally
+strictly sequential at the lifecycle level: one uncommitted diff at a time,
+because the working diff is what reviewers review.
 
-Run a genuine session A/A before evaluating changes:
+## One-off profiling (no campaign)
 
-```bash
-python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py \
-  --browser=out/perf/chrome --blocks=5 --aa
-```
+To just profile and inspect candidates without campaign machinery: run
+`remote_measure.py --mode profile --ref <sha>` (or `run_cycle_benchmark.py`
+directly on the measurement box), then read the returned
+`candidate_frontier.md` / `opportunity_trees.txt` with
+`resources/analyzer_reference.md` as the interpretation guide. No ledger, no
+flag, no gates. Everything below this point assumes a full campaign.
 
-Require named Chromium frames, named JIT frames, useful call-chain depth, and a
-stable A/A noise estimate. Keep `/tmp/perf-*.map` until profile conversion is
-complete.
+## Context discipline (non-negotiable)
 
-## Phase 1: Capture only scored work
+Your context must last the whole campaign.
 
-Apply the bundled Speedometer `performance.mark()` monotonic-time probe in a
-disposable profiling worktree, then rebuild Chrome:
+- You read ONLY: `STATUS.md`/ledger output, `candidate_frontier.md`
+  summaries, dossier summaries, review verdict JSON, and measurement summary
+  JSON. You never open source files, raw diffs, opportunity trees, or perf
+  data — that is subagent work.
+- Subagent replies are bounded by their output contracts; if one returns a
+  wall of text, extract the contract fields and drop the rest.
+- All campaign state lives in the ledger (`scripts/campaign.py`), never only
+  in your context. Any fresh session must be able to resume from
+  `campaign.py show` + `git log` alone.
 
-```bash
-git apply --check \
-  .agents/skills/optimize-speedometer/resources/performance_mark_monotonic_probe.patch
-git apply \
-  .agents/skills/optimize-speedometer/resources/performance_mark_monotonic_probe.patch
-autoninja -C out/perf chrome
-```
+## Principles
 
-The probe emits exactly `[SP3_MONO_TIME] sp3-measurement-start: <seconds>` and
-the corresponding end line on stderr using `base::TimeTicks`, which shares the
-Linux monotonic clock domain with `perf record -k mono`. Do not start capture
-unless `git apply --check` succeeds; update the bundled patch when upstream
-context changes.
+1. A sample is a complete call stack; never turn a flat self-time list into a
+   work queue. Rank by marginal, previously-uncovered samples — nested frames
+   are competing explanations, not additive wins.
+2. Optimize as high in the call tree as one invariant permits; prefer a
+   parent that controls several expensive children.
+3. Individual optimizations are expected to be sub-noise on the suite score.
+   Their evidence is **mechanistic**: counters, oracle interventions, and
+   sampled-cycle reduction — plus story-targeted A/B when samples
+   concentrate. Suite-score movement is a *batch* property. A stat-sig
+   regression anywhere, however small, is always actionable.
+4. Every optimization is production quality, spec-preserving, gated behind
+   the single campaign flag, and individually committed after passing both
+   independent reviews and its tests.
+5. Restrict changes to Chromium-owned code (no V8/ANGLE/Skia forks).
+6. `out/Default` (local) for all development and tests; `out/perf` exists
+   only on the remote machine and only via `remote_measure.py`. Local
+   headless numbers are screening evidence; the remote bare-metal box is
+   authoritative (Pinpoint for final confirmation).
+7. Fidelity over latency in analysis: keep inline frames, full stacks, exact
+   sample membership, complete inventories.
+8. All artifacts under `scratch/` or the campaign directory — never the repo
+   root.
 
-Capture the launched Chrome process tree with hardware cycles, `-F 997`, call
-chains, and `-k mono`:
+## Campaign setup (once)
 
-```bash
-python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py \
-  --browser=out/perf/chrome --stories=all --repetitions=2
-```
-
-The collector enables `Speedometer3OptimizationSet` by default to preserve the
-optimization campaign configuration. Pass `--enable-features=` for a true
-baseline capture, or provide a comma-separated feature list explicitly. The
-manifest records the effective value.
-
-The collector must emit:
-
-- every matched measurement start/end interval, not one first-start/last-end
-  envelope;
-- PIDs and roles for browser, renderer, GPU, and utility processes;
-- the raw `perf.data` file;
-- full-process-tree and renderer-only candidate frontiers;
-- full-process-tree and renderer-only `opportunity_trees.txt` reports;
-- `profile.collapsed` for interactive inspection.
-
-Reject the capture before candidate work if it has unmatched marks, fewer than
-5,000 retained samples, median stack depth below 3, more than 15% unknown
-user-space frames, disabled inline expansion, missing expected roles, or
-obvious harness/startup leakage. Kernel symbols are reported separately from
-user-space symbol quality.
-
-The collector runs both full-tree and renderer analyses even when the first
-quality gate rejects its profile. It writes both diagnostic report sets, then
-exits with status 3 after listing every rejected view.
-
-To reanalyze an existing capture:
-
-```bash
-python3 .agents/skills/optimize-speedometer/scripts/analyze_stacks.py \
-  --input STORY_OR_RUN=path/to/perf.data \
-  --intervals path/to/perf_run_manifest.json \
-  --out-dir path/to/analysis
-```
-
-Repeat `--input LABEL=PATH` for independent story or repetition captures. This
-adds group breadth to ranking and exposes candidates that recur across runs.
-
-## Phase 2: Build an autonomous candidate frontier
-
-Read `opportunity_trees.txt` first for orientation, then
-`candidate_frontier.json` and `candidate_frontier.md` for autonomous candidate
-selection. The analyzer builds these representations from the same weighted
-samples:
-
-1. **Context tree:** root-to-leaf stack tries with inclusive and self weight.
-   Use this to find a coherent parent whose descendants form an expensive
-   operation such as style, layout, paint, bindings, or IPC.
-2. **Merged function view:** union all samples containing the same function,
-   counting each sample once even when recursion or inlining repeats it. Use
-   caller diversity to find shared work spanning disjoint trees.
-3. **Merged class area:** union methods of the same qualified class. This is a
-   separate search lens for work split across many methods; a broad class does
-   not consume coverage or suppress concrete operation candidates.
-4. **Coverage frontier:** greedily select high-value regions by marginal
-   uncovered cycles, recomputing marginal value after every selection. Keep
-   strongly overlapping descendants as alternatives within the parent dossier
-   instead of independent candidates.
-5. **Text opportunity trees:** emit a pruned cross-area tree plus exclusive
-   Blink, Chromium, V8/JavaScript, ANGLE, and Skia ownership trees. Percentages
-   always use the global profile denominator. Linear trunks, insignificant
-   branches, and depth-limited descendants are omitted without synthetic
-   placeholder rows. Unicode tree connectors (`├──`, `└──`, and `│`) preserve
-   sibling ancestry through deep branches; `[*]` marks an operation selected
-   by the coverage frontier.
-
-The cross-area tree deliberately retains raw inclusive transitions between
-repositories, so it is useful for visually following a browser operation into
-Blink, V8, or Skia. The repository-owned trees assign each sample to its
-innermost recognized owner segment. Use those views to judge where the cycles
-are addressable: an outer Blink event-dispatch wrapper does not inherit nested
-application script or V8 work. All application-owned JavaScript and JIT frames
-are folded into one `[application script execution]` node; V8 builtins, runtime,
-compiler, garbage-collection, and binding plumbing remain visible.
-
-The default text-tree display floor is 0.5% of the global profile, with a
-maximum visible depth of 10 and eight children per node. Override these with
-`--tree-min-share`, `--tree-max-depth`, and `--tree-max-children`. These flags
-only prune the orientation report; they do not reduce the complete JSON
-inventory or the samples used for ranking.
-
-Each selected operation includes an automatically generated nested-hotspot
-dossier. It searches all merged functions whose samples are substantially
-contained by the selected region, not merely its direct callees. This exposes
-deep recursive operations such as style cascade work and lifecycle teardown
-without double-counting them as additive opportunities. The JSON retains the
-complete related-function list; the human-readable dossier uses weighted
-overlap to collapse near-identical inline/lifecycle aliases and display
-representative branches.
-
-Retain the complete eligible inventory in JSON even when the displayed
-frontier is small. The default inventory floor is 0.1% so important children
-below the historical 0.5% cutoff remain auditable.
-
-The analyzer reports two complementary measures. `inclusive_share` and
-`marginal_share` retain the raw descendant tree, including V8/JavaScript or
-Skia cycles that would disappear if a higher-level Chromium operation were
-avoided. `owner_exclusive_share` assigns a sample only to its deepest
-recognized owner segment. It therefore does not charge V8 execution to an
-outer Blink binding or message-loop frame, but it does charge native Blink work
-entered from JS to the inner Blink operation. Rank eliminable operations using
-raw inclusive and marginal coverage; use owner-exclusive coverage for blame,
-repository routing, and implementation placement.
-
-For each frontier entry, inspect its top callers, callees, tree fraction,
-caller diversity, group distribution, and overlapping alternatives. Then map
-the anchor to source and write a candidate dossier containing:
-
-- the expensive operation represented by the subtree;
-- why the work occurs and which invariant may avoid, combine, defer, or reduce
-  it;
-- the union sample share and marginal share;
-- whether it repeats under multiple callers, stories, or processes;
-- the expected eliminable fraction, with evidence;
-- correctness, compatibility, memory, and ownership risks;
-- a cheap intervention that can bound the opportunity;
-- a production design only after the intervention succeeds.
-
-Prefer these candidate shapes:
-
-- a high-inclusive parent with several expensive children controlled by one
-  invalidation, traversal, allocation, or conversion decision;
-- a merged Chromium function/class recurring under diverse callers;
-- duplicated sibling subtrees that can share computed state;
-- a boundary that converts or copies the same data across bindings or IPC;
-- a broad benchmark operation whose cost is stable across repeated captures.
-
-Exclude message-loop, thread-main, worker-job, and generic posted-task shells
-that merge unrelated operations merely because they share an execution loop.
-Keep their concrete descendants eligible. Generic IPC dispatch boundaries may
-remain when their dossiers identify repeated conversion or routing work across
-messages. Likewise exclude generic Blink-to-script callback, event-listener,
-and script-runner shells from the autonomous frontier. Keep concrete parents
-such as a specific teardown, lifecycle phase, or simulated operation eligible;
-their raw inclusive opportunity may legitimately include script work they can
-avoid.
-
-Do not promote a leaf merely because it has high self time. Promote it only if
-source inspection identifies a removable mechanism and its sample set is not
-already explained by a more useful parent.
-
-The analyzer's heuristic score is for ordering investigations. Re-rank after
-source inspection using:
-
-```text
-expected_value = marginal_profile_share
-                 * evidenced_eliminable_fraction
-                 * critical_path_factor
-                 * confidence
-                 / implementation_and_compatibility_cost
-```
-
-Unknown factors reduce confidence; do not silently assume they are 1.
-
-## Phase 3: Opportunity-size before production implementation
-
-For one candidate at a time, make the smallest diagnostic intervention that
-removes or bypasses the suspected mechanism. A deliberately incorrect oracle
-is allowed only on an isolated disposable branch, clearly labeled as invalid,
-and only to estimate a ceiling. Never merge or cumulatively benchmark an
-oracle as a candidate implementation.
-
-Run a short randomized A/B screen immediately. Fast-fail when:
-
-- the intervention removes the sampled subtree but does not move the score;
-- the measured ceiling is below the session MDE or too small for the goal;
-- the expensive work is off the scored critical path;
-- source inspection shows the cost is owned out of scope;
-- preserving observable behavior removes the proposed saving.
-
-If the subtree disappears without score movement, record that evidence. Do not
-continue optimizing its leaves.
-
-## Phase 4: Implement and verify
-
-For an oracle-positive candidate:
-
-1. Implement the smallest spec-preserving mechanism on a candidate branch.
-2. Build the affected target and run focused unit tests, relevant WPTs, and
-   recompute-and-compare assertions where practical.
-3. Re-profile a localized story. Confirm the intended subtree or merged sample
-   set actually shrinks without merely moving cost elsewhere.
-4. Run randomized ABBA/BAAB verification:
+1. **Init the ledger:**
 
    ```bash
-   python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py \
-     --browser=out/perf/chrome --blocks=5 --feature=YourFeature
+   python3 .agents/skills/optimize-speedometer/scripts/campaign.py init \
+     --name sp3-2026-08 --branch speedometer --target 20 --share-floor 0.1 \
+     --feature Speedometer3Optimizations --remote-host linux
    ```
 
-5. Use block log differences. Scale from 5 to at most 15 blocks when the
-   observed effect is promising but underpowered. Classify as inconclusive
-   after 15 blocks and route to Pinpoint or stop local reruns.
+   Config lives in `.agents/campaigns/<name>/` with `dossiers/`, `reviews/`,
+   `ledger.json`, and the generated `STATUS.md`.
+2. **Scaffolding commits** (implementer, on the campaign branch):
+   commit 1 = the feature flag per `resources/flag_scaffolding.md`;
+   commit 2 = the `[SP3_MONO_TIME]` probe so remote profiling never patches
+   the remote tree.
+3. **Calibrate** (measurer): remote A/A (`--mode aa`) for the session noise
+   floor and MDE, then the **flag-overhead null check** (`--mode ab` on the
+   scaffolding-only sha) — must be null before anything lands.
 
-Check geometry, DOM behavior, lifecycle ordering, observers, custom elements,
-style invalidation, paint/compositing, accessibility, focus/selection,
-threading, memory lifetime, and Oilpan implications as applicable.
+## The campaign loop
 
-## Phase 5: Cumulative integration
+Repeat until a stopping rule fires:
 
-Only individually supported candidates enter the cumulative integration
-branch. Integrate at most three new candidates before a full-suite measurement
-so interactions and regressions remain attributable.
+1. **Frontier fresh?** If a re-profiling trigger fired (below), send the
+   profiler for ≥2 independent full-suite captures **with the flag enabled**
+   (so the frontier reflects work already landed) and rebuild the punch list:
+   `campaign.py add` recurrent frontier entries above the floor; `park` stale
+   ledger candidates whose subtrees shrank.
+2. **Investigate ahead.** Keep 2–3 investigations in flight so a sized
+   dossier is always ready — their source-analysis phases overlap freely,
+   but their instrumentation/oracle steps take turns holding the tree lease
+   (and wait while an implementer holds it). Record results:
+   `advance --to sized --ceiling X --evidence "..."` or `reject --reason`.
+3. **Implement one opportunity** (`advance --to implementing`). The
+   implementer squeezes the anchor fully — refinements until two consecutive
+   rounds add no mechanistic benefit — then leaves the diff uncommitted
+   (staged with `git add -A`) and reports. Record each refinement round with
+   `campaign.py squeeze --opp N --note "..."`.
+4. **Review in parallel** (`advance --to review --tests "..."` — this
+   records the current HEAD and a digest of the staged diff, freezing what
+   is under review): skeptic + adversary on that diff; optionally a
+   story-targeted A/B from the measurer when samples concentrate (it can run
+   concurrently with reviews) — measure the *candidate itself* with
+   `remote_measure.py --mode ab2 --ref-a HEAD --ref-b STAGED
+   --enable-features <Flag>`, which builds a provisional commit from the
+   staged tree; a plain flag A/B would measure the whole cumulative campaign
+   instead. Record verdicts: `campaign.py review --role ... --verdict ...`.
+   - Both PASS → commit yourself: `git add -A && git commit` (message format
+     below), then `advance --to landed --commit <sha>`. Landing verifies the
+     commit sits directly on the reviewed base and its content matches the
+     reviewed digest — if it refuses, something changed after review;
+     re-review rather than reaching for `--skip-review-verification`.
+   - Any FAIL → `advance --to implementing` (rework, findings attached).
+     The ledger blocks a third rework round; at that point `reject` and move
+     on — the findings stay recorded.
+5. **Checkpoint every 3–5 landings** (measurer, `--mode ab` on branch head).
+   Record with `campaign.py checkpoint`. On any stat-sig regression:
+   confirm (targeted rerun), then bisect (`--mode ab2`) across the batch and
+   fix or revert the guilty commit before continuing.
+6. Reassess stopping rules; update the human via `STATUS.md` (regenerated
+   automatically by every ledger mutation).
 
-Speedometer aggregates sub-scores geometrically, so gains are not additive.
-Require the full combined patch to pass:
+### Commit protocol
 
-- per-story lower 95% confidence bound no worse than `ln(0.98)`;
-- final full-suite lower 95% confidence bound at least `ln(1.05)` for a 5%
-  goal;
-- desktop Pinpoint or bare-metal confirmation before declaring success.
+You (not the implementer) commit, one commit per opportunity, on the
+campaign branch:
 
-## Responsive visualization
+```text
+[sp3] Opp #011: Skip redundant sibling-affecting style invalidation
 
-Visualization audits the machine ranking; it is not the ranking mechanism.
+Anchor: StyleEngine::RecalcStyle subtree (0.6% marginal share)
+Evidence: 12k avoidable recalcs/run counter-verified; subtree -71% in re-profile
+Reviews: skeptic PASS, adversary PASS
+Tests: blink_unittests StyleEngine*, wpt css/selectors (both flag states)
+```
 
-- Start with `opportunity_trees.txt` for a fast, searchable text summary of
-  material trunks and repository ownership. It is an orientation aid, not an
-  additive ranking: a parent and its children usually cover the same samples.
-- Open `profile.collapsed` in [Perfetto](https://ui.perfetto.dev/) for a
-  responsive interactive flamegraph. Perfetto accepts collapsed stacks and
-  pprof; a Firefox Profiler JSON conversion retains timestamps for range
-  selection when `perf script report gecko` is available.
-- Use [Speedscope](https://www.speedscope.app/) for its WebGL time-order,
-  left-heavy, and sandwich views. It can import ordinary `perf script` output
-  directly and runs locally in the browser.
-- Keep inline expansion enabled for candidate selection. Official
-  LTO builds inline important parent operations, so `--no-inline` may hide
-  entire detach, context-creation, cascade, and lifecycle subtrees. Use
-  `--no-inline --allow-low-quality` only to diagnose a broken pipeline; never
-  use that output to choose implementation work. Preserve the profiler's full
-  captured stack depth and do not truncate inventories to save analysis time or
-  memory. Authoritative analysis passes `perf script --inline` explicitly;
-  expect symbolization to take minutes and several gigabytes of RAM.
+The ledger is gitignored, so commit messages must carry these essentials —
+`git log` alone reconstructs the landed list.
 
-Do not generate Brendan Gregg SVG flamegraphs for routine exploration. Build a
-custom viewer only if Chromium-specific overlays are required; Perfetto and
-Speedscope already solve the rendering and interaction problem.
+### Re-profiling triggers (event-driven, not scheduled)
+
+- every ~5 landings; or
+- two consecutive opportunities whose measured/instrumented reality fell far
+  short of the frontier's prediction (the profile has shifted); or
+- the candidate pool above the floor is exhausted.
+
+### Stopping rules (any one)
+
+- Target landed count reached (`target_landed`, default 20) → run the final
+  measurement (measurer, 10–15 blocks + Pinpoint routing), then decide with
+  the human: raise the target or conclude.
+- Three consecutive opportunities rejected or evidenced-null.
+- **Profile exhaustion:** a fresh re-profile's frontier has no recurrent
+  candidates above the share floor — the discoverable CPU opportunity is
+  consumed.
+- **Statistical plateau:** two consecutive checkpoints show no gain over
+  their predecessor. Respond by re-profiling first (the profile may have
+  shifted); stop only if the fresh frontier is also exhausted.
+
+Keep these two criteria separate: profile share is a *cycle-opportunity
+upper bound*, not a predicted score delta — small on-CPU savings can unblock
+disproportionate wall-clock score (see chrome-cycle-profiling §3.1), so
+never convert remaining share into an expected score number or compare it
+against the MDE. Diminishing returns are read from the checkpoint table in
+`STATUS.md` (cumulative curve) alongside — not arithmetically combined
+with — the remaining-frontier-share line.
+
+## Measurement quick reference
+
+Everything remote goes through
+`python3 .agents/skills/optimize-speedometer/scripts/remote_measure.py`
+(details: `playbooks/measurer.md`; statistics: the `chrome-cycle-profiling`
+skill). Arguments differ by purpose — use the matching row exactly:
+
+| Purpose | Command arguments |
+| --- | --- |
+| A/A noise calibration | `--mode aa --ref <sha>` |
+| Flag-overhead null check | `--mode ab --feature <Flag> --ref <scaffolding-sha>` |
+| Cumulative checkpoint | `--mode ab --feature <Flag> --ref <branch-head>` |
+| Candidate screen (in review, staged) | `--mode ab2 --ref-a HEAD --ref-b STAGED --enable-features <Flag> --stories <stories>` |
+| Landed-commit isolation | `--mode ab2 --ref-a <commit>^ --ref-b <commit> --enable-features <Flag>` |
+| Regression bisect | `--mode ab2 --ref-a <good> --ref-b <suspect> --enable-features <Flag>` |
+| Profile capture (campaign state) | `--mode profile --ref <sha> --repetitions 2 --enable-features <Flag>` |
+| Profile capture (true baseline) | `--mode profile --ref <sha> --repetitions 2 --enable-features=""` |
+
+Notes: `ab2` takes `--ref-a`/`--ref-b` (never `--ref`) and **always needs
+`--enable-features <Flag>`** — without it both arms run baseline behavior
+and flag-gated commits cannot differ. `--feature` is exclusively for `ab`
+mode, which toggles it between arms. Remote host/path default from the
+campaign ledger (overridable via `--host`/`--remote-src` or
+`SP3_REMOTE_HOST`/`SP3_REMOTE_SRC`).
+
+The wrapper pushes shas to the remote checkout over ssh (`refs/campaign/*`,
+never upstream), builds `out/perf` there, runs under a lock, and returns
+summary JSON. The remote tree must stay clean — anything that needs code
+present must be committed on the branch (or staged, for `STAGED`) first.
+Skill scripts are **not** transferred: they are pre-synced to both machines,
+and the job verifies a content digest before running. Exit codes: 75 = lock
+busy (retry later), 4 = remote tree dirty (human intervention), 5 = skill
+scripts out of sync (re-sync the skills repo on the remote host).
+
+## Resuming a campaign
+
+`campaign.py status --print` then `campaign.py show` for detail; `git log`
+on the campaign branch for landed work; the last checkpoint tells you where
+measurement stands. Pick up at the loop step the in-flight gates imply.
+
+## Reference material (for subagents, not you)
+
+- `resources/analyzer_reference.md` — frontier semantics, capture quality
+  gates, visualization tools.
+- `resources/flag_scaffolding.md` — flag + probe scaffolding patterns.
+- `../chrome-cycle-profiling/SKILL.md` — perf capture mechanics, statistical
+  protocol, correctness guardrails.

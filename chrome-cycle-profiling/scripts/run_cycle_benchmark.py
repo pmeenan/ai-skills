@@ -155,10 +155,12 @@ def main():
     )
     parser.add_argument(
         "--enable-features",
-        default="Speedometer3OptimizationSet",
+        default="Speedometer3Optimizations",
         help=(
             "Comma-separated Chrome features passed to Crossbench. The default is "
-            "Speedometer3OptimizationSet; pass an empty value for a baseline capture."
+            "the campaign flag Speedometer3Optimizations so captures reflect "
+            "already-landed work; pass an empty value for a baseline capture. "
+            "Chrome silently ignores names that are not defined in the binary."
         ),
     )
     args = parser.parse_args()

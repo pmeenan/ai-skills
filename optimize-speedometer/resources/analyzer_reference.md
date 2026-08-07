@@ -1,0 +1,127 @@
+# Analyzer & capture reference
+
+Detailed reference for `analyze_stacks.py` outputs and profile-capture
+requirements. Read by the profiler and investigator roles; the tech lead
+consumes only the resulting frontier summaries.
+
+## Capture requirements (enforced by the collector)
+
+The collector (`run_cycle_benchmark.py`, normally invoked remotely via
+`remote_measure.py --mode profile`) must emit:
+
+- every matched `[SP3_MONO_TIME]` measurement start/end interval, not one
+  first-start/last-end envelope;
+- PIDs and roles for browser, renderer, GPU, and utility processes;
+- the raw `perf.data` file (left on the remote host — record its path);
+- full-process-tree and renderer-only candidate frontiers and
+  `opportunity_trees.txt` reports;
+- `profile.collapsed` for interactive inspection.
+
+Reject a capture before candidate work if it has unmatched marks, fewer than
+5,000 retained samples, median stack depth below 3, more than 15% unknown
+user-space frames, disabled inline expansion, missing expected roles, or
+obvious harness/startup leakage. Kernel symbols are reported separately from
+user-space symbol quality. The collector still writes both diagnostic report
+sets on rejection, then exits with status 3.
+
+To reanalyze an existing capture (or merge several):
+
+```bash
+python3 .agents/skills/optimize-speedometer/scripts/analyze_stacks.py \
+  --input STORY_OR_RUN=path/to/perf.data \
+  --intervals path/to/perf_run_manifest.json \
+  --out-dir path/to/analysis
+```
+
+Repeat `--input LABEL=PATH` for independent story or repetition captures.
+This adds group breadth to ranking and exposes candidates that recur across
+runs.
+
+## Frontier representations
+
+Read `opportunity_trees.txt` first for orientation, then
+`candidate_frontier.json` / `candidate_frontier.md` for candidate selection.
+All views are built from the same weighted samples:
+
+1. **Context tree:** root-to-leaf stack tries with inclusive and self weight.
+   Use to find a coherent parent whose descendants form one expensive
+   operation (style, layout, paint, bindings, IPC).
+2. **Merged function view:** union of all samples containing a function,
+   counted once despite recursion/inlining. Caller diversity exposes shared
+   work spanning disjoint trees.
+3. **Merged class area:** union of a qualified class's methods — a separate
+   lens for work split across many methods; it does not consume coverage or
+   suppress concrete operation candidates.
+4. **Coverage frontier:** greedy selection by marginal uncovered cycles,
+   recomputed after every selection. Strongly overlapping descendants stay as
+   alternatives inside the parent dossier, not independent candidates.
+5. **Text opportunity trees:** pruned cross-area tree plus exclusive Blink,
+   Chromium, V8/JavaScript, ANGLE, and Skia ownership trees. Percentages use
+   the global profile denominator; `[*]` marks frontier selections.
+
+The cross-area tree retains raw inclusive transitions between repositories
+(useful to follow an operation into Blink/V8/Skia). The repository-owned
+trees assign each sample to its innermost recognized owner; use them to judge
+where cycles are addressable. Application JS/JIT frames fold into one
+`[application script execution]` node; V8 builtins, runtime, GC, and binding
+plumbing stay visible.
+
+Display flags (`--tree-min-share`, `--tree-max-depth`,
+`--tree-max-children`) prune only the orientation report — never the JSON
+inventory (floor 0.1%) or ranking samples.
+
+## Two measures per entry
+
+- `inclusive_share` / `marginal_share` retain the raw descendant tree,
+  including V8/Skia cycles that disappear if the Chromium parent is avoided.
+  **Rank eliminable operations with these.**
+- `owner_exclusive_share` assigns each sample to its deepest recognized owner
+  segment — it does not charge V8 execution to an outer Blink wrapper, but
+  does charge Blink work entered from JS to the inner Blink operation. **Use
+  for blame, repository routing, and implementation placement.**
+
+## Candidate shapes to prefer
+
+- a high-inclusive parent whose expensive children hang on one invalidation,
+  traversal, allocation, or conversion decision;
+- a merged Chromium function/class recurring under diverse callers;
+- duplicated sibling subtrees that can share computed state;
+- a boundary converting/copying the same data across bindings or IPC;
+- a broad benchmark operation stable across repeated captures.
+
+Excluded shells (message loops, thread mains, generic posted-task /
+event-dispatch / script-runner wrappers) stay out of the frontier, but their
+concrete descendants remain eligible. Do not promote a leaf on self time
+alone — only with a removable mechanism and a sample set not better explained
+by a parent.
+
+Each frontier selection carries a nested-hotspot dossier searching all merged
+functions substantially contained by the region (not just direct callees) —
+this exposes deep recursion like cascade work without double-counting.
+
+Re-rank after source inspection with:
+
+```text
+expected_value = marginal_profile_share
+                 * evidenced_eliminable_fraction
+                 * critical_path_factor
+                 * confidence
+                 / implementation_and_compatibility_cost
+```
+
+Unknown factors reduce confidence; never silently assume 1.
+
+## Visualization (audit aid, not the ranking mechanism)
+
+- `opportunity_trees.txt`: searchable text orientation; parent and child rows
+  usually cover the same samples — not additive.
+- [Perfetto](https://ui.perfetto.dev/) opens `profile.collapsed` as a
+  responsive flamegraph; a Firefox Profiler conversion retains timestamps
+  when `perf script report gecko` is available.
+- [Speedscope](https://www.speedscope.app/) imports `perf script` output for
+  time-order / left-heavy / sandwich views.
+- Keep inline expansion enabled for candidate selection: LTO inlines whole
+  detach/context/cascade/lifecycle subtrees, so `--no-inline` output must
+  never choose implementation work. Authoritative analysis passes
+  `perf script --inline` (minutes of CPU, gigabytes of RAM — expected).
+- Do not build Brendan Gregg SVG flamegraphs for routine exploration.
