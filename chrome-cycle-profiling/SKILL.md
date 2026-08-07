@@ -103,7 +103,7 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
 
 ## 5. Worktree Isolation & Candidate Transfer
 
-* **Disposable Worktree Rule:** Phase 1 profiling MUST run in a dedicated disposable worktree (`git worktree add ../perf-profile-phase1`). Apply probes, commit on disposable branch (`git commit -m "Phase 1 profiling probes"`), run sampling, and remove worktree (`git worktree remove ../perf-profile-phase1`). Broad `git clean -fd` across repo root is strictly forbidden.
+* **Campaign profiling is remote and worktree-free:** Under the optimize-speedometer campaign, profiling runs on the measurement host from a committed sha via `remote_measure.py`, with the probes landed on the campaign branch — no local worktree and no patch dance. The disposable-worktree pattern below applies ONLY to standalone local use of this pipeline outside a campaign, where probes are applied as patches: use a dedicated disposable worktree (`git worktree add ../perf-profile-phase1`), commit probes on the disposable branch, sample, then remove the worktree. Note a fresh Chromium worktree needs a `gclient sync` before it can build. Broad `git clean -fd` across repo root is strictly forbidden in every mode.
 * **Targeted Probe Revert:** When working in local branches, revert only the bundled probe's target:
   ```bash
   git checkout -- third_party/blink/renderer/core/timing/performance.cc

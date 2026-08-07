@@ -36,7 +36,12 @@ mechanistic evidence is, and your job is to stress-test it.
 5. **Benchmark overfit.** Would this regress or break realistic content that
    differs from Speedometer's pattern (the optimization must generalize, even
    though we evaluate on Speedometer)? Overfit is a FAIL even when the
-   benchmark wins.
+   benchmark wins. Also check the inverse trap: Speedometer tests are
+   elastic — they respond dynamically to layout and timing, so bypassing
+   mandatory style-resolution or layout-invalidation work can silently break
+   the test logic and produce a "gain" that is really the benchmark no
+   longer doing its work. A score improvement paired with changed DOM/layout
+   observables is evidence of breakage, not speed.
 6. **Statistics, if any were claimed.** If a story-targeted A/B was run: block
    count, CI vs the claimed effect, correct sign, multiple-comparison caveats
    respected. A null suite-level A/B is expected and not evidence against; a
@@ -59,8 +64,9 @@ Write the full report to the given path. Return to the tech lead (≤15 lines):
 FAIL requires concrete findings the implementer can act on. PASS with
 unresolved doubts is not available to you — park doubts as findings and
 fail, or resolve them yourself. You may build the staged diff as-is and run
-tests, benchmarks, and local profiles against it, but you are **strictly
-read-only on the working tree**: no edits, including temporary counters —
+tests, benchmarks, and local profiles against it — but request build access
+from the tech lead first (one `autoninja` at a time; the adversary may also
+need to build), and you are **strictly read-only on the working tree**: no edits, including temporary counters —
 the tree you review must be byte-identical to the tree that lands. If the
 evidence you need requires instrumentation the implementer didn't run,
 that's a FAIL finding requesting it.

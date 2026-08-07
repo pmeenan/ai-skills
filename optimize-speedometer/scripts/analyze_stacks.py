@@ -11,6 +11,7 @@ areas remain a separate discovery lens and never suppress concrete operations.
 from __future__ import annotations
 
 import argparse
+import bisect
 import collections
 import dataclasses
 import json
@@ -163,15 +164,14 @@ def parse_perf_script(
     samples: list[Sample] = []
     header: re.Match[str] | None = None
     leaf_to_root: list[Frame] = []
+    in_scope = make_interval_checker(intervals or [])
 
     def finish() -> None:
         nonlocal header, leaf_to_root
         if header and leaf_to_root:
             pid = int(header.group("pid"))
             timestamp = float(header.group("time"))
-            if (pids is None or pid in pids) and in_intervals(
-                timestamp, intervals or []
-            ):
+            if (pids is None or pid in pids) and in_scope(timestamp):
                 samples.append(
                     Sample(
                         group=group,
@@ -236,6 +236,32 @@ def load_intervals(path: pathlib.Path | None) -> list[tuple[float, float]]:
 
 def in_intervals(timestamp: float, intervals: list[tuple[float, float]]) -> bool:
     return not intervals or any(start <= timestamp <= end for start, end in intervals)
+
+
+def make_interval_checker(intervals: list[tuple[float, float]]):
+    """O(log K) membership test over the union of intervals.
+
+    Full-suite captures pair millions of samples with hundreds of scored
+    intervals, so the naive per-sample linear scan is a real cost. Intervals
+    are sorted and merged (overlaps collapse) so a single bisect on the start
+    list decides membership; inclusive-bound semantics match in_intervals().
+    """
+    if not intervals:
+        return lambda timestamp: True
+    merged: list[tuple[float, float]] = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    starts = [start for start, _ in merged]
+    ends = [end for _, end in merged]
+
+    def contains(timestamp: float) -> bool:
+        index = bisect.bisect_right(starts, timestamp) - 1
+        return index >= 0 and timestamp <= ends[index]
+
+    return contains
 
 
 def load_mark_intervals(paths: list[pathlib.Path]) -> list[tuple[float, float]]:

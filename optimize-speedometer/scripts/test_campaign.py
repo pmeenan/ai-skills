@@ -287,6 +287,31 @@ class GitReviewVerificationTest(unittest.TestCase):
         self.assertEqual(1, self.run_cmd(
             "advance", "--opp", "1", "--to", "landed", "--commit", sha))
 
+    def test_revert_after_landing(self):
+        # Revert applies only to landed opportunities.
+        self.assertEqual(1, self.run_cmd(
+            "revert", "--opp", "1", "--revert-commit", "deadbeef",
+            "--reason", "regression"))
+        self.enter_review_with("optimized v1\n")
+        self.git("commit", "-qm", "opt")
+        sha = self.git("rev-parse", "HEAD")
+        self.pass_reviews()
+        self.run_cmd("advance", "--opp", "1", "--to", "landed", "--commit", sha)
+        self.git("revert", "--no-edit", "HEAD")
+        revert_sha = self.git("rev-parse", "HEAD")
+        self.assertEqual(0, self.run_cmd(
+            "revert", "--opp", "1", "--revert-commit", revert_sha,
+            "--reason", "stat-sig regression on Editor-TipTap"))
+        with open(self.dir / "ledger.json") as f:
+            data = json.load(f)
+        opp = data["opportunities"][0]
+        self.assertEqual("reverted", opp["status"])
+        self.assertEqual(revert_sha, opp["revert_commit"])
+        # Reverted opportunities leave the landed count and can be reopened.
+        self.assertEqual(0, self.run_cmd("reopen", "--opp", "1"))
+        self.assertEqual("candidate", json.load(
+            open(self.dir / "ledger.json"))["opportunities"][0]["status"])
+
 
 if __name__ == "__main__":
     unittest.main()

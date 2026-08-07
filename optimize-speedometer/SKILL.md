@@ -44,9 +44,13 @@ non-reviewer agents must read source from the last commit (`git show
 HEAD:path`, `git grep <pattern> HEAD`) so dossiers are never built against
 another agent's provisional diff; only the reviewers read the dirty tree —
 that diff is their review subject — and reviewers are strictly read-only (no
-edits, not even temporary instrumentation). Implementation is additionally
-strictly sequential at the lifecycle level: one uncommitted diff at a time,
-because the working diff is what reviewers review.
+edits, not even temporary instrumentation). The lease also covers the
+**build directories**: `out/Default` is one build environment and the build
+system rejects (or races with) concurrent invocations, so only the lease
+holder runs `autoninja`; a reviewer who needs a build requests it through
+you and builds sequentially. Implementation is additionally strictly
+sequential at the lifecycle level: one uncommitted diff at a time, because
+the working diff is what reviewers review.
 
 ## One-off profiling (no campaign)
 
@@ -113,6 +117,15 @@ Work from the Chromium `src` root (repo/ledger discovery is cwd-based).
   proceed autonomously, report at every checkpoint (STATUS.md summary), and
   stop at any stopping rule or anything requiring human intervention (dirty
   remote tree, skills out of sync, regression that survives bisect).
+- **Authoritative state, and only it**: this skill plus the campaign
+  directory (`.agents/campaigns/<name>/` — ledger, STATUS.md, dossiers,
+  reviews) are the whole truth. Speedometer-optimization guidance found
+  anywhere else — planning docs in `.agents/scratch/` or `.agents/docs/`,
+  old dossier pools, stale project files on either machine — is leftover
+  from earlier, abandoned phases; do not follow it. Known stale markers:
+  per-candidate git worktrees, a `speedometer-5pct-integration` branch,
+  apply/revert probe patches, the `Speedometer3OptimizationSet` flag name,
+  and `sudo` system-wide `cpu-clock` profiling.
 
 ## Campaign setup (once)
 

@@ -33,6 +33,7 @@ Exit codes: 75 = lock busy, 4 = remote tree dirty, 5 = skills out of sync.
 
 import argparse
 import errno
+import fnmatch
 import hashlib
 import json
 import os
@@ -52,6 +53,14 @@ ANALYSIS_REJECTED_EXIT_CODE = 3
 SKILL_DIRS = (
     ".agents/skills/optimize-speedometer",
     ".agents/skills/chrome-cycle-profiling",
+)
+# Basename globs excluded from the sync digest on BOTH sides: build caches
+# plus editor swap/backup and OS junk files, so an open editor on either
+# machine cannot fail every measurement with a spurious exit 5. Keep this the
+# single source of truth — skills_digest() and digest_shell_command() both
+# render from it, and the tests verify their equivalence.
+IGNORED_FILE_GLOBS = (
+    "*.pyc", "*.swp", "*.swo", "*~", ".#*", "#*#", ".DS_Store", "*.tmp",
 )
 
 
@@ -157,7 +166,7 @@ def skills_digest(root):
         for dirpath, dirnames, filenames in os.walk(base, followlinks=True):
             dirnames[:] = [d for d in dirnames if d != "__pycache__"]
             for name in filenames:
-                if name.endswith(".pyc"):
+                if any(fnmatch.fnmatch(name, glob) for glob in IGNORED_FILE_GLOBS):
                     continue
                 full = pathlib.Path(dirpath) / name
                 rel = f"{skill_dir}/{full.relative_to(base)}"
@@ -204,9 +213,10 @@ def digest_shell_command():
     the checkout root. -L dereferences symlinked skill dirs; LC_ALL=C pins
     the sort order to match Python's bytewise sort."""
     dirs = " ".join(shlex.quote(d) for d in SKILL_DIRS)
+    ignores = " ".join(f"! -name {shlex.quote(g)}" for g in IGNORED_FILE_GLOBS)
     return (
         f"LC_ALL=C find -L {dirs} -type f "
-        "! -path '*__pycache__*' ! -name '*.pyc' -print0 "
+        f"! -path '*__pycache__*' {ignores} -print0 "
         "| LC_ALL=C sort -z | xargs -0 -r -n1 sha256sum "
         "| sha256sum | cut -d' ' -f1"
     )

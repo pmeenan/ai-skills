@@ -24,6 +24,27 @@ def sample(pid, timestamp, period, frames):
     return lines
 
 
+class IntervalCheckerTest(unittest.TestCase):
+    def test_matches_naive_membership_including_bounds(self):
+        intervals = [(10.0, 12.0), (11.5, 13.0), (20.0, 21.0), (30.0, 30.0)]
+        checker = MODULE.make_interval_checker(intervals)
+        probes = [
+            9.999, 10.0, 11.0, 12.0, 12.5, 13.0, 13.001, 19.9, 20.0, 20.5,
+            21.0, 21.1, 29.9, 30.0, 30.1, 0.0, 100.0,
+        ]
+        for timestamp in probes:
+            self.assertEqual(
+                MODULE.in_intervals(timestamp, intervals),
+                checker(timestamp),
+                f"divergence at {timestamp}",
+            )
+
+    def test_empty_intervals_accepts_everything(self):
+        checker = MODULE.make_interval_checker([])
+        self.assertTrue(checker(0.0))
+        self.assertTrue(checker(1e12))
+
+
 class AnalyzeStacksTest(unittest.TestCase):
     def test_text_tree_preserves_material_branches_and_area_views(self):
         lines = []

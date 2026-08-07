@@ -23,9 +23,12 @@ lead commits after both reviews pass.
    zero-overhead patterns (see `resources/flag_scaffolding.md`):
    - Blink renderer code: `RuntimeEnabledFeatures::<Flag>Enabled()` — a plain
      static bool read, safe in hot paths.
-   - Browser-process / non-Blink code: cache
-     `base::FeatureList::IsEnabled(...)` in a function-local `static const
-     bool`; never query it per call in a hot loop.
+   - Browser-process / non-Blink code: call
+     `base::FeatureList::IsEnabled(...)` directly — it is internally cached
+     (an atomic read after first use). Never hand-cache it in a `static`:
+     that breaks `ScopedFeatureList` tests and can freeze a
+     pre-registration value. In a measured hot loop, hoist into a plain
+     local at the start of the operation.
    - Flag state is fixed for the process lifetime; caching flag-dependent
      state at construction is fine, but nothing may assume a mid-process
      toggle.
@@ -48,9 +51,15 @@ lead commits after both reviews pass.
 7. Leave the final diff uncommitted but **staged: run `git add -A`** so new
    files are part of `git diff HEAD` — that is what the reviewers see and
    what the ledger digests when review starts; unstaged new files would
-   escape both. Revert every instrumentation line first. After review
-   passes, the tech lead commits exactly this diff — any change after review
-   entry will be detected and rejected at landing.
+   escape both. Before staging, clean up after yourself: revert every
+   instrumentation line, direct any test/profiling output you generate to
+   `scratch/` (gitignored) rather than the repo root, and delete stray
+   generated files (test logs, crash dumps, v8 logs) **individually by
+   name** — never a broad `git clean -fd`. Review entry hard-fails on
+   untracked files, so leftovers block you, and `git add -A` would
+   otherwise sweep junk into the reviewed tree. After review passes, the
+   tech lead commits exactly this diff — any change after review entry will
+   be detected and rejected at landing.
 
 ## Output contract
 

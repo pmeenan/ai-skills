@@ -47,14 +47,16 @@ blindly.
    (Some call sites need the `ExecutionContext`-taking overload; prefer the
    static one where the feature is not origin-trial dependent.)
 
-2. **Browser-process / non-Blink check (only if ever needed).**
-
-   ```cpp
-   static const bool sp3_opts_enabled =
-       base::FeatureList::IsEnabled(blink::features::kSpeedometer3Optimizations);
-   ```
-
-   in the containing function, referencing the generated feature constant.
+2. **Browser-process / non-Blink check (only if ever needed).** Call
+   `base::FeatureList::IsEnabled(blink::features::kSpeedometer3Optimizations)`
+   directly at the call site. Do **not** hand-cache the result in a
+   function-local static: `base::Feature` already caches its resolved state
+   internally (see `Feature::cached_value` in `base/feature_list.h`), so the
+   check is a cheap atomic read after first use — and a hand-rolled static
+   breaks `ScopedFeatureList`-based tests and can freeze a wrong value if
+   the code path runs before `FeatureList` registration. If a profiled hot
+   loop measurably suffers from the per-call check, hoist the result into a
+   plain local variable at the start of the operation instead.
 
 3. **Probe scaffolding (second commit).** Land the `[SP3_MONO_TIME]`
    `performance.mark()` probe from

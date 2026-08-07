@@ -181,6 +181,23 @@ class SkillsDigestTest(unittest.TestCase):
                 rm.skills_digest(pathlib.Path(a)), rm.skills_digest(pathlib.Path(b))
             )
 
+    def test_editor_and_junk_files_do_not_change_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            make_skill_tree(root)
+            clean = rm.skills_digest(root)
+            scripts = root / rm.SKILL_DIRS[0] / "scripts"
+            for junk in (".tool.py.swp", "tool.py~", ".#tool.py",
+                         "#tool.py#", ".DS_Store", "out.tmp"):
+                (scripts / junk).write_text("junk")
+            self.assertEqual(clean, rm.skills_digest(root))
+            # The shell pipeline must ignore the same set.
+            shell = subprocess.run(
+                ["bash", "-c", rm.digest_shell_command()],
+                cwd=root, capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            self.assertEqual(clean, shell)
+
     def test_digest_tracks_content(self):
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
             make_skill_tree(pathlib.Path(a), content="v1\n")

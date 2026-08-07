@@ -58,4 +58,6 @@ Write the full report to the given path. Return to the tech lead (≤15 lines):
 
 Each FAIL finding must be a concrete scenario (input/state → wrong observable
 outcome), not a vague concern. You may build and run tests to confirm or
-dismiss a suspicion — prefer confirming over speculating.
+dismiss a suspicion — prefer confirming over speculating — but request build
+access from the tech lead first (one `autoninja` at a time; the skeptic may
+also need to build), and never modify the working tree.

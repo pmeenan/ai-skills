@@ -39,6 +39,7 @@ STATUSES = (
     "implementing",
     "review",
     "landed",
+    "reverted",
     "rejected",
     "parked",
 )
@@ -234,13 +235,18 @@ class Ledger:
         else:
             lines.append("_(no checkpoints yet)_")
 
-        parked = [o for o in opps if o["status"] in ("parked", "rejected")]
+        parked = [o for o in opps if o["status"] in ("parked", "rejected", "reverted")]
         lines.append("")
-        lines.append("## Parked / rejected")
+        lines.append("## Parked / rejected / reverted")
         if parked:
             for o in parked:
+                revert = (
+                    f" (revert `{o['revert_commit'][:12]}`)"
+                    if o.get("revert_commit")
+                    else ""
+                )
                 lines.append(
-                    f"- #{o['id']:03d} [{o['status']}] {o['anchor']} — "
+                    f"- #{o['id']:03d} [{o['status']}] {o['anchor']}{revert} — "
                     f"{o.get('reason') or ''}"
                 )
         else:
@@ -372,6 +378,18 @@ def verify_landed_commit(opp, repo_root, sha, skip_verification, branch):
 
 def cmd_init(args):
     campaign_dir = pathlib.Path(args.dir) if args.dir else None
+    if campaign_dir is not None:
+        # Deliberately do NOT repoint the shared `current` symlink at a
+        # custom --dir: tests and throwaway ledgers use --dir, and silently
+        # hijacking the active-campaign pointer would be worse than the
+        # inconvenience of passing --dir (or SP3_CAMPAIGN_DIR) explicitly.
+        print(
+            f"note: this campaign lives outside the campaigns root; later "
+            f"commands must pass --dir {campaign_dir} or set "
+            f"SP3_CAMPAIGN_DIR={campaign_dir} (the 'current' symlink is "
+            "unchanged)",
+            file=sys.stderr,
+        )
     if campaign_dir is None:
         campaigns_root = agents_dir() / "campaigns"
         campaign_dir = campaigns_root / args.name
@@ -563,11 +581,40 @@ def cmd_park(args):
     return _close(args, "parked")
 
 
+def cmd_revert(args):
+    """A landed optimization was reverted on the branch (e.g. after a
+    regressing checkpoint bisect). Records the revert commit and removes the
+    opportunity from the landed count."""
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    opp = ledger.opp(args.opp)
+    if opp["status"] != "landed":
+        raise CampaignError(
+            f"#{opp['id']:03d} is {opp['status']}; revert applies to landed "
+            "opportunities"
+        )
+    verify_commit(find_repo_root(pathlib.Path.cwd()), args.revert_commit)
+    opp["status"] = "reverted"
+    opp["status_since"] = utc_now()
+    opp["revert_commit"] = args.revert_commit
+    opp["reason"] = args.reason
+    ledger.record(
+        opp, f"reverted by {args.revert_commit[:12]}: {args.reason}"
+    )
+    ledger.save()
+    print(
+        f"#{opp['id']:03d} reverted ({len(ledger.landed())} still landed)"
+    )
+    return 0
+
+
 def cmd_reopen(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     opp = ledger.opp(args.opp)
-    if opp["status"] not in ("rejected", "parked"):
-        raise CampaignError(f"#{opp['id']:03d} is {opp['status']}; reopen applies to rejected/parked")
+    if opp["status"] not in ("rejected", "parked", "reverted"):
+        raise CampaignError(
+            f"#{opp['id']:03d} is {opp['status']}; reopen applies to "
+            "rejected/parked/reverted"
+        )
     opp["status"] = "candidate"
     opp["status_since"] = utc_now()
     opp["reason"] = None
@@ -707,7 +754,13 @@ def build_parser():
     p.add_argument("--reason", required=True)
     p.set_defaults(func=cmd_park)
 
-    p = sub.add_parser("reopen", help="Return a rejected/parked opportunity to the pool")
+    p = sub.add_parser("revert", help="Record that a landed opportunity was reverted on the branch")
+    p.add_argument("--opp", type=int, required=True)
+    p.add_argument("--revert-commit", required=True, help="The git-revert commit sha")
+    p.add_argument("--reason", required=True)
+    p.set_defaults(func=cmd_revert)
+
+    p = sub.add_parser("reopen", help="Return a rejected/parked/reverted opportunity to the pool")
     p.add_argument("--opp", type=int, required=True)
     p.set_defaults(func=cmd_reopen)
 

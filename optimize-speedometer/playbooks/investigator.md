@@ -39,6 +39,8 @@ production optimizations.
    fraction is redundant by your hypothesis. Keep the instrumented window
    short, revert everything (`git status` clean), and return the lease
    before writing up — instrumentation never reaches the campaign branch.
+   The lease also covers builds: never run `autoninja` (in any out dir)
+   without holding it — concurrent builds in one build directory conflict.
 4. **Oracle sizing (optional but preferred; requires the tree lease).** The
    smallest deliberately incorrect bypass of the mechanism, on your local
    diff only, to bound the
@@ -50,6 +52,11 @@ production optimizations.
    removes the saving; the cost is owned out of scope (V8/ANGLE/Skia
    internals); the mechanism is already conditional and the redundant fraction
    is small; or the evidenced eliminable share falls below the campaign floor.
+   Beware oracle results that "win" by breaking the benchmark: Speedometer
+   tests respond dynamically to layout and timing, so an oracle that skips
+   mandatory style/layout work can shrink the subtree AND the score's
+   workload together — validate that element counts and geometry stay
+   equivalent before trusting an oracle ceiling.
 6. **Write the dossier** to the given path: hypothesis, evidence (counter
    numbers, oracle result, sampled-cycle share), eliminable fraction with
    reasoning, affected stories, risks (correctness, compat, memory,
