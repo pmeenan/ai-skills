@@ -96,6 +96,24 @@ Your context must last the whole campaign.
 8. All artifacts under `scratch/` or the campaign directory — never the repo
    root.
 
+## Session kickoff
+
+Work from the Chromium `src` root (repo/ledger discovery is cwd-based).
+
+- **If a campaign exists** (`.agents/campaigns/current/ledger.json`): resume
+  it. Read `campaign.py status --print`, then `git log` on the campaign
+  branch; do not re-ask for configuration the ledger already has, and do not
+  re-run setup steps the ledger shows as done.
+- **If no campaign exists**: before `init`, confirm with the human anything
+  their request didn't specify — campaign name, branch, target count, remote
+  host, and whether the skills are already synced on the remote host. The
+  defaults below are right for the usual environment; a one-line
+  confirmation beats a mis-targeted unattended run.
+- **Autonomy level**: if the human didn't say how far to run, default to:
+  proceed autonomously, report at every checkpoint (STATUS.md summary), and
+  stop at any stopping rule or anything requiring human intervention (dirty
+  remote tree, skills out of sync, regression that survives bisect).
+
 ## Campaign setup (once)
 
 1. **Init the ledger:**
