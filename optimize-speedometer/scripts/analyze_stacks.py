@@ -62,8 +62,14 @@ DEFAULT_EXCLUDE = re.compile(
     r"TimerBase::RunInternal|DOMTimer::Fired|ScheduledAction::Execute|"
     r"V8[^:]*::Invoke(?:WithoutRunnabilityCheck)?|"
     r"JSBasedEventListener::Invoke|"
-    r"EventTarget::(?:FireEventListeners|DispatchEventInternal)|"
-    r"EventDispatcher::(?:Dispatch\(\)|DispatchEvent\())|"
+    r"JSEventHandler::Invoke|"
+    r"EventTarget::(?:FireEventListeners|DispatchEventInternal|"
+    r"dispatchEventForBindings|DispatchEvent)|"
+    r"EventDispatcher::(?:Dispatch\(\)|DispatchEvent\(|"
+    r"DispatchSimulatedClick)|"
+    r"Node::DispatchSimulatedClick|"
+    r"scheduler::EventLoop::(?:RunPendingMicrotasks?|PerformMicrotaskCheckpoint))|"
+    r"^base::WaitableEvent(?:::|$)|"
     r"(?:Invoker<|TaskAnnotator::RunTask)"
 )
 OUT_OF_SCOPE_OWNER = re.compile(

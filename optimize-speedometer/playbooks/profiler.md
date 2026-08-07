@@ -66,7 +66,13 @@ Return to the tech lead (≤30 lines):
   `opportunity_trees.txt` (full tree and renderer views).
 - Quality verdict per run: PASS/REJECTED and why.
 - The top ~10 recurrent frontier entries as one line each:
-  `anchor | marginal_share% | owner_exclusive% | stories | recurrent(y/n)`.
+  `anchor | marginal_share% | owner_exclusive% | stories | recurrent(y/n) | payload-dominated(y/n)`.
+  Mark `payload-dominated: y` when owner-exclusive is a small fraction of
+  inclusive and the dossier shows the descendants are application script,
+  V8, or Skia/ANGLE — these are dispatch shells the tech lead should not
+  admit to the punch list. Prefer surfacing their concrete Blink-owned
+  descendants (from the renderer frontier and the exclusive-Blink
+  ownership tree) as entries in their own right.
 - Total remaining frontier share above the campaign floor.
 
 Do not paste tree dumps or raw stacks into your reply.

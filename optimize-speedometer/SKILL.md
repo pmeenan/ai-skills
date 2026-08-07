@@ -158,7 +158,21 @@ Repeat until a stopping rule fires:
    `campaign.py park --opp N --reason "..."` stale ledger candidates whose
    subtrees shrank; `campaign.py reopen --opp N` a previously parked or
    reverted candidate that re-emerges in the fresh frontier (never `add` a
-   duplicate).
+   duplicate, and never re-`add` a rejected anchor — its rejection reason
+   is still true unless the new profile contradicts it).
+
+   **Admission rule — payload-dominated shells don't enter the ledger.**
+   For each frontier entry, compare owner-exclusive share to inclusive
+   share (the profiler reports both per line). When owner-exclusive is a
+   small fraction of inclusive and the descendants are application script,
+   V8, or out-of-scope owners (Skia/ANGLE), the entry is a dispatch shell
+   around mandatory payload — the benchmark's own work, which no
+   parent-level invariant can avoid. Skip it; investigating it only
+   re-derives the ownership split the frontier already shows. Admit such
+   an entry only when you can name the invariant that would let the
+   parent avoid its payload. Idle-wait anchors (futex/`WaitableEvent`/
+   worker-pool sleeps) are never candidates — cycles spent waiting are
+   not eliminable work.
 2. **Investigate ahead.** Keep 2–3 investigations in flight so a sized
    dossier is always ready — mark each one
    `campaign.py advance --opp N --to investigating` when you dispatch its
