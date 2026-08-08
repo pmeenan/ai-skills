@@ -280,6 +280,143 @@ class AnalyzeStacksTest(unittest.TestCase):
         self.assertEqual(1, len(frontier))
         self.assertEqual("blink::Tree", areas[0]["name"])
 
+    def test_machine_frontier_continues_past_display_limit(self):
+        lines = []
+        for index in range(25):
+            lines += sample(
+                10,
+                1.0 + index,
+                40,
+                [f"blink::IndependentArea{index}::Run()"],
+            )
+        parsed = MODULE.parse_perf_script(lines, "story")
+        aggregates = MODULE.aggregate_samples(parsed)
+        frontier, _, _ = MODULE.build_frontier(
+            parsed,
+            aggregates,
+            min_share=0.001,
+            min_marginal_share=0.001,
+            limit=5,
+            include=MODULE.DEFAULT_INCLUDE,
+            exclude=MODULE.DEFAULT_EXCLUDE,
+        )
+        self.assertGreaterEqual(len(frontier), 25)
+
+    def test_configured_floor_below_point_one_percent_is_honored(self):
+        lines = []
+        lines += sample(10, 1.0, 75, ["blink::TinyOpportunity::Run()"])
+        lines += sample(10, 2.0, 99925, ["libc::UnownedWork()"])
+        parsed = MODULE.parse_perf_script(lines, "story")
+        frontier, _, _ = MODULE.build_frontier(
+            parsed,
+            MODULE.aggregate_samples(parsed),
+            min_share=0.0005,
+            min_marginal_share=0.0005,
+            limit=20,
+            include=MODULE.DEFAULT_INCLUDE,
+            exclude=MODULE.DEFAULT_EXCLUDE,
+        )
+        self.assertTrue(any(
+            item["name"] == "blink::TinyOpportunity::Run()"
+            for item in frontier
+        ))
+
+    def test_shared_hot_alternative_is_assigned_to_one_frontier_area(self):
+        lines = []
+        for index in range(3):
+            lines += sample(
+                10, 1.0 + index * 2, 8,
+                [f"blink::Own{index}::Run()", f"blink::Parent{index}::Run()"],
+            )
+            lines += sample(
+                10, 2.0 + index * 2, 2,
+                ["blink::SharedF::Run()", f"blink::Parent{index}::Run()"],
+            )
+        parsed = MODULE.parse_perf_script(lines, "story")
+        frontier, alternatives, _ = MODULE.build_frontier(
+            parsed,
+            MODULE.aggregate_samples(parsed),
+            min_share=0.01,
+            min_marginal_share=0.01,
+            limit=20,
+            include=MODULE.DEFAULT_INCLUDE,
+            exclude=MODULE.DEFAULT_EXCLUDE,
+        )
+        shared = next(
+            item for item in alternatives
+            if item["name"] == "blink::SharedF::Run()"
+        )
+        self.assertIsNotNone(shared["assigned_frontier_entry"])
+        self.assertEqual(3, len(shared["frontier_overlaps"]))
+        self.assertFalse(any(
+            hotspot["name"] == "blink::SharedF::Run()"
+            for item in frontier
+            for hotspot in item.get("related_hotspots", [])
+        ))
+
+    def test_split_shared_alternative_stays_global_and_contexts_are_distinct(self):
+        lines = []
+        lines += sample(
+            10, 1.0, 12,
+            ["blink::OwnA::Run()", "blink::ParentA::Run()"],
+        )
+        lines += sample(
+            10, 2.0, 8,
+            ["blink::SharedF::Run()", "blink::ParentA::Run()"],
+        )
+        lines += sample(
+            10, 3.0, 13,
+            ["blink::OwnB::Run()", "blink::ParentB::Run()"],
+        )
+        lines += sample(
+            10, 4.0, 7,
+            ["blink::SharedF::Run()", "blink::ParentB::Run()"],
+        )
+        lines += sample(10, 5.0, 9960, ["libc::UnownedWork()"])
+        parsed = MODULE.parse_perf_script(lines, "story")
+        frontier, alternatives, _ = MODULE.build_frontier(
+            parsed,
+            MODULE.aggregate_samples(parsed),
+            min_share=0.001,
+            min_marginal_share=0.001,
+            limit=20,
+            include=MODULE.DEFAULT_INCLUDE,
+            exclude=MODULE.DEFAULT_EXCLUDE,
+        )
+        shared_function = next(
+            item for item in alternatives
+            if item["kind"] == "function"
+            and item["name"] == "blink::SharedF::Run()"
+        )
+        self.assertAlmostEqual(0.0015, shared_function["inclusive_share"])
+        self.assertIsNotNone(shared_function["assigned_frontier_entry"])
+
+    def test_same_symbol_context_alternatives_have_stable_distinct_keys(self):
+        lines = []
+        lines += sample(10, 1.0, 30, ["blink::OwnA::Run()", "blink::ParentA::Run()"])
+        lines += sample(10, 2.0, 10, ["blink::SharedF::Run()", "blink::ParentA::Run()"])
+        lines += sample(10, 3.0, 30, ["blink::OwnB::Run()", "blink::ParentB::Run()"])
+        lines += sample(10, 4.0, 10, ["blink::SharedF::Run()", "blink::ParentB::Run()"])
+        lines += sample(10, 5.0, 20, ["libc::UnownedWork()"])
+        parsed = MODULE.parse_perf_script(lines, "story")
+        _, alternatives, _ = MODULE.build_frontier(
+            parsed,
+            MODULE.aggregate_samples(parsed),
+            min_share=0.05,
+            min_marginal_share=0.05,
+            limit=20,
+            include=MODULE.DEFAULT_INCLUDE,
+            exclude=MODULE.DEFAULT_EXCLUDE,
+        )
+        shared_contexts = [
+            item for item in alternatives
+            if item["kind"] == "context"
+            and item["name"] == "blink::SharedF::Run()"
+        ]
+        self.assertEqual(2, len(shared_contexts))
+        self.assertEqual(2, len({item["entry_key"] for item in shared_contexts}))
+        self.assertTrue(all(item["assigned_frontier_entry"] for item in shared_contexts))
+
     def test_class_area_does_not_hide_distinct_operations(self):
         lines = []
         lines += sample(

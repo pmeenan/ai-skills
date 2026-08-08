@@ -306,7 +306,10 @@ def build_and_run_script(args, sha, sha_b=None, expected_digest=None):
             lines.append(
                 f"vpython3 {cycle} --browser=out/perf/chrome "
                 f"--stories={stories} --repetitions={int(args.repetitions)}"
-                f" --enable-features={q(features)} || rc=$?; rc=${{rc:-0}}; "
+                f" --enable-features={q(features)}"
+                f" --min-share={args.share_floor_pct / 100.0}"
+                f" --min-marginal-share={args.share_floor_pct / 100.0}"
+                f" || rc=$?; rc=${{rc:-0}}; "
                 f"if [ $rc -ne 0 ] && [ $rc -ne {ANALYSIS_REJECTED_EXIT_CODE} ]; then exit $rc; fi; "
                 f'echo "PROFILE_EXIT_CODE: $rc"'
             )
@@ -400,6 +403,71 @@ def default_out_dir(root, mode):
 def profile_summary_paths(out_dir):
     """Analysis artifacts promised by the profiler playbook, when present."""
     paths = {}
+    full_frontier = out_dir / "analysis" / "full" / "candidate_frontier.json"
+    paths["inventory_complete"] = False
+    if full_frontier.exists():
+        try:
+            report = json.loads(full_frontier.read_text())
+            selection = report.get("selection", {})
+            paths["inventory_complete"] = selection.get("inventory_complete") is True
+            paths["analyzer_min_marginal_share"] = selection.get(
+                "min_marginal_share"
+            )
+            paths["analyzer_min_inclusive_share"] = selection.get(
+                "min_inclusive_share"
+            )
+            frontier = report.get("frontier", [])
+            frontier_keys = [item.get("entry_key") for item in frontier]
+            if any(not key for key in frontier_keys) or len(frontier_keys) != len(
+                set(frontier_keys)
+            ):
+                paths["inventory_complete"] = False
+            assigned_alternatives = {}
+            assigned_function_names = set()
+            seen_alternative_keys = set()
+            for alternative in report.get("overlapping_alternatives", []):
+                assigned = alternative.get("assigned_frontier_entry")
+                alternative_key = alternative.get("entry_key")
+                if (
+                    not alternative_key
+                    or alternative_key in seen_alternative_keys
+                    or assigned not in set(frontier_keys)
+                ):
+                    paths["inventory_complete"] = False
+                    continue
+                seen_alternative_keys.add(alternative_key)
+                if alternative.get("kind") == "function":
+                    assigned_function_names.add(alternative.get("name"))
+                assigned_alternatives.setdefault(assigned, []).append({
+                    "hotspot_key": f"alternative:{alternative_key}",
+                    "semantic_key": f"symbol:{alternative.get('name')}",
+                    "measured_share_pct": (
+                        alternative.get("inclusive_share", 0.0) * 100
+                    ),
+                })
+            paths["frontier_count"] = len(frontier)
+            paths["frontier_entries"] = frontier_keys
+            paths["frontier_inventory"] = []
+            for item in frontier:
+                entry_key = item.get("entry_key")
+                work_items = [{
+                    "hotspot_key": "@root",
+                    "semantic_key": f"symbol:{item.get('name')}",
+                    "measured_share_pct": item.get("marginal_share", 0.0) * 100,
+                }]
+                work_items.extend({
+                    "hotspot_key": hotspot["name"],
+                    "semantic_key": f"symbol:{hotspot['name']}",
+                    "measured_share_pct": hotspot.get("overlap_share", 0.0) * 100,
+                } for hotspot in item.get("related_hotspots", [])
+                if hotspot.get("name") not in assigned_function_names)
+                work_items.extend(assigned_alternatives.get(entry_key, []))
+                paths["frontier_inventory"].append({
+                    "entry_key": entry_key,
+                    "work_items": work_items,
+                })
+        except (OSError, ValueError, TypeError):
+            pass
     for view in ("full", "renderer"):
         base = out_dir / "analysis" / view
         for key, name in (
@@ -435,6 +503,24 @@ def ledger_remote_defaults():
         )
         raise SystemExit(1)
     return config.get("remote_host"), config.get("remote_src")
+
+
+def ledger_share_floor_pct(default=0.1):
+    """Return the active campaign's percentage share floor when available."""
+    import campaign
+    path = campaign.default_campaign_dir() / "ledger.json"
+    if not path.exists():
+        return default
+    try:
+        value = json.loads(path.read_text())["config"]["share_floor_pct"]
+        return float(value)
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(
+            f"error: active campaign ledger at {path} has no valid "
+            f"share_floor_pct ({e}); pass --share-floor-pct explicitly",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
 
 
 def resolve_remote(args_host, args_src, root):
@@ -502,7 +588,17 @@ def main(argv=None):
         "aa/ab2 modes: features enabled identically on BOTH arms — required "
         "when bisecting flag-gated campaign commits.",
     )
+    parser.add_argument(
+        "--share-floor-pct",
+        type=float,
+        default=None,
+        help="profile mode: campaign marginal-share floor in percent",
+    )
     parser.add_argument("--out", help="Local results directory")
+    parser.add_argument(
+        "--summary-out",
+        help="Write the final machine-readable summary JSON to this local path",
+    )
     parser.add_argument("--allow-unstaged", action="store_true",
                         help="Allow STAGED to proceed despite unstaged/untracked "
                         "changes (they are excluded from the measurement)")
@@ -524,6 +620,8 @@ def main(argv=None):
         )
 
     root = repo_root()
+    if args.mode == "profile" and args.share_floor_pct is None:
+        args.share_floor_pct = ledger_share_floor_pct(default=0.1)
     args.host, args.remote_src = resolve_remote(args.host, args.remote_src, root)
     out_dir = pathlib.Path(args.out) if args.out else default_out_dir(root, args.mode)
 
@@ -582,9 +680,21 @@ def main(argv=None):
         summary["quality_rejected"] = bool(
             quality and int(quality.group(1)) == ANALYSIS_REJECTED_EXIT_CODE
         )
+        summary["enable_features"] = (
+            args.enable_features if args.enable_features is not None else ""
+        )
+        summary["share_floor_pct"] = args.share_floor_pct
+        summary["repetitions"] = args.repetitions
+        summary["stories"] = args.stories
+        summary["capture_id"] = out_dir.name
         summary.update(profile_summary_paths(out_dir))
 
-    print(json.dumps(summary, indent=2))
+    summary_json = json.dumps(summary, indent=2)
+    if args.summary_out:
+        summary_path = pathlib.Path(args.summary_out)
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(summary_json + "\n")
+    print(summary_json)
     return 0
 
 

@@ -7,7 +7,8 @@ lead commits after both reviews pass.
 
 ## Inputs from the tech lead
 
-- The dossier path and opportunity id.
+- The mechanism dossier path, opportunity id, area key, and globally stable
+  mechanism key. Discovery records never reach this role.
 - Campaign config: branch, feature flag name.
 - On rework: the failing reviewer's findings.
 
@@ -42,12 +43,13 @@ lead commits after both reviews pass.
    stories to confirm the redundant work is actually skipped under
    Speedometer. "Compiles and tests pass" is not evidence the optimization
    does anything.
-6. **Squeeze loop**: after the base implementation works, attempt the
-   dossier's squeeze list — further reductions under the same anchor. Keep a
-   refinement only if its mechanistic evidence (counters / local cycle share)
-   shows additional benefit. **Stop after two consecutive refinements that
-   show no additional mechanistic benefit**, and report the squeeze rounds
-   attempted.
+6. **Same-mechanism squeeze loop**: after the base implementation works,
+   attempt dossier refinements controlled by the same invariant and production
+   design. Keep a refinement only if counters/local cycles show additional
+   benefit. Stop after two consecutive null refinements. Do not absorb a
+   different cache, invariant, fast path, or child-callee optimization into
+   this diff merely because it shares an anchor; report it as a sibling
+   mechanism for its own lifecycle and review.
 7. Leave the final diff uncommitted but **staged: run `git add -A`** so new
    files are part of `git diff HEAD` — that is what the reviewers see and
    what the ledger digests when review starts; unstaged new files would

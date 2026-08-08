@@ -8,6 +8,7 @@ code.
 ## Inputs from the tech lead
 
 - Campaign config: feature flag name, campaign branch, remote host/src.
+- Campaign directory for the reconciliation manifest.
 - Whether this is a baseline capture (flag disabled) or a campaign capture
   (flag enabled — the default once optimizations have landed, so the frontier
   reflects the world with prior wins applied).
@@ -26,12 +27,15 @@ code.
    ```bash
    python3 .agents/skills/optimize-speedometer/scripts/remote_measure.py \
      --mode profile --ref <sha> --stories all --repetitions 2 \
-     --enable-features <Flag>
+     --enable-features <Flag> --share-floor-pct <campaign-floor> \
+     --summary-out <capture-N.json>
    ```
 
    For a true baseline capture, pass `--enable-features=""` explicitly
    (empty = no features; omitting the flag entirely also means baseline,
    but the explicit form makes the intent auditable in the manifest).
+   Baseline captures are diagnostic only and cannot certify campaign
+   exhaustion.
 
    Each invocation returns a JSON summary with local paths to
    `candidate_frontier.md`, `opportunity_trees.txt`, and the analysis JSON,
@@ -60,22 +64,88 @@ code.
 
 ## Output contract
 
-Return to the tech lead (≤30 lines):
+Return to the tech lead (≤40 lines):
 
 - Paths to each run's `candidate_frontier.md` / `candidate_frontier.json` and
   `opportunity_trees.txt` (full tree and renderer views).
 - Quality verdict per run: PASS/REJECTED and why.
-- The top ~10 recurrent frontier entries (including fine-grained child anchors
-  decomposed from large composite subtrees such as `UpdateStyleAndLayout`,
-  `setInnerHTML`, `RunPaintLifecyclePhase`, `PrePaintTreeWalk`, and `DOMParser`
-  where individual sub-operations carry significant cycles) as one line each:
-  `anchor | marginal_share% | owner_exclusive% | stories | recurrent(y/n) | payload-dominated(y/n)`.
+- A stable profile-group id and the profiled sha for `campaign.py profile`.
+- Run each independent capture with `remote_measure.py --mode profile
+  --enable-features <campaign-feature> --share-floor-pct <campaign-floor>
+  --summary-out <capture-N.json>`. Combine the complete summary objects into
+  `<campaign-dir>/capture-summaries-<profile-id>.json`. Do not hand-author
+  capture count or quality claims. Every summary must retain its capture id,
+  distinct `local_results`/`remote_perf_data` provenance and analyzer artifact,
+  resolved SHA, feature state, quality verdict, analyzer floor, and
+  `inventory_complete` attestation. Renaming one capture id does not make a
+  reused artifact an independent capture.
+- Write `<campaign-dir>/profile-reconciliation-<profile-id>.json`: a JSON
+  object with `areas`, `source_exclusions`, and `parked_mechanisms` arrays.
+  `areas` contains **all**
+  recurrent coverage-frontier areas above the floor, not only the reply's
+  displayed top rows. Each area contains `area_key`, `anchor`,
+  `marginal_share_pct`, `stories`, the source dossier/artifact path, and
+  `disposition: discover|exclude`, plus `source_refs` identifying the exact
+  `{capture_id, entry_key}` rows it reconciles. Each recurrent machine entry
+  gets its own area and exactly one ref from every capture; do not merge
+  distinct entries into a composite area. Preserve a previously recorded area
+  key for the same source entry. Exclusions require a structured
+  `exclusion_category` (`payload-dominated`, `idle-wait`, or `out-of-scope`),
+  `exclusion_reason`, and `exclusion_evidence`; keeping them in the manifest
+  makes full frontier accounting auditable without turning them into work.
+  Put each genuinely one-capture source row in `source_exclusions` with
+  `category: not-recurrent` and evidence. Every machine-frontier source row
+  must appear exactly once; never classify an entry occurring in two captures
+  as nonrecurrent.
+  Reconcile every currently parked mechanism explicitly: use
+  `{mechanism_key, disposition:"recurrent", area_key}` when it maps to a
+  current discoverable area, or `disposition:"not-recurrent"` plus evidence.
+  Omitting it is never evidence that it disappeared.
+  The tech lead imports this atomically with `campaign.py profile --areas ...
+  --capture-summaries ... --enable-features ...`.
+- Treat `candidate_frontier.json` as authoritative: its machine frontier
+  continues overlap-safe selection until the configured marginal floor.
+  `candidate_frontier.md` intentionally displays only the leading rows and may
+  never be used as the complete reconciliation inventory.
+- Do not edit or summarize away `full_candidate_frontier_json` paths in capture
+  summaries. The importer opens those reports, verifies quality/selection and
+  exact analyzer thresholds, derives root plus all `related_hotspots` work
+  references, requires every material `overlapping_alternatives` entry to be
+  assigned exactly once to a valid frontier area by greatest exact overlap,
+  and records the artifact digest. Function roots, related children, and
+  alternatives share a normalized semantic identity for follow-on recurrence;
+  caller-specific context alternatives retain distinct stable path keys.
+  Investigators must account those refs during decomposition.
+- Preserve every work item's measured share. The campaign uses the hottest
+  root/nested/alternative item as an undecomposed discovery's global priority;
+  this intentionally lets deep high-impact work outrank shallower frontier
+  roots before the child mechanism has been materialized.
+- Exclude only a leaf frontier root with no material related or assigned
+  alternative work. A payload/idle/out-of-scope composite area must remain
+  `discover` so its root can receive that disposition without swallowing its
+  independently dispositioned child hotspots.
+- **Coverage frontier** — the top ~10 recurrent overlap-safe selections, one
+  line each:
+  `area_key | anchor | marginal_share% | owner_exclusive% | stories | recurrent(y/n) | payload-dominated(y/n)`.
+  `area_key` is a stable semantic area identity reused on follow-on runs; it is
+  not a transient rank or profile path.
   Mark `payload-dominated: y` when owner-exclusive is a small fraction of
   inclusive and the dossier shows the descendants are application script,
   V8, or Skia/ANGLE — these are dispatch shells the tech lead should not
   admit to the punch list. Prefer surfacing their concrete Blink-owned
-  descendants (from the renderer frontier and the exclusive-Blink
-  ownership tree) as entries in their own right.
-- Total remaining frontier share above the campaign floor.
+  descendants as coverage entries when the analyzer selected them.
+- **Decomposition inventory** — beneath each coverage entry, list every
+  recurrent fine-grained nested hotspot/alternative that may support an
+  independent mechanism (including children of composite subtrees such as
+  `UpdateStyleAndLayout`, `setInnerHTML`, lifecycle, prepaint, and parser
+  anchors):
+  `parent_area_key | child_anchor | inclusive_share% | overlap_with_parent% | owner_exclusive% | stories`.
+  These are investigator inputs, not independent marginal frontier rows. Do
+  not sum them or relabel their post-parent marginal share as opportunity.
+- Report both observed coverage-frontier share and eligible (`discover`) share.
+  Each is computed only from overlap-safe marginal shares: observed sums every
+  manifest row, eligible sums only `disposition: discover`. The ledger computes
+  and stores both during import; excluded share is never presented as remaining
+  optimizable opportunity.
 
 Do not paste tree dumps or raw stacks into your reply.

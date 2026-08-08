@@ -46,9 +46,11 @@ mechanistic evidence is, and your job is to stress-test it.
    count, CI vs the claimed effect, correct sign, multiple-comparison caveats
    respected. A null suite-level A/B is expected and not evidence against; a
    *stat-sig regression* anywhere is a FAIL.
-7. **Squeeze completeness.** Was the dossier's squeeze list attempted? An
-   unexplored high-value refinement is grounds for FAIL with "squeeze further"
-   findings — the campaign fully exploits an anchor before moving on.
+7. **Mechanism completeness.** Were all refinements of this mechanism's
+   invariant attempted? An unexplored same-mechanism refinement is grounds for
+   FAIL. Distinct invariants or hot child callees belong in sibling ledger
+   opportunities; verify they were recorded, but do not require them to be
+   bundled into this diff.
 
 ## Output contract
 

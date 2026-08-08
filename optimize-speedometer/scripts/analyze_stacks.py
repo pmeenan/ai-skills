@@ -14,6 +14,7 @@ import argparse
 import bisect
 import collections
 import dataclasses
+import hashlib
 import json
 import pathlib
 import re
@@ -648,7 +649,7 @@ def aggregate_samples(
         seen_functions: set[str] = set()
         seen_areas: set[str] = set()
         parent_context_id = 0
-        context_path_tail: tuple[str, ...] = ()
+        context_path: tuple[str, ...] = ()
         for depth in range(len(sample.frames)):
             frame = sample.frames[depth]
             symbol = frame.symbol
@@ -664,9 +665,9 @@ def aggregate_samples(
                 context_id = next_context_id
                 next_context_id += 1
                 context_ids[context_identity] = context_id
-            context_path_tail = (context_path_tail + (symbol,))[-8:]
+            context_path = context_path + (symbol,)
             if include.search(symbol):
-                context = get("context", symbol, context_id, path=context_path_tail)
+                context = get("context", symbol, context_id, path=context_path)
                 context.sample_mask |= 1 << sample_id
                 if start_depth is not None and depth >= start_depth:
                     context.owner_exclusive_mask |= 1 << sample_id
@@ -709,7 +710,7 @@ def aggregate_samples(
                 "context",
                 sample.frames[-1].symbol,
                 parent_context_id,
-                path=context_path_tail,
+                path=context_path,
             ).self_mask |= (
                 1 << sample_id
             )
@@ -731,6 +732,14 @@ def top_counter(counter: collections.Counter[str], limit: int = 5) -> list[dict]
         {"name": name, "weight": weight, "share": weight / total}
         for name, weight in counter.most_common(limit)
     ]
+
+
+def aggregate_entry_key(agg: Aggregate) -> str:
+    """Return a stable machine identity, preserving caller-sensitive contexts."""
+    if agg.kind != "context":
+        return f"{agg.kind}:{agg.name}"
+    context_digest = hashlib.sha256("\0".join(agg.path).encode()).hexdigest()[:16]
+    return f"context:{agg.name}@{context_digest}"
 
 
 def make_candidate(
@@ -775,6 +784,7 @@ def make_candidate(
         - 0.005 * min(average_depth, 10)
     )
     return {
+        "entry_key": aggregate_entry_key(agg),
         "kind": agg.kind,
         "name": agg.name,
         "score": score,
@@ -923,7 +933,10 @@ def build_frontier(
     selected_aggregate_ids: set[int] = set()
     uncovered = addressable_mask
     remaining = list(eligible)
-    while remaining and len(frontier) < limit:
+    # `limit` is presentation-only. The machine-readable frontier must continue
+    # until the marginal floor so lower-ranked disjoint work cannot remain
+    # permanently hidden behind recurrent hot parents.
+    while remaining:
         rescored = []
         for _, agg in remaining:
             candidate = make_candidate(
@@ -943,15 +956,39 @@ def build_frontier(
         uncovered &= ~selected_agg.sample_mask
         remaining = [item for item in remaining if item[1] is not selected_agg]
 
+    add_related_hotspots(frontier, eligible, samples, total_weight)
     alternatives = []
     for _, agg in eligible:
         if id(agg) in selected_aggregate_ids:
             continue
         candidate = make_candidate(agg, samples, total_weight, group_totals, uncovered)
+        overlaps = []
+        for frontier_candidate in frontier:
+            overlap_weight = weight_of(
+                agg.sample_mask & frontier_candidate["sample_mask"], samples
+            )
+            if not overlap_weight:
+                continue
+            overlaps.append({
+                "entry_key": frontier_candidate["entry_key"],
+                "overlap_weight": overlap_weight,
+                "overlap_share": overlap_weight / total_weight,
+                "alternative_fraction": (
+                    overlap_weight / candidate["inclusive_weight"]
+                    if candidate["inclusive_weight"] else 0.0
+                ),
+            })
+        overlaps.sort(
+            key=lambda item: (item["overlap_weight"], item["entry_key"]),
+            reverse=True,
+        )
+        candidate["frontier_overlaps"] = overlaps
+        candidate["assigned_frontier_entry"] = (
+            overlaps[0]["entry_key"] if overlaps else None
+        )
         alternatives.append(candidate)
     alternatives.sort(key=lambda item: item["inclusive_weight"], reverse=True)
 
-    add_related_hotspots(frontier, eligible, samples, total_weight)
     for rank, candidate in enumerate(frontier, 1):
         candidate["rank"] = rank
     areas = [
@@ -972,7 +1009,7 @@ def write_collapsed(samples: list[Sample], path: pathlib.Path) -> None:
             output.write(f"{stack} {sample.weight}\n")
 
 
-def write_markdown(report: dict, path: pathlib.Path) -> None:
+def write_markdown(report: dict, path: pathlib.Path, display_limit: int = 20) -> None:
     lines = [
         "# Stack candidate frontier",
         "",
@@ -1003,7 +1040,8 @@ def write_markdown(report: dict, path: pathlib.Path) -> None:
             "|---:|---|---|---:|---:|---:|---:|---:|",
         ]
     )
-    for candidate in report["frontier"]:
+    displayed_frontier = report["frontier"][:display_limit]
+    for candidate in displayed_frontier:
         lines.append(
             "| {rank} | {kind} | `{name}` | {inclusive_share:.2%} | "
             "{owner_exclusive_share:.2%} | {tree_share_of_candidate:.1%} | "
@@ -1011,7 +1049,7 @@ def write_markdown(report: dict, path: pathlib.Path) -> None:
             "{caller_contexts} |".format(**candidate)
         )
     lines.extend(["", "## Investigation context", ""])
-    for candidate in report["frontier"]:
+    for candidate in displayed_frontier:
         callers = ", ".join(
             f"`{item['name']}` ({item['share']:.0%})"
             for item in candidate["top_callers"][:3]
@@ -1142,8 +1180,11 @@ def main() -> int:
     )
     parser.add_argument("--weight", choices=("period", "samples"), default="period")
     parser.add_argument("--min-share", type=float, default=0.001)
-    parser.add_argument("--min-marginal-share", type=float, default=0.0025)
-    parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--min-marginal-share", type=float, default=0.001)
+    parser.add_argument(
+        "--limit", type=int, default=20,
+        help="Markdown presentation limit; JSON selection always runs to the marginal floor",
+    )
     parser.add_argument(
         "--tree-min-share",
         type=float,
@@ -1271,6 +1312,8 @@ def main() -> int:
         "selection": {
             "min_inclusive_share": args.min_share,
             "min_marginal_share": args.min_marginal_share,
+            "inventory_complete": True,
+            "display_limit": args.limit,
             "tree_min_share": args.tree_min_share,
             "tree_max_depth": args.tree_max_depth,
             "tree_max_children": args.tree_max_children,
@@ -1289,7 +1332,7 @@ def main() -> int:
     (args.out_dir / "candidate_frontier.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n"
     )
-    write_markdown(report, args.out_dir / "candidate_frontier.md")
+    write_markdown(report, args.out_dir / "candidate_frontier.md", args.limit)
     write_text_trees(
         samples,
         frontier,

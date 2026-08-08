@@ -12,6 +12,21 @@ dedicated branch behind one feature flag, with independent skeptic and
 adversary reviews gating every landing. Score impact is measured in
 aggregate at flag on/off checkpoints.
 
+The ledger deliberately separates a profiled **candidate area** from a
+specific **optimization mechanism**. An area investigation fans out into
+independently gated child mechanisms. Rejected/reverted mechanism keys remain
+ruled out across follow-on profiles, while residual hot work in the same area
+can produce new mechanisms. A landing never marks its parent area exhausted;
+a fresh flag-enabled profile is required.
+
+Each follow-on profile is imported atomically from a complete reconciliation
+manifest: discoverable areas become discovery records, while excluded
+payload/idle/out-of-scope rows retain structured evidence. Every raw machine
+frontier entry from two independently identified, quality-passing captures is
+accounted exactly once. `campaign.py audit-exhaustion` refuses completion if
+any latest-profile area, active or relevant parked mechanism, post-profile
+landing/revert, or checkout/branch mismatch remains unresolved.
+
 ## Prerequisites
 
 - **Local machine**: Chromium checkout with `out/Default` configured; the
@@ -82,8 +97,10 @@ Add to either prompt when relevant:
 `.agents/campaigns/<name>/STATUS.md` is regenerated on every ledger change:
 landed count vs target, last checkpoint delta with confidence interval,
 what is at each gate right now (with time-in-gate as a stall detector), the
-next candidates in priority order, the checkpoint history (the
-diminishing-returns curve), and parked/rejected opportunities with reasons.
+next discovery/mechanism candidates in global measured-impact order (a hot
+deep child raises its undecomposed parent and later competes directly), the latest overlap-safe
+profile frontier, the checkpoint history (the diminishing-returns curve), and
+parked/rejected/reverted/exhausted records with reasons.
 `ledger.json` next to it is the machine-readable source of truth;
 `dossiers/` and `reviews/` hold the per-opportunity artifacts.
 
@@ -105,8 +122,10 @@ diminishing-returns curve), and parked/rejected opportunities with reasons.
   checkout; clean or stash them there.
 - **Skills out of sync (exit 5)** — re-sync this skills repo on the remote
   host, then tell the agent to retry.
-- **Regression that survives bisect, target reached, or a stopping rule** —
-  decision points the campaign design reserves for you.
+- **Regression that survives bisect or a blocking correctness constraint** —
+  decision points the campaign design reserves for you. The target count and
+  flat checkpoints are reporting/re-profiling milestones, not automatic
+  evidence that candidate areas are exhausted.
 
 ## Layout
 

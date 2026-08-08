@@ -110,6 +110,14 @@ expected_value = marginal_profile_share
 ```
 
 Unknown factors reduce confidence; never silently assume 1.
+Use profile percentage points for `marginal_profile_share` (for example `0.8`
+for 0.8%, not `0.008`). When recording this score, also set
+`expected_value_unit: "profile-share-equivalent-pct"`. Without that exact unit,
+the campaign refuses the override and ranks directly from profiler-measured
+work refs. Overrides apply only after decomposition to concrete mechanisms; a
+coarse discovery always retains its hottest-child measured priority. The
+override changes scheduling only; it never changes profiler coverage or
+exhaustion accounting.
 
 ## Visualization (audit aid, not the ranking mechanism)
 

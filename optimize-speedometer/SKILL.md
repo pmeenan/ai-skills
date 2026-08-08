@@ -80,10 +80,11 @@ Your context must last the whole campaign.
 1. A sample is a complete call stack; never turn a flat self-time list into a
    work queue. Rank by marginal, previously-uncovered samples — nested frames
    are competing explanations, not additive wins.
-2. Explore opportunities hierarchically: start high in the call tree, but when
-   a coarse parent invariant is infeasible, rejected, or partially addressed,
-   decompose the subtree and explore fine-grained opportunities lower in the
-   call tree rather than abandoning the area.
+2. A profiled **area** and an optimization **mechanism** are different ledger
+   objects. Explore areas hierarchically, fan each investigation out into
+   stably-keyed mechanisms, and reject only the mechanism actually tried. A
+   landing never exhausts its area; only a fresh flag-enabled follow-on profile
+   can show that the residual area is below the floor.
 3. Individual optimizations are expected to be sub-noise on the suite score.
    Their evidence is **mechanistic**: counters, oracle interventions, and
    sampled-cycle reduction — plus story-targeted A/B when samples
@@ -155,31 +156,81 @@ Repeat until a stopping rule fires:
 
 1. **Frontier fresh?** If a re-profiling trigger fired (below), send the
    profiler for ≥2 independent full-suite captures **with the flag enabled**
-   (so the frontier reflects work already landed) and rebuild the punch
-   list:
-   - `campaign.py add` recurrent frontier entries above the floor.
-   - **Hierarchical decomposition**: When a coarse parent anchor is partially
-     addressed or its top-level invariant is infeasible/reverted, decompose
-     the subtree into its distinct child components (e.g. `StyleResolver`,
-     `ElementRuleCollector`, `BlockLayoutAlgorithm`, `FlexLayoutAlgorithm`,
-     `InlineNode`, `HTMLFastPathParser` token/attribute parsing, `PaintTree`)
-     and add them as fine-grained candidates.
-   - **Parent vs Child Independence**: Landing an optimization on a parent
-     anchor only rules out child optimizations if the parent optimization
-     actually eliminated or reduced that specific child callee's execution.
-     In follow-on profiles (captured with the flag enabled), any child
-     subtrees that still carry measurable cycle share above the floor remain
-     fully open and eligible for optimization.
-   - `campaign.py park --opp N --reason "..."` stale ledger candidates whose
-     subtrees shrank.
-   - `campaign.py reopen --opp N` a previously parked or reverted candidate that
-     re-emerges in the fresh frontier.
-   - **Mechanism-level rejection**: When an opportunity or commit is reverted
-     or rejected, **only the specific rejected mechanism is rejected, NOT the
-     entire candidate domain or subtree**. The underlying call tree remains
-     eligible for alternative lower-level optimizations. Never re-add an
-     identical mechanism that was proven invalid, but always explore viable
-     child anchors.
+   (so the frontier reflects work already landed) and record one reconciled
+   profile group before rebuilding the punch list. The campaign tree must be
+   clean and on the campaign-branch tip; profiling never overlaps an
+   uncommitted implementation:
+
+   ```bash
+   campaign.py profile --id <profile-id> --sha <sha> \
+     --areas <profile-reconciliation.json> \
+     --capture-summaries <capture-summaries.json> \
+     --enable-features <campaign-feature> \
+     --artifacts "..."
+   ```
+
+   The reconciliation manifest is a JSON object containing **every** recurrent
+   coverage-frontier entry above the floor and accounting for every raw source
+   entry from both captures:
+
+   ```json
+   {"areas":[
+      {"area_key":"style-recalc", "anchor":"...",
+       "marginal_share_pct":0.63, "disposition":"discover",
+       "source_refs":[
+         {"capture_id":"capture-1","entry_key":"symbol:blink::Hot"},
+         {"capture_id":"capture-2","entry_key":"symbol:blink::Hot"}]},
+      {"area_key":"script-dispatch", "anchor":"...",
+       "marginal_share_pct":0.40, "disposition":"exclude",
+       "exclusion_category":"payload-dominated",
+       "exclusion_reason":"application script owns the work",
+       "exclusion_evidence":"owner-exclusive share is negligible",
+       "source_refs":[...]}
+    ],
+    "source_exclusions":[
+      {"capture_id":"capture-1","entry_key":"symbol:one-off",
+       "category":"not-recurrent","evidence":"absent from capture 2"}],
+    "parked_mechanisms":[
+      {"mechanism_key":"style/cache-rule-match",
+       "disposition":"recurrent","area_key":"style-recalc"}]}
+   ```
+
+   The capture-summaries file is a JSON array of the complete JSON objects from
+   at least two independent `remote_measure.py --mode profile` runs. The
+   command verifies unique capture ids, distinct local/remote capture
+   provenance and analyzer artifact paths, accepted quality, matching resolved
+   SHA, the campaign feature, a compatible analyzer floor, and exhaustive
+   machine inventories. It opens/digests each referenced analyzer JSON instead
+   of trusting copied summary fields. Every raw frontier entry must appear
+   exactly once as its own area's source refs from every capture, or as a
+   genuinely nonrecurrent source exclusion; distinct entries cannot be
+   coalesced into a coarse parent. The manifest also explicitly reconciles
+   every globally parked mechanism as recurrent (mapped to a discoverable
+   area) or nonrecurrent with evidence. Stable source-entry-to-area mappings
+   cannot silently change across profiles. It validates scope exclusions and
+   the clean campaign-branch tip before atomically creating profile/discovery
+   rows. Never hand-add only displayed top rows.
+
+   - Do not add nested children as independent marginal frontier rows. Pass
+     their parent-linked inclusive/overlap shares to the discovery investigator
+     as decomposition evidence. Only `disposition: discover`
+     coverage-frontier marginal shares are summed into eligible frontier share.
+     Every material overlapping alternative is assigned exactly once to one
+     frontier area by greatest exact overlap, even when some of it also appears
+     as a related hotspot or no single parent contains 50% of it. Caller-
+     specific contexts have stable path-derived keys and remain distinct.
+     Exclude only leaf roots; composite payload/idle/out-of-scope shells remain
+     discoveries so their material child refs receive independent dispositions.
+   - A fresh profile may add another discovery for an area seen before. It
+     must not retry or duplicate terminal mechanisms: decomposition matches
+     globally stable `mechanism_key` values and skips paths that landed,
+     rejected, or reverted, while creating only novel paths.
+     A merely parked (untried) mechanism is different: rediscovery
+     automatically returns that existing record to the candidate pool and
+     links it to the new discovery.
+   - Park stale open discoveries whose areas fell below the floor. Never infer
+     area exhaustion from a landing or rejection recorded against an older
+     profile.
 
    **Admission rule — payload-dominated shells don't enter the ledger.**
    For each frontier entry, compare owner-exclusive share to inclusive
@@ -191,20 +242,66 @@ Repeat until a stopping rule fires:
    you can name the invariant that would let the parent avoid its payload.
    Idle-wait anchors (futex/`WaitableEvent`/worker-pool sleeps) are never
    candidates — cycles spent waiting are not eliminable work.
-2. **Investigate ahead.** Keep 2–3 investigations in flight so a sized
-   dossier is always ready — mark each one
+2. **Investigate and decompose ahead.** Keep 2–3 investigations in flight.
+   Select work with `campaign.py next`, which ranks the entire materialized
+   candidate pool independent of tree depth. An undecomposed discovery inherits
+   the largest profiler-measured root/nested/alternative share in its work
+   inventory, so a hot deep child pulls its parent decomposition ahead of a
+   colder shallow area. After decomposition, each mechanism is ranked by its
+   primary profiler work refs, not investigator-supplied `share_pct`. Re-run
+   `next` after every decomposition and follow-on profile. A source-inspection
+   mechanism `expected_value` may override measured priority only when
+   accompanied by `expected_value_unit: "profile-share-equivalent-pct"`;
+   express it in percentage points using the formula in
+   `resources/analyzer_reference.md`.
+   Mark each discovery or mechanism
    `campaign.py advance --opp N --to investigating` when you dispatch its
    investigator so STATUS.md shows it in flight. Source-analysis phases
    overlap freely, but instrumentation/oracle steps take turns holding the
-   tree lease (and wait while an implementer holds it). Record results:
-   `campaign.py advance --opp N --to sized --ceiling X --evidence "..."` or
-   `campaign.py reject --opp N --reason "..."`.
-3. **Implement one opportunity**
+   tree lease (and wait while an implementer holds it).
+   - A **discovery** returns one exhaustive JSON object with matching
+     `area_key`, `profile_id`, `accounting_evidence`, and a nonempty `paths`
+     array. Every supplied hotspot/path has disposition `novel`, `known`,
+     `mandatory`, `below-floor`, or `out-of-scope`, plus anchor, overlap share,
+     and evidence. Each path has `work_refs` to profiler roots/hotspots with
+     `accounting: primary|overlap`; every expected work ref requires exactly
+     one primary owner, and a primary path may cover only one hotspot key
+     across captures. Thus a coarse one-row disposition cannot swallow distinct
+     children. Novel/known rows also have a globally namespaced,
+     source-and-strategy-specific `mechanism_key`. Store the whole object and
+     atomically persist it with `campaign.py decompose --opp N --children
+     <path>`. The command creates novel paths, links known paths, records fresh
+     observations, and reopens rediscovered parked paths. If a prior parked
+     path is now below-floor/out-of-scope, keep its existing key on that row;
+     the audit rejects a latest-area decomposition that silently omits it.
+     A parked path whose prior profiler work fingerprint recurs cannot be
+     declared nonrecurrent, and an existing mechanism cannot be hidden under a
+     `mandatory` disposition: use `known` (which reopens it) or evidenced
+     `below-floor`/`out-of-scope`.
+   - After decomposition, record `campaign.py exhaust --opp N --reason "..."
+     --evidence "..."` only when every child is landed/reverted/rejected.
+     Evidence must be overlap-aware and tied to the current profile. The ledger
+     refuses direct investigation-to-exhaustion, stale post-landing evidence,
+     or exhaustion while any child is open/parked; reopening a child
+     automatically invalidates linked exhausted discoveries.
+   - A **mechanism** returns sizing evidence. Record
+     `campaign.py advance --opp N --to sized --ceiling X --evidence "..."` or
+     `campaign.py reject --opp N --reason "..." --evidence "..."`. Reject
+     requires an investigated mechanism and cannot operate on a discovery, so
+     one failed hypothesis can never close an area.
+   - Rejected and reverted mechanism keys remain ruled out across profiles.
+     `reopen` requires both `--contradicts-prior-evidence` and a reason; use it
+     only when new evidence invalidates the old conclusion, never merely
+     because the containing area is hot again. A genuinely different path gets
+     a new mechanism key.
+3. **Implement one mechanism**
    (`campaign.py advance --opp N --to implementing`). The implementer
-   squeezes the anchor fully — refinements until two consecutive rounds add
-   no mechanistic benefit — then leaves the diff uncommitted (staged with
-   `git add -A`) and reports. Record each refinement round with
-   `campaign.py squeeze --opp N --note "..."`.
+   squeezes that mechanism fully — refinements of the same invariant until two
+   consecutive rounds add no mechanistic benefit — then leaves the diff
+   uncommitted (staged with `git add -A`) and reports. A distinct invariant,
+   cache, fast path, or child callee is a sibling mechanism, not a squeeze
+   round. Record each same-mechanism refinement with `campaign.py squeeze
+   --opp N --note "..."`.
 4. **Review in parallel**
    (`campaign.py advance --opp N --to review --tests "..."` — this records
    the current HEAD and a digest of the staged diff, freezing what is under
@@ -225,8 +322,9 @@ Repeat until a stopping rule fires:
      `--skip-review-verification`.
    - Any FAIL → `campaign.py advance --opp N --to implementing` (rework,
      findings attached). The ledger blocks a third rework round; at that
-     point `campaign.py reject --opp N --reason "..."` and move on — the
-     findings stay recorded.
+     point `campaign.py reject --opp N --reason "..." --evidence "..."` and
+     move to its sibling mechanisms — the findings stay recorded and the
+     parent area stays open.
 5. **Checkpoint every 3–5 landings** (measurer, `--mode ab` on branch head).
    Record with `campaign.py checkpoint`. On any stat-sig regression:
    confirm (targeted rerun), then bisect (`--mode ab2`) across the batch,
@@ -246,33 +344,46 @@ campaign branch:
 [sp3] Opp #011: Skip redundant sibling-affecting style invalidation
 
 Anchor: StyleEngine::RecalcStyle subtree (0.6% marginal share)
+Area: style-recalc
+Mechanism: style-invalidation/skip-redundant-sibling-affecting
 Evidence: 12k avoidable recalcs/run counter-verified; subtree -71% in re-profile
 Reviews: skeptic PASS, adversary PASS
 Tests: blink_unittests StyleEngine*, wpt css/selectors (both flag states)
 ```
 
-The ledger is gitignored, so commit messages must carry these essentials —
-`git log` alone reconstructs the landed list.
+The ledger is gitignored, so commit messages must carry these essentials,
+including stable area/mechanism identities — `git log` alone reconstructs the
+landed list.
 
 ### Re-profiling triggers (event-driven, not scheduled)
 
 - every ~5 landings; or
+- a discovery's last unresolved child finishes and at least one child landed
+  (the pre-landing profile cannot establish residual exhaustion); or
+- three consecutive mechanisms are rejected/evidenced-null (treat this as a
+  signal that the profile or hypothesis inventory shifted, never as a reason
+  to abandon their areas); or
 - two consecutive opportunities whose measured/instrumented reality fell far
   short of the frontier's prediction (the profile has shifted); or
 - the candidate pool above the floor is exhausted.
 
-### Stopping rules (any one)
+### Milestones and stopping rules
 
-- Target landed count reached (`target_landed`, default 20) → run the final
-  measurement (measurer, 10–15 blocks + Pinpoint routing), then decide with
-  the human: raise the target or conclude.
-- Three consecutive opportunities rejected or evidenced-null.
-- **Profile exhaustion:** a fresh re-profile's frontier has no recurrent
-  candidates above the share floor — the discoverable CPU opportunity is
-  consumed.
-- **Statistical plateau:** two consecutive checkpoints show no gain over
-  their predecessor. Respond by re-profiling first (the profile may have
-  shifted); stop only if the fresh frontier is also exhausted.
+- Target landed count reached (`target_landed`, default 20) is a **measurement
+  and reporting milestone**, not area exhaustion. Run the 10–15 block final
+  measurement + Pinpoint routing and report it, but continue unless the human
+  changes scope or the exhaustion rule below is also satisfied.
+- Two consecutive flat checkpoints trigger re-profiling; they do not justify
+  stopping while a recurrent area or untried mechanism remains.
+- **Profile exhaustion is the autonomous completion rule:** every recurrent
+  coverage-frontier area from the latest flag-enabled ≥2-capture profile has a
+  discovery record and is evidence-exhausted, no mechanism remains active, and
+  no landing/revert made that profile stale. `campaign.py audit-exhaustion`
+  enforces this reconciliation and must PASS while still at the profiled clean
+  branch tip. Only then is discoverable in-scope CPU opportunity consumed.
+- Explicit human cancellation or a blocking external/correctness constraint
+  may stop earlier; record the reason. Rejections, reversions, target count,
+  and statistical plateau alone never imply opportunity exhaustion.
 
 Keep these two criteria separate: profile share is a *cycle-opportunity
 upper bound*, not a predicted score delta — small on-CPU savings can unblock
@@ -280,7 +391,7 @@ disproportionate wall-clock score (see chrome-cycle-profiling §3.1), so
 never convert remaining share into an expected score number or compare it
 against the MDE. Diminishing returns are read from the checkpoint table in
 `STATUS.md` (cumulative curve) alongside — not arithmetically combined
-with — the remaining-frontier-share line.
+with — the latest overlap-safe profile-frontier line.
 
 ## Measurement quick reference
 
@@ -297,7 +408,7 @@ skill). Arguments differ by purpose — use the matching row exactly:
 | Candidate screen (in review, staged) | `--mode ab2 --ref-a HEAD --ref-b STAGED --enable-features <Flag> --stories <stories>` |
 | Landed-commit isolation | `--mode ab2 --ref-a <commit>^ --ref-b <commit> --enable-features <Flag>` |
 | Regression bisect | `--mode ab2 --ref-a <good> --ref-b <suspect> --enable-features <Flag>` |
-| Profile capture (campaign state) | `--mode profile --ref <sha> --repetitions 2 --enable-features <Flag>` |
+| Profile capture (campaign state) | `--mode profile --ref <sha> --repetitions 2 --enable-features <Flag> --share-floor-pct <pct> --summary-out <path>` |
 | Profile capture (true baseline) | `--mode profile --ref <sha> --repetitions 2 --enable-features=""` |
 
 Notes: `ab2` takes `--ref-a`/`--ref-b` (never `--ref`) and **always needs

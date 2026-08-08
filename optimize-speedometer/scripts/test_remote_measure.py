@@ -25,6 +25,7 @@ def make_args(**overrides):
         seed=42,
         repetitions=2,
         enable_features=None,
+        share_floor_pct=0.1,
     )
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -83,7 +84,21 @@ class ScriptGenerationTest(unittest.TestCase):
         )
         self.assertIn("run_cycle_benchmark.py", script)
         self.assertIn("--enable-features=Speedometer3Optimizations", script)
+        self.assertIn("--min-share=0.001", script)
+        self.assertIn("--min-marginal-share=0.001", script)
         self.assertIn("PROFILE_EXIT_CODE", script)
+
+    def test_profile_mode_propagates_sub_point_one_percent_floor(self):
+        script = rm.build_and_run_script(
+            make_args(
+                mode="profile",
+                enable_features="Speedometer3Optimizations",
+                share_floor_pct=0.05,
+            ),
+            SHA_A,
+        )
+        self.assertIn("--min-share=0.0005", script)
+        self.assertIn("--min-marginal-share=0.0005", script)
 
     def test_profile_mode_baseline_empty_features(self):
         script = rm.build_and_run_script(make_args(mode="profile"), SHA_A)
@@ -140,14 +155,44 @@ class ResultDiscoveryTest(unittest.TestCase):
             full = out / "analysis" / "full"
             full.mkdir(parents=True)
             (full / "candidate_frontier.md").write_text("x")
-            (full / "candidate_frontier.json").write_text("{}")
+            (full / "candidate_frontier.json").write_text(
+                '{"selection":{"inventory_complete":true,'
+                '"min_marginal_share":0.001,"min_inclusive_share":0.001},'
+                '"frontier":[{"entry_key":"symbol:blink::Hot",'
+                '"kind":"symbol","name":"blink::Hot",'
+                '"marginal_share":0.002}],'
+                '"overlapping_alternatives":[{"kind":"symbol",'
+                '"name":"blink::Shared","entry_key":"symbol:blink::Shared",'
+                '"inclusive_share":0.003,'
+                '"assigned_frontier_entry":"symbol:blink::Hot"}]}'
+            )
             (full / "opportunity_trees.txt").write_text("x")
             paths = rm.profile_summary_paths(out)
+            self.assertEqual(True, paths.pop("inventory_complete"))
+            self.assertEqual(0.001, paths.pop("analyzer_min_marginal_share"))
+            self.assertEqual(0.001, paths.pop("analyzer_min_inclusive_share"))
+            self.assertEqual(1, paths.pop("frontier_count"))
+            self.assertEqual(
+                ["symbol:blink::Hot"], paths.pop("frontier_entries")
+            )
+            self.assertEqual(
+                [{
+                    "entry_key": "symbol:blink::Hot",
+                    "work_items": [{
+                        "hotspot_key": "@root",
+                        "semantic_key": "symbol:blink::Hot",
+                        "measured_share_pct": 0.2,
+                    }, {
+                        "hotspot_key": "alternative:symbol:blink::Shared",
+                        "semantic_key": "symbol:blink::Shared",
+                        "measured_share_pct": 0.3,
+                    }],
+                }],
+                paths.pop("frontier_inventory"),
+            )
             self.assertEqual(
                 {"full_candidate_frontier", "full_candidate_frontier_json",
-                 "full_opportunity_trees"},
-                set(paths),
-            )
+                 "full_opportunity_trees"}, set(paths))
 
 
 def make_skill_tree(root, content="pass\n", symlinked=False):

@@ -9,13 +9,25 @@ Every mutation rewrites ledger.json and regenerates STATUS.md so the
 human-facing status can never drift from the machine state. Subagents never
 call this script; they return evidence to the tech lead, who records it.
 
-State machine:
+Mechanism state machine:
 
   candidate -> investigating -> sized -> implementing -> review -> landed
                                               ^             |
                                               +-- rework ---+
-  Any non-landed state -> rejected | parked (reason required)
-  rejected | parked -> candidate (reopen)
+  investigated mechanism -> rejected (reason and evidence required)
+  candidate | investigating | sized -> parked (reason required)
+  parked -> candidate (reopen)
+  rejected | reverted -> candidate only when new evidence explicitly
+                         contradicts the prior result
+
+Discovery state machine:
+
+  candidate -> investigating -> decomposed -> exhausted
+
+A discovery is one observation of a profiled candidate area.  It fans out
+atomically into concrete, stably-keyed mechanisms.  Rejected/reverted
+mechanism keys remain in the ledger so follow-on profiles can revisit an area
+without retrying paths already proved invalid.
 
 Gate requirements are enforced by `advance`:
   -> sized:    --ceiling and --evidence (mechanistic sizing evidence)
@@ -26,23 +38,16 @@ Gate requirements are enforced by `advance`:
 
 import argparse
 import datetime
+import fcntl
+import hashlib
 import json
+import math
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
-STATUSES = (
-    "candidate",
-    "investigating",
-    "sized",
-    "implementing",
-    "review",
-    "landed",
-    "reverted",
-    "rejected",
-    "parked",
-)
 ACTIVE_GATES = ("investigating", "sized", "implementing", "review")
 FORWARD_TRANSITIONS = {
     "candidate": {"investigating", "sized"},
@@ -52,10 +57,78 @@ FORWARD_TRANSITIONS = {
     "review": {"implementing", "landed"},
 }
 REVIEW_ROLES = ("skeptic", "adversary")
+MECHANISM_TERMINAL = ("landed", "reverted", "rejected")
+EXPECTED_VALUE_UNIT = "profile-share-equivalent-pct"
 
 
 def utc_now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def canonical_key(value):
+    """Return a readable fallback identity for legacy/ad-hoc records."""
+    key = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return key or "area"
+
+
+def require_stable_key(value, label, *, namespaced=False):
+    if not isinstance(value, str) or not value.strip():
+        raise CampaignError(f"{label} must be a nonempty string")
+    value = value.strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._/-]*", value):
+        raise CampaignError(
+            f"{label} {value!r} must use lowercase stable-key characters "
+            "[a-z0-9._/-]"
+        )
+    if namespaced and "/" not in value:
+        raise CampaignError(
+            f"{label} {value!r} must be globally namespaced as component/strategy"
+        )
+    return value
+
+
+def require_finite_number(value, label, *, nonnegative=False):
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise CampaignError(f"{label} must be numeric") from exc
+    if not math.isfinite(number):
+        raise CampaignError(f"{label} must be finite")
+    if nonnegative and number < 0:
+        raise CampaignError(f"{label} cannot be negative")
+    return number
+
+
+def validate_expected_value(item, label):
+    """Validate an optional impact override with an explicitly comparable unit."""
+    value = item.get("expected_value")
+    unit = item.get("expected_value_unit")
+    if value is None:
+        if unit is not None:
+            raise CampaignError(f"{label} has expected_value_unit without expected_value")
+        return
+    item["expected_value"] = require_finite_number(
+        value, f"{label} expected_value", nonnegative=True
+    )
+    if unit != EXPECTED_VALUE_UNIT:
+        raise CampaignError(
+            f"{label} expected_value requires expected_value_unit "
+            f"{EXPECTED_VALUE_UNIT!r} so it is comparable to measured profile share"
+        )
+
+
+def measured_priority_from_refs(refs):
+    """Return the hottest profiler-measured primary work represented by refs."""
+    refs = list(refs or [])
+    primary = [ref for ref in refs if ref.get("accounting") == "primary"]
+    ranked = primary or refs
+    shares = [
+        float(ref["measured_share_pct"])
+        for ref in ranked
+        if isinstance(ref.get("measured_share_pct"), (int, float))
+        and math.isfinite(float(ref["measured_share_pct"]))
+    ]
+    return max(shares, default=None)
 
 
 def agents_dir():
@@ -110,10 +183,66 @@ class Ledger:
             )
         with open(self.path) as f:
             self.data = json.load(f)
+        self._migrate()
         return self
+
+    def _migrate(self):
+        """Add hierarchy fields to ledgers created before schema version 2.
+
+        Legacy opportunities remain concrete mechanisms so an in-flight
+        campaign can resume without losing gate state.  Their synthetic keys
+        deliberately never collide with new, investigator-supplied keys.
+        """
+        self.data.setdefault("schema_version", 1)
+        self.data.setdefault("profile_runs", [])
+        self.data.setdefault("next_sequence", 1)
+        self.data.setdefault("ledger_revision", 0)
+        self.data.setdefault("source_area_keys", {})
+        for opp in self.data.get("opportunities", []):
+            opp.setdefault("kind", "mechanism")
+            opp.setdefault("area_key", canonical_key(opp.get("anchor", "area")))
+            if opp["kind"] == "mechanism":
+                opp.setdefault("mechanism_key", f"legacy-{opp['id']:03d}")
+            else:
+                opp.setdefault("mechanism_key", None)
+            opp.setdefault("parent_id", None)
+            opp.setdefault(
+                "discovery_ids",
+                [opp["parent_id"]] if opp.get("parent_id") is not None else [],
+            )
+            opp.setdefault("profile_id", None)
+            opp.setdefault("source_profile_ids", [])
+            opp.setdefault("known_mechanism_ids", [])
+            opp.setdefault("runtime_change_sequence", None)
+            opp.setdefault("observations", [])
+            opp.setdefault("expected_value_unit", None)
+            opp.setdefault("measured_priority_pct", None)
+        events = []
+        for profile in self.data["profile_runs"]:
+            if profile.get("sequence") is None:
+                events.append((profile.get("ts", ""), "profile", profile))
+        for opp in self.data.get("opportunities", []):
+            if (
+                opp["status"] in ("landed", "reverted")
+                and opp.get("runtime_change_sequence") is None
+            ):
+                events.append((opp.get("status_since", ""), "runtime", opp))
+        sequence = max(
+            [self.data.get("next_sequence", 1) - 1]
+            + [p.get("sequence", 0) or 0 for p in self.data["profile_runs"]]
+            + [o.get("runtime_change_sequence", 0) or 0
+               for o in self.data.get("opportunities", [])]
+        ) + 1
+        for _, kind, item in sorted(events, key=lambda event: event[0]):
+            field = "sequence" if kind == "profile" else "runtime_change_sequence"
+            item[field] = sequence
+            sequence += 1
+        self.data["next_sequence"] = sequence
+        self.data["schema_version"] = 2
 
     def save(self):
         self.dir.mkdir(parents=True, exist_ok=True)
+        self.data["ledger_revision"] = self.data.get("ledger_revision", 0) + 1
         tmp = self.path.with_suffix(".json.tmp")
         with open(tmp, "w") as f:
             json.dump(self.data, f, indent=2)
@@ -126,20 +255,186 @@ class Ledger:
                 return opp
         raise CampaignError(f"Unknown opportunity id {opp_id}")
 
+    def profile(self, profile_id):
+        for profile in self.data.get("profile_runs", []):
+            if profile["id"] == profile_id:
+                return profile
+        raise CampaignError(
+            f"Unknown profile id {profile_id!r}; record it with "
+            "`campaign.py profile` before adding discoveries"
+        )
+
+    def children(self, opp_id):
+        return [
+            opp for opp in self.data["opportunities"]
+            if opp.get("parent_id") == opp_id
+            or opp_id in opp.get("discovery_ids", [])
+        ]
+
+    def mechanism(self, area_key, mechanism_key):
+        """Find a globally-keyed mechanism.
+
+        area_key is accepted so callers can pass an identity tuple and error
+        messages can stay descriptive.  mechanism_key itself must be globally
+        stable (normally `component/strategy`), because the same source change
+        may be rediscovered beneath overlapping profiler anchors.
+        """
+        for opp in self.data["opportunities"]:
+            if (
+                opp.get("kind") == "mechanism"
+                and opp.get("mechanism_key") == mechanism_key
+            ):
+                return opp
+        return None
+
     def record(self, opp, event):
         opp.setdefault("history", []).append({"ts": utc_now(), "event": event})
 
     def landed(self):
         return [o for o in self.data["opportunities"] if o["status"] == "landed"]
 
+    def measured_priority(self, opp):
+        """Return globally comparable profiler impact, independent of tree depth."""
+        if opp.get("kind") == "discovery":
+            measured = measured_priority_from_refs(opp.get("expected_work_refs"))
+        else:
+            measured = opp.get("measured_priority_pct")
+        if measured is None:
+            measured = opp.get("share_pct", 0.0)
+        try:
+            measured = float(measured)
+        except (TypeError, ValueError):
+            return 0.0
+        return measured if math.isfinite(measured) and measured >= 0 else 0.0
+
+    def priority_info(self, opp):
+        measured = self.measured_priority(opp)
+        if (
+            opp.get("kind") == "mechanism"
+            and opp.get("expected_value") is not None
+            and opp.get("expected_value_unit") == EXPECTED_VALUE_UNIT
+        ):
+            try:
+                value = float(opp["expected_value"])
+            except (TypeError, ValueError):
+                value = None
+            if value is not None and math.isfinite(value) and value >= 0:
+                return value, "expected-value", measured
+        basis = (
+            "hottest-unresolved-profiler-work"
+            if opp.get("kind") == "discovery"
+            else "primary-profiler-work"
+        )
+        return measured, basis, measured
+
     def priority(self, opp):
-        value = opp.get("expected_value")
-        return value if value is not None else opp.get("share_pct", 0.0)
+        return self.priority_info(opp)[0]
 
     def next_candidates(self, count):
         pool = [o for o in self.data["opportunities"] if o["status"] == "candidate"]
-        pool.sort(key=self.priority, reverse=True)
+        pool.sort(
+            key=lambda opp: (
+                self.priority(opp),
+                self.measured_priority(opp),
+                opp.get("kind") == "mechanism",
+                -opp["id"],
+            ),
+            reverse=True,
+        )
         return pool[:count]
+
+    def exhaustion_blockers(self):
+        """Return reasons the campaign cannot claim opportunity exhaustion."""
+        profiles = self.data.get("profile_runs", [])
+        if not profiles:
+            return ["no reconciled flag-enabled profile is recorded"]
+        latest = profiles[-1]
+        latest_discoveries = [
+            opp for opp in self.data["opportunities"]
+            if opp.get("kind") == "discovery"
+            and opp.get("profile_id") == latest["id"]
+        ]
+        blockers = []
+        expected = latest.get("area_count")
+        if expected is not None and len(latest_discoveries) != expected:
+            blockers.append(
+                f"latest profile {latest['id']} declares {expected} area(s) "
+                f"but the ledger has {len(latest_discoveries)} discovery record(s)"
+            )
+        for discovery in latest_discoveries:
+            if discovery["status"] != "exhausted":
+                blockers.append(
+                    f"latest-profile discovery #{discovery['id']:03d} "
+                    f"({discovery['area_key']}) is {discovery['status']}, not exhausted"
+                )
+            unresolved_children = [
+                child for child in self.children(discovery["id"])
+                if child["status"] not in MECHANISM_TERMINAL
+            ]
+            if unresolved_children:
+                blockers.append(
+                    f"latest-profile discovery #{discovery['id']:03d} has "
+                    "nonterminal child mechanism(s): "
+                    + ", ".join(
+                        f"#{child['id']:03d} [{child['status']}]"
+                        for child in unresolved_children
+                    )
+                )
+        for opp in self.data["opportunities"]:
+            if opp.get("kind") == "mechanism" and opp["status"] in (
+                "candidate", "investigating", "sized", "implementing", "review"
+            ):
+                blockers.append(
+                    f"mechanism #{opp['id']:03d} ({opp['mechanism_key']}) "
+                    f"is still {opp['status']}"
+                )
+            if opp.get("kind") == "discovery" and opp["status"] in (
+                "candidate", "investigating"
+            ):
+                blockers.append(
+                    f"discovery #{opp['id']:03d} ({opp['area_key']}) "
+                    f"is still {opp['status']}"
+                )
+            if opp.get("kind") == "mechanism" and opp["status"] == "parked":
+                reconciliation = next((
+                    item for item in latest.get("parked_mechanisms", [])
+                    if item.get("mechanism_key") == opp.get("mechanism_key")
+                ), None)
+                if reconciliation is None:
+                    blockers.append(
+                        f"latest profile does not reconcile parked mechanism "
+                        f"#{opp['id']:03d} ({opp['mechanism_key']})"
+                    )
+                elif reconciliation["disposition"] == "recurrent":
+                    discovery = next((
+                        item for item in latest_discoveries
+                        if item["area_key"] == reconciliation.get("area_key")
+                    ), None)
+                    accounted_keys = {
+                        item.get("mechanism_key")
+                        for item in (discovery or {}).get("path_accounting", [])
+                        if item.get("disposition") in ("below-floor", "out-of-scope")
+                    }
+                    if not discovery or (
+                        opp["id"] not in discovery.get("known_mechanism_ids", [])
+                        and opp.get("mechanism_key") not in accounted_keys
+                    ):
+                        blockers.append(
+                            f"recurrent parked mechanism #{opp['id']:03d} "
+                            f"({opp['mechanism_key']}) is not accounted by latest area "
+                            f"{reconciliation.get('area_key')!r}"
+                        )
+        profile_sequence = latest.get("sequence", 0)
+        newer_runtime_changes = [
+            opp for opp in self.data["opportunities"]
+            if (opp.get("runtime_change_sequence") or 0) > profile_sequence
+        ]
+        if newer_runtime_changes:
+            blockers.append(
+                "latest profile predates runtime-changing mechanism event(s): "
+                + ", ".join(f"#{opp['id']:03d}" for opp in newer_runtime_changes)
+            )
+        return blockers
 
     # ---------------- STATUS.md ----------------
 
@@ -147,12 +442,8 @@ class Ledger:
         cfg = self.data["config"]
         opps = self.data["opportunities"]
         checkpoints = self.data.get("checkpoints", [])
+        profiles = self.data.get("profile_runs", [])
         landed = self.landed()
-        remaining = sum(
-            o.get("share_pct", 0.0)
-            for o in opps
-            if o["status"] in ("candidate", "investigating", "sized")
-        )
         lines = []
         lines.append(
             f"# SP3 Campaign: {cfg['name']} — branch `{cfg['branch']}`"
@@ -160,9 +451,14 @@ class Ledger:
         lines.append("")
         header = (
             f"**Landed: {len(landed)}/{cfg['target_landed']}** · "
-            f"Flag: `{cfg['feature']}` · "
-            f"Remaining frontier above floor: {remaining:.2f}% share"
+            f"Flag: `{cfg['feature']}`"
         )
+        if profiles:
+            latest = profiles[-1]
+            header += (
+                f" · Latest profile `{latest['id']}` eligible frontier: "
+                f"{latest['total_share_pct']:.2f}% share"
+            )
         if checkpoints:
             cp = checkpoints[-1]
             header += (
@@ -174,17 +470,88 @@ class Ledger:
         lines.append("")
         lines.append(f"_Updated: {utc_now()} (generated from ledger.json — do not edit)_")
 
+        discoveries = [o for o in opps if o.get("kind") == "discovery"]
+        lines.append("")
+        lines.append("## Discovery coverage")
+        if discoveries:
+            lines.append("| Profile | Opp | Area | Status | Child paths | Next action |")
+            lines.append("| --- | --- | --- | --- | --- | --- |")
+            for discovery in discoveries[-12:]:
+                children = self.children(discovery["id"])
+                unresolved = [
+                    child for child in children
+                    if child["status"] not in MECHANISM_TERMINAL
+                ]
+                profile_sequence = 0
+                if discovery.get("profile_id"):
+                    try:
+                        profile_sequence = self.profile(
+                            discovery["profile_id"]
+                        ).get("sequence", 0)
+                    except CampaignError:
+                        pass
+                stale_runtime_child = any(
+                    (child.get("runtime_change_sequence") or 0) > profile_sequence
+                    for child in children
+                )
+                if discovery["status"] == "exhausted":
+                    action = "complete for this profile"
+                elif unresolved:
+                    action = f"resolve {len(unresolved)} child path(s)"
+                elif stale_runtime_child:
+                    action = "follow-on profile required"
+                elif discovery["status"] == "decomposed":
+                    action = "record exhaustion evidence"
+                else:
+                    action = "investigate/decompose"
+                lines.append(
+                    f"| `{discovery.get('profile_id')}` | #{discovery['id']:03d} | "
+                    f"`{discovery['area_key']}` | {discovery['status']} | "
+                    f"{len(children)} | {action} |"
+                )
+        else:
+            lines.append("_(no profile discoveries recorded)_")
+
+        lines.append("")
+        lines.append("## Latest profile exclusions")
+        latest_excluded = profiles[-1].get("excluded_areas", []) if profiles else []
+        if latest_excluded:
+            lines.append("| Area | Share | Category | Reason | Evidence |")
+            lines.append("| --- | ---: | --- | --- | --- |")
+            for area in latest_excluded:
+                lines.append(
+                    f"| `{area['area_key']}` | {area['marginal_share_pct']:.2f}% | "
+                    f"{area['exclusion_category']} | {area['exclusion_reason']} | "
+                    f"{area['exclusion_evidence']} |"
+                )
+        else:
+            lines.append("_(none)_")
+
+        blockers = self.exhaustion_blockers()
+        lines.append("")
+        lines.append(
+            "**Ledger-only exhaustion precheck:** "
+            + ("PASS" if not blockers else f"BLOCKED ({len(blockers)} reason(s))")
+            + " · run `campaign.py audit-exhaustion` for checkout verification"
+        )
+
         in_flight = [o for o in opps if o["status"] in ACTIVE_GATES]
         lines.append("")
         lines.append("## In flight")
         if in_flight:
-            lines.append("| Gate | Opp | Anchor | Share | Age | Note |")
-            lines.append("| --- | --- | --- | --- | --- | --- |")
+            lines.append("| Gate | Opp | Kind / key | Anchor | Share | Age | Note |")
+            lines.append("| --- | --- | --- | --- | --- | --- | --- |")
             order = {s: i for i, s in enumerate(ACTIVE_GATES)}
             for o in sorted(in_flight, key=lambda o: order[o["status"]], reverse=True):
                 note = self._flight_note(o)
+                identity = (
+                    f"mechanism `{o.get('mechanism_key')}`"
+                    if o.get("kind") == "mechanism"
+                    else f"discovery `{o.get('area_key')}`"
+                )
                 lines.append(
-                    f"| {o['status']} | #{o['id']:03d} | {o['anchor']} | "
+                    f"| {o['status']} | #{o['id']:03d} | {identity} | "
+                    f"{o['anchor']} | "
                     f"{o.get('share_pct', 0.0):.2f}% | "
                     f"{humanize_age(o.get('status_since'))} | {note} |"
                 )
@@ -192,22 +559,20 @@ class Ledger:
             lines.append("_(nothing in flight)_")
 
         lines.append("")
-        lines.append("## Next up (by expected value)")
+        lines.append("## Next up (global impact priority)")
         nxt = self.next_candidates(5)
         if nxt:
             for i, o in enumerate(nxt, 1):
+                priority, basis, measured = self.priority_info(o)
                 lines.append(
-                    f"{i}. #{o['id']:03d} {o['anchor']} "
-                    f"({o.get('share_pct', 0.0):.2f}% share"
-                    + (
-                        f", EV {o['expected_value']:.3f}"
-                        if o.get("expected_value") is not None
-                        else ""
-                    )
-                    + ")"
+                    f"{i}. #{o['id']:03d} [{o.get('kind', 'mechanism')}] "
+                    f"{o['anchor']} "
+                    f"(priority {priority:.3f}, {basis}; "
+                    f"measured {measured:.3f}%, "
+                    f"reported {o.get('share_pct', 0.0):.3f}%)"
                 )
         else:
-            lines.append("_(candidate pool empty — re-profile or stop)_")
+            lines.append("_(candidate pool empty — re-profile or reconcile discovery exhaustion)_")
 
         lines.append("")
         lines.append("## Recently landed")
@@ -215,7 +580,8 @@ class Ledger:
             for o in sorted(landed, key=lambda o: o.get("status_since", ""), reverse=True)[:8]:
                 commit = (o.get("commit") or "")[:12]
                 lines.append(
-                    f"- #{o['id']:03d} `{commit}` {o['anchor']} — "
+                    f"- #{o['id']:03d} `{commit}` {o['anchor']} "
+                    f"(`{o.get('mechanism_key')}`) — "
                     f"{o.get('landed_note') or o.get('evidence') or ''}"
                 )
         else:
@@ -235,9 +601,12 @@ class Ledger:
         else:
             lines.append("_(no checkpoints yet)_")
 
-        parked = [o for o in opps if o["status"] in ("parked", "rejected", "reverted")]
+        parked = [
+            o for o in opps
+            if o["status"] in ("parked", "rejected", "reverted", "exhausted")
+        ]
         lines.append("")
-        lines.append("## Parked / rejected / reverted")
+        lines.append("## Parked / rejected / reverted / exhausted")
         if parked:
             for o in parked:
                 revert = (
@@ -246,7 +615,9 @@ class Ledger:
                     else ""
                 )
                 lines.append(
-                    f"- #{o['id']:03d} [{o['status']}] {o['anchor']}{revert} — "
+                    f"- #{o['id']:03d} [{o['status']}] {o['anchor']}{revert} "
+                    f"(`{o.get('area_key')}` / "
+                    f"`{o.get('mechanism_key') or 'discovery'}`) — "
                     f"{o.get('reason') or ''}"
                 )
         else:
@@ -266,6 +637,8 @@ class Ledger:
             bits.append(f"rework round {opp['rework_rounds']}")
         if opp.get("squeeze_rounds"):
             bits.append(f"squeeze round {opp['squeeze_rounds']}")
+        if opp.get("parent_id"):
+            bits.append(f"child of #{opp['parent_id']:03d}")
         if not bits and opp.get("notes"):
             bits.append(opp["notes"][-1])
         return "; ".join(bits)
@@ -294,6 +667,374 @@ def verify_commit(repo_root, sha):
     )
     if result.returncode != 0:
         raise CampaignError(f"Commit {sha} does not exist in {repo_root}")
+
+
+def verify_profile_head(repo_root, sha, branch, *, allow_unverified=False):
+    """A campaign profile must describe the checked-out campaign tip."""
+    if not repo_root:
+        if not allow_unverified:
+            raise CampaignError(
+                "A profile can certify exhaustion only inside the profiled Git "
+                "repository. Tests may opt out with "
+                "--allow-unverified-repository."
+            )
+        if os.environ.get("SP3_CAMPAIGN_TEST_ALLOW_UNVERIFIED") != "1":
+            raise CampaignError(
+                "--allow-unverified-repository is restricted to test processes"
+            )
+        print("warning: profile repository verification explicitly bypassed",
+              file=sys.stderr)
+        return {
+            "repository_root": None,
+            "resolved_sha": sha,
+            "repository_verified": False,
+        }
+    verify_commit(repo_root, sha)
+    full_sha = git_output(repo_root, "rev-parse", f"{sha}^{{commit}}").strip()
+    head = git_output(repo_root, "rev-parse", "HEAD").strip()
+    if full_sha != head:
+        raise CampaignError(
+            f"Profile ref {sha} is not current HEAD ({head[:12]}); follow-on "
+            "profiles must include every landed/reverted campaign change"
+        )
+    current_branch = git_output(
+        repo_root, "rev-parse", "--abbrev-ref", "HEAD"
+    ).strip()
+    if branch and current_branch != branch:
+        raise CampaignError(
+            f"Profile HEAD is on branch {current_branch!r}, not campaign "
+            f"branch {branch!r}"
+        )
+    dirty = git_output(repo_root, "status", "--porcelain").splitlines()
+    if dirty:
+        raise CampaignError(
+            "Cannot reconcile a follow-on profile while the local campaign "
+            "tree is dirty; finish or discard the in-flight mechanism first"
+        )
+    return {
+        "repository_root": str(pathlib.Path(repo_root).resolve()),
+        "resolved_sha": full_sha,
+        "repository_verified": True,
+    }
+
+
+def feature_names(value):
+    return {item.strip() for item in (value or "").split(",") if item.strip()}
+
+
+def load_capture_summaries(
+    path, *, expected_sha, feature, expected_features, floor_pct
+):
+    try:
+        with open(path) as f:
+            summaries = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CampaignError(f"Cannot read capture summaries {path}: {exc}") from exc
+    if not isinstance(summaries, list) or len(summaries) < 2:
+        raise CampaignError(
+            "Capture summaries must be an array with at least two independent captures"
+        )
+    seen_ids = set()
+    seen_artifact_paths = set()
+    seen_local_results = set()
+    seen_remote_perf_data = set()
+    repetition_counts = set()
+    for index, summary in enumerate(summaries, 1):
+        if not isinstance(summary, dict):
+            raise CampaignError(f"Capture summary {index} must be an object")
+        capture_id = summary.get("capture_id")
+        if not isinstance(capture_id, str) or not capture_id.strip():
+            raise CampaignError(f"Capture summary {index} has no capture_id")
+        if capture_id in seen_ids:
+            raise CampaignError(f"Capture id {capture_id!r} is not independent")
+        seen_ids.add(capture_id)
+        if summary.get("mode") != "profile":
+            raise CampaignError(f"Capture {capture_id} was not produced in profile mode")
+        local_results = summary.get("local_results")
+        remote_perf_data = summary.get("remote_perf_data")
+        if not isinstance(local_results, str) or not local_results:
+            raise CampaignError(f"Capture {capture_id} has no local_results provenance")
+        if not isinstance(remote_perf_data, str) or not remote_perf_data:
+            raise CampaignError(f"Capture {capture_id} has no remote perf-data provenance")
+        resolved_results = str(pathlib.Path(local_results).resolve())
+        if resolved_results in seen_local_results:
+            raise CampaignError("Capture summaries reuse the same local_results directory")
+        if remote_perf_data in seen_remote_perf_data:
+            raise CampaignError("Capture summaries reuse the same remote perf-data capture")
+        seen_local_results.add(resolved_results)
+        seen_remote_perf_data.add(remote_perf_data)
+        if summary.get("sha") != expected_sha:
+            raise CampaignError(
+                f"Capture {capture_id} describes SHA {summary.get('sha')!r}, "
+                f"not profiled HEAD {expected_sha!r}"
+            )
+        if summary.get("quality_rejected") is not False:
+            raise CampaignError(f"Capture {capture_id} did not pass profile quality")
+        actual_features = feature_names(summary.get("enable_features"))
+        if actual_features != feature_names(expected_features):
+            raise CampaignError(
+                f"Capture {capture_id} feature set {sorted(actual_features)} "
+                f"does not match requested set {sorted(feature_names(expected_features))}"
+            )
+        if feature not in actual_features:
+            raise CampaignError(f"Capture {capture_id} did not enable {feature}")
+        if summary.get("stories") != "all":
+            raise CampaignError(
+                f"Capture {capture_id} is not a full-suite stories=all profile"
+            )
+        repetitions = summary.get("repetitions")
+        if not isinstance(repetitions, int) or repetitions < 1:
+            raise CampaignError(f"Capture {capture_id} has invalid repetitions")
+        repetition_counts.add(repetitions)
+        capture_floor = require_finite_number(
+            summary.get("share_floor_pct"),
+            f"Capture {capture_id} share_floor_pct",
+            nonnegative=True,
+        )
+        if not math.isclose(capture_floor, floor_pct, rel_tol=0, abs_tol=1e-12):
+            raise CampaignError(
+                f"Capture {capture_id} used {capture_floor}% floor, not the "
+                f"campaign floor {floor_pct}%"
+            )
+        if not summary.get("inventory_complete"):
+            raise CampaignError(
+                f"Capture {capture_id} does not attest an exhaustive machine frontier"
+            )
+        artifact_path = summary.get("full_candidate_frontier_json")
+        try:
+            resolved_artifact = pathlib.Path(artifact_path).resolve()
+            if resolved_artifact in seen_artifact_paths:
+                raise CampaignError(
+                    "Capture summaries reuse the same analyzer artifact"
+                )
+            if not resolved_artifact.is_relative_to(pathlib.Path(resolved_results)):
+                raise CampaignError(
+                    f"Capture {capture_id} analyzer artifact is outside local_results"
+                )
+            seen_artifact_paths.add(resolved_artifact)
+            artifact_bytes = resolved_artifact.read_bytes()
+            artifact = json.loads(artifact_bytes)
+        except CampaignError:
+            raise
+        except (TypeError, OSError, json.JSONDecodeError) as exc:
+            raise CampaignError(
+                f"Capture {capture_id} analyzer artifact is unreadable: {exc}"
+            ) from exc
+        if artifact.get("quality", {}).get("accepted") is not True:
+            raise CampaignError(f"Capture {capture_id} analyzer artifact failed quality")
+        selection = artifact.get("selection", {})
+        if selection.get("inventory_complete") is not True:
+            raise CampaignError(f"Capture {capture_id} analyzer inventory is incomplete")
+        artifact_frontier = artifact.get("frontier")
+        if not isinstance(artifact_frontier, list):
+            raise CampaignError(f"Capture {capture_id} artifact has no frontier")
+        if any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("name"), str)
+            or not item["name"]
+            for item in artifact_frontier
+        ):
+            raise CampaignError(f"Capture {capture_id} frontier has malformed rows")
+        frontier_keys = [item.get("entry_key") for item in artifact_frontier]
+        if any(not isinstance(key, str) or not key for key in frontier_keys):
+            raise CampaignError(f"Capture {capture_id} frontier has no stable entry keys")
+        if len(frontier_keys) != len(set(frontier_keys)):
+            raise CampaignError(f"Capture {capture_id} repeats a frontier entry key")
+        frontier_key_set = set(frontier_keys)
+        assigned_alternatives = {}
+        assigned_function_names = set()
+        seen_alternative_keys = set()
+        artifact_alternatives = artifact.get("overlapping_alternatives", [])
+        if not isinstance(artifact_alternatives, list) or any(
+            not isinstance(item, dict) for item in artifact_alternatives
+        ):
+            raise CampaignError(
+                f"Capture {capture_id} has malformed overlapping alternatives"
+            )
+        for alternative in artifact_alternatives:
+            assigned = alternative.get("assigned_frontier_entry")
+            alternative_key = alternative.get("entry_key")
+            if not isinstance(alternative_key, str) or not alternative_key:
+                raise CampaignError(
+                    f"Capture {capture_id} alternative has no stable entry key"
+                )
+            if alternative_key in seen_alternative_keys:
+                raise CampaignError(
+                    f"Capture {capture_id} repeats alternative {alternative_key!r}"
+                )
+            if assigned not in frontier_key_set:
+                raise CampaignError(
+                    f"Capture {capture_id} alternative {alternative_key!r} is not "
+                    "assigned to a frontier entry"
+                )
+            seen_alternative_keys.add(alternative_key)
+            name = alternative.get("name")
+            if not isinstance(name, str) or not name:
+                raise CampaignError(f"Capture {capture_id} alternative has no name")
+            if alternative.get("kind") == "function":
+                assigned_function_names.add(name)
+            inclusive_share = require_finite_number(
+                alternative.get("inclusive_share"),
+                f"Capture {capture_id} alternative {alternative_key} inclusive_share",
+                nonnegative=True,
+            )
+            assigned_alternatives.setdefault(assigned, []).append({
+                "hotspot_key": f"alternative:{alternative_key}",
+                "semantic_key": f"symbol:{name}",
+                "measured_share_pct": inclusive_share * 100,
+            })
+        derived_inventory = []
+        for item in artifact_frontier:
+            entry_key = item["entry_key"]
+            work_items = [{
+                "hotspot_key": "@root",
+                "semantic_key": f"symbol:{item.get('name')}",
+                "measured_share_pct": item.get("marginal_share", 0.0) * 100,
+            }]
+            work_items.extend({
+                "hotspot_key": hotspot["name"],
+                "semantic_key": f"symbol:{hotspot['name']}",
+                "measured_share_pct": hotspot.get("overlap_share", 0.0) * 100,
+            } for hotspot in item.get("related_hotspots", [])
+            if hotspot.get("name") not in assigned_function_names)
+            work_items.extend(assigned_alternatives.get(entry_key, []))
+            derived_inventory.append({
+                "entry_key": entry_key,
+                "work_items": work_items,
+            })
+        derived_entries = [item["entry_key"] for item in derived_inventory]
+        summary["artifact_sha256"] = hashlib.sha256(artifact_bytes).hexdigest()
+        for field in (
+            "analyzer_min_inclusive_share", "analyzer_min_marginal_share"
+        ):
+            analyzer_floor = require_finite_number(
+                summary.get(field), f"Capture {capture_id} {field}", nonnegative=True
+            )
+            selection_field = (
+                "min_inclusive_share" if field == "analyzer_min_inclusive_share"
+                else "min_marginal_share"
+            )
+            artifact_floor = require_finite_number(
+                selection.get(selection_field),
+                f"Capture {capture_id} artifact {selection_field}",
+                nonnegative=True,
+            )
+            expected_floor = floor_pct / 100.0
+            if not math.isclose(
+                analyzer_floor, expected_floor, rel_tol=0, abs_tol=1e-12
+            ) or not math.isclose(
+                artifact_floor, expected_floor, rel_tol=0, abs_tol=1e-12
+            ):
+                raise CampaignError(
+                    f"Capture {capture_id} {field} and analyzer artifact must "
+                    f"equal campaign fraction {expected_floor}"
+                )
+        entries = summary.get("frontier_entries")
+        inventory = summary.get("frontier_inventory")
+        if not isinstance(entries, list) or not isinstance(inventory, list):
+            raise CampaignError(f"Capture {capture_id} has no frontier inventory")
+        inventory_keys = []
+        for item in inventory:
+            if not isinstance(item, dict) or not isinstance(item.get("entry_key"), str):
+                raise CampaignError(f"Capture {capture_id} has malformed frontier inventory")
+            work_items = item.get("work_items")
+            if not isinstance(work_items, list) or any(
+                not isinstance(work, dict)
+                or not isinstance(work.get("hotspot_key"), str)
+                or not work["hotspot_key"]
+                or not isinstance(work.get("semantic_key"), str)
+                or not work["semantic_key"]
+                for work in work_items
+            ):
+                raise CampaignError(
+                    f"Capture {capture_id} entry {item['entry_key']} has malformed hotspots"
+                )
+            hotspot_keys = [work["hotspot_key"] for work in work_items]
+            if len(hotspot_keys) != len(set(hotspot_keys)):
+                raise CampaignError(
+                    f"Capture {capture_id} entry {item['entry_key']} repeats hotspots"
+                )
+            for work in work_items:
+                work["measured_share_pct"] = require_finite_number(
+                    work.get("measured_share_pct"),
+                    f"Capture {capture_id} {item['entry_key']} "
+                    f"{work['hotspot_key']} measured_share_pct",
+                    nonnegative=True,
+                )
+            inventory_keys.append(item["entry_key"])
+        if inventory_keys != entries:
+            raise CampaignError(
+                f"Capture {capture_id} frontier inventory does not match frontier_entries"
+            )
+        if entries != derived_entries or inventory != derived_inventory:
+            raise CampaignError(
+                f"Capture {capture_id} summary frontier does not match analyzer artifact"
+            )
+        if summary.get("frontier_count") != len(derived_entries):
+            raise CampaignError(f"Capture {capture_id} frontier_count is inconsistent")
+    if len(repetition_counts) != 1:
+        raise CampaignError("Capture repetition counts do not match")
+    return summaries
+
+
+def checkout_exhaustion_blockers(ledger, *, allow_unverified=False):
+    latest = ledger.data["profile_runs"][-1]
+    if not latest.get("repository_verified"):
+        test_override = (
+            allow_unverified
+            and os.environ.get("SP3_CAMPAIGN_TEST_ALLOW_UNVERIFIED") == "1"
+        )
+        return [] if test_override else [
+            "latest profile repository was not verified; rerun in the profiled "
+            "checkout (tests may pass --allow-unverified-repository)"
+        ]
+    stored_root = latest.get("repository_root")
+    current_root = find_repo_root(pathlib.Path.cwd())
+    if not current_root:
+        return ["audit is not running inside the profiled Git repository"]
+    current_root = str(pathlib.Path(current_root).resolve())
+    if current_root != stored_root:
+        return [
+            f"audit repository {current_root} differs from profiled repository "
+            f"{stored_root}"
+        ]
+    blockers = []
+    try:
+        head = git_output(current_root, "rev-parse", "HEAD").strip()
+        branch = git_output(
+            current_root, "rev-parse", "--abbrev-ref", "HEAD"
+        ).strip()
+        dirty = git_output(current_root, "status", "--porcelain").splitlines()
+    except subprocess.CalledProcessError as exc:
+        return [f"could not verify current Git checkout: {exc}"]
+    if head != latest.get("sha"):
+        blockers.append(
+            f"current HEAD {head[:12]} differs from latest profiled HEAD "
+            f"{str(latest.get('sha'))[:12]}"
+        )
+    campaign_branch = ledger.data["config"].get("branch")
+    if campaign_branch and branch != campaign_branch:
+        blockers.append(
+            f"current branch {branch!r} differs from campaign branch "
+            f"{campaign_branch!r}"
+        )
+    if dirty:
+        blockers.append("current campaign checkout is dirty")
+    for opp in ledger.landed():
+        commit = opp.get("commit")
+        if not commit:
+            blockers.append(f"landed mechanism #{opp['id']:03d} has no commit")
+            continue
+        reachable = subprocess.run(
+            ["git", "-C", current_root, "merge-base", "--is-ancestor", commit, "HEAD"],
+            capture_output=True,
+        )
+        if reachable.returncode != 0:
+            blockers.append(
+                f"landed mechanism #{opp['id']:03d} commit {commit[:12]} "
+                "is not reachable from current HEAD"
+            )
+    return blockers
 
 
 def git_output(repo_root, *args):
@@ -373,10 +1114,67 @@ def verify_landed_commit(opp, repo_root, sha, skip_verification, branch):
         )
 
 
+def stable_patch_id(repo_root, older, newer):
+    diff = subprocess.run(
+        ["git", "-C", repo_root, "diff", "--no-ext-diff", older, newer],
+        capture_output=True,
+        check=True,
+    ).stdout
+    result = subprocess.run(
+        ["git", "-C", repo_root, "patch-id", "--stable"],
+        input=diff,
+        capture_output=True,
+        text=False,
+        check=True,
+    ).stdout.decode().strip()
+    return result.split()[0] if result else None
+
+
+def verify_revert_commit(opp, repo_root, sha, branch):
+    if not repo_root:
+        raise CampaignError("Revert verification requires the campaign Git checkout")
+    verify_commit(repo_root, sha)
+    full_sha = git_output(repo_root, "rev-parse", f"{sha}^{{commit}}").strip()
+    head = git_output(repo_root, "rev-parse", "HEAD").strip()
+    if full_sha != head:
+        raise CampaignError(f"Revert commit {sha} is not current HEAD")
+    current_branch = git_output(
+        repo_root, "rev-parse", "--abbrev-ref", "HEAD"
+    ).strip()
+    if branch and current_branch != branch:
+        raise CampaignError(
+            f"Revert HEAD is on branch {current_branch!r}, not {branch!r}"
+        )
+    if git_output(repo_root, "status", "--porcelain").splitlines():
+        raise CampaignError("Cannot record a revert while the checkout is dirty")
+    landed = git_output(
+        repo_root, "rev-parse", f"{opp['commit']}^{{commit}}"
+    ).strip()
+    revert_parent = git_output(repo_root, "rev-parse", f"{full_sha}^").strip()
+    if subprocess.run(
+        ["git", "-C", repo_root, "merge-base", "--is-ancestor", landed,
+         revert_parent],
+        capture_output=True,
+    ).returncode != 0:
+        raise CampaignError("The landed commit is not an ancestor of the revert")
+    original_patch = stable_patch_id(repo_root, f"{landed}^", landed)
+    reversed_revert_patch = stable_patch_id(repo_root, full_sha, revert_parent)
+    if not original_patch or original_patch != reversed_revert_patch:
+        raise CampaignError(
+            f"Commit {sha} does not reverse the patch landed by {landed[:12]}"
+        )
+    return full_sha
+
+
 # ---------------- commands ----------------
 
 
 def cmd_init(args):
+    args.share_floor = require_finite_number(
+        args.share_floor, "--share-floor", nonnegative=True
+    )
+    if args.share_floor <= 0:
+        raise CampaignError("--share-floor must be greater than zero")
     campaign_dir = pathlib.Path(args.dir) if args.dir else None
     if campaign_dir is not None:
         # Deliberately do NOT repoint the shared `current` symlink at a
@@ -402,6 +1200,8 @@ def cmd_init(args):
     if ledger.path.exists() and not args.force:
         raise CampaignError(f"Ledger already exists at {ledger.path} (use --force)")
     ledger.data = {
+        "schema_version": 2,
+        "next_sequence": 1,
         "config": {
             "name": args.name,
             "branch": args.branch,
@@ -414,7 +1214,9 @@ def cmd_init(args):
         },
         "next_id": 1,
         "opportunities": [],
-        "checkpoints": [],
+        "profile_runs": [],
+            "checkpoints": [],
+            "source_area_keys": {},
     }
     (ledger.dir / "dossiers").mkdir(parents=True, exist_ok=True)
     (ledger.dir / "reviews").mkdir(parents=True, exist_ok=True)
@@ -423,39 +1225,541 @@ def cmd_init(args):
     return 0
 
 
-def cmd_add(args):
-    ledger = Ledger(args.dir or default_campaign_dir()).load()
-    floor = ledger.data["config"]["share_floor_pct"]
-    if args.share < floor:
-        print(
-            f"warning: share {args.share}% is below the campaign floor {floor}%",
-            file=sys.stderr,
-        )
+def new_opportunity(ledger, *, kind, anchor, area_key, mechanism_key=None,
+                    parent_id=None, profile_id=None, share=0.0, stories=None,
+                    dossier=None, expected_value=None, expected_value_unit=None,
+                    notes=None):
+    source_profiles = [profile_id] if profile_id else []
     opp = {
         "id": ledger.data["next_id"],
-        "anchor": args.anchor,
-        "share_pct": args.share,
-        "stories": args.stories,
-        "dossier": args.dossier,
-        "expected_value": args.expected_value,
+        "kind": kind,
+        "anchor": anchor,
+        "area_key": area_key,
+        "mechanism_key": mechanism_key,
+        "parent_id": parent_id,
+        "discovery_ids": [parent_id] if parent_id is not None else [],
+        "profile_id": profile_id,
+        "source_profile_ids": source_profiles,
+        "known_mechanism_ids": [],
+        "observations": [],
+        "share_pct": share,
+        "stories": stories,
+        "dossier": dossier,
+        "expected_value": expected_value,
+        "expected_value_unit": expected_value_unit,
+        "measured_priority_pct": share,
         "status": "candidate",
         "status_since": utc_now(),
         "ceiling_pct": None,
         "evidence": None,
         "tests": None,
         "commit": None,
+        "runtime_change_sequence": None,
         "rework_rounds": 0,
         "squeeze_rounds": 0,
         "reviews": {},
         "reason": None,
-        "notes": [args.notes] if args.notes else [],
+        "notes": [notes] if notes else [],
         "history": [],
     }
-    ledger.record(opp, "added as candidate")
+    ledger.record(opp, f"added as {kind} candidate")
     ledger.data["next_id"] += 1
     ledger.data["opportunities"].append(opp)
+    return opp
+
+
+def record_mechanism_observation(opp, discovery, path):
+    primary_refs = [
+        ref for ref in path.get("work_refs", [])
+        if ref.get("accounting") == "primary"
+    ]
+    fingerprint_refs = primary_refs or path.get("work_refs", [])
+    measured_priority = measured_priority_from_refs(fingerprint_refs)
+    observation = {
+        "ts": utc_now(),
+        "profile_id": discovery.get("profile_id"),
+        "discovery_id": discovery["id"],
+        "area_key": path.get("area_key") or discovery["area_key"],
+        "anchor": path["anchor"],
+        "share_pct": path["share_pct"],
+        "stories": path.get("stories") or discovery.get("stories"),
+        "dossier": path.get("dossier") or discovery.get("dossier"),
+        "expected_value": path.get("expected_value"),
+        "expected_value_unit": path.get("expected_value_unit"),
+        "measured_priority_pct": measured_priority,
+        "evidence": path.get("evidence"),
+        "work_fingerprints": sorted({
+            ref.get("semantic_key") or f"{ref['entry_key']}|{ref['hotspot_key']}"
+            for ref in fingerprint_refs
+        }),
+    }
+    opp.setdefault("observations", []).append(observation)
+    opp["anchor"] = observation["anchor"]
+    opp["share_pct"] = observation["share_pct"]
+    opp["stories"] = observation["stories"]
+    opp["dossier"] = observation["dossier"]
+    opp["expected_value"] = observation["expected_value"]
+    opp["expected_value_unit"] = observation["expected_value_unit"]
+    if measured_priority is not None:
+        opp["measured_priority_pct"] = measured_priority
+
+
+def validate_new_identity(ledger, *, kind, area_key, mechanism_key,
+                          profile_id, parent_id=None):
+    if parent_id is not None:
+        ledger.opp(parent_id)
+    if kind == "discovery":
+        if mechanism_key:
+            raise CampaignError("discovery records cannot have --mechanism-key")
+        if not profile_id:
+            raise CampaignError("discovery records require --profile-id")
+        ledger.profile(profile_id)
+        for opp in ledger.data["opportunities"]:
+            if (
+                opp.get("kind") == "discovery"
+                and opp.get("area_key") == area_key
+                and opp.get("profile_id") == profile_id
+            ):
+                raise CampaignError(
+                    f"Area {area_key!r} is already represented by discovery "
+                    f"#{opp['id']:03d} for profile {profile_id!r}"
+                )
+    else:
+        if not mechanism_key:
+            raise CampaignError("mechanism records require --mechanism-key")
+        existing = ledger.mechanism(area_key, mechanism_key)
+        if existing:
+            raise CampaignError(
+                f"Mechanism {area_key}/{mechanism_key} already exists as "
+                f"#{existing['id']:03d} [{existing['status']}]; reuse its history "
+                "instead of retrying the same path"
+            )
+        if profile_id:
+            ledger.profile(profile_id)
+
+
+def load_profile_areas(path):
+    try:
+        with open(path) as f:
+            manifest = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CampaignError(f"Cannot read profile area JSON {path}: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise CampaignError(
+            "Profile reconciliation JSON must be an object with areas and "
+            "source_exclusions"
+        )
+    areas = manifest.get("areas")
+    source_exclusions = manifest.get("source_exclusions")
+    parked_mechanisms = manifest.get("parked_mechanisms")
+    if not all(isinstance(value, list) for value in (
+        areas, source_exclusions, parked_mechanisms
+    )):
+        raise CampaignError(
+            "Profile reconciliation requires areas, source_exclusions, and "
+            "parked_mechanisms arrays"
+        )
+    seen = set()
+    for index, area in enumerate(areas, 1):
+        if not isinstance(area, dict):
+            raise CampaignError(f"Profile area {index} must be a JSON object")
+        missing = [
+            key for key in ("area_key", "anchor", "marginal_share_pct")
+            if area.get(key) is None
+        ]
+        if missing:
+            raise CampaignError(
+                f"Profile area {index} is missing: {', '.join(missing)}"
+            )
+        area["area_key"] = require_stable_key(
+            area["area_key"], f"Profile area {index} area_key"
+        )
+        if area["area_key"] in seen:
+            raise CampaignError(
+                f"Profile area manifest repeats area_key {area['area_key']!r}"
+            )
+        seen.add(area["area_key"])
+        if not isinstance(area["anchor"], str) or not area["anchor"].strip():
+            raise CampaignError(f"Profile area {index} anchor must be nonempty text")
+        area["marginal_share_pct"] = require_finite_number(
+            area["marginal_share_pct"],
+            f"Profile area {index} marginal_share_pct",
+            nonnegative=True,
+        )
+        if (
+            area.get("expected_value") is not None
+            or area.get("expected_value_unit") is not None
+        ):
+            raise CampaignError(
+                f"Profile area {index} cannot set expected_value; coarse discoveries "
+                "always rank by their hottest measured child"
+            )
+        disposition = area.get("disposition", "discover")
+        if disposition not in ("discover", "exclude"):
+            raise CampaignError(
+                f"Profile area {index} disposition must be discover or exclude"
+            )
+        if disposition == "exclude":
+            category = area.get("exclusion_category")
+            if category not in ("payload-dominated", "idle-wait", "out-of-scope"):
+                raise CampaignError(
+                    f"Profile area {index} exclusion_category must be "
+                    "payload-dominated, idle-wait, or out-of-scope"
+                )
+            if not area.get("exclusion_reason") or not area.get("exclusion_evidence"):
+                raise CampaignError(
+                    f"Profile area {index} exclusion requires reason and evidence"
+                )
+        area["disposition"] = disposition
+        if not isinstance(area.get("source_refs"), list) or not area["source_refs"]:
+            raise CampaignError(
+                f"Profile area {index} requires nonempty source_refs"
+            )
+    for index, exclusion in enumerate(source_exclusions, 1):
+        if not isinstance(exclusion, dict):
+            raise CampaignError(f"Source exclusion {index} must be an object")
+        if exclusion.get("category") != "not-recurrent":
+            raise CampaignError(
+                f"Source exclusion {index} category must be not-recurrent"
+            )
+        if not exclusion.get("evidence"):
+            raise CampaignError(f"Source exclusion {index} requires evidence")
+    return areas, source_exclusions, parked_mechanisms
+
+
+def validate_parked_reconciliation(ledger, areas, entries):
+    parked = {
+        opp["mechanism_key"]: opp
+        for opp in ledger.data["opportunities"]
+        if opp.get("kind") == "mechanism" and opp["status"] == "parked"
+    }
+    seen = set()
+    discoverable_areas = {
+        area["area_key"] for area in areas if area["disposition"] == "discover"
+    }
+    for index, entry in enumerate(entries, 1):
+        if not isinstance(entry, dict):
+            raise CampaignError(f"Parked reconciliation {index} must be an object")
+        key = entry.get("mechanism_key")
+        if key not in parked:
+            raise CampaignError(
+                f"Parked reconciliation {index} names non-parked mechanism {key!r}"
+            )
+        if key in seen:
+            raise CampaignError(f"Parked mechanism {key!r} is reconciled twice")
+        seen.add(key)
+        disposition = entry.get("disposition")
+        if disposition not in ("recurrent", "not-recurrent"):
+            raise CampaignError(
+                f"Parked mechanism {key!r} disposition must be recurrent or not-recurrent"
+            )
+        if disposition == "recurrent":
+            if entry.get("area_key") not in discoverable_areas:
+                raise CampaignError(
+                    f"Recurrent parked mechanism {key!r} must map to a discoverable area"
+                )
+        else:
+            if not entry.get("evidence"):
+                raise CampaignError(
+                    f"Nonrecurrent parked mechanism {key!r} requires evidence"
+                )
+            prior_fingerprints = {
+                fingerprint
+                for observation in parked[key].get("observations", [])
+                for fingerprint in observation.get("work_fingerprints", [])
+            }
+            latest_fingerprints = {
+                ref.get("semantic_key") or f"{ref['entry_key']}|{ref['hotspot_key']}"
+                for area in areas
+                for ref in area.get("expected_work_refs", [])
+            }
+            recurring = prior_fingerprints & latest_fingerprints
+            if recurring:
+                raise CampaignError(
+                    f"Parked mechanism {key!r} cannot be called nonrecurrent; "
+                    "its profiler work fingerprints recur: "
+                    + ", ".join(sorted(recurring))
+                )
+    missing = set(parked) - seen
+    if missing:
+        raise CampaignError(
+            "Profile does not reconcile parked mechanism(s): "
+            + ", ".join(sorted(missing))
+        )
+    return entries
+
+
+def source_ref_tuple(value, label):
+    if not isinstance(value, dict):
+        raise CampaignError(f"{label} must be an object")
+    capture_id = value.get("capture_id")
+    entry_key = value.get("entry_key")
+    if not isinstance(capture_id, str) or not capture_id.strip():
+        raise CampaignError(f"{label} requires capture_id")
+    if not isinstance(entry_key, str) or not entry_key.strip():
+        raise CampaignError(f"{label} requires entry_key")
+    return capture_id, entry_key
+
+
+def validate_source_accounting(areas, source_exclusions, summaries):
+    expected = set()
+    occurrences = {}
+    hotspot_inventory = {}
+    all_capture_ids = {summary["capture_id"] for summary in summaries}
+    for summary in summaries:
+        capture_id = summary["capture_id"]
+        entries = summary.get("frontier_entries")
+        if not isinstance(entries, list) or any(
+            not isinstance(item, str) or not item.strip() for item in entries
+        ):
+            raise CampaignError(
+                f"Capture {capture_id} has no valid exhaustive frontier_entries"
+            )
+        if len(entries) != len(set(entries)):
+            raise CampaignError(f"Capture {capture_id} repeats a frontier entry")
+        for entry_key in entries:
+            ref = (capture_id, entry_key)
+            expected.add(ref)
+            occurrences.setdefault(entry_key, set()).add(capture_id)
+        for item in summary["frontier_inventory"]:
+            hotspot_inventory[(capture_id, item["entry_key"])] = item["work_items"]
+
+    accounted = {}
+    for index, area in enumerate(areas, 1):
+        refs = [
+            source_ref_tuple(ref, f"Profile area {index} source ref")
+            for ref in area["source_refs"]
+        ]
+        if len(refs) != len(set(refs)):
+            raise CampaignError(f"Profile area {index} repeats a source ref")
+        entry_keys = {entry_key for _, entry_key in refs}
+        if len(entry_keys) != 1:
+            raise CampaignError(
+                f"Profile area {index} coalesces distinct frontier entries; "
+                "each recurrent machine entry requires its own area"
+            )
+        entry_key = next(iter(entry_keys))
+        expected_refs = {
+            (capture_id, entry_key)
+            for capture_id in occurrences.get(entry_key, set())
+        }
+        if occurrences.get(entry_key) != all_capture_ids or set(refs) != expected_refs:
+            raise CampaignError(
+                f"Profile area {index} must map entry {entry_key!r} exactly once "
+                "from every capture"
+            )
+        work_refs = []
+        for capture_id, source_entry in sorted(refs):
+            work_refs.extend({
+                "capture_id": capture_id,
+                "entry_key": source_entry,
+                "hotspot_key": work["hotspot_key"],
+                "semantic_key": work["semantic_key"],
+                "measured_share_pct": work["measured_share_pct"],
+            } for work in hotspot_inventory[(capture_id, source_entry)])
+        area["expected_work_refs"] = work_refs
+        for ref in refs:
+            if ref in accounted:
+                raise CampaignError(f"Source frontier entry {ref} is accounted twice")
+            accounted[ref] = f"area {area['area_key']}"
+
+    for index, exclusion in enumerate(source_exclusions, 1):
+        ref = source_ref_tuple(exclusion, f"Source exclusion {index}")
+        if occurrences.get(ref[1], set()) == all_capture_ids:
+            raise CampaignError(
+                f"Recurrent source entry {ref[1]!r} cannot be excluded as not-recurrent"
+            )
+        if ref in accounted:
+            raise CampaignError(f"Source frontier entry {ref} is accounted twice")
+        accounted[ref] = "not recurrent"
+
+    accounted_set = set(accounted)
+    missing = expected - accounted_set
+    unexpected = accounted_set - expected
+    if missing:
+        preview = ", ".join(f"{capture}:{entry}" for capture, entry in sorted(missing)[:5])
+        raise CampaignError(f"Reconciliation omits source frontier entries: {preview}")
+    if unexpected:
+        preview = ", ".join(
+            f"{capture}:{entry}" for capture, entry in sorted(unexpected)[:5]
+        )
+        raise CampaignError(f"Reconciliation names unknown source entries: {preview}")
+    return {next(iter({ref["entry_key"] for ref in area["source_refs"]})): area["area_key"]
+            for area in areas}
+
+
+def cmd_profile(args):
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    if any(p["id"] == args.id for p in ledger.data.get("profile_runs", [])):
+        raise CampaignError(f"Profile id {args.id!r} already exists")
+    feature = ledger.data["config"]["feature"]
+    if feature not in feature_names(args.enable_features):
+        raise CampaignError(
+            f"Profile must explicitly enable campaign feature {feature}"
+        )
+    provenance = verify_profile_head(
+        find_repo_root(pathlib.Path.cwd()), args.sha,
+        ledger.data["config"].get("branch"),
+        allow_unverified=args.allow_unverified_repository,
+    )
+    floor = ledger.data["config"]["share_floor_pct"]
+    summaries = load_capture_summaries(
+        args.capture_summaries,
+        expected_sha=provenance["resolved_sha"],
+        feature=feature,
+        expected_features=args.enable_features,
+        floor_pct=floor,
+    )
+    areas, source_exclusions, parked_entries = load_profile_areas(args.areas)
+    source_area_map = validate_source_accounting(areas, source_exclusions, summaries)
+    excluded_with_children = [
+        area for area in areas
+        if area["disposition"] == "exclude"
+        and any(
+            ref["hotspot_key"] != "@root"
+            for ref in area.get("expected_work_refs", [])
+        )
+    ]
+    if excluded_with_children:
+        raise CampaignError(
+            "A composite frontier area cannot be excluded wholesale while it "
+            "contains material related/alternative hotspots; mark it discover "
+            "and decompose each child: "
+            + ", ".join(area["area_key"] for area in excluded_with_children)
+        )
+    for entry_key, area_key in source_area_map.items():
+        prior = ledger.data.setdefault("source_area_keys", {}).get(entry_key)
+        if prior and prior != area_key:
+            raise CampaignError(
+                f"Source entry {entry_key!r} was previously area {prior!r}; "
+                f"cannot silently rename it to {area_key!r}"
+            )
+    parked_entries = validate_parked_reconciliation(ledger, areas, parked_entries)
+    discoveries = [area for area in areas if area["disposition"] == "discover"]
+    excluded = [area for area in areas if area["disposition"] == "exclude"]
+    below_floor = [
+        area for area in discoveries if area["marginal_share_pct"] < floor
+    ]
+    if below_floor:
+        raise CampaignError(
+            "Discoverable profile rows fall below the campaign floor "
+            f"{floor}%: " + ", ".join(area["area_key"] for area in below_floor)
+        )
+    total_share = sum(area["marginal_share_pct"] for area in discoveries)
+    observed_share = sum(area["marginal_share_pct"] for area in areas)
+    ledger.data.setdefault("profile_runs", []).append({
+        "id": args.id,
+        "ts": utc_now(),
+        "sha": provenance["resolved_sha"],
+        **provenance,
+        "enable_features": args.enable_features,
+        "total_share_pct": total_share,
+        "artifacts": args.artifacts,
+        "notes": args.notes,
+        "area_count": len(discoveries),
+        "inventory_count": len(areas),
+        "excluded_areas": excluded,
+        "source_exclusions": source_exclusions,
+        "parked_mechanisms": parked_entries,
+        "source_area_map": source_area_map,
+        "observed_share_pct": observed_share,
+        "areas_manifest": args.areas,
+        "captures": len(summaries),
+        "capture_ids": [summary["capture_id"] for summary in summaries],
+        "capture_summaries": args.capture_summaries,
+        "capture_provenance": [
+            {
+                "capture_id": summary["capture_id"],
+                "artifact": summary["full_candidate_frontier_json"],
+                "artifact_sha256": summary["artifact_sha256"],
+                "stories": summary["stories"],
+                "enable_features": summary["enable_features"],
+                "repetitions": summary["repetitions"],
+                "analyzer_min_inclusive_share": summary[
+                    "analyzer_min_inclusive_share"
+                ],
+                "analyzer_min_marginal_share": summary[
+                    "analyzer_min_marginal_share"
+                ],
+            }
+            for summary in summaries
+        ],
+        "sequence": ledger.data["next_sequence"],
+    })
+    ledger.data["next_sequence"] += 1
+    ledger.data["source_area_keys"].update(source_area_map)
+    for area in discoveries:
+        discovery = new_opportunity(
+            ledger,
+            kind="discovery",
+            anchor=area["anchor"],
+            area_key=area["area_key"],
+            profile_id=args.id,
+            share=area["marginal_share_pct"],
+            stories=area.get("stories"),
+            dossier=area.get("dossier"),
+            notes=area.get("notes"),
+        )
+        discovery["source_refs"] = area["source_refs"]
+        discovery["expected_work_refs"] = area["expected_work_refs"]
+        discovery["measured_priority_pct"] = measured_priority_from_refs(
+            area["expected_work_refs"]
+        )
     ledger.save()
-    print(f"Added opportunity #{opp['id']:03d}: {args.anchor}")
+    print(
+        f"Recorded profile {args.id}: {len(discoveries)} discoverable / "
+        f"{len(excluded)} excluded area(s), {total_share:.2f}% eligible share"
+    )
+    return 0
+
+
+def cmd_add(args):
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    args.share = require_finite_number(args.share, "--share", nonnegative=True)
+    expected = {
+        "expected_value": args.expected_value,
+        "expected_value_unit": args.expected_value_unit,
+    }
+    validate_expected_value(expected, "--expected-value")
+    args.expected_value = expected["expected_value"]
+    floor = ledger.data["config"]["share_floor_pct"]
+    if args.share < floor:
+        print(
+            f"warning: share {args.share}% is below the campaign floor {floor}%",
+            file=sys.stderr,
+        )
+    area_key = require_stable_key(
+        args.area_key or canonical_key(args.anchor), "--area-key"
+    )
+    # No --kind preserves the version-1 CLI for hand-created/test ledgers.
+    kind = args.kind or "mechanism"
+    if kind == "discovery" and args.expected_value is not None:
+        raise CampaignError(
+            "Discovery expected_value overrides are forbidden; discoveries rank "
+            "by their hottest measured profiler work"
+        )
+    mechanism_key = args.mechanism_key
+    if args.kind is None and mechanism_key is None:
+        mechanism_key = f"legacy-{ledger.data['next_id']:03d}"
+    elif mechanism_key is not None:
+        mechanism_key = require_stable_key(
+            mechanism_key, "--mechanism-key", namespaced=True
+        )
+    validate_new_identity(
+        ledger, kind=kind, area_key=area_key,
+        mechanism_key=mechanism_key, profile_id=args.profile_id,
+        parent_id=args.parent,
+    )
+    opp = new_opportunity(
+        ledger, kind=kind, anchor=args.anchor, area_key=area_key,
+        mechanism_key=mechanism_key, parent_id=args.parent,
+        profile_id=args.profile_id, share=args.share, stories=args.stories,
+        dossier=args.dossier, expected_value=args.expected_value,
+        expected_value_unit=args.expected_value_unit,
+        notes=args.notes,
+    )
+    ledger.save()
+    print(f"Added {kind} #{opp['id']:03d}: {args.anchor}")
     return 0
 
 
@@ -463,6 +1767,12 @@ def cmd_advance(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     opp = ledger.opp(args.opp)
     src, dst = opp["status"], args.to
+    if opp.get("kind") == "discovery" and dst not in ("investigating",):
+        raise CampaignError(
+            f"Discovery #{opp['id']:03d} cannot advance to {dst}; use "
+            "`decompose` to create mechanism children or `exhaust` when the "
+            "profiled area has no untried viable path"
+        )
     if dst not in FORWARD_TRANSITIONS.get(src, set()):
         raise CampaignError(
             f"Illegal transition {src} -> {dst} for #{opp['id']:03d}. "
@@ -512,6 +1822,8 @@ def cmd_advance(args):
             ledger.data["config"].get("branch"),
         )
         opp["commit"] = args.commit
+        opp["runtime_change_sequence"] = ledger.data["next_sequence"]
+        ledger.data["next_sequence"] += 1
         if args.notes:
             opp["landed_note"] = args.notes
     opp["status"] = dst
@@ -520,6 +1832,335 @@ def cmd_advance(args):
     ledger.record(opp, f"{src} -> {dst}" + (f": {detail}" if detail else ""))
     ledger.save()
     print(f"#{opp['id']:03d} {src} -> {dst}")
+    return 0
+
+
+def load_decomposition(path):
+    try:
+        with open(path) as f:
+            result = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CampaignError(f"Cannot read decomposition JSON {path}: {exc}") from exc
+    if not isinstance(result, dict):
+        raise CampaignError("Decomposition JSON must be an object")
+    if not result.get("accounting_evidence"):
+        raise CampaignError("Decomposition requires accounting_evidence")
+    paths = result.get("paths")
+    if not isinstance(paths, list) or not paths:
+        raise CampaignError("Decomposition paths must be a non-empty array")
+    seen = set()
+    for index, path_item in enumerate(paths, 1):
+        if not isinstance(path_item, dict):
+            raise CampaignError(f"Path {index} must be a JSON object")
+        disposition = path_item.get("disposition")
+        if disposition not in (
+            "novel", "known", "mandatory", "below-floor", "out-of-scope"
+        ):
+            raise CampaignError(
+                f"Path {index} has invalid disposition {disposition!r}"
+            )
+        missing = []
+        if not isinstance(path_item.get("anchor"), str) or not path_item["anchor"].strip():
+            missing.append("anchor")
+        if path_item.get("share_pct") is None:
+            missing.append("share_pct")
+        if not isinstance(path_item.get("evidence"), str) or not path_item["evidence"].strip():
+            missing.append("evidence")
+        if disposition in ("novel", "known") and not path_item.get("mechanism_key"):
+            missing.append("mechanism_key")
+        if missing:
+            raise CampaignError(
+                f"Path {index} is missing required fields: {', '.join(missing)}"
+            )
+        work_refs = path_item.get("work_refs")
+        if not isinstance(work_refs, list) or not work_refs:
+            raise CampaignError(f"Path {index} requires nonempty work_refs")
+        normalized_refs = []
+        for ref_index, ref in enumerate(work_refs, 1):
+            if not isinstance(ref, dict):
+                raise CampaignError(
+                    f"Path {index} work ref {ref_index} must be an object"
+                )
+            key = tuple(ref.get(field) for field in (
+                "capture_id", "entry_key", "hotspot_key"
+            ))
+            if any(not isinstance(value, str) or not value for value in key):
+                raise CampaignError(
+                    f"Path {index} work ref {ref_index} is incomplete"
+                )
+            accounting = ref.get("accounting")
+            if accounting not in ("primary", "overlap"):
+                raise CampaignError(
+                    f"Path {index} work ref {ref_index} accounting must be "
+                    "primary or overlap"
+                )
+            normalized_refs.append((*key, accounting))
+        if len(normalized_refs) != len(set(normalized_refs)):
+            raise CampaignError(f"Path {index} repeats a work ref")
+        path_item["share_pct"] = require_finite_number(
+            path_item["share_pct"], f"Path {index} share_pct", nonnegative=True
+        )
+        validate_expected_value(path_item, f"Path {index}")
+        if path_item.get("area_key") is not None:
+            path_item["area_key"] = require_stable_key(
+                path_item["area_key"], f"Path {index} area_key"
+            )
+        if path_item.get("mechanism_key") is not None:
+            path_item["mechanism_key"] = require_stable_key(
+                path_item["mechanism_key"], f"Path {index} mechanism_key",
+                namespaced=True,
+            )
+            if path_item["mechanism_key"] in seen:
+                raise CampaignError(
+                    f"Paths repeat mechanism {path_item['mechanism_key']}"
+                )
+            seen.add(path_item["mechanism_key"])
+    return result
+
+
+def cmd_decompose(args):
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    parent = ledger.opp(args.opp)
+    if parent.get("kind") != "discovery":
+        raise CampaignError(
+            f"#{parent['id']:03d} is a mechanism; only discoveries decompose"
+        )
+    if parent["status"] != "investigating":
+        raise CampaignError(
+            f"Discovery #{parent['id']:03d} is {parent['status']}; "
+            "advance it to investigating before decomposition"
+        )
+    result = load_decomposition(args.children)
+    if result.get("area_key") != parent["area_key"]:
+        raise CampaignError("Decomposition area_key does not match its discovery")
+    if result.get("profile_id") != parent.get("profile_id"):
+        raise CampaignError("Decomposition profile_id does not match its discovery")
+    expected_work = {
+        tuple(ref[field] for field in ("capture_id", "entry_key", "hotspot_key"))
+        for ref in parent.get("expected_work_refs", [])
+    }
+    measured_work = {
+        tuple(ref[field] for field in ("capture_id", "entry_key", "hotspot_key")):
+        ref.get("measured_share_pct", 0.0)
+        for ref in parent.get("expected_work_refs", [])
+    }
+    canonical_work = {
+        tuple(ref[field] for field in ("capture_id", "entry_key", "hotspot_key")): ref
+        for ref in parent.get("expected_work_refs", [])
+    }
+    floor = ledger.data["config"]["share_floor_pct"]
+    primary_counts = {ref: 0 for ref in expected_work}
+    for path_item in result["paths"]:
+        path_primary = set()
+        for ref in path_item["work_refs"]:
+            key = tuple(ref[field] for field in (
+                "capture_id", "entry_key", "hotspot_key"
+            ))
+            if key not in expected_work:
+                raise CampaignError(f"Decomposition names unknown profiler work ref {key}")
+            ref["semantic_key"] = canonical_work[key]["semantic_key"]
+            ref["measured_share_pct"] = canonical_work[key]["measured_share_pct"]
+            if ref["accounting"] == "primary":
+                primary_counts[key] += 1
+                path_primary.add(key)
+        if path_primary:
+            hotspot_keys = {ref[2] for ref in path_primary}
+            if len(hotspot_keys) != 1:
+                raise CampaignError(
+                    "One path cannot swallow distinct profiler hotspots; its "
+                    "primary work_refs must share one hotspot_key"
+                )
+            hotspot_key = next(iter(hotspot_keys))
+            expected_for_hotspot = {
+                ref for ref in expected_work if ref[2] == hotspot_key
+            }
+            if path_primary != expected_for_hotspot:
+                raise CampaignError(
+                    f"Primary path accounting for {hotspot_key!r} must include "
+                    "that hotspot from every capture in one semantic row"
+                )
+            if path_item["disposition"] == "below-floor" and any(
+                measured_work[ref] >= floor for ref in path_primary
+            ):
+                raise CampaignError(
+                    f"Profiler measurements for {hotspot_key!r} are at/above "
+                    f"the campaign floor {floor}%; it cannot be dispositioned "
+                    "below-floor using an investigator-supplied share"
+                )
+    invalid_counts = {
+        ref: count for ref, count in primary_counts.items() if count != 1
+    }
+    if invalid_counts:
+        preview = ", ".join(
+            f"{ref} ({count} primary)"
+            for ref, count in list(invalid_counts.items())[:5]
+        )
+        raise CampaignError(
+            "Every profiler root/hotspot requires exactly one primary path "
+            f"accounting reference: {preview}"
+        )
+    wrongly_below_floor = [
+        item for item in result["paths"]
+        if item["disposition"] == "below-floor" and item["share_pct"] >= floor
+    ]
+    if wrongly_below_floor:
+        raise CampaignError(
+            "A below-floor path is at or above the campaign floor: "
+            + ", ".join(item["anchor"] for item in wrongly_below_floor)
+        )
+    novel = []
+    known = []
+    accounted_known = []
+    for path_item in result["paths"]:
+        if path_item["disposition"] not in ("novel", "known"):
+            if path_item.get("mechanism_key"):
+                existing = ledger.mechanism(
+                    path_item.get("area_key") or parent["area_key"],
+                    path_item["mechanism_key"],
+                )
+                if existing:
+                    if path_item["disposition"] == "mandatory":
+                        raise CampaignError(
+                            f"Existing mechanism {path_item['mechanism_key']} "
+                            "cannot be resolved as mandatory; use known to "
+                            "reopen it or below-floor/out-of-scope with evidence"
+                        )
+                    accounted_known.append((existing, path_item))
+            continue
+        area_key = path_item.get("area_key") or parent["area_key"]
+        existing = ledger.mechanism(area_key, path_item["mechanism_key"])
+        if path_item["disposition"] == "novel":
+            if existing:
+                raise CampaignError(
+                    f"Path {path_item['mechanism_key']} is marked novel but "
+                    f"already exists as #{existing['id']:03d}"
+                )
+            novel.append((path_item, area_key))
+        else:
+            if not existing:
+                raise CampaignError(
+                    f"Path {path_item['mechanism_key']} is marked known but "
+                    "does not exist in the ledger"
+                )
+            known.append((existing, path_item))
+
+    created = []
+    for path_item, area_key in novel:
+        opp = new_opportunity(
+            ledger,
+            kind="mechanism",
+            anchor=path_item["anchor"],
+            area_key=area_key,
+            mechanism_key=path_item["mechanism_key"],
+            parent_id=parent["id"],
+            profile_id=parent.get("profile_id"),
+            share=path_item["share_pct"],
+            stories=path_item.get("stories") or parent.get("stories"),
+            dossier=path_item.get("dossier") or parent.get("dossier"),
+            expected_value=path_item.get("expected_value"),
+            expected_value_unit=path_item.get("expected_value_unit"),
+            notes=path_item.get("notes"),
+        )
+        record_mechanism_observation(opp, parent, path_item)
+        created.append(opp)
+    for opp, path_item in known:
+        profile_id = parent.get("profile_id")
+        if profile_id and profile_id not in opp.setdefault("source_profile_ids", []):
+            opp["source_profile_ids"].append(profile_id)
+            ledger.record(
+                opp,
+                f"rediscovered under discovery #{parent['id']:03d} "
+                f"in profile {profile_id}",
+            )
+        if parent["id"] not in opp.setdefault("discovery_ids", []):
+            opp["discovery_ids"].append(parent["id"])
+        record_mechanism_observation(opp, parent, path_item)
+        if opp["status"] == "parked":
+            opp["status"] = "candidate"
+            opp["status_since"] = utc_now()
+            opp["reason"] = None
+            ledger.record(
+                opp,
+                f"automatically reopened because profile {profile_id} "
+                "rediscovered the parked mechanism",
+            )
+    for opp, path_item in accounted_known:
+        profile_id = parent.get("profile_id")
+        if profile_id and profile_id not in opp.setdefault("source_profile_ids", []):
+            opp["source_profile_ids"].append(profile_id)
+        record_mechanism_observation(opp, parent, path_item)
+        ledger.record(
+            opp,
+            f"accounted as {path_item['disposition']} under discovery "
+            f"#{parent['id']:03d} in profile {profile_id}",
+        )
+    parent["known_mechanism_ids"] = sorted(
+        {opp["id"] for opp in created + [item[0] for item in known]}
+    )
+    parent["accounting_evidence"] = result["accounting_evidence"]
+    parent["path_accounting"] = result["paths"]
+    parent["status"] = "decomposed"
+    parent["status_since"] = utc_now()
+    detail = (
+        f"decomposed into {len(created)} new mechanism(s); "
+        f"{len(known)} previously known mechanism(s) reconciled"
+    )
+    ledger.record(parent, detail)
+    ledger.save()
+    print(f"Discovery #{parent['id']:03d} {detail}")
+    for opp in created:
+        print(
+            f"  added #{opp['id']:03d} "
+            f"{opp['area_key']}/{opp['mechanism_key']}"
+        )
+    for opp, _ in known:
+        print(
+            f"  skipped known #{opp['id']:03d} "
+            f"{opp['area_key']}/{opp['mechanism_key']} [{opp['status']}]"
+        )
+    return 0
+
+
+def cmd_exhaust(args):
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    discovery = ledger.opp(args.opp)
+    if discovery.get("kind") != "discovery":
+        raise CampaignError("Only a discovery record can be marked exhausted")
+    if discovery["status"] != "decomposed":
+        raise CampaignError(
+            f"Discovery #{discovery['id']:03d} is {discovery['status']}; "
+            "record the complete path-accounting decomposition before exhaustion"
+        )
+    unresolved = [
+        child for child in ledger.children(discovery["id"])
+        if child["status"] not in MECHANISM_TERMINAL
+    ]
+    if unresolved:
+        ids = ", ".join(f"#{child['id']:03d}" for child in unresolved)
+        raise CampaignError(
+            f"Discovery #{discovery['id']:03d} still has unresolved child "
+            f"mechanisms: {ids}"
+        )
+    profile_sequence = ledger.profile(discovery["profile_id"]).get("sequence", 0)
+    stale_runtime_children = [
+        child for child in ledger.children(discovery["id"])
+        if (child.get("runtime_change_sequence") or 0) > profile_sequence
+    ]
+    if stale_runtime_children:
+        raise CampaignError(
+            "A discovery cannot prove residual exhaustion after an associated "
+            "mechanism landed or reverted. Capture a follow-on flag-enabled "
+            "profile and use its new discovery."
+        )
+    discovery["status"] = "exhausted"
+    discovery["status_since"] = utc_now()
+    discovery["reason"] = args.reason
+    discovery["exhaustion_evidence"] = args.evidence
+    ledger.record(
+        discovery, f"exhausted: {args.reason}; evidence: {args.evidence}"
+    )
+    ledger.save()
+    print(f"Discovery #{discovery['id']:03d} exhausted for profile {discovery['profile_id']}")
     return 0
 
 
@@ -559,26 +2200,54 @@ def cmd_review(args):
     return 0
 
 
-def _close(args, status):
+def _close(args, status, *, allowed_statuses, evidence=None):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     opp = ledger.opp(args.opp)
-    if opp["status"] == "landed":
-        raise CampaignError(f"#{opp['id']:03d} already landed; cannot {status[:-2]}")
+    if opp["status"] not in allowed_statuses:
+        raise CampaignError(
+            f"#{opp['id']:03d} is {opp['status']}; cannot mark it {status}. "
+            f"Allowed source states: {', '.join(sorted(allowed_statuses))}"
+        )
     opp["status"] = status
     opp["status_since"] = utc_now()
     opp["reason"] = args.reason
+    if evidence is not None:
+        opp["rejection_evidence"] = evidence
     ledger.record(opp, f"{status}: {args.reason}")
+    if evidence is not None:
+        ledger.record(opp, f"rejection evidence: {evidence}")
     ledger.save()
     print(f"#{opp['id']:03d} {status}: {args.reason}")
     return 0
 
 
 def cmd_reject(args):
-    return _close(args, "rejected")
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    opp = ledger.opp(args.opp)
+    if opp.get("kind") == "discovery":
+        raise CampaignError(
+            f"#{opp['id']:03d} is a discovery area, not one optimization path; "
+            "use `decompose`, `exhaust`, or `park` instead of rejecting it"
+        )
+    if not args.evidence:
+        raise CampaignError(
+            "Rejecting a mechanism requires --evidence tied to the source or "
+            "profile result that rules out this individual path"
+        )
+    return _close(
+        args,
+        "rejected",
+        allowed_statuses={"investigating", "sized", "implementing", "review"},
+        evidence=args.evidence,
+    )
 
 
 def cmd_park(args):
-    return _close(args, "parked")
+    return _close(
+        args,
+        "parked",
+        allowed_statuses={"candidate", "investigating", "sized"},
+    )
 
 
 def cmd_revert(args):
@@ -592,10 +2261,17 @@ def cmd_revert(args):
             f"#{opp['id']:03d} is {opp['status']}; revert applies to landed "
             "opportunities"
         )
-    verify_commit(find_repo_root(pathlib.Path.cwd()), args.revert_commit)
+    full_sha = verify_revert_commit(
+        opp,
+        find_repo_root(pathlib.Path.cwd()),
+        args.revert_commit,
+        ledger.data["config"].get("branch"),
+    )
     opp["status"] = "reverted"
     opp["status_since"] = utc_now()
-    opp["revert_commit"] = args.revert_commit
+    opp["revert_commit"] = full_sha
+    opp["runtime_change_sequence"] = ledger.data["next_sequence"]
+    ledger.data["next_sequence"] += 1
     opp["reason"] = args.reason
     ledger.record(
         opp, f"reverted by {args.revert_commit[:12]}: {args.reason}"
@@ -610,15 +2286,51 @@ def cmd_revert(args):
 def cmd_reopen(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     opp = ledger.opp(args.opp)
+    if opp.get("kind") != "mechanism":
+        raise CampaignError("Only an individual mechanism path can be reopened")
     if opp["status"] not in ("rejected", "parked", "reverted"):
         raise CampaignError(
             f"#{opp['id']:03d} is {opp['status']}; reopen applies to "
             "rejected/parked/reverted"
         )
+    if opp["status"] in ("rejected", "reverted"):
+        if not args.contradicts_prior_evidence or not args.reason:
+            raise CampaignError(
+                "Rejected/reverted mechanisms stay ruled out. Reopening one "
+                "requires --contradicts-prior-evidence and --reason describing "
+                "the new evidence. A different mechanism must use a new key."
+            )
+        opp.setdefault("prior_attempts", []).append({
+            "status": opp["status"],
+            "reason": opp.get("reason"),
+            "commit": opp.get("commit"),
+            "revert_commit": opp.get("revert_commit"),
+            "ceiling_pct": opp.get("ceiling_pct"),
+            "evidence": opp.get("evidence"),
+            "ts": utc_now(),
+        })
+        for field, value in (
+            ("ceiling_pct", None), ("evidence", None), ("tests", None),
+            ("commit", None), ("revert_commit", None), ("reviews", {}),
+            ("rework_rounds", 0), ("squeeze_rounds", 0),
+        ):
+            opp[field] = value
     opp["status"] = "candidate"
     opp["status_since"] = utc_now()
     opp["reason"] = None
-    ledger.record(opp, "reopened as candidate")
+    detail = f": {args.reason}" if args.reason else ""
+    ledger.record(opp, f"reopened as candidate{detail}")
+    for discovery_id in opp.get("discovery_ids", []):
+        discovery = ledger.opp(discovery_id)
+        if discovery.get("kind") == "discovery" and discovery["status"] == "exhausted":
+            discovery["status"] = "decomposed"
+            discovery["status_since"] = utc_now()
+            discovery["reason"] = None
+            discovery["exhaustion_evidence"] = None
+            ledger.record(
+                discovery,
+                f"exhaustion invalidated because child #{opp['id']:03d} reopened",
+            )
     ledger.save()
     print(f"#{opp['id']:03d} reopened")
     return 0
@@ -662,10 +2374,39 @@ def cmd_status(args):
     return 0
 
 
+def cmd_audit_exhaustion(args):
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    blockers = ledger.exhaustion_blockers()
+    if ledger.data.get("profile_runs"):
+        blockers.extend(checkout_exhaustion_blockers(
+            ledger,
+            allow_unverified=args.allow_unverified_repository,
+        ))
+    if blockers:
+        print("Campaign opportunity exhaustion is NOT established:")
+        for blocker in blockers:
+            print(f"- {blocker}")
+        return 1
+    latest = ledger.data["profile_runs"][-1]
+    excluded = latest.get("excluded_areas", [])
+    print(
+        f"Campaign opportunity exhaustion established by profile "
+        f"{latest['id']} and resolved ledger state "
+        f"({len(excluded)} structured area exclusion(s))"
+    )
+    return 0
+
+
 def cmd_show(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     if args.opp is not None:
         print(json.dumps(ledger.opp(args.opp), indent=2))
+    elif args.area_key is not None:
+        print(json.dumps([
+            opp for opp in ledger.data["opportunities"]
+            if opp.get("area_key") == args.area_key
+            or opp.get("area_key", "").startswith(args.area_key + "/")
+        ], indent=2))
     else:
         print(json.dumps(ledger.data, indent=2))
     return 0
@@ -674,9 +2415,11 @@ def cmd_show(args):
 def cmd_next(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     for o in ledger.next_candidates(args.count):
+        priority, basis, measured = ledger.priority_info(o)
         print(
-            f"#{o['id']:03d} {o['anchor']} share={o.get('share_pct', 0.0):.2f}% "
-            f"ev={o.get('expected_value')}"
+            f"#{o['id']:03d} {o['anchor']} priority={priority:.3f} "
+            f"basis={basis} measured={measured:.3f}% "
+            f"reported={o.get('share_pct', 0.0):.3f}%"
         )
     return 0
 
@@ -705,18 +2448,82 @@ def build_parser():
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_init)
 
-    p = sub.add_parser("add", help="Add a candidate opportunity")
+    p = sub.add_parser("profile", help="Record one reconciled follow-on profile frontier")
+    p.add_argument("--id", required=True, help="Stable capture/group id")
+    p.add_argument("--sha", required=True, help="Profiled campaign commit")
+    p.add_argument(
+        "--areas", required=True,
+        help="Complete source-accounted profile reconciliation JSON object",
+    )
+    p.add_argument(
+        "--capture-summaries", required=True,
+        help="JSON array of at least two independent remote_measure summaries",
+    )
+    p.add_argument(
+        "--enable-features", required=True,
+        help="Comma-separated feature state used for every capture",
+    )
+    p.add_argument(
+        "--allow-unverified-repository", action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    p.add_argument("--artifacts", default=None, help="Summary/artifact paths")
+    p.add_argument("--notes", default=None)
+    p.set_defaults(func=cmd_profile)
+
+    p = sub.add_parser("add", help="Add a discovery area or concrete mechanism")
     p.add_argument("--anchor", required=True, help="Anchor symbol/subtree description")
-    p.add_argument("--share", type=float, required=True, help="Marginal profile share (%%)")
+    p.add_argument(
+        "--kind", choices=("discovery", "mechanism"), default=None,
+        help="Explicit record type (omitting preserves the legacy mechanism CLI)",
+    )
+    p.add_argument("--area-key", default=None, help="Stable candidate-area identity")
+    p.add_argument("--mechanism-key", default=None, help="Stable optimization-path identity")
+    p.add_argument("--parent", type=int, default=None, help="Parent discovery/opportunity id")
+    p.add_argument("--profile-id", default=None, help="Profile that observed this area/path")
+    p.add_argument("--share", type=float, required=True, help="Marginal or overlap profile share (%%)")
     p.add_argument("--stories", default=None, help="Comma-separated stories where samples concentrate")
     p.add_argument("--dossier", default=None, help="Path to the dossier file")
     p.add_argument("--expected-value", type=float, default=None)
+    p.add_argument(
+        "--expected-value-unit",
+        choices=(EXPECTED_VALUE_UNIT,),
+        default=None,
+        help=(
+            "Required with --expected-value; declares a profile-share-equivalent "
+            "percentage so the override is globally comparable"
+        ),
+    )
     p.add_argument("--notes", default=None)
     p.set_defaults(func=cmd_add)
 
+    p = sub.add_parser(
+        "decompose", help="Atomically fan a discovery out into mechanism candidates"
+    )
+    p.add_argument("--opp", type=int, required=True, help="Discovery opportunity id")
+    p.add_argument(
+        "--children", required=True,
+        help="Complete decomposition JSON object with accounting and path dispositions",
+    )
+    p.set_defaults(func=cmd_decompose)
+
+    p = sub.add_parser(
+        "exhaust", help="Mark one profiled discovery exhausted with evidence"
+    )
+    p.add_argument("--opp", type=int, required=True)
+    p.add_argument("--reason", required=True)
+    p.add_argument(
+        "--evidence", required=True,
+        help="Overlap-aware evidence that no untried viable mechanism remains",
+    )
+    p.set_defaults(func=cmd_exhaust)
+
     p = sub.add_parser("advance", help="Move an opportunity through a gate")
     p.add_argument("--opp", type=int, required=True)
-    p.add_argument("--to", required=True, choices=[s for s in STATUSES if s not in ("candidate", "rejected", "parked")])
+    p.add_argument(
+        "--to", required=True,
+        choices=("investigating", "sized", "implementing", "review", "landed"),
+    )
     p.add_argument("--ceiling", type=float, default=None, help="Evidenced eliminable share (%%)")
     p.add_argument("--evidence", default=None)
     p.add_argument("--tests", default=None)
@@ -747,6 +2554,10 @@ def build_parser():
     p = sub.add_parser("reject", help="Reject an opportunity with a reason")
     p.add_argument("--opp", type=int, required=True)
     p.add_argument("--reason", required=True)
+    p.add_argument(
+        "--evidence", required=True,
+        help="Source/profile evidence that rules out this individual mechanism",
+    )
     p.set_defaults(func=cmd_reject)
 
     p = sub.add_parser("park", help="Defer an opportunity with a reason")
@@ -760,8 +2571,10 @@ def build_parser():
     p.add_argument("--reason", required=True)
     p.set_defaults(func=cmd_revert)
 
-    p = sub.add_parser("reopen", help="Return a rejected/parked/reverted opportunity to the pool")
+    p = sub.add_parser("reopen", help="Return a parked or newly-contradicted mechanism to the pool")
     p.add_argument("--opp", type=int, required=True)
+    p.add_argument("--contradicts-prior-evidence", action="store_true")
+    p.add_argument("--reason", default=None, help="New evidence justifying a terminal-path retry")
     p.set_defaults(func=cmd_reopen)
 
     p = sub.add_parser("note", help="Append a note to an opportunity")
@@ -782,8 +2595,19 @@ def build_parser():
     p.add_argument("--print", action="store_true")
     p.set_defaults(func=cmd_status)
 
+    p = sub.add_parser(
+        "audit-exhaustion",
+        help="Check whether the latest profile and ledger prove campaign exhaustion",
+    )
+    p.add_argument(
+        "--allow-unverified-repository", action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    p.set_defaults(func=cmd_audit_exhaustion)
+
     p = sub.add_parser("show", help="Dump ledger or one opportunity as JSON")
     p.add_argument("--opp", type=int, default=None)
+    p.add_argument("--area-key", default=None, help="Show all history for one area")
     p.set_defaults(func=cmd_show)
 
     p = sub.add_parser("next", help="Print the next candidates by priority")
@@ -796,7 +2620,11 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
-        return args.func(args)
+        campaign_dir = pathlib.Path(args.dir or default_campaign_dir())
+        campaign_dir.mkdir(parents=True, exist_ok=True)
+        with open(campaign_dir / ".ledger.lock", "a+") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            return args.func(args)
     except CampaignError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

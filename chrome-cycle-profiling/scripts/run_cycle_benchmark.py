@@ -171,6 +171,18 @@ def main():
             "Chrome silently ignores names that are not defined in the binary."
         ),
     )
+    parser.add_argument(
+        "--min-share",
+        type=float,
+        default=0.001,
+        help="Fractional inclusive-share floor for candidate eligibility",
+    )
+    parser.add_argument(
+        "--min-marginal-share",
+        type=float,
+        default=0.001,
+        help="Fractional profile-share floor for the exhaustive candidate inventory",
+    )
     args = parser.parse_args()
 
     cwd = get_repo_root()
@@ -311,6 +323,10 @@ def main():
             manifest_file,
             "--out-dir",
             analysis_dir,
+            "--min-marginal-share",
+            str(args.min_marginal_share),
+            "--min-share",
+            str(args.min_share),
         ]
         if run_analyzer(full_command, cwd) == ANALYSIS_REJECTED_EXIT_CODE:
             rejected_analyses.append("full process tree")
@@ -336,6 +352,10 @@ def main():
                 "renderer",
                 "--out-dir",
                 renderer_dir,
+                "--min-marginal-share",
+                str(args.min_marginal_share),
+                "--min-share",
+                str(args.min_share),
             ]
             if run_analyzer(renderer_command, cwd) == ANALYSIS_REJECTED_EXIT_CODE:
                 rejected_analyses.append("renderer")
