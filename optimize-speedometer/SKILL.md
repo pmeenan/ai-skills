@@ -169,9 +169,15 @@ Repeat until a stopping rule fires:
      --artifacts "..."
    ```
 
-   The reconciliation manifest is a JSON object containing **every** recurrent
-   coverage-frontier entry above the floor and accounting for every raw source
-   entry from both captures:
+   **Never hand-author the manifest from scratch.** Generate it with
+   `campaign.py profile-scaffold --capture-summaries <capture-summaries.json>
+   --out <profile-reconciliation.json>`: recurrence matching, source refs,
+   shares, and the parked-mechanism reconciliation are mechanical joins of the
+   machine inventories, so the scaffold prefills them; the profiler then only
+   reviews dispositions (`discover` vs `exclude` under the admission rule) and
+   supplies exclusion evidence. The manifest is a JSON object containing
+   **every** recurrent coverage-frontier entry above the floor and accounting
+   for every raw source entry from both captures:
 
    ```json
    {"areas":[
@@ -204,7 +210,13 @@ Repeat until a stopping rule fires:
    of trusting copied summary fields. Every raw frontier entry must appear
    exactly once as its own area's source refs from every capture, or as a
    genuinely nonrecurrent source exclusion; distinct entries cannot be
-   coalesced into a coarse parent. The manifest also explicitly reconciles
+   coalesced into a coarse parent. Recurrence is judged on the digest-free
+   semantic work identity: a caller-specific context whose path digest differs
+   between captures—or moves between context and function representation—still
+   recurs, must be reconciled as one area (its per-capture `source_refs` may
+   carry different exact keys), and can never be dropped as `not-recurrent`;
+   a surplus same-symbol context may be excluded as `context-variant` only
+   while a sibling area covers that symbol. The manifest also explicitly reconciles
    every globally parked mechanism as recurrent (mapped to a discoverable
    area) or nonrecurrent with evidence. Stable source-entry-to-area mappings
    cannot silently change across profiles. It validates scope exclusions and
@@ -261,29 +273,45 @@ Repeat until a stopping rule fires:
    tree lease (and wait while an implementer holds it).
    - A **discovery** returns one exhaustive JSON object with matching
      `area_key`, `profile_id`, `accounting_evidence`, and a nonempty `paths`
-     array. Every supplied hotspot/path has disposition `novel`, `known`,
-     `mandatory`, `below-floor`, or `out-of-scope`, plus anchor, overlap share,
-     and evidence. Each path has `work_refs` to profiler roots/hotspots with
-     `accounting: primary|overlap`; every expected work ref requires exactly
-     one primary owner, and a primary path may cover only one hotspot key
-     across captures. Thus a coarse one-row disposition cannot swallow distinct
-     children. Novel/known rows also have a globally namespaced,
-     source-and-strategy-specific `mechanism_key`. Store the whole object and
-     atomically persist it with `campaign.py decompose --opp N --children
-     <path>`. The command creates novel paths, links known paths, records fresh
-     observations, and reopens rediscovered parked paths. If a prior parked
-     path is now below-floor/out-of-scope, keep its existing key on that row;
-     the audit rejects a latest-area decomposition that silently omits it.
-     A parked path whose prior profiler work fingerprint recurs cannot be
-     declared nonrecurrent, and an existing mechanism cannot be hidden under a
-     `mandatory` disposition: use `known` (which reopens it) or evidenced
+     array. Start the investigator from `campaign.py decompose-scaffold
+     --opp N --out <path>` — it emits one path row per profiler hotspot with
+     the exactly-one-primary `work_refs` accounting prefilled and blank
+     dispositions, so the investigator supplies only judgments. Every
+     supplied hotspot/path has disposition `novel`, `known`, `covered-by`,
+     `mandatory`, `below-floor`, or `out-of-scope`, plus anchor, overlap
+     share, and evidence. Each path has `work_refs` to profiler
+     roots/hotspots with `accounting: primary|overlap`; every expected work
+     ref requires exactly one primary owner, and a primary path may cover
+     only one hotspot key across captures. Thus a coarse one-row disposition
+     cannot swallow distinct children — while a recursive wrapper frame whose
+     samples are the same work as another path is dispositioned `covered-by`
+     with `covered_by: <owner mechanism_key>`, never falsely `mandatory` and
+     never a spurious sibling mechanism. Novel/known rows also have a
+     globally namespaced, source-and-strategy-specific `mechanism_key`.
+     Store the whole object and atomically persist it with `campaign.py
+     decompose --opp N --children <path>`. The command creates novel paths,
+     links known paths, records fresh observations, and reopens rediscovered
+     parked paths. If a prior parked path is now below-floor/out-of-scope,
+     keep its existing key on that row; the audit rejects a latest-area
+     decomposition that silently omits it. A parked path whose prior
+     profiler work fingerprint recurs cannot be declared nonrecurrent, and
+     an existing mechanism cannot be hidden under a `mandatory` disposition:
+     use `known` (which reopens it) or evidenced
      `below-floor`/`out-of-scope`.
-   - After decomposition, record `campaign.py exhaust --opp N --reason "..."
+   - After decomposition, dispatch a **skeptic exhaustion review** of the
+     decomposition's `mandatory`/`out-of-scope`/`covered-by` claims — these
+     close work with no other gate. Record it with `campaign.py review
+     --opp N --role skeptic --verdict PASS|FAIL`. A FAIL cannot be overwritten:
+     revise the decomposition by rerunning `campaign.py decompose` (existing
+     child mechanisms become `known` rows), then dispatch a fresh review;
+     every verdict is bound to that exact decomposition revision. Reopening
+     any child also stales the verdict. Then record `campaign.py exhaust --opp N --reason "..."
      --evidence "..."` only when every child is landed/reverted/rejected.
      Evidence must be overlap-aware and tied to the current profile. The ledger
      refuses direct investigation-to-exhaustion, stale post-landing evidence,
-     or exhaustion while any child is open/parked; reopening a child
-     automatically invalidates linked exhausted discoveries.
+     exhaustion without a skeptic PASS, or exhaustion while any child is
+     open/parked; reopening a child automatically invalidates linked
+     exhausted discoveries.
    - A **mechanism** returns sizing evidence. Record
      `campaign.py advance --opp N --to sized --ceiling X --evidence "..."` or
      `campaign.py reject --opp N --reason "..." --evidence "..."`. Reject

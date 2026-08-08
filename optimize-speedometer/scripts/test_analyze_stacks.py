@@ -417,6 +417,49 @@ class AnalyzeStacksTest(unittest.TestCase):
         self.assertEqual(2, len({item["entry_key"] for item in shared_contexts}))
         self.assertTrue(all(item["assigned_frontier_entry"] for item in shared_contexts))
 
+    def test_floor_worthy_low_score_entry_is_not_skipped(self):
+        # After ParentC is selected, TargetB's residual falls below the
+        # marginal floor but still outscores deep single-caller TargetA.
+        # Selection must skip TargetB and still take TargetA, or TargetA
+        # would become an alternative overlapping no frontier entry.
+        lines = []
+        lines += sample(10, 1.0, 2000, ["blink::ParentC::Run()"])
+        lines += sample(10, 2.0, 500, [
+            "blink::TargetB::Run()", "libapp::CallerX()",
+            "blink::ParentC::Run()",
+        ])
+        lines += sample(10, 3.0, 450, [
+            "blink::TargetB::Run()", "libapp::CallerY()",
+            "blink::ParentC::Run()",
+        ])
+        lines += sample(10, 4.0, 95, [
+            "blink::TargetB::Run()", "libapp::CallerZ()",
+        ])
+        lines += sample(10, 5.0, 100, [
+            "blink::TargetA::Run()", "libapp::Wrap1()", "libapp::Wrap2()",
+            "libapp::Wrap3()", "libapp::Wrap4()", "libapp::Wrap5()",
+        ])
+        lines += sample(10, 6.0, 96855, ["libc::UnownedWork()"])
+        parsed = MODULE.parse_perf_script(lines, "story")
+        frontier, alternatives, _ = MODULE.build_frontier(
+            parsed,
+            MODULE.aggregate_samples(parsed),
+            min_share=0.001,
+            min_marginal_share=0.001,
+            limit=20,
+            include=MODULE.DEFAULT_INCLUDE,
+            exclude=MODULE.DEFAULT_EXCLUDE,
+        )
+        self.assertTrue(any(
+            item["name"] == "blink::TargetA::Run()" for item in frontier
+        ))
+        self.assertFalse(any(
+            item["marginal_share"] < 0.001 for item in frontier
+        ))
+        self.assertTrue(all(
+            item["assigned_frontier_entry"] for item in alternatives
+        ))
+
     def test_class_area_does_not_hide_distinct_operations(self):
         lines = []
         lines += sample(

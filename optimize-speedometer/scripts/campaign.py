@@ -23,6 +23,8 @@ Mechanism state machine:
 Discovery state machine:
 
   candidate -> investigating -> decomposed -> exhausted
+                            ^          |
+                            +-- skeptic FAIL / revised decomposition
 
 A discovery is one observation of a profiled candidate area.  It fans out
 atomically into concrete, stably-keyed mechanisms.  Rejected/reverted
@@ -217,6 +219,22 @@ class Ledger:
             opp.setdefault("observations", [])
             opp.setdefault("expected_value_unit", None)
             opp.setdefault("measured_priority_pct", None)
+            if opp["kind"] == "discovery":
+                opp.setdefault("decomposition_revision", 0)
+                opp.setdefault("decomposition_sha256", None)
+                if opp.get("path_accounting"):
+                    if not opp["decomposition_revision"]:
+                        opp["decomposition_revision"] = 1
+                    digest = decomposition_digest(opp)
+                    if not opp["decomposition_sha256"]:
+                        opp["decomposition_sha256"] = digest
+                    skeptic = opp.get("reviews", {}).get("skeptic")
+                    if skeptic:
+                        skeptic.setdefault(
+                            "decomposition_revision",
+                            opp["decomposition_revision"],
+                        )
+                        skeptic.setdefault("decomposition_sha256", digest)
         events = []
         for profile in self.data["profile_runs"]:
             if profile.get("sequence") is None:
@@ -367,6 +385,21 @@ class Ledger:
                     f"latest-profile discovery #{discovery['id']:03d} "
                     f"({discovery['area_key']}) is {discovery['status']}, not exhausted"
                 )
+            elif discovery.get("path_accounting"):
+                review = discovery.get("reviews", {}).get("skeptic", {})
+                digest = decomposition_digest(discovery)
+                if not (
+                    review.get("verdict") == "PASS"
+                    and review.get("decomposition_revision")
+                    == discovery.get("decomposition_revision")
+                    and review.get("decomposition_sha256") == digest
+                    and discovery.get("decomposition_sha256") == digest
+                ):
+                    blockers.append(
+                        f"latest-profile discovery #{discovery['id']:03d} "
+                        "has no current skeptic PASS for its exact "
+                        "decomposition revision"
+                    )
             unresolved_children = [
                 child for child in self.children(discovery["id"])
                 if child["status"] not in MECHANISM_TERMINAL
@@ -501,7 +534,17 @@ class Ledger:
                 elif stale_runtime_child:
                     action = "follow-on profile required"
                 elif discovery["status"] == "decomposed":
-                    action = "record exhaustion evidence"
+                    skeptic = (
+                        discovery.get("reviews", {})
+                        .get("skeptic", {})
+                        .get("verdict")
+                    )
+                    if skeptic == "PASS":
+                        action = "record exhaustion evidence"
+                    elif skeptic == "FAIL":
+                        action = "revise decomposition, then re-review"
+                    else:
+                        action = "skeptic exhaustion review, then exhaust"
                 else:
                     action = "investigate/decompose"
                 lines.append(
@@ -722,6 +765,146 @@ def feature_names(value):
     return {item.strip() for item in (value or "").split(",") if item.strip()}
 
 
+def semantic_entry_identity(entry_key):
+    """Return the profiler work identity represented by a frontier root.
+
+    Context entry keys embed a digest of the full call path, which is exact
+    within one capture but fragile across captures (one differing frame near
+    the root renames the key). A hot symbol can also move between a
+    caller-sensitive context aggregate and a function aggregate across runs.
+    Recurrence decisions must therefore compare the represented symbol, never
+    the raw aggregate kind or context digest.
+    """
+    kind, separator, identity = entry_key.partition(":")
+    if separator and kind in ("context", "function", "symbol"):
+        if kind == "context" and "@" in identity:
+            identity = identity.rsplit("@", 1)[0]
+        return f"symbol:{identity}"
+    return entry_key
+
+
+def semantic_area_keys(source_area_keys):
+    """Group exact historical source keys by recurrence-stable identity."""
+    result = {}
+    for entry_key, area_key in source_area_keys.items():
+        semantic = semantic_entry_identity(entry_key)
+        if area_key not in result.setdefault(semantic, []):
+            result[semantic].append(area_key)
+    return result
+
+
+def decomposition_digest(discovery):
+    """Bind an exhaustion review to the exact decomposition it inspected."""
+    payload = {
+        "area_key": discovery.get("area_key"),
+        "profile_id": discovery.get("profile_id"),
+        "accounting_evidence": discovery.get("accounting_evidence"),
+        "paths": discovery.get("path_accounting"),
+    }
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def derive_frontier_inventory(report):
+    """Derive the per-entry work-item inventory from an analyzer report.
+
+    Single source of truth shared by remote_measure.py (which embeds the
+    result in capture summaries) and the profile importer (which re-derives
+    it for verification) — the two must never drift, because the importer
+    rejects any capture whose summary does not byte-match this derivation.
+
+    Returns (frontier_entries, frontier_inventory, problems). Problems are
+    human-readable strings; a nonempty list means the artifact cannot attest
+    a complete inventory.
+    """
+    problems = []
+    frontier = report.get("frontier")
+    if not isinstance(frontier, list):
+        return [], [], ["artifact has no frontier"]
+    frontier_keys = []
+    for item in frontier:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str) \
+                or not item["name"]:
+            problems.append("frontier has malformed rows")
+            continue
+        entry_key = item.get("entry_key")
+        if not isinstance(entry_key, str) or not entry_key:
+            problems.append("frontier has no stable entry keys")
+            continue
+        frontier_keys.append(entry_key)
+    if len(frontier_keys) != len(set(frontier_keys)):
+        problems.append("frontier repeats an entry key")
+    frontier_key_set = set(frontier_keys)
+    assigned_alternatives = {}
+    assigned_function_names = set()
+    seen_alternative_keys = set()
+    alternatives = report.get("overlapping_alternatives", [])
+    if not isinstance(alternatives, list) or any(
+        not isinstance(item, dict) for item in alternatives
+    ):
+        problems.append("malformed overlapping alternatives")
+        alternatives = []
+    for alternative in alternatives:
+        assigned = alternative.get("assigned_frontier_entry")
+        alternative_key = alternative.get("entry_key")
+        name = alternative.get("name")
+        if not isinstance(alternative_key, str) or not alternative_key:
+            problems.append("alternative has no stable entry key")
+            continue
+        if alternative_key in seen_alternative_keys:
+            problems.append(f"repeats alternative {alternative_key!r}")
+            continue
+        if assigned not in frontier_key_set:
+            problems.append(
+                f"alternative {alternative_key!r} is not assigned to a "
+                "frontier entry"
+            )
+            continue
+        if not isinstance(name, str) or not name:
+            problems.append(f"alternative {alternative_key!r} has no name")
+            continue
+        inclusive_share = alternative.get("inclusive_share")
+        if not isinstance(inclusive_share, (int, float)) or not math.isfinite(
+            float(inclusive_share)
+        ) or float(inclusive_share) < 0:
+            problems.append(
+                f"alternative {alternative_key!r} inclusive_share is invalid"
+            )
+            continue
+        seen_alternative_keys.add(alternative_key)
+        if alternative.get("kind") == "function":
+            assigned_function_names.add(name)
+        assigned_alternatives.setdefault(assigned, []).append({
+            "hotspot_key": f"alternative:{alternative_key}",
+            "semantic_key": f"symbol:{name}",
+            "measured_share_pct": float(inclusive_share) * 100,
+        })
+    inventory = []
+    for item in frontier:
+        entry_key = item.get("entry_key")
+        if entry_key not in frontier_key_set:
+            continue
+        work_items = [{
+            "hotspot_key": "@root",
+            "semantic_key": f"symbol:{item.get('name')}",
+            "measured_share_pct": item.get("marginal_share", 0.0) * 100,
+        }]
+        work_items.extend({
+            "hotspot_key": hotspot["name"],
+            "semantic_key": f"symbol:{hotspot['name']}",
+            "measured_share_pct": hotspot.get("overlap_share", 0.0) * 100,
+        } for hotspot in item.get("related_hotspots", [])
+        if hotspot.get("name") not in assigned_function_names)
+        work_items.extend(assigned_alternatives.get(entry_key, []))
+        inventory.append({
+            "entry_key": entry_key,
+            "work_items": work_items,
+        })
+    return frontier_keys, inventory, problems
+
+
 def load_capture_summaries(
     path, *, expected_sha, feature, expected_features, floor_pct
 ):
@@ -825,84 +1008,14 @@ def load_capture_summaries(
         selection = artifact.get("selection", {})
         if selection.get("inventory_complete") is not True:
             raise CampaignError(f"Capture {capture_id} analyzer inventory is incomplete")
-        artifact_frontier = artifact.get("frontier")
-        if not isinstance(artifact_frontier, list):
-            raise CampaignError(f"Capture {capture_id} artifact has no frontier")
-        if any(
-            not isinstance(item, dict)
-            or not isinstance(item.get("name"), str)
-            or not item["name"]
-            for item in artifact_frontier
-        ):
-            raise CampaignError(f"Capture {capture_id} frontier has malformed rows")
-        frontier_keys = [item.get("entry_key") for item in artifact_frontier]
-        if any(not isinstance(key, str) or not key for key in frontier_keys):
-            raise CampaignError(f"Capture {capture_id} frontier has no stable entry keys")
-        if len(frontier_keys) != len(set(frontier_keys)):
-            raise CampaignError(f"Capture {capture_id} repeats a frontier entry key")
-        frontier_key_set = set(frontier_keys)
-        assigned_alternatives = {}
-        assigned_function_names = set()
-        seen_alternative_keys = set()
-        artifact_alternatives = artifact.get("overlapping_alternatives", [])
-        if not isinstance(artifact_alternatives, list) or any(
-            not isinstance(item, dict) for item in artifact_alternatives
-        ):
+        derived_entries, derived_inventory, derivation_problems = (
+            derive_frontier_inventory(artifact)
+        )
+        if derivation_problems:
             raise CampaignError(
-                f"Capture {capture_id} has malformed overlapping alternatives"
+                f"Capture {capture_id} analyzer artifact cannot attest a "
+                "complete inventory: " + "; ".join(derivation_problems[:5])
             )
-        for alternative in artifact_alternatives:
-            assigned = alternative.get("assigned_frontier_entry")
-            alternative_key = alternative.get("entry_key")
-            if not isinstance(alternative_key, str) or not alternative_key:
-                raise CampaignError(
-                    f"Capture {capture_id} alternative has no stable entry key"
-                )
-            if alternative_key in seen_alternative_keys:
-                raise CampaignError(
-                    f"Capture {capture_id} repeats alternative {alternative_key!r}"
-                )
-            if assigned not in frontier_key_set:
-                raise CampaignError(
-                    f"Capture {capture_id} alternative {alternative_key!r} is not "
-                    "assigned to a frontier entry"
-                )
-            seen_alternative_keys.add(alternative_key)
-            name = alternative.get("name")
-            if not isinstance(name, str) or not name:
-                raise CampaignError(f"Capture {capture_id} alternative has no name")
-            if alternative.get("kind") == "function":
-                assigned_function_names.add(name)
-            inclusive_share = require_finite_number(
-                alternative.get("inclusive_share"),
-                f"Capture {capture_id} alternative {alternative_key} inclusive_share",
-                nonnegative=True,
-            )
-            assigned_alternatives.setdefault(assigned, []).append({
-                "hotspot_key": f"alternative:{alternative_key}",
-                "semantic_key": f"symbol:{name}",
-                "measured_share_pct": inclusive_share * 100,
-            })
-        derived_inventory = []
-        for item in artifact_frontier:
-            entry_key = item["entry_key"]
-            work_items = [{
-                "hotspot_key": "@root",
-                "semantic_key": f"symbol:{item.get('name')}",
-                "measured_share_pct": item.get("marginal_share", 0.0) * 100,
-            }]
-            work_items.extend({
-                "hotspot_key": hotspot["name"],
-                "semantic_key": f"symbol:{hotspot['name']}",
-                "measured_share_pct": hotspot.get("overlap_share", 0.0) * 100,
-            } for hotspot in item.get("related_hotspots", [])
-            if hotspot.get("name") not in assigned_function_names)
-            work_items.extend(assigned_alternatives.get(entry_key, []))
-            derived_inventory.append({
-                "entry_key": entry_key,
-                "work_items": work_items,
-            })
-        derived_entries = [item["entry_key"] for item in derived_inventory]
         summary["artifact_sha256"] = hashlib.sha256(artifact_bytes).hexdigest()
         for field in (
             "analyzer_min_inclusive_share", "analyzer_min_marginal_share"
@@ -1215,8 +1328,8 @@ def cmd_init(args):
         "next_id": 1,
         "opportunities": [],
         "profile_runs": [],
-            "checkpoints": [],
-            "source_area_keys": {},
+        "checkpoints": [],
+        "source_area_keys": {},
     }
     (ledger.dir / "dossiers").mkdir(parents=True, exist_ok=True)
     (ledger.dir / "reviews").mkdir(parents=True, exist_ok=True)
@@ -1258,6 +1371,8 @@ def new_opportunity(ledger, *, kind, anchor, area_key, mechanism_key=None,
         "rework_rounds": 0,
         "squeeze_rounds": 0,
         "reviews": {},
+        "decomposition_revision": 0 if kind == "discovery" else None,
+        "decomposition_sha256": None,
         "reason": None,
         "notes": [notes] if notes else [],
         "history": [],
@@ -1268,7 +1383,7 @@ def new_opportunity(ledger, *, kind, anchor, area_key, mechanism_key=None,
     return opp
 
 
-def record_mechanism_observation(opp, discovery, path):
+def record_mechanism_observation(opp, discovery, path, *, update_sizing=True):
     primary_refs = [
         ref for ref in path.get("work_refs", [])
         if ref.get("accounting") == "primary"
@@ -1294,6 +1409,11 @@ def record_mechanism_observation(opp, discovery, path):
         }),
     }
     opp.setdefault("observations", []).append(observation)
+    if opp["status"] in MECHANISM_TERMINAL or not update_sizing:
+        # Terminal mechanisms keep the fields their verdict used; covered-by
+        # wrapper observations are overlap provenance, not a replacement for
+        # the owning mechanism's sizing identity.
+        return
     opp["anchor"] = observation["anchor"]
     opp["share_pct"] = observation["share_pct"]
     opp["stories"] = observation["stories"]
@@ -1418,9 +1538,10 @@ def load_profile_areas(path):
     for index, exclusion in enumerate(source_exclusions, 1):
         if not isinstance(exclusion, dict):
             raise CampaignError(f"Source exclusion {index} must be an object")
-        if exclusion.get("category") != "not-recurrent":
+        if exclusion.get("category") not in ("not-recurrent", "context-variant"):
             raise CampaignError(
-                f"Source exclusion {index} category must be not-recurrent"
+                f"Source exclusion {index} category must be not-recurrent or "
+                "context-variant"
             )
         if not exclusion.get("evidence"):
             raise CampaignError(f"Source exclusion {index} requires evidence")
@@ -1504,6 +1625,7 @@ def source_ref_tuple(value, label):
 def validate_source_accounting(areas, source_exclusions, summaries):
     expected = set()
     occurrences = {}
+    semantic_occurrences = {}
     hotspot_inventory = {}
     all_capture_ids = {summary["capture_id"] for summary in summaries}
     for summary in summaries:
@@ -1521,10 +1643,14 @@ def validate_source_accounting(areas, source_exclusions, summaries):
             ref = (capture_id, entry_key)
             expected.add(ref)
             occurrences.setdefault(entry_key, set()).add(capture_id)
+            semantic_occurrences.setdefault(
+                semantic_entry_identity(entry_key), set()
+            ).add(capture_id)
         for item in summary["frontier_inventory"]:
             hotspot_inventory[(capture_id, item["entry_key"])] = item["work_items"]
 
     accounted = {}
+    source_area_map = {}
     for index, area in enumerate(areas, 1):
         refs = [
             source_ref_tuple(ref, f"Profile area {index} source ref")
@@ -1532,24 +1658,31 @@ def validate_source_accounting(areas, source_exclusions, summaries):
         ]
         if len(refs) != len(set(refs)):
             raise CampaignError(f"Profile area {index} repeats a source ref")
-        entry_keys = {entry_key for _, entry_key in refs}
-        if len(entry_keys) != 1:
+        # One area maps one semantic entry. Context digests may legitimately
+        # differ per capture, and a symbol may move between context/function
+        # aggregates, so exact entry keys only have to agree on represented
+        # profiler work identity.
+        semantic_ids = {
+            semantic_entry_identity(entry_key) for _, entry_key in refs
+        }
+        if len(semantic_ids) != 1:
             raise CampaignError(
                 f"Profile area {index} coalesces distinct frontier entries; "
                 "each recurrent machine entry requires its own area"
             )
-        entry_key = next(iter(entry_keys))
-        expected_refs = {
-            (capture_id, entry_key)
-            for capture_id in occurrences.get(entry_key, set())
-        }
-        if occurrences.get(entry_key) != all_capture_ids or set(refs) != expected_refs:
+        ref_captures = sorted(capture_id for capture_id, _ in refs)
+        if ref_captures != sorted(all_capture_ids):
             raise CampaignError(
-                f"Profile area {index} must map entry {entry_key!r} exactly once "
-                "from every capture"
+                f"Profile area {index} must map entry "
+                f"{next(iter(semantic_ids))!r} exactly once from every capture"
             )
         work_refs = []
         for capture_id, source_entry in sorted(refs):
+            if (capture_id, source_entry) not in expected:
+                raise CampaignError(
+                    f"Profile area {index} names source entry {source_entry!r} "
+                    f"that capture {capture_id!r} did not report"
+                )
             work_refs.extend({
                 "capture_id": capture_id,
                 "entry_key": source_entry,
@@ -1562,16 +1695,47 @@ def validate_source_accounting(areas, source_exclusions, summaries):
             if ref in accounted:
                 raise CampaignError(f"Source frontier entry {ref} is accounted twice")
             accounted[ref] = f"area {area['area_key']}"
+            source_area_map[ref[1]] = area["area_key"]
+    area_semantics = {
+        semantic_entry_identity(entry_key) for entry_key in source_area_map
+    }
 
     for index, exclusion in enumerate(source_exclusions, 1):
         ref = source_ref_tuple(exclusion, f"Source exclusion {index}")
-        if occurrences.get(ref[1], set()) == all_capture_ids:
-            raise CampaignError(
-                f"Recurrent source entry {ref[1]!r} cannot be excluded as not-recurrent"
-            )
+        semantic_id = semantic_entry_identity(ref[1])
+        if exclusion.get("category") == "context-variant":
+            # A surplus same-symbol caller context whose siblings are already
+            # reconciled as an area; legal only when that area exists, so the
+            # symbol's recurrence can never be dropped wholesale.
+            if not ref[1].startswith("context:"):
+                raise CampaignError(
+                    f"Source entry {ref[1]!r} is not a caller context and "
+                    "cannot use category context-variant"
+                )
+            if semantic_id not in area_semantics:
+                raise CampaignError(
+                    f"Source entry {ref[1]!r} cannot be a context-variant "
+                    f"exclusion: no reconciled area covers {semantic_id!r}"
+                )
+        else:
+            if occurrences.get(ref[1], set()) == all_capture_ids:
+                raise CampaignError(
+                    f"Recurrent source entry {ref[1]!r} cannot be excluded as "
+                    "not-recurrent"
+                )
+            if semantic_occurrences.get(semantic_id, set()) == all_capture_ids:
+                raise CampaignError(
+                    f"Source entry {ref[1]!r} cannot be excluded as "
+                    f"not-recurrent: its semantic profiler identity "
+                    f"{semantic_id!r} occurs in every capture. Context path "
+                    "digests and context/function representation are "
+                    "capture-fragile; reconcile the same-symbol entries as one "
+                    "area with per-capture source_refs (surplus contexts may "
+                    "use category context-variant)"
+                )
         if ref in accounted:
             raise CampaignError(f"Source frontier entry {ref} is accounted twice")
-        accounted[ref] = "not recurrent"
+        accounted[ref] = exclusion["category"]
 
     accounted_set = set(accounted)
     missing = expected - accounted_set
@@ -1584,8 +1748,7 @@ def validate_source_accounting(areas, source_exclusions, summaries):
             f"{capture}:{entry}" for capture, entry in sorted(unexpected)[:5]
         )
         raise CampaignError(f"Reconciliation names unknown source entries: {preview}")
-    return {next(iter({ref["entry_key"] for ref in area["source_refs"]})): area["area_key"]
-            for area in areas}
+    return source_area_map
 
 
 def cmd_profile(args):
@@ -1627,12 +1790,26 @@ def cmd_profile(args):
             "and decompose each child: "
             + ", ".join(area["area_key"] for area in excluded_with_children)
         )
+    historical_source_areas = ledger.data.setdefault("source_area_keys", {})
     for entry_key, area_key in source_area_map.items():
-        prior = ledger.data.setdefault("source_area_keys", {}).get(entry_key)
+        prior = historical_source_areas.get(entry_key)
         if prior and prior != area_key:
             raise CampaignError(
                 f"Source entry {entry_key!r} was previously area {prior!r}; "
                 f"cannot silently rename it to {area_key!r}"
+            )
+    prior_semantic_areas = semantic_area_keys(historical_source_areas)
+    current_semantic_areas = semantic_area_keys(source_area_map)
+    for semantic, current_keys in current_semantic_areas.items():
+        prior_keys = prior_semantic_areas.get(semantic, [])
+        reused = set(current_keys) & set(prior_keys)
+        required_reuse = min(len(current_keys), len(prior_keys))
+        if prior_keys and len(reused) < required_reuse:
+            raise CampaignError(
+                f"Semantic source entry {semantic!r} previously used area "
+                f"key(s) {prior_keys}; cannot silently replace them with "
+                f"{current_keys}. Reuse the prior key(s) even when exact "
+                "context digests or aggregate kinds changed"
             )
     parked_entries = validate_parked_reconciliation(ledger, areas, parked_entries)
     discoveries = [area for area in areas if area["disposition"] == "discover"]
@@ -1713,6 +1890,311 @@ def cmd_profile(args):
     return 0
 
 
+def load_scaffold_summaries(path):
+    try:
+        with open(path) as f:
+            summaries = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CampaignError(f"Cannot read capture summaries {path}: {exc}") from exc
+    if not isinstance(summaries, list) or len(summaries) < 2:
+        raise CampaignError(
+            "Capture summaries must be an array with at least two captures"
+        )
+    for index, summary in enumerate(summaries, 1):
+        if not isinstance(summary, dict) or not summary.get("capture_id"):
+            raise CampaignError(f"Capture summary {index} has no capture_id")
+        if not isinstance(summary.get("frontier_entries"), list) or not isinstance(
+            summary.get("frontier_inventory"), list
+        ):
+            raise CampaignError(
+                f"Capture {summary.get('capture_id')} has no frontier "
+                "inventory; rerun remote_measure.py --mode profile with "
+                "--summary-out"
+            )
+    return summaries
+
+
+def entry_display_name(entry_key):
+    semantic = semantic_entry_identity(entry_key)
+    return semantic.split(":", 1)[1] if ":" in semantic else semantic
+
+
+def cmd_profile_scaffold(args):
+    """Emit a prefilled reconciliation manifest from the machine inventories.
+
+    Recurrence, source refs, shares, and parked-mechanism reconciliation are
+    mechanical joins of the capture summaries; deriving them here leaves the
+    profiler only the judgment calls (dispositions, exclusion evidence) and
+    removes the error-prone hand-matching of raw entry keys.
+    """
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    summaries = load_scaffold_summaries(args.capture_summaries)
+    capture_order = [summary["capture_id"] for summary in summaries]
+    all_captures = set(capture_order)
+    root_share = {}
+    entry_order = []
+    by_semantic = {}
+    inventories = {}
+    for summary in summaries:
+        capture_id = summary["capture_id"]
+        inventory = {
+            item.get("entry_key"): item.get("work_items", [])
+            for item in summary["frontier_inventory"]
+            if isinstance(item, dict)
+        }
+        inventories[capture_id] = inventory
+        for entry_key in summary["frontier_entries"]:
+            if not isinstance(entry_key, str) or not entry_key:
+                continue
+            root_share[(capture_id, entry_key)] = next((
+                work.get("measured_share_pct", 0.0)
+                for work in inventory.get(entry_key, [])
+                if isinstance(work, dict) and work.get("hotspot_key") == "@root"
+            ), 0.0)
+            semantic = semantic_entry_identity(entry_key)
+            if semantic not in by_semantic:
+                entry_order.append(semantic)
+            by_semantic.setdefault(semantic, {}).setdefault(
+                capture_id, []
+            ).append(entry_key)
+
+    prior_area_keys = ledger.data.get("source_area_keys", {})
+    prior_semantic_area_keys = semantic_area_keys(prior_area_keys)
+    used_area_keys = set()
+
+    def derive_area_key(entry_keys):
+        for entry_key in entry_keys:
+            prior = prior_area_keys.get(entry_key)
+            if prior and prior not in used_area_keys:
+                used_area_keys.add(prior)
+                return prior
+        semantic = semantic_entry_identity(entry_keys[0])
+        for prior in prior_semantic_area_keys.get(semantic, []):
+            if prior not in used_area_keys:
+                used_area_keys.add(prior)
+                return prior
+        base = canonical_key(entry_display_name(entry_keys[0]))
+        candidate = base
+        suffix = 2
+        while candidate in used_area_keys:
+            candidate = f"{base}-{suffix}"
+            suffix += 1
+        used_area_keys.add(candidate)
+        return candidate
+
+    areas = []
+    source_exclusions = []
+    for semantic in entry_order:
+        per_capture = by_semantic[semantic]
+        for capture_id, entries in per_capture.items():
+            entries.sort(
+                key=lambda entry: root_share[(capture_id, entry)], reverse=True
+            )
+        if set(per_capture) == all_captures:
+            paired = min(len(entries) for entries in per_capture.values())
+            for rank in range(paired):
+                refs = [
+                    {"capture_id": capture_id,
+                     "entry_key": per_capture[capture_id][rank]}
+                    for capture_id in capture_order
+                ]
+                shares = [
+                    root_share[(ref["capture_id"], ref["entry_key"])]
+                    for ref in refs
+                ]
+                area = {
+                    "area_key": derive_area_key(
+                        [ref["entry_key"] for ref in refs]
+                    ),
+                    "anchor": entry_display_name(refs[0]["entry_key"]),
+                    "marginal_share_pct": sum(shares) / len(shares),
+                    "disposition": "discover",
+                    "source_refs": refs,
+                }
+                if paired > 1:
+                    area["notes"] = (
+                        "scaffold paired same-symbol caller contexts by "
+                        "per-capture share rank; verify the pairing"
+                    )
+                areas.append(area)
+            for capture_id in capture_order:
+                for entry_key in per_capture[capture_id][paired:]:
+                    source_exclusions.append({
+                        "capture_id": capture_id,
+                        "entry_key": entry_key,
+                        "category": "context-variant",
+                        "evidence": (
+                            "surplus same-symbol caller context; sibling "
+                            "contexts are reconciled as an area"
+                        ),
+                    })
+        else:
+            absent = sorted(all_captures - set(per_capture))
+            for capture_id in capture_order:
+                for entry_key in per_capture.get(capture_id, []):
+                    source_exclusions.append({
+                        "capture_id": capture_id,
+                        "entry_key": entry_key,
+                        "category": "not-recurrent",
+                        "evidence": (
+                            "absent from capture(s): " + ", ".join(absent)
+                        ),
+                    })
+
+    entry_to_area = {
+        ref["entry_key"]: area["area_key"]
+        for area in areas
+        for ref in area["source_refs"]
+    }
+    area_semantic_work = {}
+    for area in areas:
+        for ref in area["source_refs"]:
+            for work in inventories[ref["capture_id"]].get(ref["entry_key"], []):
+                if isinstance(work, dict) and work.get("semantic_key"):
+                    area_semantic_work.setdefault(
+                        work["semantic_key"], area["area_key"]
+                    )
+    parked_entries = []
+    for opp in ledger.data["opportunities"]:
+        if opp.get("kind") != "mechanism" or opp["status"] != "parked":
+            continue
+        fingerprints = {
+            fingerprint
+            for observation in opp.get("observations", [])
+            for fingerprint in observation.get("work_fingerprints", [])
+        }
+        recurring = sorted(fingerprints & set(area_semantic_work))
+        if recurring:
+            parked_entries.append({
+                "mechanism_key": opp["mechanism_key"],
+                "disposition": "recurrent",
+                "area_key": area_semantic_work[recurring[0]],
+                "notes": (
+                    "scaffold: prior work fingerprints recur: "
+                    + ", ".join(recurring[:3])
+                ),
+            })
+        else:
+            parked_entries.append({
+                "mechanism_key": opp["mechanism_key"],
+                "disposition": "not-recurrent",
+                "evidence": (
+                    "no prior work fingerprint of this mechanism appears in "
+                    "any capture's reconciled area inventory"
+                ),
+            })
+
+    manifest = {
+        "areas": areas,
+        "source_exclusions": source_exclusions,
+        "parked_mechanisms": parked_entries,
+    }
+    out = pathlib.Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(manifest, indent=2) + "\n")
+    print(
+        f"Scaffolded {len(areas)} area(s), {len(source_exclusions)} source "
+        f"exclusion(s), {len(parked_entries)} parked reconciliation(s) -> "
+        f"{out}"
+    )
+    print(
+        "Review every disposition (discover vs exclude needs the admission "
+        "rule) before `campaign.py profile`."
+    )
+    return 0
+
+
+def cmd_decompose_scaffold(args):
+    """Emit a decomposition skeleton with the primary accounting prefilled.
+
+    One path row per profiler hotspot, work_refs already satisfying the
+    exactly-one-primary rule; the investigator supplies only dispositions,
+    keys, and evidence. Blank dispositions fail validation, so an unedited
+    scaffold cannot be recorded.
+    """
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    discovery = ledger.opp(args.opp)
+    if discovery.get("kind") != "discovery":
+        raise CampaignError("decompose-scaffold takes a discovery opportunity id")
+    refs = discovery.get("expected_work_refs") or []
+    if not refs:
+        raise CampaignError(
+            f"Discovery #{discovery['id']:03d} has no profiler work inventory"
+        )
+    grouped = {}
+    order = []
+    for ref in refs:
+        key = ref["hotspot_key"]
+        if key not in grouped:
+            order.append(key)
+        grouped.setdefault(key, []).append(ref)
+
+    def hotspot_share(key):
+        return max(
+            ref.get("measured_share_pct", 0.0) or 0.0 for ref in grouped[key]
+        )
+
+    order.sort(key=hotspot_share, reverse=True)
+    paths = []
+    for key in order:
+        rows = grouped[key]
+        semantic = rows[0].get("semantic_key") or key
+        anchor = semantic.split(":", 1)[1] if ":" in semantic else semantic
+        if key == "@root":
+            anchor = discovery.get("anchor") or anchor
+        paths.append({
+            "disposition": "",
+            "anchor": anchor,
+            "share_pct": hotspot_share(key),
+            "evidence": "",
+            "work_refs": [
+                {
+                    "capture_id": ref["capture_id"],
+                    "entry_key": ref["entry_key"],
+                    "hotspot_key": ref["hotspot_key"],
+                    "accounting": "primary",
+                }
+                for ref in rows
+            ],
+        })
+    area_key = discovery["area_key"]
+    ledger_mechanisms = [
+        {
+            "mechanism_key": opp["mechanism_key"],
+            "status": opp["status"],
+            "area_key": opp["area_key"],
+        }
+        for opp in ledger.data["opportunities"]
+        if opp.get("kind") == "mechanism" and opp.get("mechanism_key")
+        and (opp.get("area_key") == area_key
+             or opp.get("area_key", "").startswith(area_key + "/"))
+    ]
+    scaffold = {
+        "area_key": area_key,
+        "profile_id": discovery.get("profile_id"),
+        "accounting_evidence": "",
+        "scaffold_note": (
+            "Fill disposition (novel|known|covered-by|mandatory|below-floor|"
+            "out-of-scope), evidence, and mechanism_key (novel/known) or "
+            "covered_by (covered-by) on every path; fill accounting_evidence. "
+            "work_refs already satisfy the exactly-one-primary rule and "
+            "normally need no edits. ledger_mechanisms_for_area lists keys "
+            "that must be reconciled as known/below-floor/out-of-scope, "
+            "never re-invented"
+        ),
+        "ledger_mechanisms_for_area": ledger_mechanisms,
+        "paths": paths,
+    }
+    out = pathlib.Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(scaffold, indent=2) + "\n")
+    print(
+        f"Scaffolded {len(paths)} path row(s) for discovery "
+        f"#{discovery['id']:03d} ({area_key}) -> {out}"
+    )
+    return 0
+
+
 def cmd_add(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     args.share = require_finite_number(args.share, "--share", nonnegative=True)
@@ -1733,10 +2215,12 @@ def cmd_add(args):
     )
     # No --kind preserves the version-1 CLI for hand-created/test ledgers.
     kind = args.kind or "mechanism"
-    if kind == "discovery" and args.expected_value is not None:
+    if kind == "discovery":
         raise CampaignError(
-            "Discovery expected_value overrides are forbidden; discoveries rank "
-            "by their hottest measured profiler work"
+            "Discovery records are created only by `campaign.py profile` from "
+            "a reconciled capture manifest; a hand-added discovery would have "
+            "no profiler work inventory, so it could never be decomposed or "
+            "exhausted"
         )
     mechanism_key = args.mechanism_key
     if args.kind is None and mechanism_key is None:
@@ -1854,7 +2338,8 @@ def load_decomposition(path):
             raise CampaignError(f"Path {index} must be a JSON object")
         disposition = path_item.get("disposition")
         if disposition not in (
-            "novel", "known", "mandatory", "below-floor", "out-of-scope"
+            "novel", "known", "covered-by", "mandatory", "below-floor",
+            "out-of-scope"
         ):
             raise CampaignError(
                 f"Path {index} has invalid disposition {disposition!r}"
@@ -1868,9 +2353,25 @@ def load_decomposition(path):
             missing.append("evidence")
         if disposition in ("novel", "known") and not path_item.get("mechanism_key"):
             missing.append("mechanism_key")
+        if disposition == "covered-by" and not path_item.get("covered_by"):
+            missing.append("covered_by")
         if missing:
             raise CampaignError(
                 f"Path {index} is missing required fields: {', '.join(missing)}"
+            )
+        if disposition == "covered-by":
+            # A wrapper frame in a recursive chain: the same samples as the
+            # owning mechanism seen one level up/down the stack. It stays
+            # attached to a tracked mechanism instead of needing a false
+            # mandatory/out-of-scope claim or a spurious sibling mechanism.
+            if path_item.get("mechanism_key"):
+                raise CampaignError(
+                    f"Path {index} is covered-by and cannot also carry its own "
+                    "mechanism_key; name the owner in covered_by"
+                )
+            path_item["covered_by"] = require_stable_key(
+                path_item["covered_by"], f"Path {index} covered_by",
+                namespaced=True,
             )
         work_refs = path_item.get("work_refs")
         if not isinstance(work_refs, list) or not work_refs:
@@ -1925,10 +2426,25 @@ def cmd_decompose(args):
         raise CampaignError(
             f"#{parent['id']:03d} is a mechanism; only discoveries decompose"
         )
-    if parent["status"] != "investigating":
+    skeptic_verdict = (
+        parent.get("reviews", {}).get("skeptic", {}).get("verdict")
+    )
+    decomposition_changed_outside_workflow = (
+        parent["status"] == "decomposed"
+        and parent.get("decomposition_sha256") != decomposition_digest(parent)
+    )
+    revising_failed_decomposition = (
+        parent["status"] == "decomposed"
+        and (
+            skeptic_verdict == "FAIL"
+            or decomposition_changed_outside_workflow
+        )
+    )
+    if parent["status"] != "investigating" and not revising_failed_decomposition:
         raise CampaignError(
             f"Discovery #{parent['id']:03d} is {parent['status']}; "
-            "advance it to investigating before decomposition"
+            "advance it to investigating before its first decomposition, or "
+            "record a skeptic FAIL before replacing a reviewed decomposition"
         )
     result = load_decomposition(args.children)
     if result.get("area_key") != parent["area_key"]:
@@ -2011,7 +2527,25 @@ def cmd_decompose(args):
     novel = []
     known = []
     accounted_known = []
+    covered = []
+    decomposition_keys = {
+        path_item["mechanism_key"]
+        for path_item in result["paths"]
+        if path_item["disposition"] in ("novel", "known")
+    }
     for path_item in result["paths"]:
+        if path_item["disposition"] == "covered-by":
+            owner_key = path_item["covered_by"]
+            if owner_key not in decomposition_keys and not ledger.mechanism(
+                parent["area_key"], owner_key
+            ):
+                raise CampaignError(
+                    f"Path {path_item['anchor']!r} is covered by unknown "
+                    f"mechanism {owner_key!r}; the owner must be a novel/known "
+                    "path in this decomposition or an existing ledger mechanism"
+                )
+            covered.append(path_item)
+            continue
         if path_item["disposition"] not in ("novel", "known"):
             if path_item.get("mechanism_key"):
                 existing = ledger.mechanism(
@@ -2094,16 +2628,86 @@ def cmd_decompose(args):
             f"accounted as {path_item['disposition']} under discovery "
             f"#{parent['id']:03d} in profile {profile_id}",
         )
+    covered_owners = []
+    for path_item in covered:
+        owner = ledger.mechanism(parent["area_key"], path_item["covered_by"])
+        if owner is None:
+            raise CampaignError(
+                f"Covered-by owner {path_item['covered_by']!r} did not "
+                "materialize during decomposition"
+            )
+        profile_id = parent.get("profile_id")
+        if profile_id and profile_id not in owner.setdefault("source_profile_ids", []):
+            owner["source_profile_ids"].append(profile_id)
+        if parent["id"] not in owner.setdefault("discovery_ids", []):
+            owner["discovery_ids"].append(parent["id"])
+        # A novel/known owner in this decomposition already has a current
+        # observation. A ledger-only owner does not: record one so this
+        # recurrence has honest profile/discovery provenance.
+        current_observation = next((
+            observation for observation in reversed(owner.get("observations", []))
+            if observation.get("discovery_id") == parent["id"]
+            and observation.get("profile_id") == profile_id
+        ), None)
+        if current_observation is None:
+            record_mechanism_observation(
+                owner, parent, path_item, update_sizing=False
+            )
+            current_observation = owner["observations"][-1]
+        # Fold the wrapper's profiler fingerprints into the owner so parked/
+        # not-recurrent reconciliation in later profiles still sees this work.
+        fingerprints = sorted({
+            ref.get("semantic_key") or f"{ref['entry_key']}|{ref['hotspot_key']}"
+            for ref in path_item["work_refs"]
+        })
+        merged = set(current_observation.get("work_fingerprints", []))
+        merged.update(fingerprints)
+        current_observation["work_fingerprints"] = sorted(merged)
+        covered_priority = measured_priority_from_refs(path_item["work_refs"])
+        if covered_priority is not None:
+            prior_priority = current_observation.get("measured_priority_pct")
+            current_observation["measured_priority_pct"] = max(
+                covered_priority, prior_priority or 0.0
+            )
+            if owner["status"] not in MECHANISM_TERMINAL:
+                owner["measured_priority_pct"] = max(
+                    covered_priority, owner.get("measured_priority_pct") or 0.0
+                )
+        if owner["status"] == "parked":
+            owner["status"] = "candidate"
+            owner["status_since"] = utc_now()
+            owner["reason"] = None
+            ledger.record(
+                owner,
+                f"automatically reopened because profile {profile_id} "
+                "rediscovered the mechanism through a covered-by wrapper",
+            )
+        ledger.record(
+            owner,
+            f"covers same-work wrapper hotspot {path_item['anchor']!r} under "
+            f"discovery #{parent['id']:03d}",
+        )
+        covered_owners.append(owner)
     parent["known_mechanism_ids"] = sorted(
-        {opp["id"] for opp in created + [item[0] for item in known]}
+        {
+            opp["id"]
+            for opp in created + [item[0] for item in known] + covered_owners
+        }
     )
     parent["accounting_evidence"] = result["accounting_evidence"]
     parent["path_accounting"] = result["paths"]
+    parent["decomposition_revision"] = (
+        parent.get("decomposition_revision", 0) + 1
+    )
+    parent["decomposition_sha256"] = decomposition_digest(parent)
+    parent["reviews"] = {}
     parent["status"] = "decomposed"
     parent["status_since"] = utc_now()
+    action = "revised decomposition" if revising_failed_decomposition else "decomposed"
     detail = (
-        f"decomposed into {len(created)} new mechanism(s); "
-        f"{len(known)} previously known mechanism(s) reconciled"
+        f"{action} revision {parent['decomposition_revision']} into "
+        f"{len(created)} new mechanism(s); {len(known)} previously known "
+        "mechanism(s) reconciled"
     )
     ledger.record(parent, detail)
     ledger.save()
@@ -2152,6 +2756,26 @@ def cmd_exhaust(args):
             "mechanism landed or reverted. Capture a follow-on flag-enabled "
             "profile and use its new discovery."
         )
+    skeptic_review = discovery.get("reviews", {}).get("skeptic", {})
+    skeptic = skeptic_review.get("verdict")
+    current_revision = discovery.get("decomposition_revision", 0)
+    current_digest = decomposition_digest(discovery)
+    review_is_current = (
+        skeptic_review.get("decomposition_revision") == current_revision
+        and skeptic_review.get("decomposition_sha256") == current_digest
+        and discovery.get("decomposition_sha256") == current_digest
+    )
+    if skeptic != "PASS" or not review_is_current:
+        detail = skeptic or "missing"
+        if skeptic == "PASS" and not review_is_current:
+            detail = "stale"
+        raise CampaignError(
+            f"Exhaustion blocked: skeptic verdict is {detail}. "
+            "Mandatory/out-of-scope/covered-by claims close an area without "
+            "any other gate, so a skeptic must review the decomposition first "
+            f"(`campaign.py review --opp {discovery['id']} --role skeptic "
+            "--verdict PASS`)"
+        )
     discovery["status"] = "exhausted"
     discovery["status_since"] = utc_now()
     discovery["reason"] = args.reason
@@ -2183,17 +2807,52 @@ def cmd_squeeze(args):
 def cmd_review(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     opp = ledger.opp(args.opp)
-    if opp["status"] != "review":
+    if opp.get("kind") == "discovery":
+        # Exhaustion review: the skeptic stress-tests the decomposition's
+        # mandatory/out-of-scope/covered-by claims before the area can close.
+        if args.role != "skeptic":
+            raise CampaignError(
+                "Discovery decompositions take a skeptic exhaustion review "
+                "only; the adversary reviews implementation diffs"
+            )
+        if opp["status"] != "decomposed":
+            raise CampaignError(
+                f"Discovery #{opp['id']:03d} is {opp['status']}; the skeptic "
+                "reviews a completed decomposition"
+            )
+        revision = opp.get("decomposition_revision", 0)
+        digest = decomposition_digest(opp)
+        if opp.get("decomposition_sha256") != digest:
+            raise CampaignError(
+                f"Discovery #{opp['id']:03d} decomposition changed outside "
+                "the ledger workflow; rerun `decompose` before review"
+            )
+        prior_review = opp.get("reviews", {}).get("skeptic")
+        if prior_review and (
+            prior_review.get("decomposition_revision") == revision
+            or prior_review.get("decomposition_sha256") == digest
+        ):
+            raise CampaignError(
+                f"Discovery #{opp['id']:03d} revision {revision} already has "
+                f"a skeptic {prior_review.get('verdict')} verdict. A FAIL can "
+                "only be replaced after revising the decomposition with "
+                "`campaign.py decompose`"
+            )
+    elif opp["status"] != "review":
         raise CampaignError(
             f"#{opp['id']:03d} is {opp['status']}, not in review; "
             "advance it to review before recording verdicts"
         )
-    opp.setdefault("reviews", {})[args.role] = {
+    review = {
         "verdict": args.verdict,
         "notes": args.notes,
         "report": args.report,
         "ts": utc_now(),
     }
+    if opp.get("kind") == "discovery":
+        review["decomposition_revision"] = revision
+        review["decomposition_sha256"] = digest
+    opp.setdefault("reviews", {})[args.role] = review
     ledger.record(opp, f"{args.role} review: {args.verdict}")
     ledger.save()
     print(f"#{opp['id']:03d} {args.role}: {args.verdict}")
@@ -2322,7 +2981,9 @@ def cmd_reopen(args):
     ledger.record(opp, f"reopened as candidate{detail}")
     for discovery_id in opp.get("discovery_ids", []):
         discovery = ledger.opp(discovery_id)
-        if discovery.get("kind") == "discovery" and discovery["status"] == "exhausted":
+        if discovery.get("kind") != "discovery":
+            continue
+        if discovery["status"] == "exhausted":
             discovery["status"] = "decomposed"
             discovery["status_since"] = utc_now()
             discovery["reason"] = None
@@ -2330,6 +2991,13 @@ def cmd_reopen(args):
             ledger.record(
                 discovery,
                 f"exhaustion invalidated because child #{opp['id']:03d} reopened",
+            )
+        if discovery["status"] == "decomposed" and discovery.get("reviews"):
+            discovery["reviews"] = {}
+            ledger.record(
+                discovery,
+                f"exhaustion review invalidated because child "
+                f"#{opp['id']:03d} reopened",
             )
     ledger.save()
     print(f"#{opp['id']:03d} reopened")
@@ -2471,7 +3139,36 @@ def build_parser():
     p.add_argument("--notes", default=None)
     p.set_defaults(func=cmd_profile)
 
-    p = sub.add_parser("add", help="Add a discovery area or concrete mechanism")
+    p = sub.add_parser(
+        "profile-scaffold",
+        help=(
+            "Prefill a reconciliation manifest from capture summaries; "
+            "review dispositions, then feed it to `profile --areas`"
+        ),
+    )
+    p.add_argument(
+        "--capture-summaries", required=True,
+        help="JSON array of remote_measure --summary-out objects",
+    )
+    p.add_argument("--out", required=True, help="Manifest output path")
+    p.set_defaults(func=cmd_profile_scaffold)
+
+    p = sub.add_parser(
+        "decompose-scaffold",
+        help=(
+            "Prefill a decomposition skeleton (one path per profiler hotspot, "
+            "primary accounting done); fill dispositions/evidence, then feed "
+            "it to `decompose --children`"
+        ),
+    )
+    p.add_argument("--opp", type=int, required=True, help="Discovery opportunity id")
+    p.add_argument("--out", required=True, help="Skeleton output path")
+    p.set_defaults(func=cmd_decompose_scaffold)
+
+    p = sub.add_parser(
+        "add",
+        help="Add a concrete mechanism (discoveries come from `profile`)",
+    )
     p.add_argument("--anchor", required=True, help="Anchor symbol/subtree description")
     p.add_argument(
         "--kind", choices=("discovery", "mechanism"), default=None,
@@ -2560,7 +3257,14 @@ def build_parser():
     )
     p.set_defaults(func=cmd_reject)
 
-    p = sub.add_parser("park", help="Defer an opportunity with a reason")
+    p = sub.add_parser(
+        "park",
+        help=(
+            "Defer an opportunity with a reason. Parking a discovery is "
+            "permanent (only mechanisms reopen); a recurrent area gets a "
+            "fresh discovery from the next profile import"
+        ),
+    )
     p.add_argument("--opp", type=int, required=True)
     p.add_argument("--reason", required=True)
     p.set_defaults(func=cmd_park)

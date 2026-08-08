@@ -23,9 +23,19 @@ Each follow-on profile is imported atomically from a complete reconciliation
 manifest: discoverable areas become discovery records, while excluded
 payload/idle/out-of-scope rows retain structured evidence. Every raw machine
 frontier entry from two independently identified, quality-passing captures is
-accounted exactly once. `campaign.py audit-exhaustion` refuses completion if
-any latest-profile area, active or relevant parked mechanism, post-profile
-landing/revert, or checkout/branch mismatch remains unresolved.
+accounted exactly once, with recurrence judged on symbol-level semantic work
+identity so capture-fragile context keys and context/function drift cannot be
+dropped. The mechanical
+halves of both big JSON handoffs are generated, not hand-written:
+`campaign.py profile-scaffold` prefills the reconciliation manifest and
+`campaign.py decompose-scaffold` prefills a decomposition's per-hotspot
+accounting, leaving agents only the judgment calls. Closing an area requires
+a skeptic review of the decomposition's mandatory/out-of-scope/covered-by
+claims before `exhaust` is accepted; a FAIL requires a revised decomposition
+and cannot be overwritten on unchanged accounting. `campaign.py
+audit-exhaustion` refuses
+completion if any latest-profile area, active or relevant parked mechanism,
+post-profile landing/revert, or checkout/branch mismatch remains unresolved.
 
 ## Prerequisites
 

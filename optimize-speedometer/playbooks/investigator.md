@@ -103,7 +103,12 @@ instrument code freely; you never write production optimizations.
 
 Return to the tech lead (≤25 lines + one JSON object).
 
-Discovery decomposition:
+Discovery decomposition — **start from the scaffold**: ask the tech lead for
+(or run) `campaign.py decompose-scaffold --opp N --out <path>`. It emits one
+path row per profiler hotspot with the exactly-one-primary `work_refs`
+accounting prefilled, blank dispositions/evidence, and the ledger's existing
+mechanism keys for the area. Fill in judgments; do not rebuild the accounting
+by hand:
 
 ```json
 {
@@ -152,6 +157,21 @@ Discovery decomposition:
         {"capture_id":"capture-2","entry_key":"symbol:blink::Style",
          "hotspot_key":"@root","accounting":"primary"}
       ]
+    },
+    {
+      "disposition": "covered-by",
+      "anchor": "blink::StyleResolver::ResolveStyleImpl",
+      "covered_by": "style-rule-collection/reuse-selector-filter-result",
+      "share_pct": 0.24,
+      "evidence": "wrapper frame in the same recursive chain; overlap mask is near-identical to the owner's",
+      "work_refs": [
+        {"capture_id":"capture-1","entry_key":"symbol:blink::Style",
+         "hotspot_key":"blink::StyleResolver::ResolveStyleImpl",
+         "accounting":"primary"},
+        {"capture_id":"capture-2","entry_key":"symbol:blink::Style",
+         "hotspot_key":"blink::StyleResolver::ResolveStyleImpl",
+         "accounting":"primary"}
+      ]
     }
   ],
   "dossier": "path"
@@ -159,15 +179,28 @@ Discovery decomposition:
 ```
 
 Use exactly one row per accounted path with disposition `novel`, `known`,
-`mandatory`, `below-floor`, or `out-of-scope`. Novel/known rows require a
-globally namespaced `mechanism_key`; all rows require nonnegative finite
-`share_pct` and concrete evidence. Even when no viable mechanism exists,
-return a nonempty path-accounting object (for example mandatory and
+`covered-by`, `mandatory`, `below-floor`, or `out-of-scope`. Novel/known rows
+require a globally namespaced `mechanism_key`; all rows require nonnegative
+finite `share_pct` and concrete evidence. Even when no viable mechanism
+exists, return a nonempty path-accounting object (for example mandatory and
 below-floor rows). The tech lead passes the entire object to `campaign.py
 decompose`; only after that command succeeds may it call `campaign.py exhaust`.
+If the skeptic rejects the accounting, revise the scaffold and rerun
+`campaign.py decompose`; mark mechanisms created by the prior revision as
+`known`. A FAIL is bound to that revision and cannot be overwritten without a
+replacement decomposition.
 When a previously parked mechanism is now below floor or out of scope, retain
 its existing `mechanism_key` on that disposition so the audit can prove it was
 considered rather than silently forgotten.
+
+`covered-by` exists for recursive wrapper chains: when several hotspot rows
+are the same samples seen at different frames of one chain, give the real
+optimization site its `novel`/`known` row and mark each wrapper frame
+`covered-by` with `covered_by` naming that owner (another path in this
+decomposition or an existing ledger mechanism). Never account a wrapper as
+`mandatory`/`out-of-scope` just to satisfy the accounting, and never invent a
+spurious sibling mechanism per frame — a `covered-by` row keeps the samples
+attached to a tracked mechanism, so the work cannot be silently dropped.
 
 Copy `work_refs` only from the discovery's ledger record. Every profiler root
 and related-hotspot ref must occur as `primary` on exactly one path. Use

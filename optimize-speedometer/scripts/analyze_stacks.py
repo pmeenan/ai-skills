@@ -933,28 +933,60 @@ def build_frontier(
     selected_aggregate_ids: set[int] = set()
     uncovered = addressable_mask
     remaining = list(eligible)
+
     # `limit` is presentation-only. The machine-readable frontier must continue
     # until the marginal floor so lower-ranked disjoint work cannot remain
-    # permanently hidden behind recurrent hot parents.
-    while remaining:
-        rescored = []
-        for _, agg in remaining:
-            candidate = make_candidate(
-                agg, samples, total_weight, group_totals, uncovered
-            )
-            marginal_score = candidate["score"] * (
+    # permanently hidden behind recurrent hot parents. Selection skips (rather
+    # than stops at) entries whose marginal fell below the floor: a low-scored
+    # entry that still holds floor-worthy uncovered samples must be selected,
+    # or it would end up an alternative overlapping no frontier entry.
+    def marginal_entry(agg, base):
+        marginal_weight = weight_of(agg.sample_mask & uncovered, samples)
+        candidate = dict(base)
+        candidate["marginal_weight"] = marginal_weight
+        candidate["marginal_share"] = marginal_weight / total_weight
+        marginal_score = candidate["score"] * (
+            marginal_weight / candidate["inclusive_weight"]
+            if candidate["inclusive_weight"]
+            else 0
+        )
+        return marginal_score, candidate
+
+    # Only the two marginal fields depend on coverage, so the expensive static
+    # candidate is built once per aggregate, and a cached entry stays exact
+    # until its mask intersects a newly selected entry (marginals only shrink).
+    base_candidates = {
+        id(agg): make_candidate(agg, samples, total_weight, group_totals, uncovered)
+        for _, agg in remaining
+    }
+    scores = {
+        agg_id: (
+            candidate["score"] * (
                 candidate["marginal_weight"] / candidate["inclusive_weight"]
                 if candidate["inclusive_weight"]
                 else 0
-            )
-            rescored.append((marginal_score, candidate, agg))
-        _, candidate, selected_agg = max(rescored, key=lambda item: item[0])
-        if candidate["marginal_share"] < min_marginal_share:
+            ),
+            candidate,
+        )
+        for agg_id, candidate in base_candidates.items()
+    }
+    while remaining:
+        viable = [
+            (*scores[id(agg)], agg)
+            for _, agg in remaining
+            if scores[id(agg)][1]["marginal_share"] >= min_marginal_share
+        ]
+        if not viable:
             break
+        _, candidate, selected_agg = max(viable, key=lambda item: item[0])
         frontier.append(candidate)
         selected_aggregate_ids.add(id(selected_agg))
         uncovered &= ~selected_agg.sample_mask
+        selected_mask = selected_agg.sample_mask
         remaining = [item for item in remaining if item[1] is not selected_agg]
+        for _, agg in remaining:
+            if agg.sample_mask & selected_mask:
+                scores[id(agg)] = marginal_entry(agg, base_candidates[id(agg)])
 
     add_related_hotspots(frontier, eligible, samples, total_weight)
     alternatives = []
@@ -1211,6 +1243,13 @@ def main() -> int:
         help="Write diagnostic output and exit successfully even if quality gates fail",
     )
     args = parser.parse_args()
+    if args.min_share < args.min_marginal_share:
+        parser.error(
+            "--min-share must be >= --min-marginal-share; a smaller inclusive "
+            "floor admits aggregates that can stay below the marginal floor "
+            "while overlapping no frontier entry, leaving the overlap-safe "
+            "inventory unable to assign them"
+        )
     if not 0 < args.tree_min_share < 1:
         parser.error("--tree-min-share must be between 0 and 1")
     if args.tree_max_depth < 1:

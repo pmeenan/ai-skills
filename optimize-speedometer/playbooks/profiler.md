@@ -79,24 +79,23 @@ Return to the tech lead (≤40 lines):
   resolved SHA, feature state, quality verdict, analyzer floor, and
   `inventory_complete` attestation. Renaming one capture id does not make a
   reused artifact an independent capture.
-- Write `<campaign-dir>/profile-reconciliation-<profile-id>.json`: a JSON
-  object with `areas`, `source_exclusions`, and `parked_mechanisms` arrays.
-  `areas` contains **all**
-  recurrent coverage-frontier areas above the floor, not only the reply's
-  displayed top rows. Each area contains `area_key`, `anchor`,
-  `marginal_share_pct`, `stories`, the source dossier/artifact path, and
-  `disposition: discover|exclude`, plus `source_refs` identifying the exact
-  `{capture_id, entry_key}` rows it reconciles. Each recurrent machine entry
-  gets its own area and exactly one ref from every capture; do not merge
-  distinct entries into a composite area. Preserve a previously recorded area
-  key for the same source entry. Exclusions require a structured
-  `exclusion_category` (`payload-dominated`, `idle-wait`, or `out-of-scope`),
-  `exclusion_reason`, and `exclusion_evidence`; keeping them in the manifest
-  makes full frontier accounting auditable without turning them into work.
-  Put each genuinely one-capture source row in `source_exclusions` with
-  `category: not-recurrent` and evidence. Every machine-frontier source row
-  must appear exactly once; never classify an entry occurring in two captures
-  as nonrecurrent.
+- Generate `<campaign-dir>/profile-reconciliation-<profile-id>.json` with
+  `campaign.py profile-scaffold --capture-summaries <capture-summaries.json>
+  --out <path>` — never hand-author it. The scaffold mechanically joins the
+  machine inventories: recurrence matching (by symbol-level semantic work
+  identity, independent of context digest or context/function representation),
+  per-capture `source_refs`, mean marginal shares, prior area-key reuse, and
+  the parked-mechanism reconciliation are prefilled. Your job is to review
+  it: keep or change each area's `disposition: discover|exclude` under the
+  admission rule, supply `exclusion_category` (`payload-dominated`,
+  `idle-wait`, or `out-of-scope`) with `exclusion_reason` and
+  `exclusion_evidence` for excluded areas, verify any rank-based pairing of
+  same-symbol caller contexts the scaffold flagged, and confirm the
+  `not-recurrent` / `context-variant` source exclusions. Every machine
+  frontier source row must appear exactly once; never classify an entry whose
+  semantic identity occurs in every capture as nonrecurrent — reconcile it as
+  one area even when its context path digest or aggregate kind differs between
+  captures.
   Reconcile every currently parked mechanism explicitly: use
   `{mechanism_key, disposition:"recurrent", area_key}` when it maps to a
   current discoverable area, or `disposition:"not-recurrent"` plus evidence.

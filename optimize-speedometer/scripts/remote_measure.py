@@ -402,6 +402,7 @@ def default_out_dir(root, mode):
 
 def profile_summary_paths(out_dir):
     """Analysis artifacts promised by the profiler playbook, when present."""
+    import campaign
     paths = {}
     full_frontier = out_dir / "analysis" / "full" / "candidate_frontier.json"
     paths["inventory_complete"] = False
@@ -416,56 +417,17 @@ def profile_summary_paths(out_dir):
             paths["analyzer_min_inclusive_share"] = selection.get(
                 "min_inclusive_share"
             )
-            frontier = report.get("frontier", [])
-            frontier_keys = [item.get("entry_key") for item in frontier]
-            if any(not key for key in frontier_keys) or len(frontier_keys) != len(
-                set(frontier_keys)
-            ):
+            # The importer re-derives this inventory from the artifact with the
+            # same shared function and rejects the capture on any mismatch.
+            entries, inventory, problems = campaign.derive_frontier_inventory(
+                report
+            )
+            if problems:
                 paths["inventory_complete"] = False
-            assigned_alternatives = {}
-            assigned_function_names = set()
-            seen_alternative_keys = set()
-            for alternative in report.get("overlapping_alternatives", []):
-                assigned = alternative.get("assigned_frontier_entry")
-                alternative_key = alternative.get("entry_key")
-                if (
-                    not alternative_key
-                    or alternative_key in seen_alternative_keys
-                    or assigned not in set(frontier_keys)
-                ):
-                    paths["inventory_complete"] = False
-                    continue
-                seen_alternative_keys.add(alternative_key)
-                if alternative.get("kind") == "function":
-                    assigned_function_names.add(alternative.get("name"))
-                assigned_alternatives.setdefault(assigned, []).append({
-                    "hotspot_key": f"alternative:{alternative_key}",
-                    "semantic_key": f"symbol:{alternative.get('name')}",
-                    "measured_share_pct": (
-                        alternative.get("inclusive_share", 0.0) * 100
-                    ),
-                })
-            paths["frontier_count"] = len(frontier)
-            paths["frontier_entries"] = frontier_keys
-            paths["frontier_inventory"] = []
-            for item in frontier:
-                entry_key = item.get("entry_key")
-                work_items = [{
-                    "hotspot_key": "@root",
-                    "semantic_key": f"symbol:{item.get('name')}",
-                    "measured_share_pct": item.get("marginal_share", 0.0) * 100,
-                }]
-                work_items.extend({
-                    "hotspot_key": hotspot["name"],
-                    "semantic_key": f"symbol:{hotspot['name']}",
-                    "measured_share_pct": hotspot.get("overlap_share", 0.0) * 100,
-                } for hotspot in item.get("related_hotspots", [])
-                if hotspot.get("name") not in assigned_function_names)
-                work_items.extend(assigned_alternatives.get(entry_key, []))
-                paths["frontier_inventory"].append({
-                    "entry_key": entry_key,
-                    "work_items": work_items,
-                })
+                paths["inventory_problems"] = problems
+            paths["frontier_count"] = len(entries)
+            paths["frontier_entries"] = entries
+            paths["frontier_inventory"] = inventory
         except (OSError, ValueError, TypeError):
             pass
     for view in ("full", "renderer"):

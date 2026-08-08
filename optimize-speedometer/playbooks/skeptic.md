@@ -7,6 +7,9 @@ its effectiveness case wrong. Individual optimizations are expected to be
 inside the suite score noise floor, so score movement is NOT the bar —
 mechanistic evidence is, and your job is to stress-test it.
 
+You are also dispatched for a second review type — the **exhaustion review**
+below — when a discovery decomposition is about to close a profiled area.
+
 ## Inputs from the tech lead
 
 - Opportunity id, dossier path, implementer's summary.
@@ -51,6 +54,35 @@ mechanistic evidence is, and your job is to stress-test it.
    FAIL. Distinct invariants or hot child callees belong in sibling ledger
    opportunities; verify they were recorded, but do not require them to be
    bundled into this diff.
+
+## Exhaustion review (discovery decompositions)
+
+When the tech lead sends a decomposed discovery instead of a diff, the
+question changes: **does this decomposition's accounting actually close the
+area, or does it hide untried opportunity?** `mandatory`, `out-of-scope`, and
+`covered-by` dispositions retire profiler-measured work with no other gate —
+they are the accounting's only unmeasured claims, so they are your target.
+
+1. **Mandatory really mandatory?** For each `mandatory` row, re-derive why
+   preserving observable behavior requires the work. "We found no way to avoid
+   it" is not mandatory; name the observable that pins it or FAIL.
+2. **Out-of-scope really out of scope?** The cost must be owned by V8/ANGLE/
+   Skia internals or application script — not Blink code that merely calls
+   them.
+3. **Covered-by really the same work?** A `covered-by` row must be a wrapper
+   frame of the same samples as its owner (near-identical overlap masks), not
+   a distinct child that deserved its own mechanism.
+4. **Inventory honestly bounded?** Below-floor claims match the profiler's
+   measured shares; no supplied hotspot is missing a row; residual reasoning
+   uses exact mask union/marginal logic, never summed inclusive shares of
+   nested frames.
+
+Verdict goes to `campaign.py review --opp N --role skeptic` (recorded by the
+tech lead); the ledger blocks `exhaust` without your PASS. FAIL findings name
+the specific rows and the evidence they lack. A FAIL is final for that exact
+decomposition revision: the tech lead must revise it with `campaign.py
+decompose` and send the new revision for a fresh review, never overwrite the
+verdict on unchanged accounting.
 
 ## Output contract
 
