@@ -65,7 +65,10 @@ Return to the tech lead (≤30 lines):
 - Paths to each run's `candidate_frontier.md` / `candidate_frontier.json` and
   `opportunity_trees.txt` (full tree and renderer views).
 - Quality verdict per run: PASS/REJECTED and why.
-- The top ~10 recurrent frontier entries as one line each:
+- The top ~10 recurrent frontier entries (including fine-grained child anchors
+  decomposed from large composite subtrees such as `UpdateStyleAndLayout`,
+  `setInnerHTML`, `RunPaintLifecyclePhase`, `PrePaintTreeWalk`, and `DOMParser`
+  where individual sub-operations carry significant cycles) as one line each:
   `anchor | marginal_share% | owner_exclusive% | stories | recurrent(y/n) | payload-dominated(y/n)`.
   Mark `payload-dominated: y` when owner-exclusive is a small fraction of
   inclusive and the dossier shows the descendants are application script,

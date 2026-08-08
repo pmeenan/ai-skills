@@ -80,8 +80,10 @@ Your context must last the whole campaign.
 1. A sample is a complete call stack; never turn a flat self-time list into a
    work queue. Rank by marginal, previously-uncovered samples — nested frames
    are competing explanations, not additive wins.
-2. Optimize as high in the call tree as one invariant permits; prefer a
-   parent that controls several expensive children.
+2. Explore opportunities hierarchically: start high in the call tree, but when
+   a coarse parent invariant is infeasible, rejected, or partially addressed,
+   decompose the subtree and explore fine-grained opportunities lower in the
+   call tree rather than abandoning the area.
 3. Individual optimizations are expected to be sub-noise on the suite score.
    Their evidence is **mechanistic**: counters, oracle interventions, and
    sampled-cycle reduction — plus story-targeted A/B when samples
@@ -154,12 +156,30 @@ Repeat until a stopping rule fires:
 1. **Frontier fresh?** If a re-profiling trigger fired (below), send the
    profiler for ≥2 independent full-suite captures **with the flag enabled**
    (so the frontier reflects work already landed) and rebuild the punch
-   list: `campaign.py add` recurrent frontier entries above the floor;
-   `campaign.py park --opp N --reason "..."` stale ledger candidates whose
-   subtrees shrank; `campaign.py reopen --opp N` a previously parked or
-   reverted candidate that re-emerges in the fresh frontier (never `add` a
-   duplicate, and never re-`add` a rejected anchor — its rejection reason
-   is still true unless the new profile contradicts it).
+   list:
+   - `campaign.py add` recurrent frontier entries above the floor.
+   - **Hierarchical decomposition**: When a coarse parent anchor is partially
+     addressed or its top-level invariant is infeasible/reverted, decompose
+     the subtree into its distinct child components (e.g. `StyleResolver`,
+     `ElementRuleCollector`, `BlockLayoutAlgorithm`, `FlexLayoutAlgorithm`,
+     `InlineNode`, `HTMLFastPathParser` token/attribute parsing, `PaintTree`)
+     and add them as fine-grained candidates.
+   - **Parent vs Child Independence**: Landing an optimization on a parent
+     anchor only rules out child optimizations if the parent optimization
+     actually eliminated or reduced that specific child callee's execution.
+     In follow-on profiles (captured with the flag enabled), any child
+     subtrees that still carry measurable cycle share above the floor remain
+     fully open and eligible for optimization.
+   - `campaign.py park --opp N --reason "..."` stale ledger candidates whose
+     subtrees shrank.
+   - `campaign.py reopen --opp N` a previously parked or reverted candidate that
+     re-emerges in the fresh frontier.
+   - **Mechanism-level rejection**: When an opportunity or commit is reverted
+     or rejected, **only the specific rejected mechanism is rejected, NOT the
+     entire candidate domain or subtree**. The underlying call tree remains
+     eligible for alternative lower-level optimizations. Never re-add an
+     identical mechanism that was proven invalid, but always explore viable
+     child anchors.
 
    **Admission rule — payload-dominated shells don't enter the ledger.**
    For each frontier entry, compare owner-exclusive share to inclusive
@@ -167,12 +187,10 @@ Repeat until a stopping rule fires:
    small fraction of inclusive and the descendants are application script,
    V8, or out-of-scope owners (Skia/ANGLE), the entry is a dispatch shell
    around mandatory payload — the benchmark's own work, which no
-   parent-level invariant can avoid. Skip it; investigating it only
-   re-derives the ownership split the frontier already shows. Admit such
-   an entry only when you can name the invariant that would let the
-   parent avoid its payload. Idle-wait anchors (futex/`WaitableEvent`/
-   worker-pool sleeps) are never candidates — cycles spent waiting are
-   not eliminable work.
+   parent-level invariant can avoid. Skip it; admit such an entry only when
+   you can name the invariant that would let the parent avoid its payload.
+   Idle-wait anchors (futex/`WaitableEvent`/worker-pool sleeps) are never
+   candidates — cycles spent waiting are not eliminable work.
 2. **Investigate ahead.** Keep 2–3 investigations in flight so a sized
    dossier is always ready — mark each one
    `campaign.py advance --opp N --to investigating` when you dispatch its
