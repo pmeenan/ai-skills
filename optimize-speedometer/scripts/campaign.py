@@ -32,8 +32,8 @@ mechanism keys remain in the ledger so follow-on profiles can revisit an area
 without retrying paths already proved invalid.
 
 Gate requirements are enforced by `advance`:
-  -> sized:    --ceiling and --evidence (mechanistic sizing evidence)
-  -> review:   --tests (what was run and passed)
+  -> sized:    --evidence-manifest from mechanism_evidence.py
+  -> review:   --tests plus --verification-manifest
   -> landed:   --commit, plus recorded PASS verdicts from both skeptic and
                adversary reviews for the current review round.
 """
@@ -49,6 +49,9 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
+
+import mechanism_evidence as mechanism_contract
 
 ACTIVE_GATES = ("investigating", "sized", "implementing", "review")
 FORWARD_TRANSITIONS = {
@@ -61,6 +64,49 @@ FORWARD_TRANSITIONS = {
 REVIEW_ROLES = ("skeptic", "adversary")
 MECHANISM_TERMINAL = ("landed", "reverted", "rejected")
 EXPECTED_VALUE_UNIT = "profile-share-equivalent-pct"
+MAX_LANDINGS_WITHOUT_PROFILE = 5
+MAX_LANDINGS_WITHOUT_CHECKPOINT = 5
+TEST_BYPASS_ENV = "SP3_CAMPAIGN_TEST_ALLOW_UNVERIFIED"
+MECHANISM_REVIEW_CHECKS = {
+    "skeptic": (
+        "hot_path_reality",
+        "raw_evidence_opened",
+        "applicability_measured",
+        "net_work_removed",
+        "cold_path_tax_measured",
+        "benchmark_overfit_checked",
+        "one_invariant_only",
+    ),
+    "adversary": (
+        "spec", "security", "privacy", "lifecycle", "tests",
+        "benchmark_overfit_checked",
+    ),
+}
+EXHAUSTION_REVIEW_CHECKS = (
+    "complete_path_accounting",
+    "exactly_one_primary_per_hotspot",
+    "covered_by_same_samples",
+    "mandatory_work_proved",
+    "out_of_scope_proved",
+    "below_floor_measured",
+    "known_mechanisms_reconciled",
+)
+
+
+def test_bypass_requested():
+    return os.environ.get(TEST_BYPASS_ENV) == "1"
+
+
+def test_bypass_active():
+    return test_bypass_requested() and "unittest" in sys.modules
+
+
+def review_checks(opp, role):
+    if opp.get("kind") == "discovery":
+        if role != "skeptic":
+            raise CampaignError("Discovery exhaustion takes a skeptic review only")
+        return EXHAUSTION_REVIEW_CHECKS
+    return MECHANISM_REVIEW_CHECKS[role]
 
 
 def utc_now():
@@ -99,6 +145,101 @@ def require_finite_number(value, label, *, nonnegative=False):
     if nonnegative and number < 0:
         raise CampaignError(f"{label} cannot be negative")
     return number
+
+
+def sha256_file(path):
+    path = pathlib.Path(path)
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise CampaignError(f"Cannot read evidence artifact {path}: {exc}") from exc
+
+
+def load_gate_evidence(path, *, opp, phase):
+    path = pathlib.Path(path)
+    try:
+        evidence = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CampaignError(f"Cannot read evidence manifest {path}: {exc}") from exc
+    if not isinstance(evidence, dict) or evidence.get("schema_version") != 1:
+        raise CampaignError("Evidence manifest must use mechanism-evidence schema v1")
+    if evidence.get("phase") != phase or evidence.get("gate_pass") is not True:
+        raise CampaignError(f"Evidence must be a passing {phase!r} artifact")
+    for field, expected in (
+        ("opportunity_id", opp["id"]),
+        ("mechanism_key", opp.get("mechanism_key")),
+        ("profile_id", opp.get("profile_id")),
+        ("interval_kind", "exact-scored"),
+    ):
+        if evidence.get(field) != expected:
+            raise CampaignError(
+                f"Evidence {field} {evidence.get(field)!r} does not match {expected!r}"
+            )
+    if evidence.get("score_scope", {}).get("classification") not in (
+        "score-critical", "cpu-only"
+    ):
+        raise CampaignError("Evidence lacks a score-scope classification")
+    sources = evidence.get("sources")
+    expected_sources = 1 if phase == "sizing" else 2
+    if not isinstance(sources, list) or len(sources) != expected_sources:
+        raise CampaignError(
+            f"{phase} evidence must bind exactly {expected_sources} raw source file(s)"
+        )
+    source_paths = []
+    for source in sources:
+        if not isinstance(source, dict) or not source.get("path") or not source.get("sha256"):
+            raise CampaignError("Evidence source provenance is incomplete")
+        source_path = pathlib.Path(source["path"])
+        if sha256_file(source_path) != source["sha256"]:
+            raise CampaignError(f"Raw evidence source digest changed: {source_path}")
+        source_paths.append(source_path)
+    try:
+        with tempfile.TemporaryDirectory(prefix="sp3-evidence-check-") as temp_dir:
+            recomputed_path = pathlib.Path(temp_dir) / "evidence.json"
+            if phase == "sizing":
+                mechanism_contract.cmd_summarize(argparse.Namespace(
+                    raw=source_paths[0], out=recomputed_path
+                ))
+            else:
+                mechanism_contract.cmd_compare(argparse.Namespace(
+                    baseline=source_paths[0], variant=source_paths[1],
+                    kind="candidate", out=recomputed_path
+                ))
+            recomputed = json.loads(recomputed_path.read_text())
+    except (mechanism_contract.EvidenceError, OSError, json.JSONDecodeError) as exc:
+        raise CampaignError(f"Cannot recompute evidence artifact: {exc}") from exc
+    if recomputed != evidence:
+        raise CampaignError(
+            "Evidence manifest does not match deterministic recomputation from raw sources"
+        )
+    return evidence, sha256_file(path)
+
+
+def landings_since_sequence(ledger, sequence):
+    return sum(
+        opp.get("runtime_change_sequence", 0) > sequence
+        for opp in ledger.data.get("opportunities", [])
+        if opp.get("status") in ("landed", "reverted")
+    )
+
+
+def enforce_freshness_for_landing(ledger):
+    profiles = ledger.data.get("profile_runs", [])
+    if not profiles:
+        raise CampaignError("Landing is blocked until an exact-scored profile is recorded")
+    profile_sequence = profiles[-1].get("sequence", 0)
+    if landings_since_sequence(ledger, profile_sequence) >= MAX_LANDINGS_WITHOUT_PROFILE:
+        raise CampaignError(
+            f"Landing is blocked after {MAX_LANDINGS_WITHOUT_PROFILE} runtime changes; "
+            "record a fresh flag-enabled profile"
+        )
+    checkpoints = ledger.data.get("checkpoints", [])
+    checkpoint_count = checkpoints[-1]["landed_count"] if checkpoints else 0
+    if len(ledger.landed()) - checkpoint_count >= MAX_LANDINGS_WITHOUT_CHECKPOINT:
+        raise CampaignError(
+            f"Landing is blocked after {MAX_LANDINGS_WITHOUT_CHECKPOINT} unchecked "
+            "landings; record a cumulative checkpoint"
+        )
 
 
 def validate_expected_value(item, label):
@@ -189,7 +330,7 @@ class Ledger:
         return self
 
     def _migrate(self):
-        """Add hierarchy fields to ledgers created before schema version 2.
+        """Add fields required by the current campaign evidence schema.
 
         Legacy opportunities remain concrete mechanisms so an in-flight
         campaign can resume without losing gate state.  Their synthetic keys
@@ -219,6 +360,10 @@ class Ledger:
             opp.setdefault("observations", [])
             opp.setdefault("expected_value_unit", None)
             opp.setdefault("measured_priority_pct", None)
+            opp.setdefault("sizing_evidence", None)
+            opp.setdefault("sizing_evidence_sha256", None)
+            opp.setdefault("verification_evidence", None)
+            opp.setdefault("verification_evidence_sha256", None)
             if opp["kind"] == "discovery":
                 opp.setdefault("decomposition_revision", 0)
                 opp.setdefault("decomposition_sha256", None)
@@ -256,10 +401,18 @@ class Ledger:
             item[field] = sequence
             sequence += 1
         self.data["next_sequence"] = sequence
-        self.data["schema_version"] = 2
+        self.data["schema_version"] = 3
 
     def save(self):
         self.dir.mkdir(parents=True, exist_ok=True)
+        if test_bypass_active():
+            self.data.setdefault("test_only_taint", {
+                "ts": utc_now(),
+                "reason": (
+                    f"{TEST_BYPASS_ENV}=1 was active under unittest; "
+                    "this ledger is not valid campaign evidence"
+                ),
+            })
         self.data["ledger_revision"] = self.data.get("ledger_revision", 0) + 1
         tmp = self.path.with_suffix(".json.tmp")
         with open(tmp, "w") as f:
@@ -363,6 +516,8 @@ class Ledger:
 
     def exhaustion_blockers(self):
         """Return reasons the campaign cannot claim opportunity exhaustion."""
+        if self.data.get("test_only_taint") and not test_bypass_active():
+            return ["ledger is permanently tainted by test-only gate bypass"]
         profiles = self.data.get("profile_runs", [])
         if not profiles:
             return ["no reconciled flag-enabled profile is recorded"]
@@ -482,6 +637,12 @@ class Ledger:
             f"# SP3 Campaign: {cfg['name']} — branch `{cfg['branch']}`"
         )
         lines.append("")
+        if self.data.get("test_only_taint"):
+            lines.append(
+                "> **TEST-ONLY TAINT:** gate bypass was used. This ledger and "
+                "all derived status/checkpoint claims are invalid campaign evidence."
+            )
+            lines.append("")
         header = (
             f"**Landed: {len(landed)}/{cfg['target_landed']}** · "
             f"Flag: `{cfg['feature']}`"
@@ -502,6 +663,20 @@ class Ledger:
         lines.append(header)
         lines.append("")
         lines.append(f"_Updated: {utc_now()} (generated from ledger.json — do not edit)_")
+        profile_changes = (
+            landings_since_sequence(self, profiles[-1].get("sequence", 0))
+            if profiles else 0
+        )
+        checkpoint_landed = checkpoints[-1]["landed_count"] if checkpoints else 0
+        unchecked_landings = max(0, len(landed) - checkpoint_landed)
+        lines.append("")
+        lines.append(
+            "**Freshness:** "
+            f"{profile_changes}/{MAX_LANDINGS_WITHOUT_PROFILE} runtime changes "
+            "since profile · "
+            f"{unchecked_landings}/{MAX_LANDINGS_WITHOUT_CHECKPOINT} landings "
+            "since checkpoint"
+        )
 
         discoveries = [o for o in opps if o.get("kind") == "discovery"]
         lines.append("")
@@ -721,7 +896,7 @@ def verify_profile_head(repo_root, sha, branch, *, allow_unverified=False):
                 "repository. Tests may opt out with "
                 "--allow-unverified-repository."
             )
-        if os.environ.get("SP3_CAMPAIGN_TEST_ALLOW_UNVERIFIED") != "1":
+        if not test_bypass_active():
             raise CampaignError(
                 "--allow-unverified-repository is restricted to test processes"
             )
@@ -953,6 +1128,39 @@ def load_capture_summaries(
             )
         if summary.get("quality_rejected") is not False:
             raise CampaignError(f"Capture {capture_id} did not pass profile quality")
+        strict_evidence = not test_bypass_active()
+        if strict_evidence and summary.get("interval_kind") != "exact-scored":
+            raise CampaignError(
+                f"Capture {capture_id} is not scoped to exact Speedometer score timers"
+            )
+        if strict_evidence and summary.get("metric_weighting") != "speedometer-geomean-v1":
+            raise CampaignError(
+                f"Capture {capture_id} does not use equal suite/repetition score weighting"
+            )
+        if strict_evidence:
+            nominal = require_finite_number(
+                summary.get("nominal_samples_at_floor"),
+                f"Capture {capture_id} nominal_samples_at_floor",
+                nonnegative=True,
+            )
+            if nominal < 100:
+                raise CampaignError(
+                    f"Capture {capture_id} has only {nominal:.1f} nominal samples at floor"
+                )
+            build_provenance = summary.get("build_provenance")
+            required_build = (
+                build_provenance.get("required_release_args", {})
+                if isinstance(build_provenance, dict) else {}
+            )
+            if required_build != {
+                "is_official_build": "true",
+                "is_debug": "false",
+                "chrome_pgo_phase": "2",
+                "use_thin_lto": "true",
+            }:
+                raise CampaignError(
+                    f"Capture {capture_id} lacks verified official PGO/ThinLTO provenance"
+                )
         actual_features = feature_names(summary.get("enable_features"))
         if actual_features != feature_names(expected_features):
             raise CampaignError(
@@ -1005,7 +1213,27 @@ def load_capture_summaries(
             ) from exc
         if artifact.get("quality", {}).get("accepted") is not True:
             raise CampaignError(f"Capture {capture_id} analyzer artifact failed quality")
+        if strict_evidence and artifact.get("quality", {}).get("interval_kind") != "exact-scored":
+            raise CampaignError(f"Capture {capture_id} analyzer used broad intervals")
+        if strict_evidence:
+            artifact_nominal = require_finite_number(
+                artifact.get("quality", {}).get("nominal_samples_at_floor"),
+                f"Capture {capture_id} artifact nominal_samples_at_floor",
+                nonnegative=True,
+            )
+            if not math.isclose(
+                artifact_nominal, nominal, rel_tol=0, abs_tol=1e-9
+            ):
+                raise CampaignError(
+                    f"Capture {capture_id} sample-floor summary disagrees with analyzer artifact"
+                )
+            if artifact.get("quality", {}).get("build_provenance") != build_provenance:
+                raise CampaignError(
+                    f"Capture {capture_id} build provenance disagrees with analyzer artifact"
+                )
         selection = artifact.get("selection", {})
+        if strict_evidence and selection.get("metric_weighting") != "speedometer-geomean-v1":
+            raise CampaignError(f"Capture {capture_id} analyzer is not score-weighted")
         if selection.get("inventory_complete") is not True:
             raise CampaignError(f"Capture {capture_id} analyzer inventory is incomplete")
         derived_entries, derived_inventory, derivation_problems = (
@@ -1095,7 +1323,7 @@ def checkout_exhaustion_blockers(ledger, *, allow_unverified=False):
     if not latest.get("repository_verified"):
         test_override = (
             allow_unverified
-            and os.environ.get("SP3_CAMPAIGN_TEST_ALLOW_UNVERIFIED") == "1"
+            and test_bypass_active()
         )
         return [] if test_override else [
             "latest profile repository was not verified; rerun in the profiled "
@@ -1313,7 +1541,7 @@ def cmd_init(args):
     if ledger.path.exists() and not args.force:
         raise CampaignError(f"Ledger already exists at {ledger.path} (use --force)")
     ledger.data = {
-        "schema_version": 2,
+        "schema_version": 3,
         "next_sequence": 1,
         "config": {
             "name": args.name,
@@ -1365,6 +1593,10 @@ def new_opportunity(ledger, *, kind, anchor, area_key, mechanism_key=None,
         "status_since": utc_now(),
         "ceiling_pct": None,
         "evidence": None,
+        "sizing_evidence": None,
+        "sizing_evidence_sha256": None,
+        "verification_evidence": None,
+        "verification_evidence_sha256": None,
         "tests": None,
         "commit": None,
         "runtime_change_sequence": None,
@@ -1852,6 +2084,12 @@ def cmd_profile(args):
                 "stories": summary["stories"],
                 "enable_features": summary["enable_features"],
                 "repetitions": summary["repetitions"],
+                "interval_kind": summary.get("interval_kind"),
+                "metric_weighting": summary.get("metric_weighting"),
+                "nominal_samples_at_floor": summary.get(
+                    "nominal_samples_at_floor"
+                ),
+                "build_provenance": summary.get("build_provenance"),
                 "analyzer_min_inclusive_share": summary[
                     "analyzer_min_inclusive_share"
                 ],
@@ -2250,6 +2488,7 @@ def cmd_add(args):
 def cmd_advance(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     opp = ledger.opp(args.opp)
+    test_legacy = test_bypass_active()
     src, dst = opp["status"], args.to
     if opp.get("kind") == "discovery" and dst not in ("investigating",):
         raise CampaignError(
@@ -2263,17 +2502,39 @@ def cmd_advance(args):
             f"Allowed from {src}: {sorted(FORWARD_TRANSITIONS.get(src, set()))}"
         )
     if dst == "sized":
-        if args.ceiling is None or not args.evidence:
-            raise CampaignError(
-                "-> sized requires --ceiling <pct> and --evidence "
-                "(instrumentation/oracle sizing evidence)"
+        if args.evidence_manifest:
+            evidence, evidence_digest = load_gate_evidence(
+                args.evidence_manifest, opp=opp, phase="sizing"
             )
-        opp["ceiling_pct"] = args.ceiling
-        opp["evidence"] = args.evidence
+            opp["ceiling_pct"] = require_finite_number(
+                evidence.get("ceiling_pct"), "evidence ceiling_pct", nonnegative=True
+            )
+            opp["evidence"] = args.evidence_manifest
+            opp["sizing_evidence"] = evidence
+            opp["sizing_evidence_sha256"] = evidence_digest
+        elif test_legacy and args.ceiling is not None and args.evidence:
+            opp["ceiling_pct"] = args.ceiling
+            opp["evidence"] = args.evidence
+        else:
+            raise CampaignError(
+                "-> sized requires --evidence-manifest from "
+                "mechanism_evidence.py summarize; manual ceilings are rejected"
+            )
     if dst == "review":
         if not args.tests:
             raise CampaignError(
                 "-> review requires --tests describing what was run and passed"
+            )
+        if args.verification_manifest:
+            evidence, evidence_digest = load_gate_evidence(
+                args.verification_manifest, opp=opp, phase="candidate"
+            )
+            opp["verification_evidence"] = evidence
+            opp["verification_evidence_sha256"] = evidence_digest
+        elif not test_legacy:
+            raise CampaignError(
+                "-> review requires --verification-manifest proving a paired "
+                "exclusive-cycle reduction inside exact score intervals"
             )
         opp["tests"] = args.tests
         opp["reviews"] = {}
@@ -2300,6 +2561,8 @@ def cmd_advance(args):
                     f"(record with `campaign.py review --opp {opp['id']} "
                     f"--role {role} --verdict PASS`)"
                 )
+        if not test_legacy:
+            enforce_freshness_for_landing(ledger)
         verify_landed_commit(
             opp, find_repo_root(pathlib.Path.cwd()), args.commit,
             args.skip_review_verification,
@@ -2804,6 +3067,102 @@ def cmd_squeeze(args):
     return 0
 
 
+def cmd_review_scaffold(args):
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    opp = ledger.opp(args.opp)
+    if opp.get("kind") == "discovery":
+        if args.role != "skeptic" or opp.get("status") != "decomposed":
+            raise CampaignError(
+                "Discovery review scaffolds require a decomposed discovery "
+                "and role=skeptic"
+            )
+        if opp.get("decomposition_sha256") != decomposition_digest(opp):
+            raise CampaignError(
+                "Discovery decomposition changed outside the ledger workflow"
+            )
+        bindings = {
+            "review_kind": "discovery-exhaustion",
+            "decomposition_revision": opp.get("decomposition_revision"),
+            "decomposition_sha256": opp.get("decomposition_sha256"),
+        }
+    elif opp.get("status") == "review":
+        bindings = {
+            "review_kind": "mechanism",
+            "review_base": opp.get("review_base"),
+            "review_tree": opp.get("review_tree"),
+            "sizing_evidence_sha256": opp.get("sizing_evidence_sha256"),
+            "verification_evidence_sha256": opp.get(
+                "verification_evidence_sha256"
+            ),
+        }
+    else:
+        raise CampaignError("Review scaffolds require a reviewable opportunity")
+    report = {
+        "schema_version": 1,
+        "opportunity_id": opp["id"],
+        "role": args.role,
+        **bindings,
+        "checks": {name: False for name in review_checks(opp, args.role)},
+        "findings": [],
+        "verdict": "FAIL",
+        "notes": "Replace with concise artifact-backed reasoning.",
+    }
+    pathlib.Path(args.out).write_text(json.dumps(report, indent=2) + "\n")
+    print(args.out)
+    return 0
+
+
+def load_review_report(path, *, opp, role, verdict):
+    path = pathlib.Path(path)
+    try:
+        report = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CampaignError(f"Cannot read review report {path}: {exc}") from exc
+    if not isinstance(report, dict) or report.get("schema_version") != 1:
+        raise CampaignError("Review report must use schema_version 1")
+    expected = {
+        "opportunity_id": opp["id"],
+        "role": role,
+        "verdict": verdict,
+    }
+    if opp.get("kind") == "discovery":
+        expected.update({
+            "review_kind": "discovery-exhaustion",
+            "decomposition_revision": opp.get("decomposition_revision"),
+            "decomposition_sha256": decomposition_digest(opp),
+        })
+    else:
+        expected.update({
+            "review_kind": "mechanism",
+            "review_base": opp.get("review_base"),
+            "review_tree": opp.get("review_tree"),
+            "sizing_evidence_sha256": opp.get("sizing_evidence_sha256"),
+            "verification_evidence_sha256": opp.get(
+                "verification_evidence_sha256"
+            ),
+        })
+    for field, value in expected.items():
+        if report.get(field) != value:
+            raise CampaignError(
+                f"Review report {field} {report.get(field)!r} does not match {value!r}"
+            )
+    checks = report.get("checks")
+    required_checks = review_checks(opp, role)
+    if not isinstance(checks, dict) or set(checks) != set(required_checks):
+        raise CampaignError(
+            "Review report checks must exactly match: "
+            + ", ".join(required_checks)
+        )
+    if any(not isinstance(value, bool) for value in checks.values()):
+        raise CampaignError("Every review check must be a JSON boolean")
+    findings = report.get("findings")
+    if not isinstance(findings, list):
+        raise CampaignError("Review findings must be an array")
+    if verdict == "PASS" and (not all(checks.values()) or findings):
+        raise CampaignError("PASS requires every bounded check true and no findings")
+    return report, sha256_file(path)
+
+
 def cmd_review(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     opp = ledger.opp(args.opp)
@@ -2843,12 +3202,25 @@ def cmd_review(args):
             f"#{opp['id']:03d} is {opp['status']}, not in review; "
             "advance it to review before recording verdicts"
         )
+    report_digest = None
+    report_data = None
+    if not test_bypass_active():
+        if not args.report:
+            raise CampaignError(
+                "Reviews require a digest-bound report generated by review-scaffold"
+            )
+        report_data, report_digest = load_review_report(
+            args.report, opp=opp, role=args.role, verdict=args.verdict
+        )
     review = {
         "verdict": args.verdict,
         "notes": args.notes,
         "report": args.report,
         "ts": utc_now(),
+        "report_sha256": report_digest,
     }
+    if report_data is not None:
+        review["checks"] = report_data["checks"]
     if opp.get("kind") == "discovery":
         review["decomposition_revision"] = revision
         review["decomposition_sha256"] = digest
@@ -2972,6 +3344,9 @@ def cmd_reopen(args):
             ("ceiling_pct", None), ("evidence", None), ("tests", None),
             ("commit", None), ("revert_commit", None), ("reviews", {}),
             ("rework_rounds", 0), ("squeeze_rounds", 0),
+            ("sizing_evidence", None), ("sizing_evidence_sha256", None),
+            ("verification_evidence", None),
+            ("verification_evidence_sha256", None),
         ):
             opp[field] = value
     opp["status"] = "candidate"
@@ -3015,19 +3390,91 @@ def cmd_note(args):
 
 def cmd_checkpoint(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
+    if args.summary:
+        path = pathlib.Path(args.summary)
+        try:
+            summary = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise CampaignError(f"Cannot read checkpoint summary {path}: {exc}") from exc
+        if summary.get("mode") != "ab" or summary.get("stories") != "all":
+            raise CampaignError("Checkpoint must be a cumulative full-suite feature A/B")
+        if summary.get("feature") != ledger.data["config"]["feature"]:
+            raise CampaignError("Checkpoint toggled the wrong feature")
+        if not isinstance(summary.get("blocks"), int) or summary["blocks"] < 5:
+            raise CampaignError("Checkpoint requires at least 5 complete blocks")
+        if not isinstance(summary.get("seed"), int):
+            raise CampaignError("Checkpoint summary must record the randomized seed")
+        schedule = summary.get("schedule")
+        if not isinstance(schedule, list) or len(schedule) != summary["blocks"]:
+            raise CampaignError("Checkpoint summary must record the complete block schedule")
+        if abs(schedule.count("ABBA") - schedule.count("BAAB")) > 1:
+            raise CampaignError("Checkpoint ABBA/BAAB schedule is not balanced")
+        provenance = summary.get("build_provenance")
+        if not isinstance(provenance, dict) or not all(
+            isinstance(provenance.get(arm), dict) for arm in ("a", "b")
+        ):
+            raise CampaignError("Checkpoint lacks per-arm build provenance")
+        verify_profile_head(
+            find_repo_root(pathlib.Path.cwd()), summary.get("sha"),
+            ledger.data["config"].get("branch"), allow_unverified=False,
+        )
+        if any(
+            provenance[arm].get("git_sha") != summary.get("sha")
+            for arm in ("a", "b")
+        ):
+            raise CampaignError("Checkpoint build provenance SHA does not match measured SHA")
+        manifest_path = pathlib.Path(summary.get("manifest", ""))
+        try:
+            manifest_data = json.loads(manifest_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise CampaignError(f"Cannot read checkpoint raw manifest: {exc}") from exc
+        for field in (
+            "mode", "feature", "stories", "blocks", "seed", "schedule",
+            "geometric_delta_pct", "ci_95_pct", "mde_80_power_pct",
+            "build_provenance",
+        ):
+            if manifest_data.get(field) != summary.get(field):
+                raise CampaignError(f"Checkpoint summary disagrees with manifest on {field}")
+        delta = require_finite_number(summary.get("geometric_delta_pct"), "delta")
+        ci = summary.get("ci_95_pct")
+        if not isinstance(ci, list) or len(ci) != 2:
+            raise CampaignError("Checkpoint summary lacks ci_95_pct")
+        ci_low = require_finite_number(ci[0], "CI lower")
+        ci_high = require_finite_number(ci[1], "CI upper")
+        if ci_low > ci_high:
+            raise CampaignError("Checkpoint CI bounds are reversed")
+        manifest = summary.get("manifest")
+        manifest_sha256 = sha256_file(manifest_path)
+        sha = summary.get("sha")
+        evidence_sha256 = sha256_file(path)
+        seed = summary.get("seed")
+        mde = summary.get("mde_80_power_pct")
+    elif test_bypass_active():
+        delta, ci_low, ci_high = args.delta, args.ci_low, args.ci_high
+        manifest, sha = args.manifest, args.sha
+        evidence_sha256, seed, mde, manifest_sha256 = None, None, None, None
+    else:
+        raise CampaignError(
+            "checkpoint requires --summary from remote_measure.py; manual deltas are rejected"
+        )
     ledger.data.setdefault("checkpoints", []).append(
         {
             "ts": utc_now(),
             "landed_count": len(ledger.landed()),
-            "delta_pct": args.delta,
-            "ci": [args.ci_low, args.ci_high],
-            "manifest": args.manifest,
-            "sha": args.sha,
+            "delta_pct": delta,
+            "ci": [ci_low, ci_high],
+            "manifest": manifest,
+            "manifest_sha256": manifest_sha256,
+            "sha": sha,
+            "summary": args.summary,
+            "summary_sha256": evidence_sha256,
+            "seed": seed,
+            "mde_80_power_pct": mde,
             "notes": args.notes,
         }
     )
     ledger.save()
-    print(f"Recorded checkpoint after {len(ledger.landed())} landed: {args.delta:+.2f}%")
+    print(f"Recorded checkpoint after {len(ledger.landed())} landed: {delta:+.2f}%")
     return 0
 
 
@@ -3107,7 +3554,7 @@ def build_parser():
     p.add_argument(
         "--share-floor",
         type=float,
-        default=0.1,
+        default=0.3,
         help="Minimum marginal profile share (%%) worth attempting",
     )
     p.add_argument("--feature", default="Speedometer3Optimizations")
@@ -3223,6 +3670,16 @@ def build_parser():
     )
     p.add_argument("--ceiling", type=float, default=None, help="Evidenced eliminable share (%%)")
     p.add_argument("--evidence", default=None)
+    p.add_argument(
+        "--evidence-manifest",
+        default=None,
+        help="Passing sizing JSON emitted by mechanism_evidence.py summarize",
+    )
+    p.add_argument(
+        "--verification-manifest",
+        default=None,
+        help="Passing candidate JSON emitted by mechanism_evidence.py compare",
+    )
     p.add_argument("--tests", default=None)
     p.add_argument("--commit", default=None)
     p.add_argument("--notes", default=None)
@@ -3247,6 +3704,15 @@ def build_parser():
     p.add_argument("--notes", default=None)
     p.add_argument("--report", default=None, help="Path to the full review report")
     p.set_defaults(func=cmd_review)
+
+    p = sub.add_parser(
+        "review-scaffold",
+        help="Write a review JSON bound to the current tree and evidence digests",
+    )
+    p.add_argument("--opp", type=int, required=True)
+    p.add_argument("--role", required=True, choices=REVIEW_ROLES)
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_review_scaffold)
 
     p = sub.add_parser("reject", help="Reject an opportunity with a reason")
     p.add_argument("--opp", type=int, required=True)
@@ -3287,9 +3753,10 @@ def build_parser():
     p.set_defaults(func=cmd_note)
 
     p = sub.add_parser("checkpoint", help="Record a cumulative flag on/off measurement")
-    p.add_argument("--delta", type=float, required=True, help="Suite geometric delta (%%)")
-    p.add_argument("--ci-low", type=float, required=True)
-    p.add_argument("--ci-high", type=float, required=True)
+    p.add_argument("--summary", help="remote_measure.py machine-readable summary JSON")
+    p.add_argument("--delta", type=float, default=None, help=argparse.SUPPRESS)
+    p.add_argument("--ci-low", type=float, default=None, help=argparse.SUPPRESS)
+    p.add_argument("--ci-high", type=float, default=None, help=argparse.SUPPRESS)
     p.add_argument("--manifest", default=None)
     p.add_argument("--sha", default=None)
     p.add_argument("--notes", default=None)
@@ -3324,6 +3791,11 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
+        if test_bypass_requested() and not test_bypass_active():
+            raise CampaignError(
+                f"{TEST_BYPASS_ENV} is test-only and is honored only by an "
+                "in-process unittest run"
+            )
         campaign_dir = pathlib.Path(args.dir or default_campaign_dir())
         campaign_dir.mkdir(parents=True, exist_ok=True)
         with open(campaign_dir / ".ledger.lock", "a+") as lock_file:

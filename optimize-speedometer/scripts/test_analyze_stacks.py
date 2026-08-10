@@ -600,6 +600,23 @@ class AnalyzeStacksTest(unittest.TestCase):
                 [(1.0, 2.0), (4.0, 5.5)], MODULE.load_mark_intervals([path])
             )
 
+    def test_mark_log_prefers_exact_score_intervals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "browser.stdout.log"
+            path.write_text(
+                "[SP3_SCORE_TIME] sp3-measurement-start: 1.0\n"
+                "[SP3_SCORE_TIME] Suite.Test-start: 1.2\n"
+                "[SP3_SCORE_TIME] Suite.Test-sync-end: 1.4\n"
+                "[SP3_SCORE_TIME] Suite.Test-async-start: 1.5\n"
+                "[SP3_SCORE_TIME] Suite.Test-async-end: 1.8\n"
+                "[SP3_SCORE_TIME] sp3-measurement-end: 2.0\n"
+                "[SP3_MONO_TIME] sp3-measurement-start: 1.0\n"
+                "[SP3_MONO_TIME] sp3-measurement-end: 2.0\n"
+            )
+            self.assertEqual(
+                [(1.2, 1.4), (1.5, 1.8)], MODULE.load_mark_intervals([path])
+            )
+
     def test_deepest_owner_excludes_v8_but_keeps_native_primitive(self):
         v8_lines = sample(
             10,

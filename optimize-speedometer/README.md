@@ -12,6 +12,21 @@ dedicated branch behind one feature flag, with independent skeptic and
 adversary reviews gating every landing. Score impact is measured in
 aggregate at flag on/off checkpoints.
 
+The current workflow has three deliberately separate evidence layers:
+
+1. exact sync/async score-window profiles, normalized to equal suite weight,
+   discover broad areas;
+2. instrumented calls/applicability/avoidable/exclusive-cycle blocks prove one
+   mechanism; the probe emits machine rows which `mechanism_evidence.py`
+   digest-binds and reduces without transcription;
+3. fresh-seed randomized block A/B measures the aggregate score.
+
+Profile share is never converted to predicted score impact. Manual ceilings,
+unbound review prose, and copied checkpoint numbers are rejected by the
+ledger. The default discovery floor is 0.3%, with a minimum of 100 nominal
+samples at that floor. The next landing is blocked after five runtime changes
+without a fresh enabled profile or five landings without a checkpoint.
+
 The ledger deliberately separates a profiled **candidate area** from a
 specific **optimization mechanism**. An area investigation fans out into
 independently gated child mechanisms. Rejected/reverted mechanism keys remain
@@ -29,7 +44,9 @@ dropped. The mechanical
 halves of both big JSON handoffs are generated, not hand-written:
 `campaign.py profile-scaffold` prefills the reconciliation manifest and
 `campaign.py decompose-scaffold` prefills a decomposition's per-hotspot
-accounting, leaving agents only the judgment calls. Closing an area requires
+accounting. `mechanism_evidence.py scaffold/ingest/summarize/compare` performs the
+candidate arithmetic, and `campaign.py review-scaffold` binds review checks
+to the staged tree and evidence digests. Closing an area requires
 a skeptic review of the decomposition's mandatory/out-of-scope/covered-by
 claims before `exhaust` is accepted; a FAIL requires a revised decomposition
 and cannot be overwritten on unchanged accounting. `campaign.py
@@ -43,9 +60,12 @@ post-profile landing/revert, or checkout/branch mismatch remains unresolved.
   campaign branch (default `speedometer`) checked out; this skills repo
   present under `.agents/skills/`.
 - **Remote measurement machine** (default ssh host `linux`): bare-metal box
-  with PMU access, full Chromium checkout sharing upstream history,
-  configured `out/perf` (PGO/LTO, frame pointers, symbols), and `perf`,
-  `vpython3`, `autoninja`, `gn` on the PATH of a non-interactive ssh shell.
+  with PMU access, full Chromium checkout sharing upstream history, and two
+  official non-debug PGO phase-2 ThinLTO builds. Use `out/perf` for profiling
+  with symbols/frame pointers and `out/release` for authoritative score
+  measurement without symbols. Both build identities are recorded as
+  provenance. The host also needs `perf`, `vpython3`, `autoninja`, and `gn` on
+  the PATH of a non-interactive ssh shell.
   Budget disk generously: binary-vs-binary comparisons (`ab2` mode — used
   for bisects and candidate screens) maintain two additional official build
   dirs (`out/perf_a`, `out/perf_b`) beside `out/perf`, so plan on the order
@@ -61,6 +81,17 @@ post-profile landing/revert, or checkout/branch mismatch remains unresolved.
 
 ## Starting a campaign (first session)
 
+The skill intentionally resumes `.agents/campaigns/current/ledger.json` when
+it exists. To start from scratch, first archive or deliberately remove the old
+campaign directory and its `current` link; do not ask the agent to overwrite
+an existing ledger. This destructive choice remains a human operation.
+
+A clean-slate campaign installs the exact `[SP3_SCORE_TIME]` probe from this
+skill in place of the old outer-window `[SP3_MONO_TIME]` probe, compiles it,
+and smoke-tests exact interval matching before its first profile. It then runs
+a 3–5 candidate pilot through counters, oracle, candidate, and cumulative A/B
+before scaling to a 20–40-change campaign.
+
 The defaults (branch `speedometer`, target 20, flag
 `Speedometer3Optimizations`, host `linux`) fit the usual environment, but
 state the config and the autonomy level explicitly on the first run:
@@ -72,6 +103,8 @@ state the config and the autonomy level explicitly on the first run:
 >   there).
 > - Do the full setup: init the ledger, land the flag and probe scaffolding,
 >   run A/A calibration and the flag-overhead null check.
+> - Complete the 3–5 candidate counter → oracle → candidate → cumulative A/B
+>   pilot, and continue to the long campaign only if the directions agree.
 > - Then run the campaign loop. Report to me with the STATUS.md summary
 >   after each checkpoint; otherwise proceed autonomously. Stop on any
 >   stopping rule or anything needing human intervention.
@@ -85,9 +118,13 @@ is a preference it can only guess at.
 > Continue the Speedometer optimization campaign using the
 > optimize-speedometer skill.
 
-That is sufficient. All campaign state lives in the ledger, the commit
-messages on the campaign branch, and STATUS.md; the agent reconstructs
-where it left off and picks up mid-loop without re-asking for configuration.
+That is sufficient when `current` selects the intended campaign, the recorded
+branch is checked out, the updated skills are synced locally and remotely,
+and every digest-bound artifact still exists. Preserve raw counter logs,
+profile and trace artifacts, A/A summaries, build-provenance files, derived
+evidence JSON, the ledger, campaign commits, and STATUS.md. The agent reads the
+ledger, regenerates status, verifies artifacts at the next gate, and resumes
+without reconstructing evidence from prose.
 
 ## Situational extras
 
@@ -146,5 +183,6 @@ parked/rejected/reverted/exhausted records with reasons.
 | `scripts/campaign.py` | Ledger, gate enforcement, STATUS.md generation |
 | `scripts/remote_measure.py` | Remote measurement wrapper (ssh + lock + digest check) |
 | `scripts/analyze_stacks.py` | Overlap-aware candidate frontier from perf stacks |
-| `resources/` | Flag/probe scaffolding, analyzer reference |
+| `scripts/mechanism_evidence.py` | Raw counter validation and paired mechanism statistics |
+| `resources/` | Flag/probe scaffolding, instrumented-twin, mechanism-evidence, decomposition, and analyzer references |
 | `../chrome-cycle-profiling/` | Companion skill: capture mechanics, A/B statistics |

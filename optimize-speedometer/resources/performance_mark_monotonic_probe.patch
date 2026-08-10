@@ -1,22 +1,98 @@
 diff --git a/third_party/blink/renderer/core/timing/performance.cc b/third_party/blink/renderer/core/timing/performance.cc
 --- a/third_party/blink/renderer/core/timing/performance.cc
 +++ b/third_party/blink/renderer/core/timing/performance.cc
-@@ -31,2 +31,3 @@
+@@ -32,5 +32,9 @@
+ #include "third_party/blink/renderer/core/timing/performance.h"
+ 
  #include <algorithm>
 +#include <cstdio>
  #include <optional>
-@@ -879,6 +880,14 @@ PerformanceMark* Performance::mark(ScriptState* script_state,
++#include <string>
++#include <utility>
++#include <vector>
+ 
+@@ -109,8 +113,38 @@ namespace blink {
+ namespace {
+ 
+ // LongTask API can be a source of many events. Filter on Performance object
+ // level before reporting to UKM to smooth out recorded events over all pages.
+ constexpr size_t kLongTaskUkmSampleInterval = 100;
++
++// Speedometer score-boundary timestamps are buffered so fprintf/fflush never
++// runs inside a score timer. A start is taken after Performance::mark work and
++// an end is taken before it, excluding the marker implementation itself.
++// Intentionally leaked and function-local: Blink forbids both non-trivial
++// thread_local destructors and namespace-scope dynamic initialization.
++using Sp3ScoreMarks = std::vector<std::pair<std::string, double>>;
++
++Sp3ScoreMarks& GetSp3ScoreMarks() {
++  thread_local auto* marks = new Sp3ScoreMarks;
++  return *marks;
++}
++
++thread_local bool sp3_collecting_score_marks = false;
++
++bool IsSpeedometerScoreStart(const AtomicString& name) {
++  return name.contains(".") && name.ends_with("-start");
++}
++
++bool IsSpeedometerScoreEnd(const AtomicString& name) {
++  return name.contains(".") &&
++         (name.ends_with("-sync-end") || name.ends_with("-async-end"));
++}
++
++void FlushSpeedometerScoreMarks() {
++  for (const auto& [name, timestamp] : GetSp3ScoreMarks())
++    std::fprintf(stderr, "[SP3_SCORE_TIME] %s: %.9f\n", name.c_str(), timestamp);
++  std::fflush(stderr);
++  GetSp3ScoreMarks().clear();
++}
+ 
+ const char kParserPausingCalledAfterResumimg[] =
+     "Blink.HTMLParsing.IsParserPausingCalledAfterResuming";
+@@ -878,10 +912,26 @@ UserTiming& Performance::GetUserTiming() {
+ PerformanceMark* Performance::mark(ScriptState* script_state,
                                     const AtomicString& mark_name,
                                     PerformanceMarkOptions* mark_options,
                                     ExceptionState& exception_state) {
-+  if (mark_name == "sp3-measurement-start" ||
-+      mark_name == "sp3-measurement-end") {
-+    std::fprintf(stderr, "[SP3_MONO_TIME] %s: %.9f\n",
-+                 mark_name.Utf8().c_str(),
-+                 base::TimeTicks::Now().since_origin().InSecondsF());
-+    std::fflush(stderr);
++  const bool sp3_outer_start = mark_name == "sp3-measurement-start";
++  const bool sp3_outer_end = mark_name == "sp3-measurement-end";
++  const bool sp3_score_start =
++      sp3_collecting_score_marks && IsSpeedometerScoreStart(mark_name);
++  const bool sp3_score_end =
++      sp3_collecting_score_marks && IsSpeedometerScoreEnd(mark_name);
++  if (sp3_outer_start) {
++    GetSp3ScoreMarks().clear();
++    sp3_collecting_score_marks = true;
++  }
++  if (sp3_score_end || sp3_outer_end) {
++    GetSp3ScoreMarks().emplace_back(
++        mark_name.Utf8().c_str(),
++        base::TimeTicks::Now().since_origin().InSecondsF());
 +  }
 +
    DEFINE_THREAD_SAFE_STATIC_LOCAL(const AtomicString, mark_fully_loaded,
                                    ("mark_fully_loaded"));
    DEFINE_THREAD_SAFE_STATIC_LOCAL(const AtomicString, mark_fully_visible,
+                                   ("mark_fully_visible"));
+   DEFINE_THREAD_SAFE_STATIC_LOCAL(const AtomicString, mark_interactive,
+                                   ("mark_interactive"));
+@@ -1019,6 +1069,18 @@ PerformanceMark* Performance::mark(ScriptState* script_state,
+     NotifyObserversOfEntry(*performance_mark);
+   }
++  if (sp3_score_start || sp3_outer_start) {
++    GetSp3ScoreMarks().emplace_back(
++        mark_name.Utf8().c_str(),
++        base::TimeTicks::Now().since_origin().InSecondsF());
++  }
++  if (sp3_outer_end) {
++    // The last scored interval ended before this call. Flushing here is
++    // outside every score timer but remains inside the outer diagnostic
++    // window, which is never used for candidate weights.
++    sp3_collecting_score_marks = false;
++    FlushSpeedometerScoreMarks();
++  }
+   return performance_mark;
+ }
+ 
+ void Performance::ProcessUserFeatureMark(

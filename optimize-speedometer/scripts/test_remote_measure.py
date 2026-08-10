@@ -192,7 +192,9 @@ class ResultDiscoveryTest(unittest.TestCase):
             )
             self.assertEqual(
                 {"full_candidate_frontier", "full_candidate_frontier_json",
-                 "full_opportunity_trees"}, set(paths))
+                 "full_opportunity_trees", "interval_kind",
+                 "metric_weighting", "nominal_samples_at_floor",
+                 "build_provenance"}, set(paths))
 
 
 def make_skill_tree(root, content="pass\n", symlinked=False):

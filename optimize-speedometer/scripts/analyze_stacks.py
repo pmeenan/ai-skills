@@ -114,7 +114,7 @@ class Sample:
     pid: int
     tid: int
     timestamp: float
-    weight: int
+    weight: float
     frames: tuple[Frame, ...]  # root to leaf
 
 
@@ -166,22 +166,30 @@ def parse_perf_script(
     lines: Iterable[str],
     group: str,
     intervals: list[tuple[float, float]] | None = None,
+    interval_records: list[dict] | None = None,
     pids: set[int] | None = None,
 ) -> list[Sample]:
     samples: list[Sample] = []
     header: re.Match[str] | None = None
     leaf_to_root: list[Frame] = []
     in_scope = make_interval_checker(intervals or [])
+    interval_group = make_interval_group_matcher(interval_records or [])
 
     def finish() -> None:
         nonlocal header, leaf_to_root
         if header and leaf_to_root:
             pid = int(header.group("pid"))
             timestamp = float(header.group("time"))
-            if (pids is None or pid in pids) and in_scope(timestamp):
+            matched_group = interval_group(timestamp)
+            if (pids is None or pid in pids) and in_scope(timestamp) and (
+                not interval_records or matched_group is not None
+            ):
                 samples.append(
                     Sample(
-                        group=group,
+                        group=(
+                            f"{group}:{matched_group}"
+                            if matched_group is not None else group
+                        ),
                         comm=sys.intern(header.group("comm").strip()),
                         pid=pid,
                         tid=int(header.group("tid") or pid),
@@ -220,6 +228,13 @@ def parse_perf_script(
 
 
 def load_intervals(path: pathlib.Path | None) -> list[tuple[float, float]]:
+    return [
+        (item["start_time_mono"], item["end_time_mono"])
+        for item in load_interval_records(path)
+    ]
+
+
+def load_interval_records(path: pathlib.Path | None) -> list[dict]:
     if path is None:
         return []
     data = json.loads(path.read_text())
@@ -234,11 +249,17 @@ def load_intervals(path: pathlib.Path | None) -> list[tuple[float, float]]:
         if isinstance(item, dict):
             start = item.get("start_time_mono", item.get("start"))
             end = item.get("end_time_mono", item.get("end"))
+            group = item.get("group") or item.get("suite")
         else:
             start, end = item
+            group = None
         if start is not None and end is not None and float(end) > float(start):
-            intervals.append((float(start), float(end)))
-    return sorted(intervals)
+            intervals.append({
+                "start_time_mono": float(start),
+                "end_time_mono": float(end),
+                "group": str(group) if group is not None else None,
+            })
+    return sorted(intervals, key=lambda item: item["start_time_mono"])
 
 
 def in_intervals(timestamp: float, intervals: list[tuple[float, float]]) -> bool:
@@ -271,11 +292,59 @@ def make_interval_checker(intervals: list[tuple[float, float]]):
     return contains
 
 
+def make_interval_group_matcher(records: list[dict]):
+    if not records:
+        return lambda timestamp: None
+    records = sorted(records, key=lambda item: item["start_time_mono"])
+    starts = [item["start_time_mono"] for item in records]
+
+    def match(timestamp: float):
+        index = bisect.bisect_right(starts, timestamp) - 1
+        if index < 0 or timestamp > records[index]["end_time_mono"]:
+            return None
+        return records[index].get("group") or "@interval"
+
+    return match
+
+
+def normalize_score_groups(samples: list[Sample]) -> None:
+    """Give every Speedometer suite/capture group equal total profile weight."""
+    totals = collections.Counter()
+    for sample in samples:
+        totals[sample.group] += sample.weight
+    target = statistics.fmean(totals.values())
+    scales = {group: target / total for group, total in totals.items() if total > 0}
+    for sample in samples:
+        sample.weight *= scales[sample.group]
+
+
 def load_mark_intervals(paths: list[pathlib.Path]) -> list[tuple[float, float]]:
     intervals = []
     for path in paths:
         pending_start = None
+        score_starts = {}
+        exact = []
+        outer = []
         for line in path.read_text(errors="replace").splitlines():
+            score = re.search(r"\[SP3_SCORE_TIME\]\s+(.+?):\s*([\d.]+)", line)
+            if score:
+                name, timestamp = score.group(1), float(score.group(2))
+                if name.endswith("-sync-end"):
+                    key = name[: -len("-sync-end")] + "-start"
+                    start_time = score_starts.pop(key, None)
+                    if start_time is None or timestamp <= start_time:
+                        raise ValueError(f"Unmatched exact score end in {path}: {name}")
+                    exact.append((start_time, timestamp))
+                elif name.endswith("-async-end"):
+                    key = name[: -len("-async-end")] + "-async-start"
+                    start_time = score_starts.pop(key, None)
+                    if start_time is None or timestamp <= start_time:
+                        raise ValueError(f"Unmatched exact score end in {path}: {name}")
+                    exact.append((start_time, timestamp))
+                elif name != "sp3-measurement-start" and name.endswith("-start"):
+                    if name in score_starts:
+                        raise ValueError(f"Repeated exact score start in {path}: {name}")
+                    score_starts[name] = timestamp
             if "[SP3_MONO_TIME]" not in line:
                 continue
             start = re.search(r"sp3-measurement-start:\s*([\d.]+)", line)
@@ -290,10 +359,13 @@ def load_mark_intervals(paths: list[pathlib.Path]) -> list[tuple[float, float]]:
                 end_time = float(end.group(1))
                 if end_time <= pending_start:
                     raise ValueError(f"Invalid measurement interval in {path}")
-                intervals.append((pending_start, end_time))
+                outer.append((pending_start, end_time))
                 pending_start = None
         if pending_start is not None:
             raise ValueError(f"Unmatched measurement start in {path}")
+        if score_starts:
+            raise ValueError(f"Unmatched exact score start(s) in {path}")
+        intervals.extend(exact or outer)
     return sorted(intervals)
 
 
@@ -1188,7 +1260,10 @@ def main() -> int:
         action="append",
         type=pathlib.Path,
         default=[],
-        help="Extract measurement intervals from a probed browser.stdout.log",
+        help=(
+            "Extract exact SP3_SCORE_TIME intervals from a browser log; "
+            "legacy outer SP3_MONO_TIME is diagnostic fallback only"
+        ),
     )
     parser.add_argument(
         "--role",
@@ -1211,8 +1286,8 @@ def main() -> int:
         help="Skip inline expansion for a faster, lower-fidelity screen",
     )
     parser.add_argument("--weight", choices=("period", "samples"), default="period")
-    parser.add_argument("--min-share", type=float, default=0.001)
-    parser.add_argument("--min-marginal-share", type=float, default=0.001)
+    parser.add_argument("--min-share", type=float, default=0.003)
+    parser.add_argument("--min-marginal-share", type=float, default=0.003)
     parser.add_argument(
         "--limit", type=int, default=20,
         help="Markdown presentation limit; JSON selection always runs to the marginal floor",
@@ -1257,7 +1332,11 @@ def main() -> int:
     if args.tree_max_children < 1:
         parser.error("--tree-max-children must be at least 1")
 
-    intervals = load_intervals(args.intervals) + load_mark_intervals(args.browser_log)
+    interval_records = load_interval_records(args.intervals)
+    intervals = [
+        (item["start_time_mono"], item["end_time_mono"])
+        for item in interval_records
+    ] + load_mark_intervals(args.browser_log)
     intervals.sort()
     role_pids: set[int] | None = None
     if args.role:
@@ -1279,7 +1358,13 @@ def main() -> int:
         )
         try:
             samples.extend(
-                parse_perf_script(lines, group, intervals=intervals, pids=role_pids)
+                parse_perf_script(
+                    lines,
+                    group,
+                    intervals=intervals,
+                    interval_records=interval_records,
+                    pids=role_pids,
+                )
             )
         finally:
             if process:
@@ -1294,6 +1379,13 @@ def main() -> int:
     if not samples:
         print("No stack samples remained after parsing/filtering.", file=sys.stderr)
         return 2
+
+    interval_manifest = (
+        json.loads(args.intervals.read_text()) if args.intervals else {}
+    )
+    exact_scored = interval_manifest.get("interval_kind") == "exact-scored"
+    if exact_scored:
+        normalize_score_groups(samples)
 
     aggregates = aggregate_samples(samples)
     frontier, alternatives, areas = build_frontier(
@@ -1317,7 +1409,6 @@ def main() -> int:
     if not intervals:
         quality_issues.append("measurement intervals unavailable; capture is unscoped")
     elif args.intervals:
-        interval_manifest = json.loads(args.intervals.read_text())
         if (
             "measurement_intervals" not in interval_manifest
             and interval_manifest.get("start_time_mono") is not None
@@ -1327,8 +1418,17 @@ def main() -> int:
             )
         elif interval_manifest.get("scoped_to_scored_work") is False:
             quality_issues.append("historical broad interval includes unscored work")
+        elif not exact_scored:
+            quality_issues.append(
+                "interval manifest is not exact-scored; outer suite windows are diagnostic only"
+            )
     if len(samples) < 5000:
         quality_issues.append("fewer than 5,000 samples")
+    nominal_floor_samples = len(samples) * args.min_marginal_share
+    if nominal_floor_samples < 100:
+        quality_issues.append(
+            "fewer than 100 nominal samples at the marginal-share floor"
+        )
     if unknown_user_fraction > 0.15:
         quality_issues.append("more than 15% unknown user-space frames")
     if statistics.median(depths) < 3:
@@ -1345,6 +1445,9 @@ def main() -> int:
             "p90_depth": sorted(depths)[min(len(depths) - 1, int(len(depths) * 0.9))],
             "unknown_user_frame_fraction": unknown_user_fraction,
             "measurement_intervals": intervals,
+            "interval_kind": "exact-scored" if exact_scored else "broad-or-missing",
+            "nominal_samples_at_floor": nominal_floor_samples,
+            "build_provenance": interval_manifest.get("build_provenance"),
             "role": args.role or "all",
             "pids": sorted(role_pids) if role_pids is not None else [],
         },
@@ -1357,6 +1460,9 @@ def main() -> int:
             "tree_max_depth": args.tree_max_depth,
             "tree_max_children": args.tree_max_children,
             "weight": args.weight,
+            "metric_weighting": (
+                "speedometer-geomean-v1" if exact_scored else "raw-cycles"
+            ),
             "note": (
                 "Inclusive and marginal shares retain descendant engine work as an "
                 "opportunity bound. Owner-exclusive share attributes samples to the "

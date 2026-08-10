@@ -25,6 +25,7 @@ import json
 import math
 import os
 import random
+import secrets
 import shutil
 import subprocess
 import sys
@@ -67,6 +68,33 @@ def t_power(df):
 
 def get_repo_root():
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+
+
+def sha256_path(path):
+    import hashlib
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def build_provenance(cwd, browser):
+    browser_path = os.path.realpath(os.path.join(cwd, browser))
+    args_path = os.path.join(os.path.dirname(browser_path), "args.gn")
+    try:
+        sha = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "HEAD"], check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+    except subprocess.SubprocessError:
+        sha = "unknown"
+    return {
+        "resolved_browser": browser_path,
+        "browser_sha256": sha256_path(browser_path),
+        "git_sha": sha,
+        "gn_args_sha256": sha256_path(args_path) if os.path.isfile(args_path) else None,
+    }
 
 
 def check_feature_registered(cwd, feature):
@@ -150,7 +178,12 @@ def parse_run_metrics(cwd, out_dir):
                 continue
             stories = {}
             for key, value in data.items():
-                if key == "Score" or "/" in key:
+                if (
+                    key == "Score"
+                    or "/" in key
+                    or key == "Geomean"
+                    or key.startswith("Iteration-")
+                ):
                     continue
                 num = _scalar(value)
                 if num is not None and num > 0:
@@ -247,7 +280,10 @@ def main():
     parser.add_argument("--aa", action="store_true", help="Run in genuine A/A baseline mode (identical binaries/flags on both arms)")
     parser.add_argument("--blocks", type=int, default=5, help="Number of ABBA/BAAB blocks (default: 5 blocks = 10 paired reps per arm)")
     parser.add_argument("--stories", default="all", help="Speedometer stories to run (default: all)")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for block ordering")
+    parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Random seed for block ordering (default: a fresh recorded seed)",
+    )
     parser.add_argument("--enable-features", default="",
                         help="Comma-separated features enabled on BOTH arms "
                         "(aa and two-binary modes only). Required for bisecting "
@@ -284,7 +320,8 @@ def main():
 
     temp_results_dir = tempfile.mkdtemp(prefix="results_ab_interleaved_", dir=os.path.join(cwd, "scratch"))
     rel_out_dir = os.path.relpath(temp_results_dir, cwd)
-    random.seed(args.seed)
+    actual_seed = args.seed if args.seed is not None else secrets.randbits(32)
+    rng = random.Random(actual_seed)
 
     if args.aa:
         mode_str = "GENUINE A/A CALIBRATION"
@@ -302,6 +339,7 @@ def main():
     print(f" Output Dir   : {rel_out_dir}")
     print(f" Blocks       : {args.blocks} (Total paired runs: {args.blocks * 2} per arm)")
     print(f" Stories      : {args.stories}")
+    print(f" Seed         : {actual_seed}")
     print(f"=======================================================\n")
 
     common_flags = (
@@ -325,11 +363,13 @@ def main():
         )
 
     block_data = []
-    block_patterns = ["ABBA", "BAAB"]
+    block_patterns = ["ABBA"] * ((args.blocks + 1) // 2)
+    block_patterns += ["BAAB"] * (args.blocks // 2)
+    rng.shuffle(block_patterns)
     total_rep = 0
 
     for b_idx in range(args.blocks):
-        pattern = random.choice(block_patterns)
+        pattern = block_patterns[b_idx]
         print(f"\n--- Block {b_idx + 1}/{args.blocks} Pattern: {pattern} ---")
         a_scores, b_scores = [], []
         a_stories, b_stories = [], []
@@ -415,6 +455,8 @@ def main():
         "browser_b": args.browser_b,
         "stories": args.stories,
         "blocks": suite["n_blocks"],
+        "seed": actual_seed,
+        "schedule": block_patterns,
         "block_details": [
             {k: b[k] for k in ("block", "pattern", "a_scores", "b_scores")}
             for b in block_data
@@ -428,6 +470,10 @@ def main():
         "achieves_5pct_goal": achieves_5pct_goal,
         "per_story": stories,
         "stat_sig_story_regressions": stat_sig_regressions,
+        "build_provenance": {
+            "a": build_provenance(cwd, args.browser_a or args.browser),
+            "b": build_provenance(cwd, args.browser_b or args.browser),
+        },
     }
     manifest_path = os.path.join(cwd, "scratch", "ab_results_manifest.json")
     os.makedirs(os.path.dirname(manifest_path), exist_ok=True)

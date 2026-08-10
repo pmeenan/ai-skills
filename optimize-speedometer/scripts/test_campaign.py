@@ -10,6 +10,7 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import campaign
 
@@ -255,6 +256,16 @@ class CampaignTest(unittest.TestCase):
         text = self.status_text()
         self.assertIn("StyleEngine::RecalcStyle subtree", text)
         self.assertIn("Landed: 0/20", text)
+
+    def test_test_bypass_permanently_taints_status(self):
+        self.assertIn("test_only_taint", self.ledger())
+        self.assertIn("TEST-ONLY TAINT", self.status_text())
+
+    def test_test_bypass_is_rejected_outside_unittest(self):
+        with mock.patch.object(campaign, "test_bypass_active", return_value=False):
+            self.assertEqual(1, campaign.main([
+                "--dir", str(self.dir), "status"
+            ]))
 
     def test_global_priority_surfaces_hot_nested_work_before_shallow_parent(self):
         areas = [{
@@ -822,7 +833,7 @@ class CampaignTest(unittest.TestCase):
         self.assertEqual(0, self.run_cmd(
             "note", "--opp", str(opp), "--text", "migration save"))
         migrated = self.ledger()
-        self.assertEqual(2, migrated["schema_version"])
+        self.assertEqual(3, migrated["schema_version"])
         self.assertEqual("mechanism", migrated["opportunities"][0]["kind"])
         self.assertEqual("legacy-001", migrated["opportunities"][0]["mechanism_key"])
 
@@ -876,6 +887,35 @@ class CampaignTest(unittest.TestCase):
         self.assertEqual(1, self.run_cmd(
             "review", "--opp", str(discovery), "--role", "skeptic",
             "--verdict", "PASS"))
+
+    def test_discovery_exhaustion_review_is_digest_bound(self):
+        discovery = self.record_profile("profile-1")[0]
+        self.assertEqual(0, self.decompose(discovery, [{
+            "anchor": "mandatory residual",
+            "share_pct": 0.3,
+            "disposition": "mandatory",
+            "evidence": "specification requires the observable work",
+        }]))
+        report_path = self.dir / "exhaustion-review.json"
+        os.environ.pop("SP3_CAMPAIGN_TEST_ALLOW_UNVERIFIED", None)
+        try:
+            self.assertEqual(1, self.run_cmd(
+                "review", "--opp", str(discovery), "--role", "skeptic",
+                "--verdict", "PASS"))
+            self.assertEqual(0, self.run_cmd(
+                "review-scaffold", "--opp", str(discovery), "--role",
+                "skeptic", "--out", str(report_path)))
+            report = json.loads(report_path.read_text())
+            self.assertEqual("discovery-exhaustion", report["review_kind"])
+            report["checks"] = {name: True for name in report["checks"]}
+            report["verdict"] = "PASS"
+            report["findings"] = []
+            report_path.write_text(json.dumps(report))
+            self.assertEqual(0, self.run_cmd(
+                "review", "--opp", str(discovery), "--role", "skeptic",
+                "--verdict", "PASS", "--report", str(report_path)))
+        finally:
+            os.environ["SP3_CAMPAIGN_TEST_ALLOW_UNVERIFIED"] = "1"
 
     def test_covered_by_accounts_wrapper_chain_to_one_mechanism(self):
         discovery = self.record_profile(
@@ -1470,6 +1510,10 @@ class GitReviewVerificationTest(unittest.TestCase):
         self.repo.mkdir()
         self.dir = pathlib.Path(self.tmp.name) / "camp"
         self.prev_cwd = os.getcwd()
+        self.prev_test_override = os.environ.get(
+            "SP3_CAMPAIGN_TEST_ALLOW_UNVERIFIED"
+        )
+        os.environ["SP3_CAMPAIGN_TEST_ALLOW_UNVERIFIED"] = "1"
         os.chdir(self.repo)
         self.git("init", "-q")
         self.git("config", "user.email", "t@example.com")
@@ -1478,7 +1522,10 @@ class GitReviewVerificationTest(unittest.TestCase):
         self.git("add", "-A")
         self.git("commit", "-qm", "base")
         self.branch = self.git("rev-parse", "--abbrev-ref", "HEAD")
-        self.run_cmd("init", "--name", "gittest", "--branch", self.branch)
+        self.run_cmd(
+            "init", "--name", "gittest", "--branch", self.branch,
+            "--share-floor", "0.1"
+        )
         self.run_cmd("add", "--anchor", "anchor", "--share", "0.5")
         self.run_cmd("advance", "--opp", "1", "--to", "sized",
                      "--ceiling", "0.3", "--evidence", "oracle")
@@ -1486,6 +1533,10 @@ class GitReviewVerificationTest(unittest.TestCase):
 
     def tearDown(self):
         os.chdir(self.prev_cwd)
+        if self.prev_test_override is None:
+            os.environ.pop("SP3_CAMPAIGN_TEST_ALLOW_UNVERIFIED", None)
+        else:
+            os.environ["SP3_CAMPAIGN_TEST_ALLOW_UNVERIFIED"] = self.prev_test_override
         self.tmp.cleanup()
 
     def git(self, *argv):

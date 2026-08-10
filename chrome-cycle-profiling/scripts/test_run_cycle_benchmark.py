@@ -4,6 +4,7 @@ import importlib.util
 import pathlib
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -17,6 +18,30 @@ SPEC.loader.exec_module(MODULE)
 
 
 class RunCycleBenchmarkTest(unittest.TestCase):
+    def test_exact_score_intervals_are_labeled_and_outer_is_diagnostic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            log_dir = root / "results" / "run"
+            log_dir.mkdir(parents=True)
+            (log_dir / "browser.stdout.log").write_text(
+                "[SP3_SCORE_TIME] sp3-measurement-start: 10.000000000\n"
+                "[SP3_SCORE_TIME] TodoMVC-React.Adding100Items-start: 10.100000000\n"
+                "[SP3_SCORE_TIME] TodoMVC-React.Adding100Items-sync-end: 10.200000000\n"
+                "[SP3_SCORE_TIME] TodoMVC-React.Adding100Items-async-start: 10.300000000\n"
+                "[SP3_SCORE_TIME] TodoMVC-React.Adding100Items-async-end: 10.500000000\n"
+                "[SP3_SCORE_TIME] sp3-measurement-end: 10.700000000\n"
+            )
+            intervals, outer = MODULE.parse_mono_intervals("results", tmp)
+            self.assertEqual(["sync", "async"], [item["phase"] for item in intervals])
+            self.assertTrue(all(
+                item["group"].endswith("|TodoMVC-React") for item in intervals
+            ))
+            self.assertAlmostEqual(0.3, sum(
+                item["end_time_mono"] - item["start_time_mono"]
+                for item in intervals
+            ))
+            self.assertAlmostEqual(0.7, outer[0]["end_time_mono"] - outer[0]["start_time_mono"])
+
     def test_quality_rejection_is_returned_without_raising(self):
         completed = subprocess.CompletedProcess(["analyzer"], 3)
         with mock.patch.object(MODULE.subprocess, "run", return_value=completed):

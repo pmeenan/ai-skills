@@ -4,6 +4,7 @@
 # found in the LICENSE file.
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -17,6 +18,50 @@ import time
 
 PROCESS_POLL_INTERVAL_SECONDS = 0.25
 ANALYSIS_REJECTED_EXIT_CODE = 3
+REQUIRED_RELEASE_GN_ARGS = {
+    "is_official_build": "true",
+    "is_debug": "false",
+    "chrome_pgo_phase": "2",
+    "use_thin_lto": "true",
+}
+
+
+def build_provenance(cwd, browser):
+    browser_path = os.path.realpath(os.path.join(cwd, browser))
+    build_dir = os.path.dirname(browser_path)
+    completed = subprocess.run(
+        ["gn", "args", build_dir, "--list", "--short"],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    resolved = {}
+    for line in completed.stdout.splitlines():
+        if "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        resolved[name.strip()] = value.strip()
+    mismatches = [
+        f"{name}={resolved.get(name)!r} (need {expected})"
+        for name, expected in REQUIRED_RELEASE_GN_ARGS.items()
+        if resolved.get(name) != expected
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "Profiling build is not an official PGO/ThinLTO release-like build: "
+            + ", ".join(mismatches)
+        )
+    return {
+        "resolved_browser": browser_path,
+        "gn_args_sha256": hashlib.sha256(completed.stdout.encode()).hexdigest(),
+        "required_release_args": REQUIRED_RELEASE_GN_ARGS,
+        "symbol_level": resolved.get("symbol_level"),
+        "enable_profiling": resolved.get("enable_profiling"),
+        "full_stack_no_inline": resolved.get(
+            "enable_full_stack_frames_for_profiling"
+        ),
+    }
 
 
 def snapshot_chrome_processes(root_pid, browser_name):
@@ -88,14 +133,82 @@ def get_repo_root():
 
 def parse_mono_intervals(out_dir, cwd):
     intervals = []
+    outer_intervals = []
 
     for root, dirs, files in os.walk(os.path.join(cwd, out_dir)):
         for file in files:
             if file == "browser.stdout.log":
                 log_file_path = os.path.join(root, file)
                 pending_start = None
+                score_starts = {}
                 with open(log_file_path, "r") as f:
                     for line in f:
+                        score = re.search(
+                            r"\[SP3_SCORE_TIME\]\s+(.+?):\s*([\d.]+)", line
+                        )
+                        if score:
+                            name, timestamp = score.group(1), float(score.group(2))
+                            if name == "sp3-measurement-start":
+                                if pending_start is not None:
+                                    raise RuntimeError(
+                                        f"Unmatched measurement start in {log_file_path}"
+                                    )
+                                pending_start = timestamp
+                            elif name == "sp3-measurement-end":
+                                if pending_start is None or timestamp <= pending_start:
+                                    raise RuntimeError(
+                                        f"Invalid measurement end in {log_file_path}"
+                                    )
+                                outer_intervals.append({
+                                    "start_time_mono": pending_start,
+                                    "end_time_mono": timestamp,
+                                    "browser_log": log_file_path,
+                                })
+                                pending_start = None
+                            elif name.endswith("-sync-end"):
+                                base = name[: -len("-sync-end")]
+                                start = score_starts.pop(base + "-start", None)
+                                if start is None:
+                                    raise RuntimeError(
+                                        f"Unmatched score end {name} in {log_file_path}"
+                                    )
+                                suite, test = base.split(".", 1)
+                                intervals.append({
+                                    "start_time_mono": start,
+                                    "end_time_mono": timestamp,
+                                    "browser_log": log_file_path,
+                                    "suite": suite,
+                                    "test": test,
+                                    "phase": "sync",
+                                    "group": (
+                                        f"{os.path.relpath(log_file_path, cwd)}|{suite}"
+                                    ),
+                                })
+                            elif name.endswith("-async-end"):
+                                base = name[: -len("-async-end")]
+                                start = score_starts.pop(base + "-async-start", None)
+                                if start is None:
+                                    raise RuntimeError(
+                                        f"Unmatched score end {name} in {log_file_path}"
+                                    )
+                                suite, test = base.split(".", 1)
+                                intervals.append({
+                                    "start_time_mono": start,
+                                    "end_time_mono": timestamp,
+                                    "browser_log": log_file_path,
+                                    "suite": suite,
+                                    "test": test,
+                                    "phase": "async",
+                                    "group": (
+                                        f"{os.path.relpath(log_file_path, cwd)}|{suite}"
+                                    ),
+                                })
+                            elif name.endswith("-start"):
+                                if name in score_starts:
+                                    raise RuntimeError(
+                                        f"Repeated score start {name} in {log_file_path}"
+                                    )
+                                score_starts[name] = timestamp
                         if "[SP3_MONO_TIME]" in line:
                             if "sp3-measurement-start" in line:
                                 m = re.search(
@@ -119,7 +232,7 @@ def parse_mono_intervals(out_dir, cwd):
                                         raise RuntimeError(
                                             f"Invalid measurement interval in {log_file_path}"
                                         )
-                                    intervals.append(
+                                    outer_intervals.append(
                                         {
                                             "start_time_mono": pending_start,
                                             "end_time_mono": end_time,
@@ -131,7 +244,15 @@ def parse_mono_intervals(out_dir, cwd):
                     raise RuntimeError(
                         f"Unmatched measurement start in {log_file_path}"
                     )
-    return sorted(intervals, key=lambda interval: interval["start_time_mono"])
+                if score_starts:
+                    raise RuntimeError(
+                        f"Unmatched score starts in {log_file_path}: "
+                        + ", ".join(sorted(score_starts)[:3])
+                    )
+    return (
+        sorted(intervals, key=lambda interval: interval["start_time_mono"]),
+        sorted(outer_intervals, key=lambda interval: interval["start_time_mono"]),
+    )
 
 
 def run_analyzer(command, cwd):
@@ -154,7 +275,7 @@ def main():
         "--stories", default="all", help="Speedometer stories to run (default: all)"
     )
     parser.add_argument(
-        "--repetitions", type=int, default=1, help="Number of repetitions (default: 1)"
+        "--repetitions", type=int, default=4, help="Number of repetitions (default: 4)"
     )
     parser.add_argument(
         "--skip-analysis",
@@ -174,18 +295,19 @@ def main():
     parser.add_argument(
         "--min-share",
         type=float,
-        default=0.001,
+        default=0.003,
         help="Fractional inclusive-share floor for candidate eligibility",
     )
     parser.add_argument(
         "--min-marginal-share",
         type=float,
-        default=0.001,
+        default=0.003,
         help="Fractional profile-share floor for the exhaustive candidate inventory",
     )
     args = parser.parse_args()
 
     cwd = get_repo_root()
+    provenance = build_provenance(cwd, args.browser)
     temp_results_dir = tempfile.mkdtemp(
         prefix="results_perf_sampling_", dir=os.path.join(cwd, "scratch")
     )
@@ -254,7 +376,16 @@ def main():
     if capture.returncode:
         raise subprocess.CalledProcessError(capture.returncode, perf_cmd)
 
-    intervals = parse_mono_intervals(rel_out_dir, cwd)
+    intervals, outer_intervals = parse_mono_intervals(rel_out_dir, cwd)
+    if intervals and not outer_intervals:
+        raise RuntimeError("Exact score intervals exist without outer diagnostic windows")
+    for interval in intervals:
+        if not any(
+            outer["start_time_mono"] <= interval["start_time_mono"]
+            and interval["end_time_mono"] <= outer["end_time_mono"]
+            for outer in outer_intervals
+        ):
+            raise RuntimeError("Exact score interval falls outside every suite window")
 
     print(f"\n=======================================================")
     print(f" PERF PROFILE CAPTURED")
@@ -266,6 +397,14 @@ def main():
         )
         print(
             f" Measurement Intervals: {len(intervals)} ({measured_duration:.3f}s total)"
+        )
+        outer_duration = sum(
+            interval["end_time_mono"] - interval["start_time_mono"]
+            for interval in outer_intervals
+        )
+        print(
+            f" Outer Diagnostic Windows: {len(outer_intervals)} "
+            f"({outer_duration:.3f}s; {outer_duration - measured_duration:.3f}s unscored)"
         )
         print(
             " Candidate analysis uses the union of intervals; do not replace it with one broad --time range."
@@ -281,11 +420,15 @@ def main():
     missing_roles = sorted({"browser", "renderer"} - observed_roles)
     manifest = {
         "browser": args.browser,
+        "build_provenance": provenance,
         "stories": args.stories,
         "enable_features": args.enable_features,
         "perf_data_file": perf_data_file,
         "scoped_to_scored_work": bool(intervals),
+        "interval_kind": "exact-scored" if intervals else "missing",
+        "metric_weighting": "speedometer-geomean-v1",
         "measurement_intervals": intervals,
+        "outer_measurement_intervals": outer_intervals,
         "processes": sorted(process_manifest.values(), key=lambda item: item["pid"]),
         "missing_required_roles": missing_roles,
     }

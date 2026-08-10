@@ -4,13 +4,28 @@ Detailed reference for `analyze_stacks.py` outputs and profile-capture
 requirements. Read by the profiler and investigator roles; the tech lead
 consumes only the resulting frontier summaries.
 
+## Scope and weighting contract
+
+Campaign output is valid only when `quality.interval_kind` is
+`exact-scored` and `selection.metric_weighting` is
+`speedometer-geomean-v1`. Exact intervals are the sync/async timers that feed
+the Speedometer score. The broader suite windows are diagnostics and include
+setup/reporting work that is not scored.
+
+The analyzer normalizes each capture/suite group to equal total weight before
+building the frontier. Speedometer uses a geometric mean across suite totals,
+so raw global cycle pooling would otherwise give slow suites more influence.
+This is appropriate for discovery; it does not turn cycle share into a score
+forecast. Size mechanisms with `mechanism_evidence.py`.
+
 ## Capture requirements (enforced by the collector)
 
 The collector (`run_cycle_benchmark.py`, normally invoked remotely via
 `remote_measure.py --mode profile`) must emit:
 
-- every matched `[SP3_MONO_TIME]` measurement start/end interval, not one
-  first-start/last-end envelope;
+- every matched `[SP3_SCORE_TIME]` sync/async score interval, with suite/test
+  labels. A legacy `[SP3_MONO_TIME]` outer log may be retained only when
+  importing an old capture; new campaign probes do not emit it;
 - PIDs and roles for browser, renderer, GPU, and utility processes;
 - the raw `perf.data` file (left on the remote host — record its path);
 - full-process-tree and renderer-only candidate frontiers and
@@ -68,7 +83,7 @@ plumbing stay visible.
 
 Display flags (`--tree-min-share`, `--tree-max-depth`,
 `--tree-max-children`) prune only the orientation report — never the JSON
-inventory (floor 0.1%) or ranking samples.
+inventory (the campaign default floor is 0.3%) or ranking samples.
 
 ## Two measures per entry
 

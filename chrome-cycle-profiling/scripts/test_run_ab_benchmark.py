@@ -83,6 +83,8 @@ class ParseTest(unittest.TestCase):
             with open(os.path.join(run_dir, "speedometer_3.0.json"), "w") as f:
                 json.dump({"Score": 35.0,
                            "TodoMVC-React": 20.0,
+                           "Geomean": 19.0,
+                           "Iteration-0-Total": 21.0,
                            "TodoMVC-React/Adding100Items": 12.0}, f)
             runs = ab.parse_run_metrics(tmp, "res")
             self.assertEqual(1, len(runs))

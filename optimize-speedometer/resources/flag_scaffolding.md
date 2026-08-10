@@ -58,12 +58,13 @@ blindly.
    loop measurably suffers from the per-call check, hoist the result into a
    plain local variable at the start of the operation instead.
 
-3. **Probe scaffolding (second commit).** Land the `[SP3_MONO_TIME]`
+3. **Probe scaffolding (second commit).** Land the `[SP3_SCORE_TIME]`
    `performance.mark()` probe from
    `resources/performance_mark_monotonic_probe.patch` on the campaign branch
-   so remote profiling never needs to patch the remote tree. The probe fires
-   only on the two `sp3-measurement-*` mark names — two stderr lines per
-   scored interval, symmetric across A/B arms, negligible.
+   so remote profiling never needs to patch the remote tree. On a clean-slate
+   campaign this is the only timing probe; do not install the legacy outer
+   `[SP3_MONO_TIME]` probe. The new probe records every sync/async timer that
+   feeds the score, buffers rows, and flushes only after the scored work.
 
 ## Verification before first use
 
@@ -77,3 +78,6 @@ blindly.
 3. Run the flag-overhead null check on the remote machine
    (`remote_measure.py --mode ab` on the scaffolding-only sha): the CI must
    span zero with no stat-sig story regressions.
+4. Compile the patched Blink target with warnings-as-errors and run
+   `run_cycle_benchmark.py` once. Require matched `[SP3_SCORE_TIME]` intervals
+   and `interval_kind: exact-scored` before committing the fixture.

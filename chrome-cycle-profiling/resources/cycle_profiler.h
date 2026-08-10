@@ -1,190 +1,322 @@
-#ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_LOADER_FETCH_CYCLE_PROFILER_H_
-#define THIRD_PARTY_BLINK_RENDERER_PLATFORM_LOADER_FETCH_CYCLE_PROFILER_H_
+#ifndef TOOLS_PERF_MECHANISM_CYCLE_PROFILER_H_
+#define TOOLS_PERF_MECHANISM_CYCLE_PROFILER_H_
 
+// Temporary Linux-only instrumentation for scored mechanism evidence.
+// Remove this from production diffs. Emit rows only outside score timers.
+
+#include <asm/unistd.h>
+#include <linux/perf_event.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <cerrno>
 #include <cstdint>
-#include <cstring>
-#include <x86intrin.h>
-#include "base/compiler_specific.h"
-#include "base/logging.h"
+#include <cstdio>
 
-namespace blink {
+namespace perf_instrumentation {
 
-// Advanced CPU Cycle Profiler for Blink Renderer execution.
-// Supports:
-// 1. Exclusive Self-Time vs Top-Level Inclusive Time tracking (eliminates recursive double-counting).
-// 2. Thread-Local Accumulation (eliminates atomic RMW cache-line bouncing).
-// 3. Sub-sampling for ultra-hot paths (e.g., 1-in-N sampling).
-// 4. Calibrated probe overhead subtraction.
-class CycleProfiler {
+struct CounterRead {
+  uint64_t value = 0;
+  uint64_t time_enabled = 0;
+  uint64_t time_running = 0;
+};
+
+class ThreadCycleEvent {
  public:
-  enum Phase {
-    kRequestResource,
-    kPrepareRequestForCacheAccess,
-    kUpgradeResourceRequestForLoader,
-    kAddClientHintsIfNecessary,
-    kSetReferrer,
-    kSetFirstPartyCookie,
-    kCalculateIfAdSubresource,
-    kBlockNodeLayout,
-    kHandleInflow,
-    kComputeMinMaxSizes,
-    kEventDispatchBubbling,
-    kEventDispatchPostProcess,
-    kMakeGarbageCollected,
-    kCount // Must be last
-  };
+  ThreadCycleEvent(const ThreadCycleEvent&) = delete;
+  ThreadCycleEvent& operator=(const ThreadCycleEvent&) = delete;
 
-  static constexpr uint64_t kProbeOverheadCycles = 35; // Calibrated hardware __rdtscp + stack overhead
-
-  static inline uint64_t ReadCycles() {
-    unsigned int aux;
-    return __rdtscp(&aux);
+  static ThreadCycleEvent& Get() {
+    // Intentionally leaked to avoid a non-trivial thread_local destructor.
+    thread_local auto* event = new ThreadCycleEvent;
+    return *event;
   }
 
-  static inline bool IsEnabled() {
-    return g_enabled.load(std::memory_order_relaxed);
+  bool available() const { return fd_ >= 0; }
+  int open_errno() const { return open_errno_; }
+
+  bool Read(CounterRead* result) const {
+    if (fd_ < 0)
+      return false;
+    struct ReadFormat {
+      uint64_t value;
+      uint64_t time_enabled;
+      uint64_t time_running;
+    } data = {};
+    if (read(fd_, &data, sizeof(data)) != sizeof(data))
+      return false;
+    result->value = data.value;
+    result->time_enabled = data.time_enabled;
+    result->time_running = data.time_running;
+    return true;
   }
-
-  static inline void Enable() {
-    g_enabled.store(true, std::memory_order_relaxed);
-  }
-
-  static inline void Disable() {
-    g_enabled.store(false, std::memory_order_relaxed);
-  }
-
-  static inline void Reset() {
-    for (size_t i = 0; i < kCount; ++i) {
-      g_global_exclusive_cycles[i].store(0, std::memory_order_relaxed);
-      g_global_top_level_inclusive_cycles[i].store(0, std::memory_order_relaxed);
-      g_global_invocations[i].store(0, std::memory_order_relaxed);
-    }
-  }
-
-  static inline void DumpProfile(const char* header_name = "CYCLE PROFILE") {
-    if (!IsEnabled()) return;
-    
-    LOG(ERROR) << "=== " << header_name << " (EXCLUSIVE VS TOP-LEVEL INCLUSIVE) ===";
-    uint64_t max_exclusive = 1;
-    for (size_t i = 0; i < kCount; ++i) {
-      uint64_t excl = g_global_exclusive_cycles[i].load(std::memory_order_relaxed);
-      if (excl > max_exclusive) max_exclusive = excl;
-    }
-
-    PrintPhase("RequestResource             ", kRequestResource, max_exclusive);
-    PrintPhase("PrepareRequestForCacheAccess", kPrepareRequestForCacheAccess, max_exclusive);
-    PrintPhase("BlockNodeLayout             ", kBlockNodeLayout, max_exclusive);
-    PrintPhase("HandleInflow                ", kHandleInflow, max_exclusive);
-    PrintPhase("ComputeMinMaxSizes          ", kComputeMinMaxSizes, max_exclusive);
-    PrintPhase("EventDispatchBubbling       ", kEventDispatchBubbling, max_exclusive);
-    PrintPhase("EventDispatchPostProcess    ", kEventDispatchPostProcess, max_exclusive);
-    PrintPhase("MakeGarbageCollected        ", kMakeGarbageCollected, max_exclusive);
-  }
-
-  // Aggregate thread-local accumulators into global atomic counters
-  static void FlushThreadLocalData();
 
  private:
-  friend struct ScopedCycleProfiler;
-
-  static inline void PrintPhase(const char* name, Phase phase, uint64_t max_ref) {
-    uint64_t excl = g_global_exclusive_cycles[phase].load(std::memory_order_relaxed);
-    uint64_t incl = g_global_top_level_inclusive_cycles[phase].load(std::memory_order_relaxed);
-    uint64_t count = g_global_invocations[phase].load(std::memory_order_relaxed);
-    uint64_t avg_excl = count > 0 ? (excl / count) : 0;
-    
-    LOG(ERROR) << "  " << name << ": Excl=" << excl << " (" << count << " calls, avg " << avg_excl << " c/call) | Top-Level Incl=" << incl;
+  ThreadCycleEvent() {
+    perf_event_attr attr = {};
+    attr.type = PERF_TYPE_HARDWARE;
+    attr.size = sizeof(attr);
+    attr.config = PERF_COUNT_HW_CPU_CYCLES;
+    attr.exclude_kernel = 1;
+    attr.exclude_hv = 1;
+    attr.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED |
+                       PERF_FORMAT_TOTAL_TIME_RUNNING;
+    // pid=0 measures the calling thread; cpu=-1 follows CPU migration.
+    fd_ = static_cast<int>(
+        syscall(__NR_perf_event_open, &attr, 0, -1, -1, 0));
+    if (fd_ < 0)
+      open_errno_ = errno;
   }
 
-  static inline std::atomic<uint64_t> g_global_exclusive_cycles[kCount] = {};
-  static inline std::atomic<uint64_t> g_global_top_level_inclusive_cycles[kCount] = {};
-  static inline std::atomic<uint64_t> g_global_invocations[kCount] = {};
-  static inline std::atomic<bool> g_enabled{false};
+  // Leaked by Get(); retained for correctness if instantiated another way.
+  ~ThreadCycleEvent() {
+    if (fd_ >= 0)
+      close(fd_);
+  }
+
+  int fd_ = -1;
+  int open_errno_ = 0;
 };
 
-// Thread-Local Stack Frame for Exclusive vs Inclusive Subtraction
-struct ScopedCycleProfiler {
-  CycleProfiler::Phase phase;
-  uint64_t start_cycles;
-  uint64_t child_cycles{0};
-  ScopedCycleProfiler* parent_scope{nullptr};
-  bool active{false};
+inline uint64_t CurrentTid() {
+  return static_cast<uint64_t>(syscall(__NR_gettid));
+}
 
-  ScopedCycleProfiler(CycleProfiler::Phase p) : phase(p) {
-    if (!CycleProfiler::IsEnabled()) return;
-    active = true;
-    
-    // Register on thread-local stack
-    parent_scope = t_current_scope;
-    t_current_scope = this;
-    
-    ++t_depth[phase];
-    start_cycles = CycleProfiler::ReadCycles();
+inline bool CounterDelta(const CounterRead& start,
+                         const CounterRead& end,
+                         uint64_t* scaled_cycles,
+                         uint64_t* enabled,
+                         uint64_t* running) {
+  if (end.value < start.value || end.time_enabled <= start.time_enabled ||
+      end.time_running <= start.time_running) {
+    return false;
   }
+  const uint64_t raw = end.value - start.value;
+  *enabled = end.time_enabled - start.time_enabled;
+  *running = end.time_running - start.time_running;
+  if (*running > *enabled)
+    return false;
+  const long double scaled = static_cast<long double>(raw) *
+                             static_cast<long double>(*enabled) /
+                             static_cast<long double>(*running);
+  if (scaled < 0 || scaled > static_cast<long double>(UINT64_MAX))
+    return false;
+  *scaled_cycles = static_cast<uint64_t>(scaled);
+  return true;
+}
 
-  ~ScopedCycleProfiler() {
-    if (!active) return;
-    uint64_t end_cycles = CycleProfiler::ReadCycles();
-    
-    // Restore parent scope on thread stack
-    t_current_scope = parent_scope;
-    --t_depth[phase];
-
-    uint64_t raw_elapsed = (end_cycles > start_cycles) ? (end_cycles - start_cycles) : 0;
-    uint64_t net_elapsed = (raw_elapsed > CycleProfiler::kProbeOverheadCycles) 
-                           ? (raw_elapsed - CycleProfiler::kProbeOverheadCycles) : 0;
-    
-    uint64_t exclusive_elapsed = (net_elapsed > child_cycles) ? (net_elapsed - child_cycles) : 0;
-
-    // Accumulate into thread-local storage (no atomic RMW)
-    t_tls_exclusive_cycles[phase] += exclusive_elapsed;
-    ++t_tls_invocations[phase];
-
-    if (t_depth[phase] == 0) {
-      t_tls_top_level_inclusive_cycles[phase] += net_elapsed;
-    }
-
-    // Pass net inclusive elapsed time up to parent scope to subtract from parent's self-time
-    if (parent_scope) {
-      parent_scope->child_cycles += net_elapsed;
-    }
-
-    // Periodically flush TLS data to global process counters (every 1000 calls)
-    if (++t_flush_counter % 1000 == 0) {
-      CycleProfiler::FlushThreadLocalData();
+// Calibrate on the measurement thread and in the same build as the probes.
+// Zero means calibration failed and causes every scope to be marked invalid.
+inline uint64_t CalibrateProbeOverhead() {
+  constexpr size_t kSamples = 101;
+  std::array<uint64_t, kSamples> samples = {};
+  ThreadCycleEvent& event = ThreadCycleEvent::Get();
+  if (!event.available())
+    return 0;
+  for (size_t i = 0; i < kSamples; ++i) {
+    CounterRead start;
+    CounterRead end;
+    uint64_t enabled = 0;
+    uint64_t running = 0;
+    if (!event.Read(&start) || !event.Read(&end) ||
+        !CounterDelta(start, end, &samples[i], &enabled, &running)) {
+      return 0;
     }
   }
+  std::sort(samples.begin(), samples.end());
+  return samples[kSamples / 2];
+}
 
-  static inline thread_local ScopedCycleProfiler* t_current_scope{nullptr};
-  static inline thread_local int t_depth[CycleProfiler::kCount] = {};
-  static inline thread_local uint64_t t_tls_exclusive_cycles[CycleProfiler::kCount] = {};
-  static inline thread_local uint64_t t_tls_top_level_inclusive_cycles[CycleProfiler::kCount] = {};
-  static inline thread_local uint64_t t_tls_invocations[CycleProfiler::kCount] = {};
-  static inline thread_local uint32_t t_flush_counter{0};
+enum class Accounting { kExclusive, kInclusive };
+
+struct CycleBlock {
+  explicit CycleBlock(uint64_t calibrated_overhead = 0)
+      : owner_tid(CurrentTid()), probe_overhead_cycles(calibrated_overhead) {}
+
+  bool CheckOwner() {
+    if (owner_tid != CurrentTid()) {
+      thread_affinity_violations.fetch_add(1, std::memory_order_relaxed);
+      return false;
+    }
+    return true;
+  }
+
+  const uint64_t owner_tid;
+  uint64_t calls = 0;
+  uint64_t applicable_calls = 0;
+  uint64_t sampled_calls = 0;
+  uint64_t cycles = 0;
+  uint64_t probe_overhead_cycles = 0;
+  uint64_t time_enabled = 0;
+  uint64_t time_running = 0;
+  uint64_t multiplexed_samples = 0;
+  uint64_t invalid_reads = 0;
+  uint64_t unavailable_reads = 0;
+  uint64_t uncalibrated_scopes = 0;
+  uint64_t nested_same_block_violations = 0;
+  std::atomic<uint64_t> thread_affinity_violations = 0;
 };
 
-inline void CycleProfiler::FlushThreadLocalData() {
-  for (size_t i = 0; i < kCount; ++i) {
-    uint64_t excl = ScopedCycleProfiler::t_tls_exclusive_cycles[i];
-    uint64_t incl = ScopedCycleProfiler::t_tls_top_level_inclusive_cycles[i];
-    uint64_t count = ScopedCycleProfiler::t_tls_invocations[i];
+class ScopedCycleProbe {
+ public:
+  // Subsampling does not compose with exclusive parents: an unsampled child
+  // cannot subtract its cycles. Use sample_every=1 for every scope in an
+  // exclusive nesting chain. Child boundary overhead also remains charged to
+  // the parent; keep nesting shallow and enforce the instrumentation A/A gate.
+  ScopedCycleProbe(CycleBlock& block,
+                   bool applicable,
+                   Accounting accounting = Accounting::kExclusive,
+                   uint32_t sample_every = 1)
+      : block_(block),
+        accounting_(accounting),
+        sample_every_(sample_every ? sample_every : 1) {
+    if (!block_.CheckOwner())
+      return;
+    ++block_.calls;
+    if (!applicable)
+      return;
+    ++block_.applicable_calls;
+    if (block_.applicable_calls % sample_every_ != 0)
+      return;
+    if (block_.probe_overhead_cycles == 0) {
+      ++block_.uncalibrated_scopes;
+      return;
+    }
+    for (ScopedCycleProbe* scope = active_scope_; scope; scope = scope->parent_) {
+      if (&scope->block_ == &block_) {
+        ++block_.nested_same_block_violations;
+        return;
+      }
+    }
+    event_ = &ThreadCycleEvent::Get();
+    if (!event_->available()) {
+      ++block_.unavailable_reads;
+      return;
+    }
+    if (!event_->Read(&start_)) {
+      ++block_.invalid_reads;
+      return;
+    }
+    parent_ = active_scope_;
+    active_scope_ = this;
+    active_ = true;
+  }
 
-    if (excl > 0) {
-      g_global_exclusive_cycles[i].fetch_add(excl, std::memory_order_relaxed);
-      ScopedCycleProfiler::t_tls_exclusive_cycles[i] = 0;
+  ScopedCycleProbe(const ScopedCycleProbe&) = delete;
+  ScopedCycleProbe& operator=(const ScopedCycleProbe&) = delete;
+
+  ~ScopedCycleProbe() {
+    if (!active_)
+      return;
+    active_scope_ = parent_;
+    CounterRead end;
+    uint64_t inclusive = 0;
+    uint64_t enabled = 0;
+    uint64_t running = 0;
+    if (!event_->Read(&end) ||
+        !CounterDelta(start_, end, &inclusive, &enabled, &running)) {
+      ++block_.invalid_reads;
+      return;
     }
-    if (incl > 0) {
-      g_global_top_level_inclusive_cycles[i].fetch_add(incl, std::memory_order_relaxed);
-      ScopedCycleProfiler::t_tls_top_level_inclusive_cycles[i] = 0;
-    }
-    if (count > 0) {
-      g_global_invocations[i].fetch_add(count, std::memory_order_relaxed);
-      ScopedCycleProfiler::t_tls_invocations[i] = 0;
+    block_.time_enabled += enabled;
+    block_.time_running += running;
+    if (running < enabled)
+      ++block_.multiplexed_samples;
+    const uint64_t net = inclusive > block_.probe_overhead_cycles
+                             ? inclusive - block_.probe_overhead_cycles
+                             : 0;
+    const uint64_t exclusive = net > child_cycles_ ? net - child_cycles_ : 0;
+    block_.cycles +=
+        (accounting_ == Accounting::kInclusive ? net : exclusive) * sample_every_;
+    ++block_.sampled_calls;
+    if (parent_)
+      parent_->child_cycles_ += net;
+  }
+
+ private:
+  CycleBlock& block_;
+  Accounting accounting_;
+  ThreadCycleEvent* event_ = nullptr;
+  ScopedCycleProbe* parent_ = nullptr;
+  CounterRead start_;
+  uint64_t child_cycles_ = 0;
+  uint32_t sample_every_ = 1;
+  bool active_ = false;
+
+  static inline thread_local ScopedCycleProbe* active_scope_ = nullptr;
+};
+
+inline void WriteJsonString(FILE* output, const char* value) {
+  for (const unsigned char* p =
+           reinterpret_cast<const unsigned char*>(value ? value : "");
+       *p; ++p) {
+    if (*p == '"' || *p == '\\') {
+      std::fputc('\\', output);
+      std::fputc(*p, output);
+    } else if (*p >= 0x20) {
+      std::fputc(*p, output);
     }
   }
 }
 
-}  // namespace blink
+inline void EmitCycleRow(FILE* output,
+                         uint32_t block,
+                         const char* repetition_suite,
+                         const CycleBlock& mechanism,
+                         const CycleBlock& avoidable,
+                         const CycleBlock& scored_total) {
+  const ThreadCycleEvent& event = ThreadCycleEvent::Get();
+  std::fprintf(output, "[SP3_CYCLE_ROW] {\"schema_version\":1,\"block\":%u,"
+                       "\"group\":\"", block);
+  WriteJsonString(output, repetition_suite);
+  std::fprintf(
+      output,
+      "\",\"calls\":%llu,\"applicable_calls\":%llu,"
+      "\"exclusive_cycles\":%llu,\"avoidable_cycles\":%llu,"
+      "\"total_scored_cycles\":%llu,\"probe_overhead_cycles\":%llu,"
+      "\"time_enabled\":%llu,\"time_running\":%llu,"
+      "\"multiplexed_samples\":%llu,\"invalid_reads\":%llu,"
+      "\"unavailable_reads\":%llu,\"uncalibrated_scopes\":%llu,"
+      "\"nested_violations\":%llu,\"thread_affinity_violations\":%llu,"
+      "\"perf_open_errno\":%d}\n",
+      static_cast<unsigned long long>(mechanism.calls),
+      static_cast<unsigned long long>(mechanism.applicable_calls),
+      static_cast<unsigned long long>(mechanism.cycles),
+      static_cast<unsigned long long>(avoidable.cycles),
+      static_cast<unsigned long long>(scored_total.cycles),
+      static_cast<unsigned long long>(mechanism.probe_overhead_cycles),
+      static_cast<unsigned long long>(mechanism.time_enabled +
+                                      avoidable.time_enabled +
+                                      scored_total.time_enabled),
+      static_cast<unsigned long long>(mechanism.time_running +
+                                      avoidable.time_running +
+                                      scored_total.time_running),
+      static_cast<unsigned long long>(mechanism.multiplexed_samples +
+                                      avoidable.multiplexed_samples +
+                                      scored_total.multiplexed_samples),
+      static_cast<unsigned long long>(mechanism.invalid_reads +
+                                      avoidable.invalid_reads +
+                                      scored_total.invalid_reads),
+      static_cast<unsigned long long>(mechanism.unavailable_reads +
+                                      avoidable.unavailable_reads +
+                                      scored_total.unavailable_reads),
+      static_cast<unsigned long long>(mechanism.uncalibrated_scopes +
+                                      avoidable.uncalibrated_scopes +
+                                      scored_total.uncalibrated_scopes),
+      static_cast<unsigned long long>(mechanism.nested_same_block_violations +
+                                      avoidable.nested_same_block_violations +
+                                      scored_total.nested_same_block_violations),
+      static_cast<unsigned long long>(
+          mechanism.thread_affinity_violations.load(std::memory_order_relaxed) +
+          avoidable.thread_affinity_violations.load(std::memory_order_relaxed) +
+          scored_total.thread_affinity_violations.load(
+              std::memory_order_relaxed)),
+      event.open_errno());
+  std::fflush(output);
+}
 
-#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_LOADER_FETCH_CYCLE_PROFILER_H_
+}  // namespace perf_instrumentation
+
+#endif  // TOOLS_PERF_MECHANISM_CYCLE_PROFILER_H_

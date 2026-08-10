@@ -39,6 +39,7 @@ import json
 import os
 import pathlib
 import re
+import secrets
 import shlex
 import subprocess
 import sys
@@ -410,7 +411,14 @@ def profile_summary_paths(out_dir):
         try:
             report = json.loads(full_frontier.read_text())
             selection = report.get("selection", {})
+            quality = report.get("quality", {})
             paths["inventory_complete"] = selection.get("inventory_complete") is True
+            paths["interval_kind"] = quality.get("interval_kind")
+            paths["metric_weighting"] = selection.get("metric_weighting")
+            paths["nominal_samples_at_floor"] = quality.get(
+                "nominal_samples_at_floor"
+            )
+            paths["build_provenance"] = quality.get("build_provenance")
             paths["analyzer_min_marginal_share"] = selection.get(
                 "min_marginal_share"
             )
@@ -467,7 +475,7 @@ def ledger_remote_defaults():
     return config.get("remote_host"), config.get("remote_src")
 
 
-def ledger_share_floor_pct(default=0.1):
+def ledger_share_floor_pct(default=0.3):
     """Return the active campaign's percentage share floor when available."""
     import campaign
     path = campaign.default_campaign_dir() / "ledger.json"
@@ -505,7 +513,10 @@ def summarize_ab(manifest_path):
         "mode",
         "feature",
         "enable_features",
+        "stories",
         "blocks",
+        "seed",
+        "schedule",
         "geometric_delta_pct",
         "ci_95_pct",
         "significance_threshold_pct",
@@ -513,6 +524,7 @@ def summarize_ab(manifest_path):
         "is_stat_sig",
         "passes_regression_guardrail",
         "stat_sig_story_regressions",
+        "build_provenance",
     )
     return {k: manifest.get(k) for k in keys if k in manifest}
 
@@ -541,8 +553,8 @@ def main(argv=None):
     parser.add_argument("--feature", help="ab mode: feature flag to toggle")
     parser.add_argument("--blocks", type=int, default=5)
     parser.add_argument("--stories", default="all")
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--repetitions", type=int, default=2, help="profile mode")
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--repetitions", type=int, default=4, help="profile mode")
     parser.add_argument(
         "--enable-features",
         default=None,
@@ -565,6 +577,8 @@ def main(argv=None):
                         help="Allow STAGED to proceed despite unstaged/untracked "
                         "changes (they are excluded from the measurement)")
     args = parser.parse_args(argv)
+    if args.seed is None:
+        args.seed = secrets.randbits(32)
 
     if args.mode == "ab" and not args.feature:
         parser.error("--mode ab requires --feature")
@@ -583,7 +597,7 @@ def main(argv=None):
 
     root = repo_root()
     if args.mode == "profile" and args.share_floor_pct is None:
-        args.share_floor_pct = ledger_share_floor_pct(default=0.1)
+        args.share_floor_pct = ledger_share_floor_pct(default=0.3)
     args.host, args.remote_src = resolve_remote(args.host, args.remote_src, root)
     out_dir = pathlib.Path(args.out) if args.out else default_out_dir(root, args.mode)
 

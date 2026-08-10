@@ -1,6 +1,6 @@
 ---
 name: chrome-cycle-profiling
-description: High-precision Desktop Chromium profiling with hardware-cycle perf sampling, V8 JIT basic-prof symbolization, exclusive self-time C++ cycle instrumentation, and randomized block-interleaved A/B verification.
+description: High-precision Desktop Chromium profiling with hardware-cycle perf sampling, V8 JIT basic-prof symbolization, self-auditing targeted C++ cycle instrumentation, and randomized block-interleaved A/B verification.
 ---
 
 # Performance Profiling & Verification in Desktop Chromium
@@ -26,14 +26,19 @@ This skill provides the authoritative runbook, instrumentation resources, and ve
    * **Two Profiling Reports:** Phase 1 full-suite sampling requires two reports:
      1. Full Chrome process-tree report partitioned into Browser, Renderer, GPU, and Utility roles.
      2. Renderer-specific deep-dive report for candidate investigation.
-   * **Structured PID/Timestamp Manifest:** Poll the launched command's descendants while profiling and record every Chrome PID with its browser, renderer, GPU, or utility role. Preserve every matched measurement start/end interval; never replace disjoint scored intervals with one first-start/last-end envelope.
-   * **Quality Rejection Gate:** Reject profiles with unmatched measurement marks, poor call stack unwinding, overall `[unknown]` frames >15%, concentrated `[unknown]` frames >10% within any dominant call stack, or insufficient total samples (<5,000 samples).
+   * **Structured PID/Timestamp Manifest:** Poll the launched command's descendants while profiling and record every Chrome PID with its browser, renderer, GPU, or utility role. Preserve the labeled sync/async intervals used by the benchmark score. Outer suite windows are diagnostic only.
+   * **Score Weighting:** Normalize every capture/suite group to equal total weight (`speedometer-geomean-v1`). Raw cycle pooling overweights slow suites and is forbidden for campaign discovery.
+   * **Quality Rejection Gate:** Reject profiles with unmatched score marks, poor call stack unwinding, overall `[unknown]` frames >15%, concentrated `[unknown]` frames >10% within any dominant call stack, insufficient total samples (<5,000), or fewer than 100 nominal samples at the requested marginal floor.
 
 ---
 
 ## 2. Mandatory Phase 0 Preflight & Script Conformance Checklist
 
 Execute these 5 preflight steps in order before Phase 1 profiling. All 5 must pass and emit required JSON manifests:
+
+`run_cycle_benchmark.py` also resolves the browser output directory's GN args
+and hard-fails unless the build is official, non-debug, PGO phase 2, and
+ThinLTO. Symbols and frame-pointer state are recorded as provenance.
 
 ```bash
 # Step 1: Software sampling check
@@ -69,29 +74,30 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
 5. **Phase 1 Conformance Verification:**
    - (a) `blink::`/`content::` C++ frames symbolized.
    - (b) Named JS frames (`JS:^runSync`, `JS:^layout`) present.
-   - (c) Every `[SP3_MONO_TIME]` start has a matched end in `browser.stdout.log`.
-   - (d) `scratch/perf_run_manifest.json` contains Chrome process roles and the complete interval list.
-   - (e) The sum of scored interval durations is plausible; do not validate against the broader envelope that includes gaps.
+   - (c) Every `[SP3_SCORE_TIME]` sync/async start has its matching end.
+   - (d) `scratch/perf_run_manifest.json` reports `interval_kind: exact-scored`, process roles, and labeled intervals.
+   - (e) Analyzer output reports `metric_weighting: speedometer-geomean-v1`; outer windows are never candidate weight.
 
 ---
 
 ## 3. Opportunity-Sizing & Correctness Guardrails
 
-1. **Opportunity-Sizing Plausibility Check & Sensitivity Ranges:** Hardware-cycle sample share is an **opportunity-sizing plausibility check**, not a rigid rejection invariant. On-CPU sampled cycles differ from wall-clock score duration; removing small critical-path CPU work can unblock wall-clock score by more than its sample share. Use sensitivity ranges (Optimistic: 100% unblocked, Plausible: 50-70% unblocked, Conservative: 25% unblocked) as explicit sensitivity assumptions for feasibility estimation, corroborated by wall-time trace events.
-2. **Correctness Guardrails:** Oracles are opportunity-sizing experiments. Candidate implementations must pass comprehensive correctness checks:
+1. **Discovery Is Not Sizing:** Hardware-cycle sample share locates broad work. It does not size a mechanism or predict score delta. Use exact-score counters plus paired baseline/oracle/candidate exclusive-cycle evidence through `mechanism_evidence.py`. Classify work as score-critical or CPU-only with a trace artifact.
+2. **Instrumentation:** Prefer per-thread perf hardware-counter reads for targeted regions. `resources/cycle_profiler.h` is a temporary generic probe scaffold that follows thread migration, scales PMU multiplexing with enabled/running time, supports exclusive nested accounting and subsampling, enforces owning-thread use, emits machine rows, and requires calibrated overhead. Any emitted quality violation or running ratio below 0.99 fails ingestion. Raw `RDTSCP` deltas are invalid unless migration, descheduling, nesting, and measured probe overhead are handled. Require at least three independent blocks and an instrumentation A/A overhead of at most 1%.
+3. **Correctness Guardrails:** Oracles are opportunity-sizing experiments. Candidate implementations must pass comprehensive correctness checks:
    - Layout geometry & element node count smoke tests.
    - Event listeners & lifecycle ordering.
    - MutationObservers & custom elements.
    - Style invalidation, compositing, accessibility, focus/selection.
    - Oilpan garbage collection lifetime checks.
-3. **Mechanical Test Suites:** Combine LLM intent reviews with dynamic unit tests, WPT test suites, and recompute-and-compare assertion modes (`DCHECK` verification builds). Remove diagnostic assertions and probes before scoring runs.
+4. **Mechanical Test Suites:** Combine bounded review checklists with dynamic unit tests, WPT test suites, and recompute-and-compare assertion modes (`DCHECK` verification builds). Remove diagnostic assertions and probes before scoring runs.
 
 ---
 
 ## 4. Statistical Rigor & Block Log-Difference Verification
 
 1. **Genuine Session A/A Calibration:** Re-measure local A/A noise floor per session/reboot using `run_ab_benchmark.py --browser=out/perf/chrome --blocks=5 --aa`.
-2. **Randomized Block-Interleaved Order (ABBA/BAAB):** `run_ab_benchmark.py` alternates executions in randomized ABBA/BAAB blocks with fresh browser state per rep.
+2. **Randomized Block-Interleaved Order (ABBA/BAAB):** `run_ab_benchmark.py` generates a fresh recorded seed by default, balances ABBA and BAAB counts, shuffles the schedule, and uses fresh browser state per rep. Do not repeatedly reuse seed 42.
 3. **Block Log-Difference Statistics:** For each block $b$, compute observation $d_b = \text{mean}(\ln B) - \text{mean}(\ln A)$. Compute paired log-ratio mean $\bar{d}$ and 95% confidence intervals across block observations.
 4. **Adaptive Block Scaling & Power Rule:** Target $80\%$ statistical power ($\alpha=0.05$). Initial sample is $N=5$ blocks (10 paired reps). If underpowered relative to session MDE, scale adaptively up to $N_{\text{max}}=15$ blocks. If a candidate remains underpowered after 15 blocks, classify as **INCONCLUSIVE** and route to Pinpoint or reject without further local reruns.
 5. **Provisional Local Promotion & Regression Sign Guardrail:**
@@ -116,7 +122,7 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
 
 ## 6. Automation Scripts
 
-* **Full-Suite Perf Sampling and Tree Analysis:** `python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --browser=out/perf/chrome --stories=all --repetitions=2` (defaults to enabling the campaign feature; pass `--enable-features=` for a true baseline capture)
+* **Full-Suite Perf Sampling and Tree Analysis:** `python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --browser=out/perf/chrome --stories=all --repetitions=4` (defaults to enabling the campaign feature; pass `--enable-features=` for a true baseline capture)
 * **Randomized Block A/B Benchmark:** `python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --browser=out/perf/chrome --blocks=5 --feature=FeatureName`
   - `--aa` for A/A calibration; `--browser-a=... --browser-b=...` for binary-vs-binary comparison (bisecting a batch regression). In aa/two-binary modes, `--enable-features=<flags>` applies identically to BOTH arms — required when comparing flag-gated campaign builds, which are otherwise baseline-identical.
   - `--feature` refuses feature names not defined in the source tree (Chrome silently ignores unknown features); `--skip-feature-check` overrides.
