@@ -25,10 +25,11 @@ Procedure:
    raw TSC subtraction unless CPU migration, descheduling, nesting, and probe
    overhead are explicitly handled. Prefer per-thread perf hardware counters
    or the chrome-cycle-profiling harness.
-5. Follow `resources/instrumented_twin.md`. Run at least three independent
-   baseline blocks, create metadata with `mechanism_evidence.py scaffold`, and
-   create raw JSON with `mechanism_evidence.py ingest`. Never transcribe
-   emitted rows or type a computed ceiling.
+5. Follow `resources/instrumented_twin.md`. Produce instrumentation overhead
+   with `calibrate-aa`. Run at least three independent baseline blocks only via
+   `mechanism_evidence.py capture`, then pass its capture manifests to
+   `ingest`. Never invoke the harness separately, transcribe emitted rows,
+   author a capture manifest, or type a computed ceiling.
 6. Run `mechanism_evidence.py summarize`; it verifies log digests and counter
    quality, then computes an upper confidence
    bound on avoidable scored CPU-cycle share, not score delta. If it fails,
@@ -36,7 +37,9 @@ Procedure:
 7. When feasible, create an intentionally incorrect oracle that bypasses only
    W, collect paired blocks, and run `mechanism_evidence.py compare --kind
    oracle`. The oracle must not enter the production diff.
-8. Write a short dossier linking the raw and derived artifacts by path and
+8. Confirm baseline/oracle use distinct source-tree and browser identities;
+   identical builds are rejected. Write a short dossier linking raw browser
+   logs, capture manifests, raw JSON, and derived artifacts by path and
    digest. Return the tree clean.
 
 Return only:

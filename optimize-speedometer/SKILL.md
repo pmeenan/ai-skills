@@ -14,6 +14,13 @@ Act as the tech lead. Use scripts for joins, arithmetic, gates, and state.
 Agents inspect source and fill bounded artifacts; they do not estimate impact
 from intuition and do not manually edit `ledger.json`.
 
+Your objective is to **actually make Chrome faster in the symbol-free
+`out/release` Speedometer score**, with a reproducible confidence interval—not
+to reach `target_landed`, make STATUS green, or maximize accepted artifacts.
+The target count is only a batching/planning limit. You own the aggregate
+outcome: if machine-valid candidates accumulate while checkpoints stay flat,
+stop producing patches and diagnose the evidence chain.
+
 This workflow targets changes whose individual score effect is below the
 benchmark noise floor. It deliberately separates three kinds of evidence:
 
@@ -50,6 +57,30 @@ benchmark noise floor. It deliberately separates three kinds of evidence:
    ThinLTO builds. Validate a mechanism in a release-like instrumented twin.
 9. Chromium-owned code only. Preserve specification, security, privacy,
    lifecycle, and behavior outside the campaign flag.
+10. A staged candidate must change executable production semantics and add an
+    explicit campaign-feature reference on new executable lines. Comments,
+    whitespace, tests, ledger artifacts, and compiler-erased no-ops are never
+    an optimization; baseline and candidate executable `.text` must differ.
+11. Build/test evidence comes only from `command_evidence.py`; mechanism rows
+    come only from nonce-bound `mechanism_evidence.py capture` browser logs.
+    Typed success strings and hand-authored counter/capture JSON are invalid.
+12. The first five candidates are a fail-closed pilot. The sixth landing is
+    blocked until cumulative `out/release` A/B has a positive 95% CI.
+13. Mechanism provenance, rebuilds, captures, and candidate build/test
+    receipts run on the configured bare-metal measurement host. Their host
+    name, boot id, kernel, CPU, source tree, and candidate binary must agree.
+14. After the pilot, any current-tip cumulative checkpoint whose 95% CI is not
+    positive blocks the next landing. Add balanced blocks or diagnose/bisect;
+    do not bury a flat result under another patch batch.
+15. Score evidence uses the v3 runner manifest. The ledger verifies every raw
+    scalar-result digest, real ABBA/BAAB position, monotonic duration, host and
+    harness identity, then recomputes delta, CI, significance, and MDE.
+16. Campaign init requires a clean, committed skills repository. The initial
+    skill digest is bound to mechanism provenance/captures, command receipts,
+    score manifests, and the tamper-evident ledger snapshot history. Run
+    `campaign.py audit` before trusting a resumed or completed campaign.
+    `.agents/skills` must resolve into that standalone skills Git clone;
+    copied/rsynced files living only under Chromium's ignored tree are invalid.
 
 If a required field or artifact is unavailable, stop that opportunity. Do
 not replace missing evidence with prose.
@@ -64,9 +95,25 @@ not replace missing evidence with prose.
 | Skeptic | `playbooks/skeptic.md` | bound effectiveness review JSON |
 | Adversary | `playbooks/adversary.md` | bound correctness review JSON |
 | Measurer | `playbooks/measurer.md` | A/A or A/B summary JSON |
+| Gate challengers | `playbooks/gate_review.md` | independent skeptic and adversary challenge JSON |
 
 Give each agent its playbook, opportunity id/key, input artifact paths, output
 paths, and the instruction to return only the playbook output contract.
+
+Before accepting **every** preflight, profile, decomposition, sizing,
+candidate, checkpoint/pilot, reprofile, or exhaustion gate, run two independent
+read-only challenges from `playbooks/gate_review.md`: one skeptic and one
+adversary. Give them raw artifacts, not the orchestrator's summary, and keep
+their conclusions independent. Resolve every CHALLENGE before advancing.
+These reviews are defense in depth: they can pause a superficially valid gate,
+but can never waive a machine rejection. Save their JSON under the campaign's
+`reviews/gates/` directory.
+Actually invoke distinct subagent tasks and retain their real task/transcript
+references; never self-author both reports or fabricate reviewer signatures.
+For every machine-gated command, append both
+`--gate-skeptic <skeptic-challenge.json>` and
+`--gate-adversary <adversary-challenge.json>`. The command verifies the exact
+artifact digests and refuses missing, shared-task, CHALLENGE, or unbound files.
 
 The Chromium tree and build directories are exclusive resources. Only the
 investigator holding the instrumentation lease or the implementer may dirty
@@ -80,7 +127,8 @@ Work from Chromium `src`.
 - If `.agents/campaigns/current/ledger.json` exists, run `campaign.py status
   --print` and resume the recorded gate. Do not recreate state from prose.
 - Otherwise confirm the name, branch, target, host, remote source path, and
-  skill sync, then initialize:
+  skill sync. A human must first commit the local skill changes; init rejects a
+  dirty skills repository. Then initialize:
 
   ```bash
   python3 .agents/skills/optimize-speedometer/scripts/campaign.py init \
@@ -110,12 +158,15 @@ flag has a measurable cost.
 
 Before authorizing a long campaign, run the 3–5-candidate end-to-end pilot in
 `resources/instrumented_twin.md`. Continue only when the emitted-counter,
-oracle, candidate, and cumulative A/B directions agree.
+oracle, and candidate gates pass and cumulative A/B has a positive 95% CI.
+An inconclusive pilot permits more balanced measurement, not a sixth landing.
 
 ## Loop
 
 Follow these steps in order. `campaign.py` is the state machine; if a command
 rejects an artifact, repair or regenerate it instead of bypassing the gate.
+At the end of each numbered step, run both independent gate challenges before
+the next numbered step.
 
 ### 1. Capture a fresh frontier
 
@@ -144,7 +195,9 @@ python3 .agents/skills/optimize-speedometer/scripts/campaign.py profile-scaffold
   --out <reconciliation.json>
 python3 .agents/skills/optimize-speedometer/scripts/campaign.py profile --id <profile-id> --sha <campaign-tip> \
   --areas <reconciliation.json> --capture-summaries <captures.json> \
-  --enable-features Speedometer3Optimizations
+  --enable-features Speedometer3Optimizations \
+  --gate-skeptic <profile-skeptic.json> \
+  --gate-adversary <profile-adversary.json>
 ```
 
 Profile entries are broad discovery areas. Nested stacks overlap; never add
@@ -158,7 +211,10 @@ below the floor.
 python3 .agents/skills/optimize-speedometer/scripts/campaign.py next --count 3
 python3 .agents/skills/optimize-speedometer/scripts/campaign.py advance --opp <discovery> --to investigating
 python3 .agents/skills/optimize-speedometer/scripts/campaign.py decompose-scaffold --opp <discovery> --out <paths.json>
-python3 .agents/skills/optimize-speedometer/scripts/campaign.py decompose --opp <discovery> --children <paths.json>
+python3 .agents/skills/optimize-speedometer/scripts/campaign.py decompose \
+  --opp <discovery> --children <paths.json> \
+  --gate-skeptic <decomposition-skeptic.json> \
+  --gate-adversary <decomposition-adversary.json>
 ```
 
 Each novel path has one stable `component/strategy` mechanism key and one
@@ -183,28 +239,57 @@ minimum in each row:
 Use `resources/instrumented_twin.md` for the build/probe/emission recipe and
 `resources/mechanism_evidence.md` for exact field meanings.
 
+Run provenance, mechanism captures, and command receipts directly in the
+configured bare-metal campaign checkout against its fully staged tree.
+`remote_measure.py` is for committed/STAGED profile and score jobs; never
+substitute locally fabricated JSON for a remote staged-tree artifact.
+
+Before every variant capture, use `bind-instrumentation` to prove the same
+instrumentation-only patch maps its probe-free `product_tree` to the staged
+instrumented `source_tree`. Baseline/candidate comparisons require different
+product trees and binaries but the identical patch digest. Review and command
+receipts bind to the probe-free candidate product tree.
+
 Classify the work as `score-critical` or `cpu-only` using a digested trace
 artifact. Raster/GPU/worker work is not score-critical merely because it is
 on-CPU during an outer suite window.
 
-Generate metadata, replace only its `REPLACE` fields, and machine-ingest the
-harness logs. Never type or paste counter rows into JSON:
+Generate a metadata skeleton and fill only trace/instrumentation fields. Use
+`provenance` plus `attach-provenance` for every build field; never type SHA,
+tree, binary, GN, toolchain, or PGO identities. Then let `capture` run each
+full-suite block. Never invoke Crossbench separately or type/paste counter
+rows or capture manifests:
 
 ```bash
 python3 .agents/skills/optimize-speedometer/scripts/mechanism_evidence.py scaffold --opp <id> \
   --mechanism-key <component/strategy> --profile-id <profile> \
-  --variant baseline --out <baseline.metadata.json>
+  --variant baseline --out <baseline.metadata-skeleton.json>
+# Follow resources/instrumented_twin.md to bind the instrumentation tree,
+# emit build-provenance.json, and create baseline.metadata.json.
+python3 .agents/skills/optimize-speedometer/scripts/mechanism_evidence.py capture \
+  --metadata <baseline.metadata.json> --variant baseline \
+  --browser out/perf_instrumented/chrome --block 1 \
+  --enable-features Speedometer3Optimizations \
+  --out-dir <baseline-block-1> --out <baseline-capture-1.json>
+# Repeat capture for blocks 2 and 3 using distinct output paths.
 python3 .agents/skills/optimize-speedometer/scripts/mechanism_evidence.py ingest \
-  --metadata <baseline.metadata.json> --log <block-1.log> --log <block-2.log> \
-  --log <block-3.log> --out <baseline.raw.json>
+  --metadata <baseline.metadata.json> \
+  --capture-manifest <baseline-capture-1.json> \
+  --capture-manifest <baseline-capture-2.json> \
+  --capture-manifest <baseline-capture-3.json> --out <baseline.raw.json>
 python3 .agents/skills/optimize-speedometer/scripts/mechanism_evidence.py summarize \
   --raw <baseline.raw.json> --out <sizing.json>
 python3 .agents/skills/optimize-speedometer/scripts/campaign.py advance --opp <id> --to sized \
-  --evidence-manifest <sizing.json>
+  --evidence-manifest <sizing.json> \
+  --gate-skeptic <sizing-skeptic.json> \
+  --gate-adversary <sizing-adversary.json>
 ```
 
-The stored bound is an upper confidence bound on avoidable scored CPU-cycle
-share, not a predicted score delta. Use at least three blocks. Record full build identity, GN-args digest,
+The capture runner verifies a staged source tree, browser/GN digest, fresh
+nonce, 32 real suite names, exact score marks, natural run variance, and the
+byte-exact extraction from raw browser logs. The stored bound is an upper
+confidence bound on avoidable scored CPU-cycle share, not a predicted score
+delta. Use at least three blocks. Record full build identity, GN-args digest,
 toolchain id, PGO-profile digest, probe revision, probe A/A overhead, and the
 trace digest. Probe A/A overhead above 1% fails the artifact.
 
@@ -227,17 +312,30 @@ work is off the scored critical path and no CPU-only goal justifies it.
 python3 .agents/skills/optimize-speedometer/scripts/campaign.py advance --opp <id> --to implementing
 ```
 
-The implementer preserves the temporary counters while developing, runs
-targeted correctness tests, and repeats the same blocks with
+The implementer preserves the temporary counters while developing and repeats the same blocks with
 `variant: candidate`. Validate the paired reduction:
 
 ```bash
 python3 .agents/skills/optimize-speedometer/scripts/mechanism_evidence.py compare --kind candidate \
   --baseline <baseline.raw.json> --variant <candidate.raw.json> \
   --out <candidate.json>
-python3 .agents/skills/optimize-speedometer/scripts/campaign.py advance --opp <id> --to review --tests <test-summary> \
-  --verification-manifest <candidate.json>
+python3 .agents/skills/optimize-speedometer/scripts/command_evidence.py \
+  --kind build --out <build.json> -- autoninja -C out/perf <test-binary-target>
+python3 .agents/skills/optimize-speedometer/scripts/command_evidence.py \
+  --kind test --out <test.json> -- out/perf/<test-binary> <focused-args>
+python3 .agents/skills/optimize-speedometer/scripts/campaign.py advance \
+  --opp <id> --to review --build-manifest <build.json> \
+  --test-manifest <test.json> --verification-manifest <candidate.json> \
+  --gate-skeptic <candidate-skeptic.json> \
+  --gate-adversary <candidate-adversary.json>
 ```
+
+Run both receipt commands on the same configured bare-metal host and boot as
+the candidate mechanism capture. The build runner accepts only tracked
+Chromium depot_tools `autoninja`; the test runner accepts only an ELF test
+binary under this checkout's `out/` that reports at least one passing gtest.
+The build receipt must explicitly name that test-binary target. The ledger
+rejects host, tree, tool, binary, and skill-digest mismatches.
 
 The lower 95% confidence bounds for both relative exclusive-cycle reduction
 and net scored-cycle share saved must be positive. Inspect
@@ -257,9 +355,10 @@ python3 .agents/skills/optimize-speedometer/scripts/campaign.py review-scaffold 
   --out <adversary.json>
 ```
 
-Reviewers inspect the staged diff and the raw artifacts referenced by their
-digests, set every bounded check to JSON `true` only when verified, add
-findings, and set the verdict. Record it:
+Reviewers inspect the staged diff and raw artifacts referenced by their
+digests, set every bounded check to JSON `true` only when verified, replace
+every `check_evidence` and notes placeholder with artifact-specific reasoning,
+add findings, and set the verdict. Record it:
 
 ```bash
 python3 .agents/skills/optimize-speedometer/scripts/campaign.py review --opp <id> --role skeptic --verdict PASS \
@@ -279,14 +378,26 @@ Commit the exact reviewed tree and record it:
 python3 .agents/skills/optimize-speedometer/scripts/campaign.py advance --opp <id> --to landed --commit <sha>
 ```
 
-After at most five landings, run a cumulative full-suite flag A/B with a fresh
-recorded seed and at least five balanced ABBA/BAAB blocks. Prefer 10–15 blocks
-when the current MDE is larger than the expected batch effect. Record the
-machine output, not copied numbers:
+After at most five landings, run a cumulative full-suite flag A/B on the
+symbol-free official PGO2/ThinLTO `out/release` build with a fresh recorded
+seed and at least 32 blocks: 16 ABBA and 16 BAAB, 64 paired reps per arm. If
+the pilot interval crosses zero, increase the even block count and remeasure;
+the sixth landing stays blocked. Record machine output, not copied numbers:
 
 ```bash
-python3 .agents/skills/optimize-speedometer/scripts/campaign.py checkpoint --summary <remote-ab-summary.json>
+python3 .agents/skills/optimize-speedometer/scripts/remote_measure.py \
+  --mode ab --ref <campaign-tip> --feature Speedometer3Optimizations \
+  --stories all --blocks 32 --summary-out <remote-ab-summary.json>
+python3 .agents/skills/optimize-speedometer/scripts/campaign.py checkpoint \
+  --summary <remote-ab-summary.json> \
+  --gate-skeptic <checkpoint-skeptic.json> \
+  --gate-adversary <checkpoint-adversary.json>
 ```
+
+Thirty-two blocks means 128 full-suite repetitions. The hard duration floor is
+64 minutes and several hours including builds is normal. Wait for the real
+runner; silence is not permission to synthesize or shorten evidence. If the
+CI is too wide, increase the even block count in a fresh balanced run.
 
 Also reprofile the enabled campaign tip after at most five runtime changes,
 and immediately after two candidate verification misses or a checkpoint that
@@ -312,6 +423,8 @@ Stop and report when any condition holds:
 Do not claim an aggregate improvement when the confidence interval crosses
 zero. Report the point estimate, 95% CI, MDE, blocks, seed, SHAs, and build
 provenance.
+Before any final claim, run `campaign.py audit`; a changed skill tree,
+snapshot, raw result, receipt, review, or evidence artifact invalidates it.
 
 ## One-off profiling
 

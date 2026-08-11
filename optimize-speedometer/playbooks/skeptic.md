@@ -23,6 +23,11 @@ counter logs, raw baseline/candidate files, and derived artifacts. Verify:
 - `benchmark_overfit_checked`: no benchmark strings, selectors, or data-shaped
   special cases unless they express a general product invariant;
 - `one_invariant_only`: the diff does not bundle mechanisms.
+- `implementation_is_executable`: staged production semantics changed; the
+  candidate is not comments, whitespace, tests, or campaign bookkeeping;
+- `candidate_build_bound`: candidate counters, build receipt, test receipt,
+  staged tree, bare-metal host/boot, browser identity, and executable `.text`
+  all describe the same implementation.
 
 For `review_kind: discovery-exhaustion`, open the exact decomposition and
 profiler inventory. Verify:
@@ -38,6 +43,9 @@ profiler inventory. Verify:
 - `known_mechanisms_reconciled`: landed/rejected/reverted/parked history is
   represented without retrying ruled-out work.
 
-Set a check true only after verification. Add every actionable problem to
-`findings`. PASS requires all checks true and an empty findings array. Set the
-verdict in the JSON and return only its absolute path plus the verdict.
+Set a check true only after verification and replace its `check_evidence`
+placeholder with an artifact/path/line-specific explanation of at least one
+sentence. Replace the top-level notes placeholder too. Add every actionable
+problem to `findings`. PASS requires all checks true, substantive evidence for
+every check, and an empty findings array. Set the verdict in the JSON and
+return only its absolute path plus the verdict.

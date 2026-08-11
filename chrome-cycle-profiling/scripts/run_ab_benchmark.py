@@ -21,15 +21,34 @@ single flagged stories as leads to confirm with a targeted rerun, not verdicts.
 """
 
 import argparse
+import datetime
+import fnmatch
+import hashlib
 import json
 import math
 import os
+import platform
 import random
+import re
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import time
+
+
+MANIFEST_SCHEMA_VERSION = 3
+MANIFEST_RUNNER = "run_ab_benchmark.py/v3"
+MIN_FULL_SUITE_REP_SECONDS = 30
+SKILL_DIRS = (
+    ".agents/skills/optimize-speedometer",
+    ".agents/skills/chrome-cycle-profiling",
+)
+IGNORED_SKILL_GLOBS = (
+    "*.pyc", "*.swp", "*.swo", "*~", ".#*", "#*#", ".DS_Store", "*.tmp",
+)
 
 # Two-sided 95% Student-t critical values by degrees of freedom.
 T_CRIT_95 = {
@@ -79,9 +98,112 @@ def sha256_path(path):
     return digest.hexdigest()
 
 
-def build_provenance(cwd, browser):
+def artifact_ref(path, *, relative_to=None):
+    path = os.path.realpath(path)
+    stored = os.path.relpath(path, relative_to) if relative_to else path
+    return {"path": stored, "sha256": sha256_path(path)}
+
+
+def skill_tree_digest(cwd):
+    entries = []
+    for skill_dir in SKILL_DIRS:
+        base = os.path.join(cwd, skill_dir)
+        if not os.path.isdir(base):
+            raise RuntimeError(f"skill directory is missing: {base}")
+        for dirpath, dirnames, filenames in os.walk(base, followlinks=True):
+            dirnames[:] = [name for name in dirnames if name != "__pycache__"]
+            for name in filenames:
+                if any(fnmatch.fnmatch(name, glob) for glob in IGNORED_SKILL_GLOBS):
+                    continue
+                full = os.path.join(dirpath, name)
+                rel = f"{skill_dir}/{os.path.relpath(full, base)}"
+                entries.append((rel, full))
+    lines = [f"{sha256_path(full)}  {rel}\n" for rel, full in sorted(entries)]
+    return hashlib.sha256("".join(lines).encode()).hexdigest()
+
+
+def capture_environment():
+    with open("/proc/sys/kernel/random/boot_id") as source:
+        boot_id = source.read().strip().lower()
+    with open("/proc/cpuinfo", errors="replace") as source:
+        cpuinfo = source.read()
+    model = next(
+        (line.split(":", 1)[1].strip() for line in cpuinfo.splitlines()
+         if line.lower().startswith("model name") and ":" in line),
+        "",
+    )
+    detected = subprocess.run(
+        ["systemd-detect-virt"], capture_output=True, text=True, check=False
+    )
+    virtualization = detected.stdout.strip() if detected.returncode == 0 else "none"
+    if not model or virtualization != "none":
+        raise RuntimeError(
+            f"score evidence requires an identified bare-metal host; "
+            f"cpu={model!r}, virtualization={virtualization!r}"
+        )
+    return {
+        "host_name": socket.gethostname(),
+        "host_boot_id": boot_id,
+        "kernel_release": platform.release(),
+        "cpu_model": model,
+        "virtualization": virtualization,
+    }
+
+
+def git_value(root, *args):
+    return subprocess.run(
+        ["git", "-C", root, *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def harness_identity(cwd):
+    cb = os.path.realpath(os.path.join(cwd, "third_party/crossbench/cb.py"))
+    crossbench = os.path.dirname(cb)
+    expected_match = re.search(
+        r"'crossbench_revision':\s*'([0-9a-f]{40})'",
+        open(os.path.join(cwd, "DEPS"), errors="replace").read(),
+    )
+    expected = expected_match.group(1) if expected_match else ""
+    actual = git_value(crossbench, "rev-parse", "HEAD")
+    dirty = git_value(crossbench, "status", "--porcelain", "--untracked-files=no")
+    if not expected or actual != expected or dirty:
+        raise RuntimeError(
+            "Crossbench checkout is not the clean revision pinned by Chromium DEPS"
+        )
+    vpython = shutil.which("vpython3")
+    if not vpython:
+        raise RuntimeError("vpython3 is not on PATH")
+    vpython = os.path.realpath(vpython)
+    depot_root = git_value(os.path.dirname(vpython), "rev-parse", "--show-toplevel")
+    depot_origin = git_value(depot_root, "remote", "get-url", "origin")
+    depot_dirty = git_value(
+        depot_root, "status", "--porcelain", "--untracked-files=no"
+    )
+    if (
+        not depot_origin.rstrip("/").endswith("chromium/tools/depot_tools.git")
+        or depot_dirty
+    ):
+        raise RuntimeError("vpython3 is not from a clean Chromium depot_tools checkout")
+    return {
+        "crossbench_revision": actual,
+        "crossbench_cb": artifact_ref(cb),
+        "vpython3": artifact_ref(vpython),
+        "depot_tools_revision": git_value(depot_root, "rev-parse", "HEAD"),
+        "depot_tools_origin": depot_origin,
+    }
+
+
+REQUIRED_RELEASE_GN_ARGS = {
+    "is_official_build": "true",
+    "is_debug": "false",
+    "chrome_pgo_phase": "2",
+    "use_thin_lto": "true",
+}
+
+
+def build_provenance(cwd, browser, required_role="any"):
     browser_path = os.path.realpath(os.path.join(cwd, browser))
-    args_path = os.path.join(os.path.dirname(browser_path), "args.gn")
+    build_dir = os.path.dirname(browser_path)
     try:
         sha = subprocess.run(
             ["git", "-C", cwd, "rev-parse", "HEAD"], check=True,
@@ -89,11 +211,44 @@ def build_provenance(cwd, browser):
         ).stdout.strip()
     except subprocess.SubprocessError:
         sha = "unknown"
+    try:
+        gn_output = subprocess.run(
+            ["gn", "args", build_dir, "--list", "--short"],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"cannot resolve GN args for {browser_path}: {exc}") from exc
+    resolved = {}
+    for line in gn_output.splitlines():
+        if "=" in line:
+            name, value = line.split("=", 1)
+            resolved[name.strip()] = value.strip()
+    mismatches = [
+        f"{name}={resolved.get(name)!r} (need {expected})"
+        for name, expected in REQUIRED_RELEASE_GN_ARGS.items()
+        if resolved.get(name) != expected
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "score build is not official PGO2 ThinLTO: " + ", ".join(mismatches)
+        )
+    if required_role == "release" and resolved.get("symbol_level") != "0":
+        raise RuntimeError(
+            f"authoritative score build requires symbol_level=0, got "
+            f"{resolved.get('symbol_level')!r}"
+        )
     return {
         "resolved_browser": browser_path,
         "browser_sha256": sha256_path(browser_path),
         "git_sha": sha,
-        "gn_args_sha256": sha256_path(args_path) if os.path.isfile(args_path) else None,
+        "gn_args_sha256": hashlib.sha256(gn_output.encode()).hexdigest(),
+        "build_role": required_role,
+        "symbol_level": resolved.get("symbol_level"),
+        "enable_profiling": resolved.get("enable_profiling"),
+        "required_release_args": REQUIRED_RELEASE_GN_ARGS,
     }
 
 
@@ -148,14 +303,18 @@ def run_single_rep(browser, out_dir, stories, flag_option, state_str, rep_index,
 
 
 def _scalar(value):
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
-    if isinstance(value, dict) and isinstance(value.get("average"), (int, float)):
+    if (
+        isinstance(value, dict)
+        and isinstance(value.get("average"), (int, float))
+        and not isinstance(value.get("average"), bool)
+    ):
         return float(value["average"])
     return None
 
 
-def parse_run_metrics(cwd, out_dir):
+def parse_run_metric_artifacts(cwd, out_dir):
     """Return (suite_score, {story: total_time_ms}) for one crossbench rep.
 
     Only per-iteration result files (where Score is a scalar) are trusted;
@@ -174,7 +333,12 @@ def parse_run_metrics(cwd, out_dir):
                 print(f"Error parsing {path}: {e}", file=sys.stderr)
                 continue
             score = data.get("Score")
-            if not isinstance(score, (int, float)):
+            if (
+                not isinstance(score, (int, float))
+                or isinstance(score, bool)
+                or not math.isfinite(float(score))
+                or score <= 0
+            ):
                 continue
             stories = {}
             for key, value in data.items():
@@ -188,8 +352,12 @@ def parse_run_metrics(cwd, out_dir):
                 num = _scalar(value)
                 if num is not None and num > 0:
                     stories[key] = num
-            runs.append((float(score), stories))
+            runs.append((float(score), stories, os.path.realpath(path)))
     return runs
+
+
+def parse_run_metrics(cwd, out_dir):
+    return [item[:2] for item in parse_run_metric_artifacts(cwd, out_dir)]
 
 
 def summarize_block_diffs(block_diffs):
@@ -273,12 +441,16 @@ def per_story_stats(block_data):
 
 def main():
     parser = argparse.ArgumentParser(description="Run randomized block-interleaved (ABBA/BAAB) A/B or A/A Speedometer benchmark.")
-    parser.add_argument("--browser", default="out/perf/chrome", help="Browser build path (aa and feature modes)")
+    parser.add_argument("--browser", default="out/release/chrome", help="Browser build path (aa and feature modes)")
     parser.add_argument("--browser-a", default="", help="Arm A browser path (two-binary mode)")
     parser.add_argument("--browser-b", default="", help="Arm B browser path (two-binary mode)")
     parser.add_argument("--feature", default="", help="Chromium Feature flag name to test")
     parser.add_argument("--aa", action="store_true", help="Run in genuine A/A baseline mode (identical binaries/flags on both arms)")
-    parser.add_argument("--blocks", type=int, default=5, help="Number of ABBA/BAAB blocks (default: 5 blocks = 10 paired reps per arm)")
+    parser.add_argument("--blocks", type=int, default=32, help="Even number of ABBA/BAAB blocks (default: 32 = 64 paired reps per arm)")
+    parser.add_argument(
+        "--required-build-role", choices=("any", "release"), default="any",
+        help="Use release to require a symbol-free official PGO2 ThinLTO binary",
+    )
     parser.add_argument("--stories", default="all", help="Speedometer stories to run (default: all)")
     parser.add_argument(
         "--seed", type=int, default=None,
@@ -292,6 +464,9 @@ def main():
     parser.add_argument("--skip-feature-check", action="store_true",
                         help="Skip verifying that --feature is defined in the source tree")
     args = parser.parse_args()
+    if args.blocks < 2 or args.blocks % 2:
+        print("Error: --blocks must be even for exact ABBA/BAAB balance.", file=sys.stderr)
+        sys.exit(1)
 
     two_binary = bool(args.browser_a or args.browser_b)
     mode_count = sum([args.aa, bool(args.feature), two_binary])
@@ -308,6 +483,19 @@ def main():
         sys.exit(1)
 
     cwd = get_repo_root()
+    environment = capture_environment()
+    harness = harness_identity(cwd)
+    skill_digest = skill_tree_digest(cwd)
+    expected_skill_digest = os.environ.get("SP3_SKILL_DIGEST", skill_digest)
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", expected_skill_digest)
+        or expected_skill_digest != skill_digest
+    ):
+        print(
+            "Error: executing skill tree does not match the remote wrapper digest.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     if not args.skip_feature_check:
         if args.feature and not check_feature_registered(cwd, args.feature):
@@ -320,6 +508,9 @@ def main():
 
     temp_results_dir = tempfile.mkdtemp(prefix="results_ab_interleaved_", dir=os.path.join(cwd, "scratch"))
     rel_out_dir = os.path.relpath(temp_results_dir, cwd)
+    evidence_name = f"ab_evidence_{secrets.token_hex(12)}"
+    evidence_dir = os.path.join(cwd, "scratch", evidence_name)
+    os.makedirs(evidence_dir)
     actual_seed = args.seed if args.seed is not None else secrets.randbits(32)
     rng = random.Random(actual_seed)
 
@@ -367,35 +558,96 @@ def main():
     block_patterns += ["BAAB"] * (args.blocks // 2)
     rng.shuffle(block_patterns)
     total_rep = 0
+    arm_browser_paths = {
+        "a": os.path.realpath(os.path.join(cwd, args.browser_a or args.browser)),
+        "b": os.path.realpath(os.path.join(cwd, args.browser_b or args.browser)),
+    }
+    initial_browser_hashes = {
+        arm: sha256_path(path) for arm, path in arm_browser_paths.items()
+    }
+    run_started_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
+    run_started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     for b_idx in range(args.blocks):
         pattern = block_patterns[b_idx]
         print(f"\n--- Block {b_idx + 1}/{args.blocks} Pattern: {pattern} ---")
         a_scores, b_scores = [], []
         a_stories, b_stories = [], []
+        a_results, b_results = [], []
 
         for char in pattern:
             enable = (char == "B")
             browser, flag_option, state_str = arm_config(enable)
             block_label = f"B{b_idx+1}_{char}"
+            rep_started_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
             out_d = run_single_rep(browser, rel_out_dir, args.stories, flag_option,
                                    state_str, total_rep, block_label, cwd)
-            runs = parse_run_metrics(cwd, out_d)
-            if runs:
-                score, stories = runs[0]
-                if enable:
-                    b_scores.append(score)
-                    b_stories.append(stories)
-                else:
-                    a_scores.append(score)
-                    a_stories.append(stories)
+            rep_finished_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
+            runs = parse_run_metric_artifacts(cwd, out_d)
+            if len(runs) != 1:
+                print(
+                    f"Error: repetition {total_rep + 1} emitted {len(runs)} "
+                    "scalar Speedometer results; expected exactly one.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            score, stories, source_result = runs[0]
+            copied_name = f"rep-{total_rep + 1:04d}-{block_label}-{state_str.lower()}.json"
+            copied_result = os.path.join(evidence_dir, copied_name)
+            shutil.copy2(source_result, copied_result)
+            result = {
+                **artifact_ref(copied_result, relative_to=os.path.join(cwd, "scratch")),
+                "score": score,
+                "block": b_idx + 1,
+                "position": len(a_scores) + len(b_scores) + 1,
+                "arm": "b" if enable else "a",
+                "started_monotonic_raw_ns": rep_started_ns,
+                "finished_monotonic_raw_ns": rep_finished_ns,
+            }
+            if enable:
+                b_scores.append(score)
+                b_stories.append(stories)
+                b_results.append(result)
+            else:
+                a_scores.append(score)
+                a_stories.append(stories)
+                a_results.append(result)
             total_rep += 1
 
         block_data.append({
             "block": b_idx + 1, "pattern": pattern,
             "a_scores": a_scores, "b_scores": b_scores,
             "a_stories": a_stories, "b_stories": b_stories,
+            "a_results": a_results, "b_results": b_results,
         })
+
+    run_finished_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    run_finished_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
+    minimum_duration_ns = (
+        args.blocks * 4 * MIN_FULL_SUITE_REP_SECONDS * 1_000_000_000
+        if args.stories == "all" else 0
+    )
+    if run_finished_ns - run_started_ns < minimum_duration_ns:
+        print(
+            "Error: full-suite run completed below the conservative wall-time "
+            "floor; refusing implausible checkpoint evidence.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    final_harness = harness_identity(cwd)
+    final_skill_digest = skill_tree_digest(cwd)
+    if final_harness != harness or final_skill_digest != skill_digest:
+        print(
+            "Error: benchmark harness or campaign skill tree changed during the run.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    final_browser_hashes = {
+        arm: sha256_path(path) for arm, path in arm_browser_paths.items()
+    }
+    if final_browser_hashes != initial_browser_hashes:
+        print("Error: a measured browser changed during the run.", file=sys.stderr)
+        sys.exit(1)
 
     suite = summarize_block_diffs(suite_block_diffs(block_data))
     if suite is None:
@@ -447,6 +699,8 @@ def main():
     print(f"=======================================================\n")
 
     res_manifest = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "runner": MANIFEST_RUNNER,
         "mode": mode_key,
         "feature": args.feature,
         "enable_features": args.enable_features,
@@ -457,8 +711,20 @@ def main():
         "blocks": suite["n_blocks"],
         "seed": actual_seed,
         "schedule": block_patterns,
+        "started_at": run_started_at,
+        "finished_at": run_finished_at,
+        "started_monotonic_raw_ns": run_started_ns,
+        "finished_monotonic_raw_ns": run_finished_ns,
+        "minimum_duration_ns": minimum_duration_ns,
+        "capture_environment": environment,
+        "harness": harness,
+        "skill_tree_sha256": skill_digest,
+        "evidence_dir": evidence_name,
         "block_details": [
-            {k: b[k] for k in ("block", "pattern", "a_scores", "b_scores")}
+            {k: b[k] for k in (
+                "block", "pattern", "a_scores", "b_scores",
+                "a_results", "b_results",
+            )}
             for b in block_data
         ],
         "geometric_delta_pct": suite["delta_pct"],
@@ -471,10 +737,21 @@ def main():
         "per_story": stories,
         "stat_sig_story_regressions": stat_sig_regressions,
         "build_provenance": {
-            "a": build_provenance(cwd, args.browser_a or args.browser),
-            "b": build_provenance(cwd, args.browser_b or args.browser),
+            "a": build_provenance(
+                cwd, args.browser_a or args.browser, args.required_build_role
+            ),
+            "b": build_provenance(
+                cwd, args.browser_b or args.browser, args.required_build_role
+            ),
         },
     }
+    if any(
+        res_manifest["build_provenance"][arm]["browser_sha256"]
+        != initial_browser_hashes[arm]
+        for arm in ("a", "b")
+    ):
+        print("Error: final build provenance does not match the measured browser.", file=sys.stderr)
+        sys.exit(1)
     manifest_path = os.path.join(cwd, "scratch", "ab_results_manifest.json")
     os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
     with open(manifest_path, "w") as f:

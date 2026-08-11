@@ -1,9 +1,11 @@
 # Mechanism evidence schema
 
 Always start with `mechanism_evidence.py scaffold`; do not author the shape
-from memory. Fill metadata only, then run `mechanism_evidence.py ingest` over
-the `[SP3_CYCLE_ROW]` logs emitted by `cycle_profiler.h`. The reducer owns the
-`blocks`, `counter_logs`, and `ingested_by` fields. Hand-entered blocks fail.
+from memory. Fill metadata only, then run `mechanism_evidence.py capture` for
+each block and pass its manifests to `ingest`. The capture runner owns the
+nonce, Crossbench command, raw browser logs, and extracted counter log. The
+reducer owns `blocks`, `capture_manifests`, `counter_logs`, and `ingested_by`.
+Hand-entered rows or manifests without matching raw browser output fail.
 
 Each raw file describes one variant (`baseline`, `oracle`, or `candidate`) of
 one opportunity and profile. It binds:
@@ -12,13 +14,35 @@ one opportunity and profile. It binds:
 - complete release-like build identity (SHA, binary id, GN args, toolchain,
   and PGO profile), bound to a digested provenance artifact;
 - probe revision and measured A/A overhead, bound to its A/A artifact;
-- at least three independent blocks;
+- at least three independent blocks with natural run variance;
 - inside every block, one `repetition|suite` row for all 32 Speedometer suites.
 
-Each log is SHA-256 bound. Ingestion rejects missing/failed perf events, zero
+Each log is SHA-256 bound to a staged source tree, real browser binary, fresh
+capture nonce, and 32-suite exact-score mark inventory. Ingestion rejects
+placeholder suite names, repeated synthetic score totals, missing/failed perf events, zero
 calibration, invalid reads, thread-affinity or nesting violations, and a PMU
 time-running/time-enabled ratio below 0.99. See `instrumented_twin.md` for the
 build and emission recipe.
+
+Temporary probes are represented by a `bind-instrumentation` receipt. It
+reapplies one digest-bound instrumentation patch in a temporary Git index and
+proves `product_tree + patch = source_tree`. Baseline and candidate must have
+different product trees, binaries, and executable `.text` sections but the
+same instrumentation patch revision. Debug-only or compiler-erased changes
+therefore fail. Review binds to candidate `product_tree`, so probes can be
+removed without severing the measurement provenance.
+
+Instrumentation overhead is also reducer-owned. Run an uninstrumented-A versus
+instrumented-B full-suite binary `ab2`, then use `calibrate-aa`; metadata may
+only reference that digest-bound artifact. Its upper 95% confidence bound must
+not exceed 1%.
+
+Build identity is runner-owned too: on the bare-metal host, `provenance` runs
+the instrumented Chrome `autoninja` rebuild itself and records its output,
+host boot/CPU/kernel, staged tree, browser SHA, ELF build-id, executable
+`.text`, GN args, bundled toolchain, and exact PGO profile;
+`attach-provenance` copies that artifact into a metadata skeleton. Do not
+hand-author the build object.
 
 Group fields are raw harness output:
 

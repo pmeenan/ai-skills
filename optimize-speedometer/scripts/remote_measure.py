@@ -19,12 +19,12 @@ Modes:
 
 Requirements on the remote host:
   - full Chromium checkout sharing upstream history with this one
-  - configured out/perf build dir (args.gn present)
+  - configured out/perf (profile) and out/release (score) build dirs
   - perf, vpython3, autoninja, gn on PATH for a non-interactive ssh shell
   - a clean tracked tree (untracked files are tolerated)
-  - skill scripts pre-synced to match the local ones (they are gitignored in
-    Chromium and are NOT transferred; the job verifies a content digest and
-    exits 5 on mismatch)
+  - .agents/skills resolves into a standalone skills Git clone pre-synced to
+    the reviewed local commit (the files are gitignored in Chromium and are
+    NOT transferred; the job verifies a content digest and exits 5 on mismatch)
 
 The remote tree is checked out detached at the measured sha and left there.
 Concurrent measurements are excluded with flock on the remote host.
@@ -248,6 +248,7 @@ def build_and_run_script(args, sha, sha_b=None, expected_digest=None):
     ]
     if expected_digest:
         lines += sync_gate_lines(expected_digest)
+        lines.append(f"export SP3_SKILL_DIGEST={q(expected_digest)}")
     lines += [
         'if [ -n "$(git status --porcelain --untracked-files=no)" ]; then',
         '  echo "REMOTE TREE HAS TRACKED MODIFICATIONS; refusing to check out." >&2',
@@ -269,34 +270,37 @@ def build_and_run_script(args, sha, sha_b=None, expected_digest=None):
 
     if args.mode == "ab2":
         for arm, arm_sha in (("a", sha), ("b", sha_b)):
-            out_dir = f"out/perf_{arm}"
+            out_dir = f"out/release_{arm}"
             lines += [
                 f"git checkout --quiet --detach {q(arm_sha)}",
                 f"if [ ! -f {out_dir}/args.gn ]; then",
                 f"  mkdir -p {out_dir}",
-                f"  cp out/perf/args.gn {out_dir}/",
+                f"  cp out/release/args.gn {out_dir}/",
                 f"  gn gen {out_dir}",
                 "fi",
                 f"autoninja -C {out_dir} chrome",
             ]
         lines.append(
-            f"vpython3 {bench} --browser-a=out/perf_a/chrome "
-            f"--browser-b=out/perf_b/chrome --blocks={blocks} "
-            f"--stories={stories} --seed={seed}{common}"
+            f"vpython3 {bench} --browser-a=out/release_a/chrome "
+            f"--browser-b=out/release_b/chrome --required-build-role=release "
+            f"--blocks={blocks} --stories={stories} --seed={seed}{common}"
         )
     else:
+        out_dir = "out/perf" if args.mode == "profile" else "out/release"
         lines += [
             f"git checkout --quiet --detach {q(sha)}",
-            "autoninja -C out/perf chrome",
+            f"autoninja -C {out_dir} chrome",
         ]
         if args.mode == "aa":
             lines.append(
-                f"vpython3 {bench} --browser=out/perf/chrome --aa "
+                f"vpython3 {bench} --browser=out/release/chrome --aa "
+                f"--required-build-role=release "
                 f"--blocks={blocks} --stories={stories} --seed={seed}{common}"
             )
         elif args.mode == "ab":
             lines.append(
-                f"vpython3 {bench} --browser=out/perf/chrome "
+                f"vpython3 {bench} --browser=out/release/chrome "
+                f"--required-build-role=release "
                 f"--feature={q(args.feature)} --blocks={blocks} "
                 f"--stories={stories} --seed={seed}"
             )
@@ -368,6 +372,28 @@ def run_remote(host, script):
 def fetch_file(host, remote_path, local_dir):
     local_dir.mkdir(parents=True, exist_ok=True)
     run(["scp", "-q", f"{host}:{shlex.quote(remote_path)}", str(local_dir) + "/"], check=True)
+
+
+def fetch_score_evidence(host, remote_src, manifest_path, local_dir):
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"cannot read fetched score manifest: {exc}") from exc
+    evidence_dir = manifest.get("evidence_dir")
+    if (
+        not isinstance(evidence_dir, str)
+        or pathlib.PurePath(evidence_dir).name != evidence_dir
+        or not re.fullmatch(r"ab_evidence_[0-9a-f]{24}", evidence_dir)
+    ):
+        raise RuntimeError("score manifest has an invalid evidence_dir")
+    run(
+        [
+            "scp", "-q", "-r",
+            f"{host}:{shlex.quote(f'{remote_src}/scratch/{evidence_dir}')}",
+            str(local_dir) + "/",
+        ],
+        check=True,
+    )
 
 
 def parse_remote_results_dir(remote_stdout):
@@ -510,6 +536,8 @@ def summarize_ab(manifest_path):
     with open(manifest_path) as f:
         manifest = json.load(f)
     keys = (
+        "schema_version",
+        "runner",
         "mode",
         "feature",
         "enable_features",
@@ -525,6 +553,15 @@ def summarize_ab(manifest_path):
         "passes_regression_guardrail",
         "stat_sig_story_regressions",
         "build_provenance",
+        "started_at",
+        "finished_at",
+        "started_monotonic_raw_ns",
+        "finished_monotonic_raw_ns",
+        "minimum_duration_ns",
+        "capture_environment",
+        "harness",
+        "skill_tree_sha256",
+        "evidence_dir",
     )
     return {k: manifest.get(k) for k in keys if k in manifest}
 
@@ -551,7 +588,10 @@ def main(argv=None):
     parser.add_argument("--ref-a", help="ab2 mode: arm A commit (STAGED allowed)")
     parser.add_argument("--ref-b", help="ab2 mode: arm B commit (STAGED allowed)")
     parser.add_argument("--feature", help="ab mode: feature flag to toggle")
-    parser.add_argument("--blocks", type=int, default=5)
+    parser.add_argument(
+        "--blocks", type=int, default=None,
+        help="Score blocks (default: 32, exactly balanced; profile mode ignores it)",
+    )
     parser.add_argument("--stories", default="all")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--repetitions", type=int, default=4, help="profile mode")
@@ -577,6 +617,15 @@ def main(argv=None):
                         help="Allow STAGED to proceed despite unstaged/untracked "
                         "changes (they are excluded from the measurement)")
     args = parser.parse_args(argv)
+    if args.blocks is None:
+        args.blocks = 32
+    if args.mode in ("aa", "ab", "ab2") and (
+        args.blocks < 32 or args.blocks % 2
+    ):
+        parser.error(
+            "score measurements require at least 32 blocks and an even count "
+            "for exact ABBA/BAAB balance"
+        )
     if args.seed is None:
         args.seed = secrets.randbits(32)
 
@@ -611,7 +660,8 @@ def main(argv=None):
         sha_b = None
         push_ref(root, args.host, args.remote_src, sha, "measure")
 
-    script = build_and_run_script(args, sha, sha_b, skills_digest(root))
+    executing_skill_digest = skills_digest(root)
+    script = build_and_run_script(args, sha, sha_b, executing_skill_digest)
     rc, remote_stdout = run_remote(args.host, script)
     if rc == LOCK_BUSY_EXIT:
         print("error: another measurement holds the remote lock; retry later", file=sys.stderr)
@@ -641,9 +691,13 @@ def main(argv=None):
         "sha": sha,
         "sha_b": sha_b,
         "local_results": str(out_dir),
+        "skill_tree_sha256": executing_skill_digest,
     }
     if args.mode in ("aa", "ab", "ab2"):
         fetch_file(args.host, f"{args.remote_src}/scratch/ab_results_manifest.json", out_dir)
+        fetch_score_evidence(
+            args.host, args.remote_src, out_dir / "ab_results_manifest.json", out_dir
+        )
         summary["manifest"] = str(out_dir / "ab_results_manifest.json")
         summary.update(summarize_ab(out_dir / "ab_results_manifest.json"))
     else:

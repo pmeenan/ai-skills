@@ -14,6 +14,9 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
 
 namespace perf_instrumentation {
 
@@ -261,6 +264,43 @@ inline void WriteJsonString(FILE* output, const char* value) {
   }
 }
 
+inline uint32_t CaptureBlockFromEnvironment(uint32_t fallback) {
+  const char* value = std::getenv("SP3_CYCLE_CAPTURE_BLOCK");
+  if (!value || !*value)
+    return fallback;
+  char* end = nullptr;
+  const unsigned long parsed = std::strtoul(value, &end, 10);
+  if (!end || *end || parsed == 0 || parsed > UINT32_MAX)
+    return fallback;
+  return static_cast<uint32_t>(parsed);
+}
+
+inline const char* CurrentProcessType() {
+  char command_line[8192] = {};
+  FILE* input = std::fopen("/proc/self/cmdline", "rb");
+  if (!input)
+    return "unknown";
+  const size_t size = std::fread(command_line, 1, sizeof(command_line) - 1, input);
+  std::fclose(input);
+  size_t offset = 0;
+  while (offset < size) {
+    const char* argument = command_line + offset;
+    const size_t length = std::strlen(argument);
+    if (std::strcmp(argument, "--type=renderer") == 0)
+      return "renderer";
+    offset += length + 1;
+  }
+  return "other";
+}
+
+inline uint64_t MonotonicRawNanoseconds() {
+  struct timespec timestamp = {};
+  if (clock_gettime(CLOCK_MONOTONIC_RAW, &timestamp) != 0)
+    return 0;
+  return static_cast<uint64_t>(timestamp.tv_sec) * 1000000000ULL +
+         static_cast<uint64_t>(timestamp.tv_nsec);
+}
+
 inline void EmitCycleRow(FILE* output,
                          uint32_t block,
                          const char* repetition_suite,
@@ -268,12 +308,21 @@ inline void EmitCycleRow(FILE* output,
                          const CycleBlock& avoidable,
                          const CycleBlock& scored_total) {
   const ThreadCycleEvent& event = ThreadCycleEvent::Get();
+  const char* capture_nonce = std::getenv("SP3_CYCLE_CAPTURE_NONCE");
+  block = CaptureBlockFromEnvironment(block);
   std::fprintf(output, "[SP3_CYCLE_ROW] {\"schema_version\":1,\"block\":%u,"
-                       "\"group\":\"", block);
+                       "\"capture_nonce\":\"", block);
+  WriteJsonString(output, capture_nonce);
+  std::fprintf(output, "\",\"group\":\"");
   WriteJsonString(output, repetition_suite);
+  std::fprintf(output, "\",\"pid\":%llu,\"tid\":%llu,\"process_type\":\"",
+               static_cast<unsigned long long>(getpid()),
+               static_cast<unsigned long long>(CurrentTid()));
+  std::fprintf(output, "%s", CurrentProcessType());
   std::fprintf(
       output,
-      "\",\"calls\":%llu,\"applicable_calls\":%llu,"
+      "\",\"emitted_monotonic_raw_ns\":%llu,"
+      "\"calls\":%llu,\"applicable_calls\":%llu,"
       "\"exclusive_cycles\":%llu,\"avoidable_cycles\":%llu,"
       "\"total_scored_cycles\":%llu,\"probe_overhead_cycles\":%llu,"
       "\"time_enabled\":%llu,\"time_running\":%llu,"
@@ -281,6 +330,7 @@ inline void EmitCycleRow(FILE* output,
       "\"unavailable_reads\":%llu,\"uncalibrated_scopes\":%llu,"
       "\"nested_violations\":%llu,\"thread_affinity_violations\":%llu,"
       "\"perf_open_errno\":%d}\n",
+      static_cast<unsigned long long>(MonotonicRawNanoseconds()),
       static_cast<unsigned long long>(mechanism.calls),
       static_cast<unsigned long long>(mechanism.applicable_calls),
       static_cast<unsigned long long>(mechanism.cycles),

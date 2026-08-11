@@ -68,7 +68,7 @@ blindly.
 
 ## Verification before first use
 
-1. Build `out/Default`; run a Speedometer story with and without
+1. Build the official symbols-on `out/perf`; run a Speedometer story with and without
    `--enable-features=Speedometer3Optimizations` and a temporary
    `LOG(ERROR)` behind the check to confirm both states wire through. Remove
    the log.

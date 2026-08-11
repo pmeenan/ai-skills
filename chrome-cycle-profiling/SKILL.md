@@ -56,8 +56,8 @@ perf record -e cycles -F 997 -k mono -g -p $RENDERER_PID -o /tmp/preflight-jit.d
 kill $CHROME_PID || true
 perf report -i /tmp/preflight-jit.data --stdio | head -50
 
-# Step 4: Interleaved 10-rep Genuine A/A Baseline Calibration (--aa mode)
-python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --browser=out/perf/chrome --blocks=5 --aa
+# Step 4: Symbol-free release-build Genuine A/A Baseline Calibration
+python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --browser=out/release/chrome --required-build-role=release --blocks=32 --aa
 
 # Step 5: Apply the bundled probe and validate the end-to-end Phase 1 pipeline
 git apply --check .agents/skills/optimize-speedometer/resources/performance_mark_monotonic_probe.patch
@@ -70,7 +70,9 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
 1. **C++ Frames Symbolized:** `blink::...` and `content::...` symbols visible, not raw hex addresses (`symbol_level = 1`).
 2. **Deep Stack Unwinding:** Multi-level call graphs visible (`enable_profiling = true` frame pointers).
 3. **Named JS Frames:** Named JS functions (`/tmp/perf-*.map` symbols) visible in `perf report`.
-4. **A/A Baseline Calibration:** Crossbench completes 5 randomized ABBA/BAAB blocks in `--aa` mode, reporting session noise floor and MDE, and creating `scratch/ab_results_manifest.json`.
+4. **A/A Baseline Calibration:** Crossbench completes 32 randomized blocks
+   (16 ABBA, 16 BAAB; 64 paired reps per arm) in `--aa` mode, reporting the
+   session noise floor and MDE and creating `scratch/ab_results_manifest.json`.
 5. **Phase 1 Conformance Verification:**
    - (a) `blink::`/`content::` C++ frames symbolized.
    - (b) Named JS frames (`JS:^runSync`, `JS:^layout`) present.
@@ -96,10 +98,10 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
 
 ## 4. Statistical Rigor & Block Log-Difference Verification
 
-1. **Genuine Session A/A Calibration:** Re-measure local A/A noise floor per session/reboot using `run_ab_benchmark.py --browser=out/perf/chrome --blocks=5 --aa`.
+1. **Genuine Session A/A Calibration:** Re-measure score noise per session/reboot using the symbol-free official build: `run_ab_benchmark.py --browser=out/release/chrome --required-build-role=release --blocks=32 --aa`. `out/perf` is for symbols-on sampling profiles, never authoritative score claims.
 2. **Randomized Block-Interleaved Order (ABBA/BAAB):** `run_ab_benchmark.py` generates a fresh recorded seed by default, balances ABBA and BAAB counts, shuffles the schedule, and uses fresh browser state per rep. Do not repeatedly reuse seed 42.
 3. **Block Log-Difference Statistics:** For each block $b$, compute observation $d_b = \text{mean}(\ln B) - \text{mean}(\ln A)$. Compute paired log-ratio mean $\bar{d}$ and 95% confidence intervals across block observations.
-4. **Adaptive Block Scaling & Power Rule:** Target $80\%$ statistical power ($\alpha=0.05$). Initial sample is $N=5$ blocks (10 paired reps). If underpowered relative to session MDE, scale adaptively up to $N_{\text{max}}=15$ blocks. If a candidate remains underpowered after 15 blocks, classify as **INCONCLUSIVE** and route to Pinpoint or reject without further local reruns.
+4. **Adaptive Block Scaling & Power Rule:** Target $80\%$ statistical power ($\alpha=0.05$). Start at $N=32$ complete blocks. If the CI crosses zero or MDE exceeds the effect that must be resolved, increase to a larger even block count while retaining exact ABBA/BAAB balance. Never rerun until a favorable point appears. If the required count is impractical, classify **INCONCLUSIVE** and route to a more stable lab/Pinpoint or stop.
 5. **Provisional Local Promotion & Regression Sign Guardrail:**
    - All local score improvements are explicitly labeled **provisional** until Pinpoint trybot or bare-metal desktop confirmation.
    - **Per-story regression limit:** $\text{CI}_{\text{lower}} \ge \ln(0.98) \approx -2.0\%$ (lower 95% confidence bound must not drop below $-2.0\%$).
@@ -123,11 +125,11 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
 ## 6. Automation Scripts
 
 * **Full-Suite Perf Sampling and Tree Analysis:** `python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --browser=out/perf/chrome --stories=all --repetitions=4` (defaults to enabling the campaign feature; pass `--enable-features=` for a true baseline capture)
-* **Randomized Block A/B Benchmark:** `python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --browser=out/perf/chrome --blocks=5 --feature=FeatureName`
+* **Randomized Block A/B Benchmark:** `python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --browser=out/release/chrome --required-build-role=release --blocks=32 --feature=FeatureName`
   - `--aa` for A/A calibration; `--browser-a=... --browser-b=...` for binary-vs-binary comparison (bisecting a batch regression). In aa/two-binary modes, `--enable-features=<flags>` applies identically to BOTH arms — required when comparing flag-gated campaign builds, which are otherwise baseline-identical.
   - `--feature` refuses feature names not defined in the source tree (Chrome silently ignores unknown features); `--skip-feature-check` overrides.
   - The manifest (`scratch/ab_results_manifest.json`) includes per-story block statistics; with ~30 stories at 95% CI, expect ~1 false-positive stat-sig story per run — confirm flagged stories with a targeted `--stories` rerun before acting.
-* **Remote Execution:** On the development machine, do not run these directly — use `python3 .agents/skills/optimize-speedometer/scripts/remote_measure.py`, which pushes a committed sha to the measurement host, builds `out/perf` there, and runs these scripts under a lock.
+* **Remote Execution:** On the development machine, do not run these directly — use `python3 .agents/skills/optimize-speedometer/scripts/remote_measure.py`, which pushes a committed SHA to the measurement host, builds `out/perf` for profiles or `out/release` for score, and runs these scripts under a lock.
 * **Workspace Cleanup:** Delete only explicitly created output directories:
   ```bash
   rm -rf scratch/results_ab_interleaved_* scratch/results_perf_sampling_*

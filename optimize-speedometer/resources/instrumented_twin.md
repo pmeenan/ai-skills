@@ -10,10 +10,26 @@ the raw evidence.
    release-like baseline. It must resolve to `is_official_build=true`,
    `is_debug=false`, `chrome_pgo_phase=2`, and `use_thin_lto=true`.
 2. Keep symbols/frame pointers recorded as provenance. They may differ from
-   the score binary, but PGO/ThinLTO may not.
+   the score binary, but PGO/ThinLTO may not. `out/perf` remains the official
+   symbols-on broad-profile build; `out/release` remains the symbol-free
+   authoritative score build. Never use either name for the instrumented twin.
 3. Add `chrome-cycle-profiling/resources/cycle_profiler.h` temporarily and
    build. A `perf_event_open` failure is a failed run, not a zero result.
-4. Run an instrumented versus uninstrumented A/A. Reject overhead above 1%.
+4. Run an uninstrumented arm A versus instrumented arm B full-suite `ab2`
+   with at least 32 balanced blocks, then reduce the untouched runner manifest:
+
+   ```bash
+   python3 .agents/skills/optimize-speedometer/scripts/mechanism_evidence.py calibrate-aa \
+     --manifest <ab_results_manifest.json> --out <instrumentation-aa.json>
+   ```
+
+   Put the emitted overhead and artifact digest into every metadata file.
+   The upper 95% confidence bound must be at most 1%.
+   This A/A artifact may be reused by multiple opportunities only while arm B
+   is the exact same instrumented browser SHA and build provenance. Any
+   rebuild that changes the browser requires a fresh calibration. A 32-block
+   calibration has the same 64-minute hard floor as a checkpoint and normally
+   takes hours; start it once per stable build and wait for completion.
 
 ## Instrument one measurement thread
 
@@ -43,28 +59,99 @@ score interval closes. Never print or flush inside a score timer.
 
 ## Reduce logs without transcription
 
-First write metadata only:
+Keep the probe-free product tree separate from the instrumented tree. Stage
+the product variant first and record `git write-tree` as `product_tree`. Save
+one instrumentation-only patch, apply and stage that patch, then bind the
+mapping:
+
+```bash
+python3 .agents/skills/optimize-speedometer/scripts/mechanism_evidence.py \
+  bind-instrumentation --product-tree <probe-free-tree-hash> \
+  --patch <instrumentation-only.patch> --out <tree-transform.json>
+```
+
+The command applies the patch to the product tree in a temporary Git index and
+records the resulting `instrumented_tree`. Use the same patch digest for
+baseline, oracle, and candidate; create a separate transform receipt for each
+product tree. The instrumented build must come from that resulting tree. After
+candidate measurement, reverse only the instrumentation patch: the remaining
+staged tree must equal candidate `product_tree` and is what build/test receipts
+and review bind. This avoids either landing probes or pretending the measured
+binary came from the probe-free tree.
+
+First write the metadata skeleton:
 
 ```bash
 python3 .agents/skills/optimize-speedometer/scripts/mechanism_evidence.py scaffold \
   --opp <id> --mechanism-key <component/strategy> --profile-id <profile> \
-  --variant baseline --out <baseline.metadata.json>
+  --variant baseline --out <baseline.metadata-skeleton.json>
 ```
 
-Replace only the `REPLACE` metadata fields. Do not add `blocks`. Then ingest
-one or more harness logs:
+Replace only the non-build `REPLACE` fields (trace classification/artifact,
+instrumentation patch digest, and instrumentation A/A artifact/overhead).
+Leave the build object untouched for `attach-provenance`. Do not add `blocks`.
+
+Run the following on the configured bare-metal measurement host, in its
+campaign checkout. `provenance` does not trust a pre-existing binary: it runs
+`autoninja -C out/perf_instrumented chrome` itself, captures the build output,
+then measures the resulting identity and attaches it to the skeleton:
+
+```bash
+python3 .agents/skills/optimize-speedometer/scripts/mechanism_evidence.py \
+  provenance --browser out/perf_instrumented/chrome \
+  --product-tree <probe-free-tree-hash> \
+  --transform-artifact <tree-transform.json> --out <build-provenance.json>
+python3 .agents/skills/optimize-speedometer/scripts/mechanism_evidence.py \
+  attach-provenance --metadata <baseline.metadata-skeleton.json> \
+  --provenance <build-provenance.json> --out <baseline.metadata.json>
+```
+
+`provenance` records the bare-metal host/boot/kernel/CPU, staged tree, remote
+rebuild receipt, browser SHA/build-id, resolved GN args, bundled Clang digest,
+exact `.text`-section digest, and PGO profile from `toolchain.ninja`. Do not
+type or copy any of those fields. A VM, changed tree, failed rebuild,
+stale/missing browser, or candidate whose executable `.text` matches baseline
+fails.
+
+`build.source_tree` is the instrumented tree; `build.product_tree` is the
+probe-free tree; `instrumentation.revision` is the instrumentation patch
+SHA-256.
+
+Still on that same host and boot, do not invoke Crossbench yourself and do not
+create `[SP3_CYCLE_ROW]` text. Run at least three full-suite blocks through the
+capture subcommand. It chooses a fresh nonce, sets the block environment,
+invokes Crossbench, requires renderer PID/TID and kernel monotonic timestamps
+inside its run bounds, verifies all 32 exact-scored suites, and extracts rows
+directly from raw browser logs:
+
+```bash
+for block in 1 2 3; do
+  python3 .agents/skills/optimize-speedometer/scripts/mechanism_evidence.py capture \
+    --metadata <baseline.metadata.json> --variant baseline \
+    --browser out/perf_instrumented/chrome --block "$block" \
+    --enable-features Speedometer3Optimizations \
+    --out-dir <baseline-block-$block> --out <baseline-capture-$block.json>
+done
+```
+
+Then ingest only the runner-owned capture manifests:
 
 ```bash
 python3 .agents/skills/optimize-speedometer/scripts/mechanism_evidence.py ingest \
-  --metadata <baseline.metadata.json> --log <block-1.log> --log <block-2.log> \
-  --log <block-3.log> --out <baseline.raw.json>
+  --metadata <baseline.metadata.json> \
+  --capture-manifest <baseline-capture-1.json> \
+  --capture-manifest <baseline-capture-2.json> \
+  --capture-manifest <baseline-capture-3.json> --out <baseline.raw.json>
 python3 .agents/skills/optimize-speedometer/scripts/mechanism_evidence.py summarize \
   --raw <baseline.raw.json> --out <sizing.json>
 ```
 
-`ingest` digest-binds every log and reconstructs every block. Editing a raw
-counter after ingestion makes validation fail. Repeat the same process for
-oracle and candidate metadata/logs, then use `compare`.
+`ingest` reopens every raw browser log, verifies its nonce and score marks,
+reconstructs the extracted counter log byte-for-byte, and rebuilds every
+block. Placeholder suite names, repeated synthetic totals, and zero-variance
+paired effects fail. Repeat the same process for oracle and candidate source
+trees/binaries, then use `compare`; baseline and variant may not use the same
+Git tree or byte-identical browser.
 
 The comparison reports both mechanism cycles removed and the paired change
 in total scored cycles. A positive `moved_work_warning` means total work grew
@@ -76,6 +163,8 @@ Before authorizing 20–40 landings, complete this chain for 3–5 candidates:
 
 `emitted counters -> baseline sizing -> oracle -> candidate -> batch A/B`
 
-Proceed only if the mechanistic direction and cumulative A/B direction agree
-and all instrumentation quality fields remain zero. Fix the harness rather
-than explaining away disagreement.
+The sixth landing is locked until a 32-or-more-block cumulative `out/release`
+flag A/B has a positive 95% confidence interval. A positive point estimate
+whose interval crosses zero leaves the pilot pending: increase the balanced
+block count and remeasure. A statistically negative result fails the pilot.
+Fix the harness rather than explaining away disagreement.

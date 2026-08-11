@@ -5,12 +5,14 @@
 """Tests for remote_measure script generation, quoting, and result discovery."""
 
 import argparse
+import json
 import os
 import pathlib
 import shlex
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import remote_measure as rm
 
@@ -39,7 +41,9 @@ class ScriptGenerationTest(unittest.TestCase):
     def test_ab_mode(self):
         script = rm.build_and_run_script(make_args(), SHA_A)
         self.assertIn(f"git checkout --quiet --detach {SHA_A}", script)
-        self.assertIn("autoninja -C out/perf chrome", script)
+        self.assertIn("autoninja -C out/release chrome", script)
+        self.assertIn("--browser=out/release/chrome", script)
+        self.assertIn("--required-build-role=release", script)
         self.assertIn("--feature=Speedometer3Optimizations", script)
         self.assertIn("run_ab_benchmark.py", script)
         self.assertNotIn("--aa", script)
@@ -53,10 +57,10 @@ class ScriptGenerationTest(unittest.TestCase):
         script = rm.build_and_run_script(make_args(mode="ab2"), SHA_A, SHA_B)
         self.assertIn(f"git checkout --quiet --detach {SHA_A}", script)
         self.assertIn(f"git checkout --quiet --detach {SHA_B}", script)
-        self.assertIn("gn gen out/perf_a", script)
-        self.assertIn("gn gen out/perf_b", script)
-        self.assertIn("--browser-a=out/perf_a/chrome", script)
-        self.assertIn("--browser-b=out/perf_b/chrome", script)
+        self.assertIn("gn gen out/release_a", script)
+        self.assertIn("gn gen out/release_b", script)
+        self.assertIn("--browser-a=out/release_a/chrome", script)
+        self.assertIn("--browser-b=out/release_b/chrome", script)
 
     def test_ab2_common_features_applied_to_both_arms(self):
         script = rm.build_and_run_script(
@@ -83,6 +87,8 @@ class ScriptGenerationTest(unittest.TestCase):
             SHA_A,
         )
         self.assertIn("run_cycle_benchmark.py", script)
+        self.assertIn("autoninja -C out/perf chrome", script)
+        self.assertIn("--browser=out/perf/chrome", script)
         self.assertIn("--enable-features=Speedometer3Optimizations", script)
         self.assertIn("--min-share=0.001", script)
         self.assertIn("--min-marginal-share=0.001", script)
@@ -275,6 +281,34 @@ class SkillsDigestTest(unittest.TestCase):
         # The sync gate must run before anything mutates the remote tree.
         self.assertLess(script.index(f"exit {rm.SKILLS_SYNC_EXIT}"),
                         script.index("git checkout"))
+        self.assertIn(f"export SP3_SKILL_DIGEST={'d' * 64}", script)
+
+
+class ScoreEvidenceFetchTest(unittest.TestCase):
+    def test_fetches_only_manifest_named_evidence_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest = root / "ab_results_manifest.json"
+            manifest.write_text(json.dumps({
+                "evidence_dir": "ab_evidence_" + "a" * 24,
+            }))
+            with mock.patch.object(rm, "run") as run:
+                rm.fetch_score_evidence(
+                    "linux", "/src", manifest, root / "local"
+                )
+            command = run.call_args.args[0]
+            self.assertIn(
+                "linux:/src/scratch/ab_evidence_" + "a" * 24,
+                command,
+            )
+
+    def test_rejects_unsafe_evidence_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            manifest = root / "ab_results_manifest.json"
+            manifest.write_text('{"evidence_dir":"../forged"}')
+            with self.assertRaisesRegex(RuntimeError, "invalid evidence_dir"):
+                rm.fetch_score_evidence("linux", "/src", manifest, root)
 
 
 class RemoteJobCommandTest(unittest.TestCase):
@@ -433,6 +467,12 @@ class OutDirTest(unittest.TestCase):
             self.assertNotEqual(a, b)
             self.assertTrue(a.is_dir() and b.is_dir())
             self.assertEqual(root / "scratch", a.parent)
+
+
+class MainValidationTest(unittest.TestCase):
+    def test_score_mode_rejects_fewer_than_32_blocks(self):
+        with self.assertRaises(SystemExit):
+            rm.main(["--mode", "aa", "--blocks", "16"])
 
 
 if __name__ == "__main__":

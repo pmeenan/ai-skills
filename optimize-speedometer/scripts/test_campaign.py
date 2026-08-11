@@ -4,7 +4,9 @@
 # found in the LICENSE file.
 """Tests for the campaign ledger state machine and STATUS.md generation."""
 
+import argparse
 import json
+import hashlib
 import os
 import pathlib
 import subprocess
@@ -908,8 +910,19 @@ class CampaignTest(unittest.TestCase):
             report = json.loads(report_path.read_text())
             self.assertEqual("discovery-exhaustion", report["review_kind"])
             report["checks"] = {name: True for name in report["checks"]}
+            report["check_evidence"] = {
+                name: (
+                    "Verified against the digest-bound decomposition and raw "
+                    f"profile inventory for check {name}."
+                )
+                for name in report["checks"]
+            }
             report["verdict"] = "PASS"
             report["findings"] = []
+            report["notes"] = (
+                "The mandatory residual is tied to observable behavior and the "
+                "decomposition accounts for every profiled path."
+            )
             report_path.write_text(json.dumps(report))
             self.assertEqual(0, self.run_cmd(
                 "review", "--opp", str(discovery), "--role", "skeptic",
@@ -1499,6 +1512,331 @@ class CampaignTest(unittest.TestCase):
         self.assertEqual(1, self.run_cmd(
             "reject", "--opp", str(opp), "--reason", "nope",
             "--evidence", "late evidence"))
+
+
+class EnforcementRegressionTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = pathlib.Path(self.tmp.name)
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.email", "t@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.name", "T"],
+            check=True,
+        )
+        (self.repo / "engine.cc").write_text("int Work() { return 1; }\n")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "base")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, *args):
+        return subprocess.run(
+            ["git", "-C", str(self.repo), *args],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    def checkpoint_manifest(self):
+        evidence_name = "ab_evidence_" + "a" * 24
+        evidence = self.repo / evidence_name
+        evidence.mkdir()
+        schedule = ["ABBA", "BAAB"] * 16
+        blocks = []
+        clock = 1_000_000_000
+        run_start = clock
+        for block_number, pattern in enumerate(schedule, 1):
+            arm_results = {"a": [], "b": []}
+            arm_scores = {"a": [], "b": []}
+            for position, letter in enumerate(pattern, 1):
+                arm = letter.lower()
+                # Non-uniform, deterministic values exercise the real paired
+                # log-ratio reducer instead of a constant-data shortcut.
+                score = 100.0 + block_number * 0.07 + position * 0.013
+                if arm == "b":
+                    score *= 1.004 + (block_number % 5) * 0.0001
+                name = f"rep-{block_number:02d}-{position}-{arm}.json"
+                path = evidence / name
+                path.write_text(json.dumps({"Score": score, "ignored": "raw"}))
+                started = clock
+                clock += 31_000_000_000
+                result = {
+                    "path": f"{evidence_name}/{name}",
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "score": score,
+                    "block": block_number,
+                    "position": position,
+                    "arm": arm,
+                    "started_monotonic_raw_ns": started,
+                    "finished_monotonic_raw_ns": clock,
+                }
+                arm_results[arm].append(result)
+                arm_scores[arm].append(score)
+            blocks.append({
+                "block": block_number,
+                "pattern": pattern,
+                "a_scores": arm_scores["a"],
+                "b_scores": arm_scores["b"],
+                "a_results": arm_results["a"],
+                "b_results": arm_results["b"],
+            })
+        computed = campaign.recompute_score_statistics(blocks)
+        manifest = {
+            "schema_version": campaign.SCORE_MANIFEST_SCHEMA_VERSION,
+            "runner": campaign.SCORE_MANIFEST_RUNNER,
+            "mode": "ab",
+            "stories": "all",
+            "blocks": 32,
+            "schedule": schedule,
+            "evidence_dir": evidence_name,
+            "capture_environment": {
+                "host_name": "measurement-host",
+                "host_boot_id": "boot-id",
+                "kernel_release": "6.0",
+                "cpu_model": "Test CPU",
+                "virtualization": "none",
+            },
+            "harness": {
+                "crossbench_revision": "1" * 40,
+                "depot_tools_revision": "2" * 40,
+                "depot_tools_origin": "https://chromium.googlesource.com/chromium/tools/depot_tools.git",
+                "crossbench_cb": {"path": "/cb.py", "sha256": "3" * 64},
+                "vpython3": {"path": "/vpython3", "sha256": "4" * 64},
+            },
+            "started_monotonic_raw_ns": run_start,
+            "finished_monotonic_raw_ns": clock,
+            "minimum_duration_ns": 32 * 4 * 30 * 1_000_000_000,
+            "block_details": blocks,
+            **computed,
+        }
+        path = self.repo / "ab_results_manifest.json"
+        path.write_text(json.dumps(manifest))
+        return manifest, path
+
+    def gate_challenge(self, role, task_id, digest="d" * 64):
+        path = self.repo / f"{role}-gate.json"
+        path.write_text(json.dumps({
+            "schema_version": 1,
+            "role": role,
+            "reviewer_task_id": task_id,
+            "transcript_ref": f"transcript/{task_id}",
+            "gate": "checkpoint",
+            "artifact_digests_checked": [f"sha256:{digest}"],
+            "verdict": "PASS",
+            "challenges": [],
+            "why_this_proves_real_speedup": (
+                "I independently opened the bound raw result and verified the conclusion."
+            ),
+        }))
+        return path
+
+    def test_comment_only_optimization_is_rejected(self):
+        (self.repo / "engine.cc").write_text(
+            "int Work() { return 1; }\n"
+            "// Speedometer3Optimizations: allegedly faster\n"
+        )
+        self.git("add", "-A")
+        with self.assertRaisesRegex(campaign.CampaignError, "no semantic"):
+            campaign.validate_staged_implementation(
+                str(self.repo), "Speedometer3Optimizations"
+            )
+
+    def test_feature_name_in_comment_cannot_fake_guard(self):
+        (self.repo / "engine.cc").write_text(
+            "// Speedometer3Optimizations\n"
+            "int Work() { return 2; }\n"
+        )
+        self.git("add", "-A")
+        with self.assertRaisesRegex(campaign.CampaignError, "explicit flag guard"):
+            campaign.validate_staged_implementation(
+                str(self.repo), "Speedometer3Optimizations"
+            )
+
+    def test_feature_name_in_string_cannot_fake_guard(self):
+        (self.repo / "engine.cc").write_text(
+            'const char* Name() { return "Speedometer3Optimizations"; }\n'
+            "int Work() { return 2; }\n"
+        )
+        self.git("add", "-A")
+        with self.assertRaisesRegex(campaign.CampaignError, "explicit flag guard"):
+            campaign.validate_staged_implementation(
+                str(self.repo), "Speedometer3Optimizations"
+            )
+
+    def test_feature_name_in_test_file_cannot_fake_guard(self):
+        (self.repo / "engine.cc").write_text("int Work() { return 2; }\n")
+        (self.repo / "engine_test.cc").write_text(
+            "bool Speedometer3Optimizations();\n"
+        )
+        self.git("add", "-A")
+        with self.assertRaisesRegex(campaign.CampaignError, "explicit flag guard"):
+            campaign.validate_staged_implementation(
+                str(self.repo), "Speedometer3Optimizations"
+            )
+
+    def test_semantic_flagged_implementation_is_accepted(self):
+        (self.repo / "engine.cc").write_text(
+            "bool Speedometer3Optimizations();\n"
+            "int Work() { return Speedometer3Optimizations() ? 0 : 1; }\n"
+        )
+        self.git("add", "-A")
+        result = campaign.validate_staged_implementation(
+            str(self.repo), "Speedometer3Optimizations"
+        )
+        self.assertEqual(["engine.cc"], result["production_files"])
+
+    def test_pilot_needs_positive_confidence_interval(self):
+        pilot = {"status": "pending"}
+        campaign.update_pilot_from_checkpoint(
+            pilot, landed_count=5, saved=0.5, delta=0.4,
+            ci_low=-0.2, ci_high=1.0, evidence_sha256="digest",
+        )
+        self.assertEqual("pending", pilot["status"])
+        campaign.update_pilot_from_checkpoint(
+            pilot, landed_count=5, saved=0.5, delta=0.4,
+            ci_low=0.1, ci_high=0.7, evidence_sha256="digest-2",
+        )
+        self.assertEqual("passed", pilot["status"])
+
+    def test_pilot_contradiction_fails(self):
+        pilot = {"status": "pending"}
+        campaign.update_pilot_from_checkpoint(
+            pilot, landed_count=3, saved=0.5, delta=-0.4,
+            ci_low=-0.7, ci_high=-0.1, evidence_sha256="digest",
+        )
+        self.assertEqual("failed", pilot["status"])
+
+    def test_flat_current_checkpoint_blocks_next_landing_after_pilot(self):
+        class FakeLedger:
+            data = {
+                "pilot": {"required": True, "status": "passed"},
+                "profile_runs": [{"sequence": 100}],
+                "opportunities": [],
+                "checkpoints": [{"landed_count": 5, "ci": [-0.2, 0.8]}],
+            }
+
+            @staticmethod
+            def landed():
+                return [{"id": value} for value in range(5)]
+
+        with self.assertRaisesRegex(campaign.CampaignError, "checkpoint CI"):
+            campaign.enforce_freshness_for_landing(FakeLedger())
+
+    def test_checkpoint_recomputes_from_digest_bound_raw_results(self):
+        manifest, path = self.checkpoint_manifest()
+        computed = campaign.validate_and_recompute_checkpoint(manifest, path)
+        self.assertEqual(manifest["geometric_delta_pct"], computed["geometric_delta_pct"])
+
+    def test_checkpoint_rejects_copied_statistic(self):
+        manifest, path = self.checkpoint_manifest()
+        manifest["geometric_delta_pct"] += 1.0
+        with self.assertRaisesRegex(campaign.CampaignError, "raw recomputation"):
+            campaign.validate_and_recompute_checkpoint(manifest, path)
+
+    def test_checkpoint_rejects_changed_raw_result(self):
+        manifest, path = self.checkpoint_manifest()
+        first = self.repo / manifest["block_details"][0]["a_results"][0]["path"]
+        first.write_text(json.dumps({"Score": 999.0}))
+        with self.assertRaisesRegex(campaign.CampaignError, "digest changed"):
+            campaign.validate_and_recompute_checkpoint(manifest, path)
+
+    def test_gate_challenges_require_distinct_bound_tasks(self):
+        skeptic = self.gate_challenge("skeptic", "task-skeptic")
+        adversary = self.gate_challenge("adversary", "task-adversary")
+        reports = campaign.validate_gate_challenges(
+            argparse.Namespace(
+                gate_skeptic=str(skeptic), gate_adversary=str(adversary)
+            ),
+            gate="checkpoint",
+            artifact_digests=["d" * 64],
+        )
+        self.assertEqual({"skeptic", "adversary"}, {r["role"] for r in reports})
+        adversary = self.gate_challenge("adversary", "task-skeptic")
+        with self.assertRaisesRegex(campaign.CampaignError, "same task id"):
+            campaign.validate_gate_challenges(
+                argparse.Namespace(
+                    gate_skeptic=str(skeptic), gate_adversary=str(adversary)
+                ),
+                gate="checkpoint",
+                artifact_digests=["d" * 64],
+            )
+
+    def test_gate_challenge_rejects_unbound_digest(self):
+        skeptic = self.gate_challenge("skeptic", "task-skeptic", "e" * 64)
+        adversary = self.gate_challenge("adversary", "task-adversary")
+        with self.assertRaisesRegex(campaign.CampaignError, "unbound"):
+            campaign.validate_gate_challenges(
+                argparse.Namespace(
+                    gate_skeptic=str(skeptic), gate_adversary=str(adversary)
+                ),
+                gate="checkpoint",
+                artifact_digests=["d" * 64],
+            )
+
+    def test_campaign_snapshot_detects_manual_ledger_edit(self):
+        campaign_dir = self.repo / "campaign-state"
+        previous = os.getcwd()
+        os.chdir(self.repo)
+        try:
+            with (
+                mock.patch.object(campaign, "require_clean_skill_repository"),
+                mock.patch.object(
+                    campaign, "current_skill_tree_digest", return_value="d" * 64
+                ),
+            ):
+                self.assertEqual(0, campaign.main([
+                    "--dir", str(campaign_dir), "init", "--name", "audit-test"
+                ]))
+            ledger_path = campaign_dir / "ledger.json"
+            value = json.loads(ledger_path.read_text())
+            value["config"]["target_landed"] = 999
+            ledger_path.write_text(json.dumps(value))
+            with self.assertRaisesRegex(campaign.CampaignError, "changed outside"):
+                campaign.Ledger(campaign_dir).load()
+        finally:
+            os.chdir(previous)
+
+    def test_clean_skill_check_rejects_copied_layout_and_accepts_clean_clone(self):
+        copied_script = (
+            self.repo / ".agents/skills/optimize-speedometer/scripts/campaign.py"
+        )
+        copied_script.parent.mkdir(parents=True)
+        copied_script.write_text("# copied into Chromium\n")
+        with self.assertRaisesRegex(
+            campaign.CampaignError, "standalone skills Git checkout"
+        ):
+            campaign.require_clean_skill_repository(copied_script)
+
+        skills = pathlib.Path(self.tmp.name) / "skills"
+        for relative, text in (
+            ("optimize-speedometer/SKILL.md", "---\nname: optimize-speedometer\n---\n"),
+            ("optimize-speedometer/scripts/campaign.py", "# tracked tool\n"),
+            ("chrome-cycle-profiling/SKILL.md", "---\nname: chrome-cycle-profiling\n---\n"),
+        ):
+            path = skills / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        subprocess.run(["git", "init", "-q", str(skills)], check=True)
+        subprocess.run(["git", "-C", str(skills), "add", "-A"], check=True)
+        subprocess.run(
+            [
+                "git", "-C", str(skills),
+                "-c", "user.name=T", "-c", "user.email=t@example.com",
+                "commit", "-qm", "skills",
+            ],
+            check=True,
+        )
+        tracked_script = skills / "optimize-speedometer/scripts/campaign.py"
+        self.assertEqual(
+            str(skills.resolve()),
+            campaign.require_clean_skill_repository(tracked_script),
+        )
+        tracked_script.write_text("# tampered tool\n")
+        with self.assertRaisesRegex(campaign.CampaignError, "uncommitted changes"):
+            campaign.require_clean_skill_repository(tracked_script)
 
 
 class GitReviewVerificationTest(unittest.TestCase):

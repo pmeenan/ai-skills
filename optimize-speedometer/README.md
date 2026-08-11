@@ -12,6 +12,13 @@ dedicated branch behind one feature flag, with independent skeptic and
 adversary reviews gating every landing. Score impact is measured in
 aggregate at flag on/off checkpoints.
 
+The orchestrator is explicitly accountable for the measured release-build
+outcome. The landed-patch target is not a success criterion. Every evidence
+boundary also gets independent read-only skeptic and adversary challenges,
+aimed at finding ways an agent could satisfy the process without making Chrome
+faster. These challenges can pause work but cannot override a failed machine
+gate.
+
 The current workflow has three deliberately separate evidence layers:
 
 1. exact sync/async score-window profiles, normalized to equal suite weight,
@@ -22,10 +29,30 @@ The current workflow has three deliberately separate evidence layers:
 3. fresh-seed randomized block A/B measures the aggregate score.
 
 Profile share is never converted to predicted score impact. Manual ceilings,
-unbound review prose, and copied checkpoint numbers are rejected by the
-ledger. The default discovery floor is 0.3%, with a minimum of 100 nominal
-samples at that floor. The next landing is blocked after five runtime changes
-without a fresh enabled profile or five landings without a checkpoint.
+unbound or placeholder review prose, typed test claims, comment-only diffs,
+hand-authored counter JSON, and copied checkpoint numbers are rejected by the
+ledger. Checkpoint v3 preserves every raw scalar Crossbench result, its digest,
+arm position, and monotonic bounds; the ledger recomputes the paired statistic
+instead of trusting either summary JSON. Build/test commands produce tree-bound receipts; capture manifests are
+reduced from nonce-bound raw browser logs. Mechanism provenance invokes its
+own bare-metal `autoninja` rebuild and binds the build/capture/receipt host,
+boot, kernel, CPU, source trees, ELF and executable-`.text` identities, and
+renderer PID/TID timestamps.
+The default discovery floor is
+0.3%, with a minimum of 100 nominal samples at that floor. The next landing is
+blocked after five runtime changes without a fresh enabled profile or five
+landings without a checkpoint.
+
+The first five real candidates are a mandatory pilot. The sixth landing is
+blocked until a cumulative full-suite A/B has a positive 95% confidence
+interval. A positive point estimate whose interval crosses zero leaves the
+pilot pending; increase the balanced block count and remeasure. A statistically
+negative pilot fails permanently and requires repairing or restarting the
+campaign rather than explaining the result away.
+After the pilot, a current-tip cumulative checkpoint whose interval crosses
+zero also blocks the next landing until more balanced blocks establish a
+positive interval or the batch is diagnosed and repaired. A lazy agent cannot
+continue stacking patches over a flat checkpoint.
 
 The ledger deliberately separates a profiled **candidate area** from a
 specific **optimization mechanism**. An area investigation fans out into
@@ -53,12 +80,22 @@ and cannot be overwritten on unchanged accounting. `campaign.py
 audit-exhaustion` refuses
 completion if any latest-profile area, active or relevant parked mechanism,
 post-profile landing/revert, or checkout/branch mismatch remains unresolved.
+Every ledger save also creates a snapshot commit inside the campaign
+directory. `campaign.py audit` reopens and deterministically recomputes all
+retained evidence, receipts, reviews, checkpoint raw results, gate challenges,
+skill digests, and snapshot state.
+This is tamper-evidence, not a cryptographic trust boundary: an agent with
+write access can also rewrite local Git history or tooling. The human trust
+decision is the reviewed skills commit plus the reported campaign snapshot
+head and a clean `campaign.py audit`; reviewer task/transcript references are
+audit trails, not signatures.
 
 ## Prerequisites
 
-- **Local machine**: Chromium checkout with `out/Default` configured; the
-  campaign branch (default `speedometer`) checked out; this skills repo
-  present under `.agents/skills/`.
+- **Local machine**: Chromium checkout with the campaign branch (default
+  `speedometer`) checked out and this skills repo present under
+  `.agents/skills/`. Local build directories are not evidence prerequisites;
+  authoritative builds and measurements run on the bare-metal host.
 - **Remote measurement machine** (default ssh host `linux`): bare-metal box
   with PMU access, full Chromium checkout sharing upstream history, and two
   official non-debug PGO phase-2 ThinLTO builds. Use `out/perf` for profiling
@@ -66,16 +103,28 @@ post-profile landing/revert, or checkout/branch mismatch remains unresolved.
   measurement without symbols. Both build identities are recorded as
   provenance. The host also needs `perf`, `vpython3`, `autoninja`, and `gn` on
   the PATH of a non-interactive ssh shell.
+  `out/perf` is exclusively the official profile build with symbols;
+  `out/release` is exclusively the authoritative symbol-free score build.
+  The separate `out/perf_instrumented` mechanism twin, its provenance command,
+  mechanism captures, and candidate build/test receipt commands also run on
+  this bare-metal host; they are not local-workstation evidence.
   Budget disk generously: binary-vs-binary comparisons (`ab2` mode — used
-  for bisects and candidate screens) maintain two additional official build
-  dirs (`out/perf_a`, `out/perf_b`) beside `out/perf`, so plan on the order
+  for bisects and candidate screens) maintain two additional official release
+  dirs (`out/release_a`, `out/release_b`) beside those builds, so plan on the order
   of 200 GB free in the remote checkout.
 - **Skills synced on both machines**: the skill scripts are gitignored in
-  Chromium and are never transferred by the tooling. Sync this skills repo
-  to the remote host before a session — this is a **human** operation;
+  Chromium and are never transferred by the tooling. On each machine,
+  `.agents/skills` must resolve into a standalone Git clone of this skills
+  repository at the reviewed commit; an rsync/copy inside the Chromium tree
+  is not trusted. Clone or update that skills repo on the remote host before a
+  session — this is a **human** operation;
   agents are instructed to stop and ask rather than sync it themselves.
   Every remote job verifies a content digest and refuses to run (exit 5)
   on mismatch.
+- **Committed skill tooling**: `campaign.py init` refuses copied, untracked,
+  or dirty skill code. Have a human review and commit these enforcement scripts, then
+  sync that exact commit to the remote host. The digest is stamped into the
+  ledger, mechanism provenance/captures, command receipts, and score manifests.
 - **Start the agent in the Chromium `src` root** — repo and campaign-ledger
   discovery are cwd-based.
 
@@ -92,6 +141,13 @@ and smoke-tests exact interval matching before its first profile. It then runs
 a 3–5 candidate pilot through counters, oracle, candidate, and cumulative A/B
 before scaling to a 20–40-change campaign.
 
+The intended topology is explicit: profiles and cumulative checkpoints use
+`remote_measure.py`, which transfers a committed SHA (or its `STAGED`
+provisional commit) and builds it remotely. Mechanism provenance, instrumented
+captures, and build/test receipts run directly in the configured bare-metal
+campaign checkout against its fully staged review tree. Do not generate those
+artifacts on a workstation and do not hand-transfer JSON in lieu of the tree.
+
 The defaults (branch `speedometer`, target 20, flag
 `Speedometer3Optimizations`, host `linux`) fit the usual environment, but
 state the config and the autonomy level explicitly on the first run:
@@ -104,7 +160,7 @@ state the config and the autonomy level explicitly on the first run:
 > - Do the full setup: init the ledger, land the flag and probe scaffolding,
 >   run A/A calibration and the flag-overhead null check.
 > - Complete the 3–5 candidate counter → oracle → candidate → cumulative A/B
->   pilot, and continue to the long campaign only if the directions agree.
+>   pilot, and continue only after the A/B 95% confidence interval is positive.
 > - Then run the campaign loop. Report to me with the STATUS.md summary
 >   after each checkpoint; otherwise proceed autonomously. Stop on any
 >   stopping rule or anything needing human intervention.
@@ -123,8 +179,15 @@ branch is checked out, the updated skills are synced locally and remotely,
 and every digest-bound artifact still exists. Preserve raw counter logs,
 profile and trace artifacts, A/A summaries, build-provenance files, derived
 evidence JSON, the ledger, campaign commits, and STATUS.md. The agent reads the
-ledger, regenerates status, verifies artifacts at the next gate, and resumes
+ledger, runs `campaign.py audit`, regenerates status, verifies artifacts at the next gate, and resumes
 without reconstructing evidence from prose.
+
+A full 32-block checkpoint executes 128 complete Speedometer repetitions. Its
+hard plausibility floor is 64 minutes and normal runs can take several hours,
+including rebuild time. Long quiet periods are expected; keep the remote job
+alive and wait instead of replacing it with manually authored output. When a
+powered interval still crosses zero, add an even number of balanced blocks in
+one fresh run rather than rerunning seeds until one looks favorable.
 
 ## Situational extras
 
@@ -150,6 +213,11 @@ profile frontier, the checkpoint history (the diminishing-returns curve), and
 parked/rejected/reverted/exhausted records with reasons.
 `ledger.json` next to it is the machine-readable source of truth;
 `dossiers/` and `reviews/` hold the per-opportunity artifacts.
+Before accepting a checkpoint or final result, run:
+
+```bash
+python3 .agents/skills/optimize-speedometer/scripts/campaign.py audit
+```
 
 ## When the agent stops and asks for help
 
@@ -183,6 +251,7 @@ parked/rejected/reverted/exhausted records with reasons.
 | `scripts/campaign.py` | Ledger, gate enforcement, STATUS.md generation |
 | `scripts/remote_measure.py` | Remote measurement wrapper (ssh + lock + digest check) |
 | `scripts/analyze_stacks.py` | Overlap-aware candidate frontier from perf stacks |
-| `scripts/mechanism_evidence.py` | Raw counter validation and paired mechanism statistics |
+| `scripts/mechanism_evidence.py` | Runs nonce-bound captures, validates raw browser logs, and computes paired mechanism statistics |
+| `scripts/command_evidence.py` | Executes build/test commands and emits staged-tree-bound receipts |
 | `resources/` | Flag/probe scaffolding, instrumented-twin, mechanism-evidence, decomposition, and analyzer references |
 | `../chrome-cycle-profiling/` | Companion skill: capture mechanics, A/B statistics |
