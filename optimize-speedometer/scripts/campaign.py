@@ -460,9 +460,10 @@ class Ledger:
             )
 
     def _commit_snapshot(self, message):
-        if not self.data.get("config", {}).get("audit_history_required"):
-            return
         git_dir = self.dir / ".git"
+        if not git_dir.exists():
+            if not self.data.get("config", {}).get("audit_history_required"):
+                return
         if not git_dir.exists():
             subprocess.run(["git", "init", "-q", str(self.dir)], check=True)
             ignore = self.dir / ".gitignore"
