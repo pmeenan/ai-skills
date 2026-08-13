@@ -1,63 +1,52 @@
 # Investigator playbook
 
-Goal: turn one profiled area into one testable mechanism and machine-validated
-sizing evidence. Source inspection alone is never sizing evidence.
+Goal: turn one profiled subsystem into structured, 4-layer investigated opportunity proposals with exact stack attributions from `profile.collapsed`.
 
-Inputs: discovery/mechanism id and key, profile id, exact profile artifacts,
-tree-lease status, and output directory.
+Inputs: subsystem name, exact profile artifacts (`profile.collapsed`, `candidate_frontier.md`), and output directory.
 
 Procedure:
 
-1. State one invariant in the form: “When condition C is measured true, work
-   W can be avoided while preserving behavior B.” Split independent invariants
-   into separate mechanism keys.
-2. Use tracing to classify W as `score-critical` or `cpu-only`. Digest the
-   trace artifact. Do not infer criticality from renderer CPU share.
-3. Add temporary flag-controlled instrumentation in a release-like official
-   PGO/ThinLTO build. Within every block, emit one row for each
-   repetition/suite group (at least all 32 suites). Measure per row:
-   - calls;
-   - applicable calls;
-   - exclusive cycles for W;
-   - avoidable cycles established by a dual-path counter or oracle;
-   - total cycles within exact score intervals.
-4. Calibrate instrumentation with A/A. Overhead above 1% is a failure. Avoid
-   raw TSC subtraction unless CPU migration, descheduling, nesting, and probe
-   overhead are explicitly handled. Prefer per-thread perf hardware counters
-   or the chrome-cycle-profiling harness.
-5. Follow `resources/instrumented_twin.md`. Produce instrumentation overhead
-   with `calibrate-aa`. Run at least three independent baseline blocks only via
-   `mechanism_evidence.py capture`, then pass its capture manifests to
-   `ingest`. Never invoke the harness separately, transcribe emitted rows,
-   author a capture manifest, or type a computed ceiling.
-6. Run `mechanism_evidence.py summarize`; it verifies log digests and counter
-   quality, then computes an upper confidence
-   bound on avoidable scored CPU-cycle share, not score delta. If it fails,
-   reject or redesign the probe.
-7. When feasible, create an intentionally incorrect oracle that bypasses only
-   W, collect paired blocks, and run `mechanism_evidence.py compare --kind
-   oracle`. The oracle must not enter the production diff.
-8. Confirm baseline/oracle use distinct source-tree and browser identities;
-   identical builds are rejected. Write a short dossier linking raw browser
-   logs, capture manifests, raw JSON, and derived artifacts by path and
-   digest. Return the tree clean.
+1. **Subsystem Stack Decomposition:**
+   - Filter `profile.collapsed` for the target subsystem.
+   - Trace all major call paths from entry point down to leaf functions, quantifying exact sample counts and percentage shares.
 
-Return only:
+2. **Apply the 4-Layer Investigation Framework:**
+   - **Layer 1 (Subtree / Branch Elimination):** Can an entire call tree or lifecycle step be avoided with a pre-condition, dirty flag, or fast-exit check?
+   - **Layer 2 (Higher-Level Caching & Sharing):** Can computed state (styles, shape results, layout spaces) be shared or memoized across sibling nodes, repeated runs, or microtasks?
+   - **Layer 3 (Algorithmic & Structural Hoisting):** Can $O(N)$ linear scans, vector lookups, or stack allocations be replaced with $O(1)$ bitmasks/bloom filters or flat arrays?
+   - **Layer 4 (Leaf-Level Micro-Optimizations):** Only if Layers 1–3 cannot eliminate the work.
+
+3. **Formulate the Opportunity Invariant:**
+   - State one invariant: “When condition C is measured true, work W (including downstream call tree T) can be avoided while preserving behavior B.”
+
+4. **Quantify Profile Headroom & Avoidable Share:**
+   - `stack_profile_share_pct`: Exact sum of cycles in the targeted stack from `profile.collapsed`.
+   - `estimated_avoidable_fraction`: Realistic fraction of the stack avoided by the condition (0.0 to 1.0).
+   - `estimated_net_score_impact_pct` = `stack_profile_share_pct * estimated_avoidable_fraction`.
+   - Floor requirement: `estimated_net_score_impact_pct >= 0.30%`.
+
+5. **Emit the Opportunity Investigation Proposal:**
+   - Save to `.agents/campaigns/sp3-2026-09/proposals/<mechanism_key>.json`.
+   - Request Adversarial Review (`playbooks/adversary.md` Candidate Qualification Gate).
+
+Proposal JSON format:
 
 ```json
 {
-  "verdict":"SIZE|REJECT|SPLIT",
-  "opportunity_id":0,
-  "mechanism_key":"component/strategy",
-  "invariant":"...",
-  "score_scope":"score-critical|cpu-only",
-  "baseline_raw":"absolute path",
-  "sizing_evidence":"absolute path",
-  "oracle_evidence":"absolute path or null",
-  "dossier":"absolute path",
-  "reason":""
+  "opportunity_id": 0,
+  "mechanism_key": "component/strategy",
+  "subsystem": "style|html-parser|events|layout|dom|paint",
+  "investigation_layer": 1,
+  "target_stack_pattern": "regex_or_stack_frames",
+  "stack_profile_share_pct": 1.64,
+  "estimated_avoidable_fraction": 0.40,
+  "estimated_net_score_impact_pct": 0.656,
+  "subtree_pruned": [
+    "child_func_1",
+    "child_func_2"
+  ],
+  "invariant_description": "When an element has no classes or ID matching any rule in the RuleSet, skip RuleSet iteration entirely via bitmask check.",
+  "safety_and_spec_analysis": "Spec compliance and invalidation safety reasoning..."
 }
 ```
 
-Forbidden phrases in evidence fields: “likely,” “should,” “estimated from
-share,” and unmeasured percentages.

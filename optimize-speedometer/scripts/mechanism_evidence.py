@@ -1049,6 +1049,7 @@ def cmd_provenance(args: argparse.Namespace) -> None:
             f"remote instrumented chrome rebuild failed with {completed.returncode}; "
             f"see {build_log}"
         )
+    time.sleep(10)
     if ensure_authoritative_index(root) != source_tree:
         raise EvidenceError("source tree changed during the remote chrome rebuild")
     if not browser.is_file():
@@ -1364,7 +1365,8 @@ def cmd_summarize(args: argparse.Namespace) -> None:
         "avoidable_scored_cycle_share_pct": avoidable,
         "avoidable_scored_cycle_share_ci95_pct": [avoidable_low, avoidable_high],
         "ceiling_pct": max(0.0, avoidable_high),
-        "gate_pass": data["variant"] == "baseline" and avoidable_low > 0,
+        "min_avoidable_pct_floor": getattr(args, "min_avoidable_pct", 0.0),
+        "gate_pass": data["variant"] == "baseline" and avoidable_low >= getattr(args, "min_avoidable_pct", 0.0) and avoidable_low > 0,
     }
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
 
@@ -1514,6 +1516,7 @@ def parser() -> argparse.ArgumentParser:
     attach.set_defaults(func=cmd_attach_provenance)
     summarize = commands.add_parser("summarize", help="validate baseline counter evidence")
     summarize.add_argument("--raw", type=pathlib.Path, required=True)
+    summarize.add_argument("--min-avoidable-pct", type=float, default=0.0)
     summarize.add_argument("--out", type=pathlib.Path, required=True)
     summarize.set_defaults(func=cmd_summarize)
     compare = commands.add_parser("compare", help="validate paired oracle/candidate evidence")

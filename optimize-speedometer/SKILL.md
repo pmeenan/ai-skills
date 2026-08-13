@@ -203,12 +203,23 @@ python3 .agents/skills/optimize-speedometer/scripts/campaign.py profile --id <pr
 Profile entries are broad discovery areas. Nested stacks overlap; never add
 their shares. Exclude wait/idle and payload-only shells. Keep residual work
 from already-landed mechanisms visible until a follow-on profile shows it
-below the floor.
+### 2. Decompose and qualify candidate opportunities
 
-### 2. Decompose one area
+For each candidate discovery area (e.g. Style Recalc, HTML Parsing, Event Dispatch, Layout):
+
+1. **Invoke an Independent Investigator Subagent:**
+   - The investigator analyzes `profile.collapsed` and the target subsystem using the **4-Layer Investigation Framework** in `resources/decomposition.md` (favoring Layer 1 Subtree Elimination and Layer 2 Caching/Sharing over leaf tuning).
+   - Generates an Opportunity Investigation Proposal with exact stack share and estimated avoidable fraction ($\text{Estimated Net Impact} = \text{Stack Share} \times \text{Avoidable Fraction} \ge 0.30\%$).
+
+2. **Run Independent Adversarial Candidate Qualification:**
+   - An independent Adversary subagent reviews the proposal against Web specs, profile ground truth in `profile.collapsed`, lifecycle safety, and avoidable plausibility (`playbooks/adversary.md` Gate 1).
+   - Only proposals that **PASS** adversarial review become official qualified candidates.
+
+3. **Master Ranking & Sizing Gate:**
+   - All qualified candidates are aggregated and sorted strictly by **Verified Estimated Net Score Impact (biggest to smallest)**.
+   - We advance and instrument the top candidate in the ranking.
 
 ```bash
-python3 .agents/skills/optimize-speedometer/scripts/campaign.py next --count 3
 python3 .agents/skills/optimize-speedometer/scripts/campaign.py advance --opp <discovery> --to investigating
 python3 .agents/skills/optimize-speedometer/scripts/campaign.py decompose-scaffold --opp <discovery> --out <paths.json>
 python3 .agents/skills/optimize-speedometer/scripts/campaign.py decompose \
@@ -235,6 +246,7 @@ minimum in each row:
 - avoidable exclusive cycles, identified by a dual-path counter or oracle;
 - total cycles inside the exact scored intervals;
 - blocks independently, never one aggregate run.
+- Minimum avoidable threshold: `avoidable_low >= 0.30%` (enforced by `mechanism_evidence.py summarize`).
 
 Use `resources/instrumented_twin.md` for the build/probe/emission recipe and
 `resources/mechanism_evidence.md` for exact field meanings.
