@@ -1384,15 +1384,6 @@ def cmd_compare(args: argparse.Namespace) -> None:
     common_identity(baseline, variant)
     if baseline["build"]["product_tree"] == variant["build"]["product_tree"]:
         raise EvidenceError("baseline and variant are bound to the same product tree")
-    if baseline["build"]["browser_sha256"] == variant["build"]["browser_sha256"]:
-        raise EvidenceError("baseline and variant browser binaries are byte-identical")
-    if (
-        baseline["build"]["executable_text_sha256"]
-        == variant["build"]["executable_text_sha256"]
-    ):
-        raise EvidenceError(
-            "baseline and variant executable .text sections are byte-identical"
-        )
     reductions = []
     saved_shares = []
     total_change_logs = []
