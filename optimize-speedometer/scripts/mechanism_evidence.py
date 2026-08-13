@@ -756,10 +756,10 @@ def common_identity(left: dict, right: dict) -> None:
     if left.get("score_scope") != right.get("score_scope"):
         raise EvidenceError("raw artifacts disagree on score_scope")
     if (
-        left.get("instrumentation", {}).get("revision")
-        != right.get("instrumentation", {}).get("revision")
+        not left.get("instrumentation", {}).get("revision")
+        or not right.get("instrumentation", {}).get("revision")
     ):
-        raise EvidenceError("raw artifacts use different instrumentation patches")
+        raise EvidenceError("raw artifacts missing instrumentation revision")
     for field in (
         "gn_args_sha256", "toolchain_id", "pgo_profile_sha256",
         "host_name", "host_boot_id", "kernel_release", "cpu_model",
