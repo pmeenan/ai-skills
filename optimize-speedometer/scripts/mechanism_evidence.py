@@ -1391,7 +1391,11 @@ def cmd_compare(args: argparse.Namespace) -> None:
         raise EvidenceError(f"--variant artifact must have variant={expected}")
     common_identity(baseline, variant)
     if baseline["build"]["product_tree"] == variant["build"]["product_tree"]:
-        raise EvidenceError("baseline and variant are bound to the same product tree")
+        if not (
+            variant.get("enable_features") != baseline.get("enable_features")
+            or any(c.get("enable_features") for c in variant.get("capture_manifests", []))
+        ):
+            raise EvidenceError("baseline and variant are bound to the same product tree")
     reductions = []
     saved_shares = []
     total_change_logs = []
