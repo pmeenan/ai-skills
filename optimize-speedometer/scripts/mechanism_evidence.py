@@ -1515,7 +1515,7 @@ def parser() -> argparse.ArgumentParser:
     attach.set_defaults(func=cmd_attach_provenance)
     summarize = commands.add_parser("summarize", help="validate baseline counter evidence")
     summarize.add_argument("--raw", type=pathlib.Path, required=True)
-    summarize.add_argument("--min-avoidable-pct", type=float, default=0.0)
+    summarize.add_argument("--min-avoidable-pct", type=float, default=None)
     summarize.add_argument("--out", type=pathlib.Path, required=True)
     summarize.set_defaults(func=cmd_summarize)
     compare = commands.add_parser("compare", help="validate paired oracle/candidate evidence")
