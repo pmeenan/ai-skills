@@ -1351,6 +1351,11 @@ def cmd_summarize(args: argparse.Namespace) -> None:
     ]
     share, share_low, share_high = mean_ci95(shares)
     avoidable, avoidable_low, avoidable_high = mean_ci95(avoidable_shares)
+    floor = (
+        getattr(args, "min_avoidable_pct", None)
+        if getattr(args, "min_avoidable_pct", None) is not None
+        else data.get("score_scope", {}).get("min_avoidable_pct_floor", 0.0)
+    )
     result = {
         **base_output(data, [args.raw]),
         "phase": "sizing",
@@ -1365,9 +1370,10 @@ def cmd_summarize(args: argparse.Namespace) -> None:
         "avoidable_scored_cycle_share_pct": avoidable,
         "avoidable_scored_cycle_share_ci95_pct": [avoidable_low, avoidable_high],
         "ceiling_pct": max(0.0, avoidable_high),
+        "min_avoidable_pct_floor": floor,
         "gate_pass": (
             data["variant"] == "baseline"
-            and avoidable_low >= getattr(args, "min_avoidable_pct", 0.0)
+            and avoidable_low >= floor
         ),
     }
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
