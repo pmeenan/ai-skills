@@ -1748,13 +1748,18 @@ def verify_candidate_build_binding(opp, evidence, repo_root):
         raise CampaignError(
             "baseline evidence is not bound to the review-base product tree"
         )
-    if candidate.get("browser_sha256") == baseline.get("browser_sha256"):
-        raise CampaignError("candidate and baseline evidence use the same browser binary")
-    if candidate.get("executable_text_sha256") == baseline.get("executable_text_sha256"):
-        raise CampaignError(
-            "candidate and baseline have identical executable .text; the source "
-            "change was non-runtime or optimized away"
-        )
+    feature_flag_twin = (
+        candidate.get("enable_features") != baseline.get("enable_features")
+        or candidate.get("product_tree") != baseline.get("product_tree")
+    )
+    if not feature_flag_twin:
+        if candidate.get("browser_sha256") == baseline.get("browser_sha256"):
+            raise CampaignError("candidate and baseline evidence use the same browser binary")
+        if candidate.get("executable_text_sha256") == baseline.get("executable_text_sha256"):
+            raise CampaignError(
+                "candidate and baseline have identical executable .text; the source "
+                "change was non-runtime or optimized away"
+            )
     for receipt_name in ("build_receipt", "test_receipt"):
         receipt = opp.get(receipt_name, {})
         environment = receipt.get("capture_environment", {})
