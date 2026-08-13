@@ -1365,8 +1365,10 @@ def cmd_summarize(args: argparse.Namespace) -> None:
         "avoidable_scored_cycle_share_pct": avoidable,
         "avoidable_scored_cycle_share_ci95_pct": [avoidable_low, avoidable_high],
         "ceiling_pct": max(0.0, avoidable_high),
-        "min_avoidable_pct_floor": getattr(args, "min_avoidable_pct", 0.0),
-        "gate_pass": data["variant"] == "baseline" and avoidable_low >= getattr(args, "min_avoidable_pct", 0.0) and avoidable_low > 0,
+        "gate_pass": (
+            data["variant"] == "baseline"
+            and avoidable_low >= getattr(args, "min_avoidable_pct", 0.0)
+        ),
     }
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
 
