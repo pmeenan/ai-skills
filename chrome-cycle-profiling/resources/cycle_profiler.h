@@ -1,6 +1,14 @@
 #ifndef TOOLS_PERF_MECHANISM_CYCLE_PROFILER_H_
 #define TOOLS_PERF_MECHANISM_CYCLE_PROFILER_H_
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
+#pragma clang diagnostic ignored "-Wunknown-pragmas"
+
+#ifdef UNSAFE_BUFFERS_BUILD
+#pragma allow_unsafe_buffers
+#endif
+
 // Temporary Linux-only instrumentation for scored mechanism evidence.
 // Remove this from production diffs. Emit rows only outside score timers.
 
@@ -408,5 +416,7 @@ inline void EmitCycleRow(FILE* output,
 }
 
 }  // namespace perf_instrumentation
+
+#pragma clang diagnostic pop
 
 #endif  // TOOLS_PERF_MECHANISM_CYCLE_PROFILER_H_
