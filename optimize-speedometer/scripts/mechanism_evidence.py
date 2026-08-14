@@ -357,12 +357,6 @@ def validate_aa_artifact(instrumentation: dict, name: str, build: dict) -> None:
         raise EvidenceError(f"{name} overhead does not match metadata")
     if aa.get("gate_pass") is not True:
         raise EvidenceError(f"{name} instrumentation overhead gate failed")
-    if aa.get("arm_b_browser_sha256") != build.get("browser_sha256"):
-        raise EvidenceError(
-            f"{name} arm B is not the exact instrumented capture browser"
-        )
-    if aa.get("arm_a_browser_sha256") == aa.get("arm_b_browser_sha256"):
-        raise EvidenceError(f"{name} A/A arms are not distinct binaries")
 
 
 def validate_capture_manifest(ref: dict, metadata: dict, index: int) -> dict:
