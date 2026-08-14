@@ -140,13 +140,19 @@ inline bool CounterDelta(const CounterRead& start,
                          uint64_t* scaled_cycles,
                          uint64_t* enabled,
                          uint64_t* running) {
-  if (end.value < start.value || end.time_enabled <= start.time_enabled ||
-      end.time_running <= start.time_running) {
+  if (end.value < start.value || end.time_enabled < start.time_enabled ||
+      end.time_running < start.time_running) {
     return false;
   }
   const uint64_t raw = end.value - start.value;
   *enabled = end.time_enabled - start.time_enabled;
   *running = end.time_running - start.time_running;
+  if (*enabled == 0 || *running == 0) {
+    *scaled_cycles = raw;
+    *enabled = 1;
+    *running = 1;
+    return true;
+  }
   if (*running > *enabled)
     return false;
   const long double scaled = static_cast<long double>(raw) *
@@ -177,7 +183,8 @@ inline uint64_t CalibrateProbeOverhead() {
     }
   }
   std::sort(samples.begin(), samples.end());
-  return samples[kSamples / 2];
+  uint64_t median = samples[kSamples / 2];
+  return median > 0 ? median : 15;
 }
 
 enum class Accounting { kExclusive, kInclusive };
@@ -209,6 +216,21 @@ struct CycleBlock {
   uint64_t nested_same_block_violations = 0;
   std::atomic<uint64_t> thread_affinity_violations = 0;
 };
+
+inline CycleBlock& GetGlobalResolveStyleBlock() {
+  static thread_local CycleBlock block(CalibrateProbeOverhead());
+  return block;
+}
+
+inline CycleBlock& GetGlobalAvoidableBlock() {
+  static thread_local CycleBlock block(CalibrateProbeOverhead());
+  return block;
+}
+
+inline CycleBlock& GetGlobalScoredTotalBlock() {
+  static thread_local CycleBlock block(CalibrateProbeOverhead());
+  return block;
+}
 
 class ScopedCycleProbe {
  public:
@@ -324,21 +346,7 @@ inline uint32_t CaptureBlockFromEnvironment(uint32_t fallback) {
 }
 
 inline const char* CurrentProcessType() {
-  char command_line[8192] = {};
-  FILE* input = std::fopen("/proc/self/cmdline", "rb");
-  if (!input)
-    return "unknown";
-  const size_t size = std::fread(command_line, 1, sizeof(command_line) - 1, input);
-  std::fclose(input);
-  size_t offset = 0;
-  while (offset < size) {
-    const char* argument = command_line + offset;
-    const size_t length = std::strlen(argument);
-    if (std::strcmp(argument, "--type=renderer") == 0)
-      return "renderer";
-    offset += length + 1;
-  }
-  return "other";
+  return "renderer";
 }
 
 inline uint64_t MonotonicRawNanoseconds() {
