@@ -232,6 +232,19 @@ inline CycleBlock& GetGlobalScoredTotalBlock() {
   return block;
 }
 
+inline std::atomic<bool>& ScoredWindowActive() {
+  static std::atomic<bool> active{false};
+  return active;
+}
+
+inline bool IsInScoredWindow() {
+  return ScoredWindowActive().load(std::memory_order_relaxed);
+}
+
+inline void SetScoredWindowActive(bool active) {
+  ScoredWindowActive().store(active, std::memory_order_relaxed);
+}
+
 class ScopedCycleProbe {
  public:
   // Subsampling does not compose with exclusive parents: an unsampled child
@@ -245,6 +258,10 @@ class ScopedCycleProbe {
       : block_(block),
         accounting_(accounting),
         sample_every_(sample_every ? sample_every : 1) {
+    if (&block_ != &GetGlobalScoredTotalBlock()) {
+      if (!IsInScoredWindow())
+        return;
+    }
     if (!block_.CheckOwner())
       return;
     ++block_.calls;
