@@ -6,7 +6,13 @@
 
 #include <asm/unistd.h>
 #include <linux/perf_event.h>
+#include <sys/mman.h>
 #include <unistd.h>
+
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#include <x86intrin.h>
+#define SP3_HAS_RDPMC 1
+#endif
 
 #include <algorithm>
 #include <array>
@@ -43,6 +49,30 @@ class ThreadCycleEvent {
   bool Read(CounterRead* result) const {
     if (fd_ < 0)
       return false;
+#if defined(SP3_HAS_RDPMC)
+    if (mmap_page_ && mmap_page_->cap_user_rdpmc) {
+      uint32_t seq;
+      uint64_t count;
+      uint64_t time_enabled, time_running;
+      do {
+        seq = mmap_page_->lock;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        uint32_t idx = mmap_page_->index;
+        if (idx == 0)
+          break;
+        count = mmap_page_->offset + static_cast<uint64_t>(_rdpmc(idx - 1));
+        time_enabled = mmap_page_->time_enabled;
+        time_running = mmap_page_->time_running;
+        std::atomic_thread_fence(std::memory_order_acquire);
+      } while (mmap_page_->lock != seq);
+      if (mmap_page_->index != 0) {
+        result->value = count;
+        result->time_enabled = time_enabled;
+        result->time_running = time_running;
+        return true;
+      }
+    }
+#endif
     struct ReadFormat {
       uint64_t value;
       uint64_t time_enabled;
@@ -69,18 +99,28 @@ class ThreadCycleEvent {
     // pid=0 measures the calling thread; cpu=-1 follows CPU migration.
     fd_ = static_cast<int>(
         syscall(__NR_perf_event_open, &attr, 0, -1, -1, 0));
-    if (fd_ < 0)
+    if (fd_ < 0) {
       open_errno_ = errno;
+    } else {
+      void* page = mmap(nullptr, 4096, PROT_READ, MAP_SHARED, fd_, 0);
+      if (page != MAP_FAILED) {
+        mmap_page_ = static_cast<struct perf_event_mmap_page*>(page);
+      }
+    }
   }
 
   // Leaked by Get(); retained for correctness if instantiated another way.
   ~ThreadCycleEvent() {
+    if (mmap_page_) {
+      munmap(mmap_page_, 4096);
+    }
     if (fd_ >= 0)
       close(fd_);
   }
 
   int fd_ = -1;
   int open_errno_ = 0;
+  struct perf_event_mmap_page* mmap_page_ = nullptr;
 };
 
 inline uint64_t CurrentTid() {
