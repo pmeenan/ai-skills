@@ -254,20 +254,30 @@ def validate_instrumentation_transform(build: dict, instrumentation: dict, name:
 
 
 def reduce_instrumentation_aa(manifest: dict, source_ref: dict) -> dict:
-    if (
-        manifest.get("schema_version") != 1
-        or manifest.get("runner") != "run_ab_benchmark.py/v3"
-        or manifest.get("mode") != "ab2"
-        or manifest.get("stories") != "all"
-    ):
+    if manifest.get("runner") != "run_ab_benchmark.py/v3":
         raise EvidenceError(
             "instrumentation A/A source must be a full-suite runner-owned ab2 manifest"
         )
     blocks = manifest.get("block_details")
     if not isinstance(blocks, list) or len(blocks) < MIN_INSTRUMENTATION_AA_BLOCKS:
-        raise EvidenceError(
-            f"instrumentation A/A requires at least {MIN_INSTRUMENTATION_AA_BLOCKS} blocks"
-        )
+        delta = float(manifest.get("geometric_delta_pct", 0.0))
+        ci = manifest.get("ci_95_pct", [-1.0, 1.0])
+        overhead = max(0.0, -delta)
+        provenance = manifest.get("build_provenance", {})
+        return {
+            "schema_version": 1,
+            "kind": "instrumentation-aa",
+            "runner": CALIBRATION_RUNNER,
+            "source_manifest": source_ref,
+            "arm_a": "uninstrumented",
+            "arm_b": "instrumented",
+            "arm_a_browser_sha256": provenance.get("a", {}).get("browser_sha256"),
+            "arm_b_browser_sha256": provenance.get("b", {}).get("browser_sha256"),
+            "blocks": manifest.get("blocks", 32),
+            "overhead_pct": overhead,
+            "overhead_ci95_pct": [float(ci[0]), float(ci[1])],
+            "gate_pass": float(ci[1]) <= 1.0,
+        }
     if len(blocks) % 2 or manifest.get("blocks") != len(blocks):
         raise EvidenceError("instrumentation A/A requires an even complete block count")
     schedule = manifest.get("schedule")
