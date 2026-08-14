@@ -1309,10 +1309,20 @@ def load_capture_summaries(
         seen_local_results.add(resolved_results)
         seen_remote_perf_data.add(remote_perf_data)
         if summary.get("sha") != expected_sha:
-            raise CampaignError(
-                f"Capture {capture_id} describes SHA {summary.get('sha')!r}, "
-                f"not profiled HEAD {expected_sha!r}"
-            )
+            repo_root = find_repo_root(pathlib.Path.cwd())
+            trees_match = False
+            if repo_root:
+                try:
+                    t1 = git_output(repo_root, "rev-parse", f"{summary.get('sha')}^{{tree}}").strip()
+                    t2 = git_output(repo_root, "rev-parse", f"{expected_sha}^{{tree}}").strip()
+                    trees_match = bool(t1 and t1 == t2)
+                except subprocess.CalledProcessError:
+                    trees_match = False
+            if not trees_match:
+                raise CampaignError(
+                    f"Capture {capture_id} describes SHA {summary.get('sha')!r}, "
+                    f"not profiled HEAD {expected_sha!r}"
+                )
         if summary.get("quality_rejected") is not False:
             raise CampaignError(f"Capture {capture_id} did not pass profile quality")
         strict_evidence = not test_bypass_active()
