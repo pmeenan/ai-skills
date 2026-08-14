@@ -506,11 +506,13 @@ def main():
             if not check_feature_registered(cwd, name):
                 sys.exit(2)
 
-    temp_results_dir = tempfile.mkdtemp(prefix="results_ab_interleaved_", dir=os.path.join(cwd, "scratch"))
+    scratch_dir = os.path.join(cwd, "scratch")
+    os.makedirs(scratch_dir, exist_ok=True)
+    temp_results_dir = tempfile.mkdtemp(prefix="results_ab_interleaved_", dir=scratch_dir)
     rel_out_dir = os.path.relpath(temp_results_dir, cwd)
     evidence_name = f"ab_evidence_{secrets.token_hex(12)}"
-    evidence_dir = os.path.join(cwd, "scratch", evidence_name)
-    os.makedirs(evidence_dir)
+    evidence_dir = os.path.join(scratch_dir, evidence_name)
+    os.makedirs(evidence_dir, exist_ok=True)
     actual_seed = args.seed if args.seed is not None else secrets.randbits(32)
     rng = random.Random(actual_seed)
 

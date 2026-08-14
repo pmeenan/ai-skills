@@ -308,8 +308,10 @@ def main():
 
     cwd = get_repo_root()
     provenance = build_provenance(cwd, args.browser)
+    scratch_dir = os.path.join(cwd, "scratch")
+    os.makedirs(scratch_dir, exist_ok=True)
     temp_results_dir = tempfile.mkdtemp(
-        prefix="results_perf_sampling_", dir=os.path.join(cwd, "scratch")
+        prefix="results_perf_sampling_", dir=scratch_dir
     )
     rel_out_dir = os.path.relpath(temp_results_dir, cwd)
 
