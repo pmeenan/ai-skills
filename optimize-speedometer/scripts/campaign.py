@@ -50,6 +50,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import shutil
 
 import mechanism_evidence as mechanism_contract
 
@@ -1951,8 +1952,10 @@ def cmd_init(args):
         campaign_dir = campaigns_root / args.name
         campaign_dir.mkdir(parents=True, exist_ok=True)
         current = campaigns_root / "current"
-        if current.is_symlink() or current.exists():
+        if current.is_symlink() or current.is_file():
             current.unlink()
+        elif current.is_dir():
+            shutil.rmtree(current)
         current.symlink_to(args.name)
     ledger = Ledger(campaign_dir)
     if ledger.path.exists() and not args.force:
@@ -4964,7 +4967,10 @@ def main(argv=None):
                 f"{TEST_BYPASS_ENV} is test-only and is honored only by an "
                 "in-process unittest run"
             )
-        campaign_dir = pathlib.Path(args.dir or default_campaign_dir())
+        if args.command == "init" and not args.dir:
+            campaign_dir = agents_dir() / "campaigns" / args.name
+        else:
+            campaign_dir = pathlib.Path(args.dir or default_campaign_dir())
         campaign_dir.mkdir(parents=True, exist_ok=True)
         with open(campaign_dir / ".ledger.lock", "a+") as lock_file:
             fcntl.flock(lock_file, fcntl.LOCK_EX)
