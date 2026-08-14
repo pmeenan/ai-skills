@@ -90,6 +90,12 @@ benchmark noise floor. It deliberately separates three kinds of evidence:
     sample share of its enclosing function in the release `perf record` sampling
     profile (`sp3-prof-*`). Sizing artifacts that violate this physical ceiling
     fail validation automatically.
+19. Mechanism probes MUST be strictly gated on `IsInScoredWindow()`. When executed
+    outside Speedometer 3 scoring intervals (e.g. initial navigation, stylesheet
+    parsing, unscored DOM setup, between-suite GC), probes MUST immediately return
+    without reading PMU counters or accumulating cycles into the mechanism block.
+    Sizing rows must be emitted only at `sp3-measurement-end` via
+    `FlushSpeedometerScoreMarks()` with zero in-band I/O inside active score timers.
 
 If a required field or artifact is unavailable, stop that opportunity. Do
 not replace missing evidence with prose.

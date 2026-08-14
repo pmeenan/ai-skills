@@ -49,16 +49,38 @@ fresh `CycleBlock` objects on that same thread for each block and
    `ThreadCycleEvent` MUST read PMU counters via user-space `mmap` and `_rdpmc`
    (~15 cycles). Never use synchronous kernel `read(fd)` syscalls (~1,200 cycles)
    in hot microsecond-scale paths.
-2. **Strict Probe Symmetry:**
+2. **Exact Scored-Window Gating (`IsInScoredWindow`):**
+   Mechanism probes MUST be gated on `IsInScoredWindow()`. When executed outside
+   the Speedometer 3 scoring window (e.g. initial navigation, stylesheet loading,
+   unscored DOM setup, between-suite GC), probes MUST immediately return without
+   calling `_rdpmc`, without accumulating cycles into the mechanism block, and
+   without incrementing call counters. This prevents numerator cycle pollution
+   where unscored setup cycles are added to the numerator while the denominator
+   contains only scored-window cycles.
+3. **Speedometer 3 Performance Mark Integration:**
+   In `Performance::mark()` (`third_party/blink/renderer/core/timing/performance.cc`):
+   - On `IsSpeedometerScoreStart(mark_name)` (`sp3-sync-start` / `sp3-async-start`):
+     call `perf_instrumentation::SetScoredWindowActive(true)` and instantiate the
+     inclusive `g_score_probe` on `GetGlobalScoredTotalBlock()`.
+   - On `IsSpeedometerScoreEnd(mark_name)` (`sp3-sync-end` / `sp3-async-end`):
+     call `perf_instrumentation::SetScoredWindowActive(false)` and destroy `g_score_probe`.
+   - On `sp3-measurement-end`: invoke `FlushSpeedometerScoreMarks()` to emit `[SP3_CYCLE_ROW]`
+     logs for all completed suite groups. **Never** perform file/stream I/O or `fflush`
+     inside an active score timer.
+4. **Reference Block Accessors (`CycleBlock&`):**
+   Global block getters must return `inline CycleBlock& GetGlobal...()` referencing a
+   `static thread_local CycleBlock block(CalibrateProbeOverhead())` to prevent accidental
+   copies, slicing, or deleted copy-assignment invocations on underlying atomic state.
+5. **Strict Probe Symmetry:**
    Baseline and candidate probe placements MUST be 100% structurally symmetric.
    **Never** place a probe inside a conditional branch such as `if (feature_enabled)`
    or `if (!has_work)`. The candidate must execute the identical probe boundaries
    as baseline; candidate speedup is measured by the reduction in work *between*
    the probes, never by skipping the probe itself.
-3. **Adaptive Subsampling for High-Frequency Operations:**
+6. **Adaptive Subsampling for High-Frequency Operations:**
    For operations called $>100,000$ times per suite run, set `sample_every` (e.g. 64
    or 256) so cumulative probe execution time remains strictly negligible.
-4. **Sampling Profile Ceiling Sanity Check:**
+7. **Sampling Profile Ceiling Sanity Check:**
    A mechanism's baseline exclusive cycle share cannot exceed the total sample share
    of its enclosing function in the release `perf record` profile (`sp3-prof-*`).
 
