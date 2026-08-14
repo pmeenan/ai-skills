@@ -81,6 +81,15 @@ benchmark noise floor. It deliberately separates three kinds of evidence:
     `campaign.py audit` before trusting a resumed or completed campaign.
     `.agents/skills` must resolve into that standalone skills Git clone;
     copied/rsynced files living only under Chromium's ignored tree are invalid.
+17. Mechanism probes MUST use user-space PMU reads (`_rdpmc` via `mmap_page`)
+    at ~15 cycles overhead. Synchronous kernel `read(fd)` syscalls (~1,200 cycles)
+    are banned in micro-probes. Baseline and candidate probe placement MUST be
+    strictly symmetric; probes must NEVER be conditionally placed inside
+    `if (feature_enabled)` or optimization branches.
+18. A mechanism's baseline exclusive cycle share MUST NOT exceed the total
+    sample share of its enclosing function in the release `perf record` sampling
+    profile (`sp3-prof-*`). Sizing artifacts that violate this physical ceiling
+    fail validation automatically.
 
 If a required field or artifact is unavailable, stop that opportunity. Do
 not replace missing evidence with prose.

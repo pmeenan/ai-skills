@@ -16,6 +16,10 @@ counter logs, raw baseline/candidate files, and derived artifacts. Verify:
 - `hot_path_reality`: exact-score profile or counters observed the path;
 - `raw_evidence_opened`: raw files and digests match derived evidence;
 - `applicability_measured`: calls and applicable calls were counted;
+- `sampling_ceiling_checked`: baseline exclusive share does not exceed the
+  parent symbol's sample share in the release `perf record` sampling profile;
+- `probe_symmetry_verified`: baseline and candidate probe placement and call
+  counts are 100% structurally symmetric (probes are not conditionally bypassed);
 - `net_work_removed`: paired lower confidence bounds are positive;
   total scored-cycle change and `moved_work_warning` do not show work moved or
   added elsewhere;

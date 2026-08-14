@@ -44,6 +44,24 @@ fresh `CycleBlock` objects on that same thread for each block and
 - `avoidable`: count only work proved avoidable by the invariant or oracle,
   using dual-path counting or scopes that do not nest inside `mechanism`.
 
+### Critical Probe Invariants:
+1. **User-Space PMU Reads Only (`_rdpmc`):**
+   `ThreadCycleEvent` MUST read PMU counters via user-space `mmap` and `_rdpmc`
+   (~15 cycles). Never use synchronous kernel `read(fd)` syscalls (~1,200 cycles)
+   in hot microsecond-scale paths.
+2. **Strict Probe Symmetry:**
+   Baseline and candidate probe placements MUST be 100% structurally symmetric.
+   **Never** place a probe inside a conditional branch such as `if (feature_enabled)`
+   or `if (!has_work)`. The candidate must execute the identical probe boundaries
+   as baseline; candidate speedup is measured by the reduction in work *between*
+   the probes, never by skipping the probe itself.
+3. **Adaptive Subsampling for High-Frequency Operations:**
+   For operations called $>100,000$ times per suite run, set `sample_every` (e.g. 64
+   or 256) so cumulative probe execution time remains strictly negligible.
+4. **Sampling Profile Ceiling Sanity Check:**
+   A mechanism's baseline exclusive cycle share cannot exceed the total sample share
+   of its enclosing function in the release `perf record` profile (`sp3-prof-*`).
+
 Never put an `avoidable` probe inside the `mechanism` probe: exclusive
 parent accounting would subtract it from `mechanism.cycles`, making the row
 invalid or misleading. Keep every scope participating in exclusive nesting

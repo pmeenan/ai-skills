@@ -32,6 +32,10 @@ names, and data-shaped special cases; accept only general product invariants.
 For `runtime_binary_changed`, open the bound candidate evidence and verify its
 candidate executable `.text` digest differs from baseline; source or debug-info
 changes alone do not count.
+Verify `probe_symmetry`: baseline and candidate probe placements are 100%
+structurally symmetric; probes are never placed inside conditional feature branches
+or bypassed in the candidate. Verify that probes use user-space `_rdpmc` with no
+synchronous kernel syscalls.
 Exercise flag-on, flag-off,
 fallback, invalidation, mutation, reentrancy, ownership, and teardown paths
 that apply. A benchmark result is not correctness evidence.
