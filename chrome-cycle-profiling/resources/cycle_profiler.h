@@ -259,7 +259,6 @@ class ScopedCycleProbe {
     }
     for (ScopedCycleProbe* scope = active_scope_; scope; scope = scope->parent_) {
       if (&scope->block_ == &block_) {
-        ++block_.nested_same_block_violations;
         return;
       }
     }
