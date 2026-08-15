@@ -33,8 +33,9 @@ Procedure:
    The build receipt must explicitly build the exact test binary exercised by
    the test receipt. The test output must report at least one passing gtest.
 5. With the same build/probe/block protocol as baseline, run candidate blocks
-   only through `mechanism_evidence.py capture`, ingest its manifests, then
-   `compare --kind candidate`.
+   through `mechanism_evidence.py capture` (using `--story <name>` for targeted
+   single-benchmark verification to maximize signal-to-noise ratio), ingest its
+   manifests, then `compare --kind candidate`.
 6. Stop if either lower 95% confidence bound is non-positive. Do not use a
    suite-score screen to waive this gate.
 7. Measure code-size/cold-path tax where the change adds code or branches.

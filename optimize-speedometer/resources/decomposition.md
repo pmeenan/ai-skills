@@ -23,16 +23,34 @@ Investigators must inspect the call tree and source code **from the root of the 
    - *Only if Layers 1–3 cannot eliminate the work: is the leaf execution tight?*
    - Examples: Inlining, removing indirect virtual dispatch, branch hints.
 
+## Per-Benchmark Story Decomposition & 0.3% Local Floor
+
+Speedometer 3 comprises 32 distinct workloads. Analyzing only at the aggregate suite level hides massive framework-specific bottlenecks behind the geometric mean.
+
+1. **Local Benchmark Floor ($\ge 0.3\%$):**
+   Decompose stacks for each individual story down to $\ge 0.3\%$ of that story's scored cycles. This discovers high-leverage workload-specific opportunities (e.g. Canvas 2D in `Charts-chartjs`, SVG paths in `React-Stockcharts-SVG`, DOM class mutations in `TodoMVC-jQuery`, layout ranges in `Editor-TipTap`).
+
+2. **Global Geomean Ranking:**
+   Project the global score impact of each local opportunity:
+   $$\text{Estimated Global Delta} = \text{Local Avoidable Share} \times \text{Story Geomean Weight} \left(\approx \frac{1}{32}\right)$$
+   Sort the aggregated Master Ranked Frontier globally by estimated global delta.
+
+3. **Classification of Discovered Mechanisms:**
+   - **Cross-Benchmark Shared Invariants:** Mechanisms that recur across multiple stories (e.g. `EventDispatcher`, `StyleResolver`, `PaintOpBuffer`).
+   - **Workload-Specific Invariants:** Mechanisms localized to specific framework paradigms.
+
 ## Opportunity Investigation Proposal
 
 Each investigated opportunity must be recorded as an investigation proposal containing:
 - `opportunity_id` and stable `component/strategy` mechanism key.
 - `subsystem`: e.g. `style`, `html-parser`, `events`, `layout`, `dom`.
+- `target_story`: specific story name (or `all` if cross-benchmark).
 - `investigation_layer`: 1, 2, 3, or 4 (favoring Layers 1 & 2).
 - `target_stack_pattern`: exact regex / frames matching `profile.collapsed`.
-- `stack_profile_share_pct`: exact profile share (%) from `profile.collapsed`.
+- `story_profile_share_pct`: exact profile share (%) within the targeted story.
 - `estimated_avoidable_fraction`: fraction of that stack that can be avoided (0.0 to 1.0).
-- `estimated_net_score_impact_pct`: `stack_profile_share_pct * estimated_avoidable_fraction`.
+- `estimated_local_story_impact_pct`: `story_profile_share_pct * estimated_avoidable_fraction`.
+- `estimated_global_geomean_impact_pct`: `estimated_local_story_impact_pct / 32.0`.
 - `subtree_pruned`: list of child functions and their combined profile share eliminated.
 - `invariant_description`: exact code condition, bypass logic, and invalidation rules.
 - `safety_and_spec_analysis`: explicit reasoning on HTML/DOM/CSS spec compliance and lifecycle safety.

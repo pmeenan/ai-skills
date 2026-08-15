@@ -108,6 +108,26 @@ benchmark noise floor. It deliberately separates three kinds of evidence:
     yielding net cycle regressions. Optimization efforts MUST focus on **Layer 1 (Subtree /
     Lifecycle Phase Elimination)** and **Layer 2 (Cross-Call State Memoization / Caching)**
     where substantial blocks of work are pruned.
+21. **Per-Benchmark Decomposition & Targeted Single-Story Validation:**
+    Speedometer 3 comprises 32 diverse framework and application workloads. Evaluating
+    optimizations exclusively against full-suite aggregate geometric means dilutes
+    high-leverage, workload-specific optimization signals ($30\times\text{--}50\times$ SNR dilution).
+    Therefore:
+    - **Per-Story Profile Decomposition:** Profiler captures MUST be decomposed across
+      all 32 individual benchmark stories down to a **$0.3\%$ local benchmark marginal share floor**
+      (discovering high-leverage workload-specific hotspots that would otherwise be hidden below
+      full-suite noise).
+    - **Global Geomean Ranking:** All candidate mechanisms discovered across the 32 stories
+      are aggregated into a unified Master Ranked Frontier sorted globally by projected Speedometer 3
+      geometric mean contribution:
+      $$\text{Estimated Global Delta} = \text{Local Avoidable Share} \times \text{Story Geomean Weight} \left(\approx \frac{1}{32}\right)$$
+    - **Fast Targeted Single-Story Sizing & Verification:** Sizing and candidate verification
+      measurements SHOULD be executed against the targeted benchmark story (`--story <name>`).
+      Single-story runs execute in ~1–2 seconds, enabling 10–20 high-repetition blocks with tight
+      confidence intervals ($\pm 0.03\%$) and zero cross-suite dilution.
+    - **Periodic Full-Suite Checkpoints:** The full 32-story suite is reserved for release
+      A/B checkpoints on `out/release` after each batch of 3–5 landed optimizations to confirm
+      cumulative geometric mean score progression and verify zero cross-suite regressions.
 
 If a required field or artifact is unavailable, stop that opportunity. Do
 not replace missing evidence with prose.

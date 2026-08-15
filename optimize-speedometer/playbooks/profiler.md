@@ -22,7 +22,11 @@ Procedure:
 5. Generate the reconciliation with `campaign.py profile-scaffold`. Review
    every disposition. Preserve every recurrent source entry; do not combine
    nested shares or remove already-landed residual areas.
-6. Import with `campaign.py profile`. Do not hand-edit ledger state.
+6. **Per-Benchmark Story Breakdown:** Decompose stacks for each of the 32 individual
+   stories using the exact per-suite `measurement_intervals` down to a **$0.3\%$ local
+   story marginal share floor**. Aggregate all discovered hotspots into the unified
+   Master Ranked Frontier sorted by projected global geomean impact.
+7. Import with `campaign.py profile`. Do not hand-edit ledger state.
 
 Return only:
 
