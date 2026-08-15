@@ -24,6 +24,7 @@ counter logs, raw baseline/candidate files, and derived artifacts. Verify:
   total scored-cycle change and `moved_work_warning` do not show work moved or
   added elsewhere;
 - `cold_path_tax_measured`: added code/branches have a tax assessment;
+- `thinlto_microbranch_checked`: the candidate does not insert redundant micro-branch checks or outer trivial guards into hot multi-million-call loops that PGO2/ThinLTO already optimizes (which causes BTB pressure and net regressions);
 - `benchmark_overfit_checked`: no benchmark strings, selectors, or data-shaped
   special cases unless they express a general product invariant;
 - `one_invariant_only`: the diff does not bundle mechanisms.

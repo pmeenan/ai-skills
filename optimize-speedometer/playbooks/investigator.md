@@ -15,6 +15,7 @@ Procedure:
    - **Layer 2 (Higher-Level Caching & Sharing):** Can computed state (styles, shape results, layout spaces) be shared or memoized across sibling nodes, repeated runs, or microtasks?
    - **Layer 3 (Algorithmic & Structural Hoisting):** Can $O(N)$ linear scans, vector lookups, or stack allocations be replaced with $O(1)$ bitmasks/bloom filters or flat arrays?
    - **Layer 4 (Leaf-Level Micro-Optimizations):** Only if Layers 1–3 cannot eliminate the work.
+     * **CRITICAL ThinLTO & PGO WARNING:** Do NOT propose speculative micro-branch guards, outer trivial null checks, or empty collection checks in tight loops. In official PGO2/ThinLTO builds, LLVM already inlines and branch-predicts fast-paths; adding redundant outer branches increases BTB pressure and icache footprint, consistently causing net cycle regressions. Focus exclusively on Layers 1–2 where significant work (>100 cycles per avoided call) is pruned.
 
 3. **Formulate the Opportunity Invariant:**
    - State one invariant: “When condition C is measured true, work W (including downstream call tree T) can be avoided while preserving behavior B.”

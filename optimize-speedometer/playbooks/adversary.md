@@ -13,6 +13,7 @@ When reviewing an Opportunity Investigation Proposal, verify:
 - **Web Specifications & Standards:** Check that the proposed invariant (e.g. subtree bypass, dirty check, or caching) strictly adheres to HTML, DOM, CSS, and JS specifications.
 - **Lifecycle & Invalidation Safety:** Check that skipping the proposed branch does not miss required observer callbacks, custom element reactions, style invalidations, or layout updates.
 - **Plausibility of Avoidable Share:** Verify that the `estimated_avoidable_fraction` is realistic and not shifting work to a downstream caller/microtask.
+- **ThinLTO & Micro-Branch Anti-Pattern Check:** **REJECT** any proposal that relies on adding speculative micro-branch guards, outer trivial null checks, or empty collection checks in tight loops called $>100\text{k}$ times. ThinLTO and PGO2 already optimize inlined branches; adding redundant outer branches causes BTB pressure and pipeline stalls, producing net regressions. Demand Layer 1 (Subtree/Phase Elimination) or Layer 2 (Cross-Call State Memoization) where significant work is avoided.
 - **Flag Isolation:** Ensure the proposed design is 100% inert when `RuntimeEnabledFeatures::Speedometer3OptimizationsEnabled()` is disabled.
 
 Return JSON verdict `PASS` | `CHALLENGE` | `REJECT`.

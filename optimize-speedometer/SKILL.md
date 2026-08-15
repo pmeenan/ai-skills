@@ -96,6 +96,18 @@ benchmark noise floor. It deliberately separates three kinds of evidence:
     without reading PMU counters or accumulating cycles into the mechanism block.
     Sizing rows must be emitted only at `sp3-measurement-end` via
     `FlushSpeedometerScoreMarks()` with zero in-band I/O inside active score timers.
+20. **ThinLTO & PGO Phase 2 Micro-Branching Anti-Pattern:**
+    In official release configurations (`is_official_build=true`, `chrome_pgo_phase=2`,
+    `use_thin_lto=true`), LLVM inlines small leaf helpers and optimizes branch layouts
+    based on training profiles. Proposals and candidate diffs that attempt "micro-branch
+    squeezes"—such as adding speculative early-exit checks, outer null/flag checks before
+    calling an inlined function that already checks them, or vector-size/empty checks in hot
+    multi-million-call loops—MUST be rejected. In practice, inserting new conditional
+    branches in hot paths adds branch target buffer (BTB) pressure, pipeline mispredictions,
+    and instruction cache footprint that consistently outweigh any minor skipped work,
+    yielding net cycle regressions. Optimization efforts MUST focus on **Layer 1 (Subtree /
+    Lifecycle Phase Elimination)** and **Layer 2 (Cross-Call State Memoization / Caching)**
+    where substantial blocks of work are pruned.
 
 If a required field or artifact is unavailable, stop that opportunity. Do
 not replace missing evidence with prose.
