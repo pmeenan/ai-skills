@@ -150,20 +150,23 @@ artifacts on a workstation and do not hand-transfer JSON in lieu of the tree.
 
 The defaults (branch `speedometer`, target 20, flag
 `Speedometer3Optimizations`, host `linux`) fit the usual environment, but
-state the config and the autonomy level explicitly on the first run:
+state the config, workflow, and autonomy level explicitly on the first run:
 
 > Using the optimize-speedometer skill, start a Speedometer 3 optimization
-> campaign.
-> - Campaign name `sp3-2026-08`, branch `speedometer` (checked out), target
->   20 landed optimizations, remote host `linux` (skills already synced
->   there).
-> - Do the full setup: init the ledger, land the flag and probe scaffolding,
->   run A/A calibration and the flag-overhead null check.
-> - Complete the 3–5 candidate counter → oracle → candidate → cumulative A/B
->   pilot, and continue only after the A/B 95% confidence interval is positive.
-> - Then run the campaign loop. Report to me with the STATUS.md summary
->   after each checkpoint; otherwise proceed autonomously. Stop on any
->   stopping rule or anything needing human intervention.
+> campaign driving for a cumulative score improvement on `out/release`.
+> - **Campaign Configuration**: Campaign name `sp3-per-benchmark`, branch `speedometer`
+>   (checked out), remote host `linux` (skills already synced there).
+> - **Per-Benchmark Workflow**: Decompose exact-scored profiles across each of the 32
+>   individual benchmark stories down to a 0.3% local benchmark floor, aggregate them
+>   into a globally ranked frontier by projected geomean delta, and run high-SNR
+>   single-story sizing and candidate verification (`--story <name>`).
+> - **Architectural Focus**: Reject Layer 4 ThinLTO/PGO micro-branch squeezes. Target
+>   Layer 1 (Subtree / Lifecycle Phase Bypasses) and Layer 2 (Cross-Call State Memoization).
+> - **Remote Transfers**: Always use compression flags (`scp -C` and `rsync -avz`) for all
+>   remote transfers.
+> - **Autonomy**: Drive the work autonomously as tech lead, using subagents for investigations
+>   and independent reviews. Report with the STATUS.md summary after each milestone;
+>   stop on any stopping rule or anything requiring human intervention.
 
 The autonomy line is the one never to omit: everything else has a safe
 default the agent will confirm, but "how far do you go before checking in"

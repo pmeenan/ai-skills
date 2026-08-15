@@ -29,6 +29,9 @@ This skill provides the authoritative runbook, instrumentation resources, and ve
    * **Structured PID/Timestamp Manifest:** Poll the launched command's descendants while profiling and record every Chrome PID with its browser, renderer, GPU, or utility role. Preserve the labeled sync/async intervals used by the benchmark score. Outer suite windows are diagnostic only.
    * **Score Weighting:** Normalize every capture/suite group to equal total weight (`speedometer-geomean-v1`). Raw cycle pooling overweights slow suites and is forbidden for campaign discovery.
    * **Quality Rejection Gate:** Reject profiles with unmatched score marks, poor call stack unwinding, overall `[unknown]` frames >15%, concentrated `[unknown]` frames >10% within any dominant call stack, insufficient total samples (<5,000), or fewer than 100 nominal samples at the requested marginal floor.
+5. **Mandatory Remote Transfer Compression (`scp -C` / `rsync -z`):**
+   * The physical measurement host is remote with constrained upstream/downstream bandwidth.
+   * All artifact, patch, log, manifest, and capture transfers to/from the remote host MUST specify compression flags: `scp -C` or `rsync -avz` / `rsync -z`.
 
 ---
 

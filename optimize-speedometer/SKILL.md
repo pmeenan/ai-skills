@@ -128,6 +128,13 @@ benchmark noise floor. It deliberately separates three kinds of evidence:
     - **Periodic Full-Suite Checkpoints:** The full 32-story suite is reserved for release
       A/B checkpoints on `out/release` after each batch of 3–5 landed optimizations to confirm
       cumulative geometric mean score progression and verify zero cross-suite regressions.
+22. **Mandatory Remote Transfer Compression (`scp -C` / `rsync -z`):**
+    The bare-metal measurement host is remote with constrained upstream/downstream bandwidth.
+    Any time agents or automation scripts transfer files, patches, build logs, sizing manifests,
+    or capture directories to or from the remote host, they MUST use compression flags:
+    - **`scp`**: Always specify `-C` (e.g. `scp -C <src> <dest>`).
+    - **`rsync`**: Always specify `-z` / `--compress` (e.g. `rsync -avz <src> <dest>`).
+    Uncompressed file transfers waste bandwidth and slow iteration cycles.
 
 If a required field or artifact is unavailable, stop that opportunity. Do
 not replace missing evidence with prose.
