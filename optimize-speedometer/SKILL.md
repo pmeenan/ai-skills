@@ -35,9 +35,10 @@ benchmark noise floor. It deliberately separates three kinds of evidence:
 1. `interval_kind` is `exact-scored`. The only admitted intervals are the
    sync and async timers used by Speedometer's score. Outer suite intervals
    are diagnostic and never contribute candidate weight.
-2. Profile weights use `speedometer-geomean-v1`: each suite/capture group has
-   equal total weight. Raw global cycles overweight slow suites and are not a
-   score model.
+2. Profile weights use exact-scored per-benchmark analysis: each benchmark story is
+   treated as an independent silo down to the 0.3% local benchmark floor. Stacks are
+   analyzed and sized cleanly within the targeted benchmark so the impact is clearly
+   visible and measurable without geometric-mean dilution.
 3. Sampling profiles discover broad areas. They never size a mechanism or
    predict score delta. The default marginal floor is 0.3%, and an analysis
    fails if the floor has fewer than 100 nominal samples.
@@ -108,26 +109,28 @@ benchmark noise floor. It deliberately separates three kinds of evidence:
     yielding net cycle regressions. Optimization efforts MUST focus on **Layer 1 (Subtree /
     Lifecycle Phase Elimination)** and **Layer 2 (Cross-Call State Memoization / Caching)**
     where substantial blocks of work are pruned.
-21. **Per-Benchmark Decomposition & Targeted Single-Story Validation:**
-    Speedometer 3 comprises 32 diverse framework and application workloads. Evaluating
-    optimizations exclusively against full-suite aggregate geometric means dilutes
-    high-leverage, workload-specific optimization signals ($30\times\text{--}50\times$ SNR dilution).
-    Therefore:
-    - **Per-Story Profile Decomposition:** Profiler captures MUST be decomposed across
-      all 32 individual benchmark stories down to a **$0.3\%$ local benchmark marginal share floor**
+21. **Per-Benchmark Silo Focus & Single-Benchmark Impact Ranking:**
+    Speedometer 3 comprises 32 diverse framework and application workloads. Rather than using
+    full-suite geometric-mean weighting or dividing local story impact by 32, the campaign
+    focuses on each benchmark as an independent silo:
+    - **Per-Story Profile Decomposition:** Profiler captures MUST be decomposed across each
+      of the 32 individual benchmark stories down to a **$0.3\%$ local benchmark marginal share floor**
       (discovering high-leverage workload-specific hotspots that would otherwise be hidden below
       full-suite noise).
-    - **Global Geomean Ranking:** All candidate mechanisms discovered across the 32 stories
-      are aggregated into a unified Master Ranked Frontier sorted globally by projected Speedometer 3
-      geometric mean contribution:
-      $$\text{Estimated Global Delta} = \text{Local Avoidable Share} \times \text{Story Geomean Weight} \left(\approx \frac{1}{32}\right)$$
-    - **Fast Targeted Single-Story Sizing & Verification:** Sizing and candidate verification
-      measurements SHOULD be executed against the targeted benchmark story (`--story <name>`).
+    - **Single-Benchmark Impact Ranking:** All candidate mechanisms discovered across the 32
+      benchmark silos are aggregated into a combined Master Ranked Frontier. The combined list
+      retains benchmark-specific entries (allowing duplicate mechanisms if they appear in multiple
+      benchmark silos) and is sorted strictly by **Maximum Single-Benchmark Local Impact (%)**:
+      $$\text{Estimated Single-Benchmark Impact} = \text{Local Story Share} \times \text{Avoidable Fraction}$$
+      We pick opportunities by the biggest impact to an individual benchmark so we can clearly see
+      the impact when evaluating.
+    - **High-SNR Single-Story Sizing & Candidate Verification:** Sizing and candidate verification
+      measurements MUST be executed against the targeted benchmark story (`--story <name>`).
       Single-story runs execute in ~1–2 seconds, enabling 10–20 high-repetition blocks with tight
-      confidence intervals ($\pm 0.03\%$) and zero cross-suite dilution.
+      confidence intervals ($\pm 0.03\%$) and clean, unambiguous readouts on individual benchmark gains.
     - **Periodic Full-Suite Checkpoints:** The full 32-story suite is reserved for release
-      A/B checkpoints on `out/release` after each batch of 3–5 landed optimizations to confirm
-      cumulative geometric mean score progression and verify zero cross-suite regressions.
+      A/B checkpoints on `out/release` after batches of landed optimizations to confirm overall
+      cumulative progression across the browser.
 22. **Mandatory Remote Transfer Compression (`scp -C` / `rsync -z`):**
     The bare-metal measurement host is remote with constrained upstream/downstream bandwidth.
     Any time agents or automation scripts transfer files, patches, build logs, sizing manifests,
@@ -270,7 +273,7 @@ For each candidate discovery area (e.g. Style Recalc, HTML Parsing, Event Dispat
    - Only proposals that **PASS** adversarial review become official qualified candidates.
 
 3. **Master Ranking & Sizing Gate:**
-   - All qualified candidates are aggregated and sorted strictly by **Verified Estimated Net Score Impact (biggest to smallest)**.
+   - All qualified candidates across all benchmark silos are aggregated into the combined Master Ranked Frontier and sorted strictly by **Verified Estimated Single-Benchmark Impact (biggest to smallest)**, retaining benchmark-specific entries so that impact on individual workloads is clearly visible.
    - We advance and instrument the top candidate in the ranking.
 
 ```bash

@@ -156,10 +156,11 @@ state the config, workflow, and autonomy level explicitly on the first run:
 > campaign driving for a cumulative score improvement on `out/release`.
 > - **Campaign Configuration**: Campaign name `sp3-per-benchmark`, branch `speedometer`
 >   (checked out), remote host `linux` (skills already synced there).
-> - **Per-Benchmark Workflow**: Decompose exact-scored profiles across each of the 32
->   individual benchmark stories down to a 0.3% local benchmark floor, aggregate them
->   into a globally ranked frontier by projected geomean delta, and run high-SNR
->   single-story sizing and candidate verification (`--story <name>`).
+> - **Per-Benchmark Workflow**: Focus on each benchmark story as an independent silo.
+>   Decompose exact-scored profiles across each of the 32 individual benchmark stories
+>   down to a 0.3% local benchmark floor, sort the combined list (retaining benchmark-specific
+>   entries with duplicates allowed) by biggest single-benchmark local impact, and run
+>   high-SNR single-story sizing and candidate verification (`--story <name>`).
 > - **Architectural Focus**: Reject Layer 4 ThinLTO/PGO micro-branch squeezes. Target
 >   Layer 1 (Subtree / Lifecycle Phase Bypasses) and Layer 2 (Cross-Call State Memoization).
 > - **Remote Transfers**: Always use compression flags (`scp -C` and `rsync -avz`) for all

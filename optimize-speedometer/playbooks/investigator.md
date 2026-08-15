@@ -21,10 +21,9 @@ Procedure:
    - State one invariant: “When condition C is measured true, work W (including downstream call tree T) can be avoided while preserving behavior B.”
 
 4. **Quantify Profile Headroom & Avoidable Share:**
-   - `story_profile_share_pct`: Exact sum of cycles in the targeted stack within the specific benchmark story (or full-suite average).
+   - `story_profile_share_pct`: Exact sum of cycles in the targeted stack within the specific benchmark story silo.
    - `estimated_avoidable_fraction`: Realistic fraction of the stack avoided by the condition (0.0 to 1.0).
-   - `estimated_local_story_impact_pct` = `story_profile_share_pct * estimated_avoidable_fraction`.
-   - `estimated_global_geomean_impact_pct` = `estimated_local_story_impact_pct / 32.0`.
+   - `estimated_local_story_impact_pct` = `story_profile_share_pct * estimated_avoidable_fraction` (primary ranking metric).
    - Local floor requirement: `estimated_local_story_impact_pct >= 0.30%`.
 
 5. **Emit the Opportunity Investigation Proposal:**
@@ -38,13 +37,12 @@ Proposal JSON format:
   "opportunity_id": 0,
   "mechanism_key": "component/strategy",
   "subsystem": "style|html-parser|events|layout|dom|paint",
-  "target_story": "Charts-chartjs|TodoMVC-jQuery|all",
+  "target_story": "Charts-chartjs|TodoMVC-jQuery",
   "investigation_layer": 1,
   "target_stack_pattern": "regex_or_stack_frames",
-  "story_profile_share_pct": 3.25,
+  "story_profile_share_pct": 23.0,
   "estimated_avoidable_fraction": 0.40,
-  "estimated_local_story_impact_pct": 1.30,
-  "estimated_global_geomean_impact_pct": 0.041,
+  "estimated_local_story_impact_pct": 9.20,
   "subtree_pruned": [
     "child_func_1",
     "child_func_2"
