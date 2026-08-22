@@ -145,30 +145,28 @@ def raw(
     }))
     log_refs = []
     capture_refs = []
-    suite_names = [
-        f"Story{chr(65 + suite // 26)}{chr(65 + suite % 26)}"
-        for suite in range(32)
-    ]
+    story = "Charts-chartjs"
+    repetitions = 5
     for block, (value, total) in enumerate(zip(cycles, totals), 1):
         nonce = f"{block:032x}"
         log = root / f"counter-{variant}-{block}.log"
         lines = []
         browser_lines = []
-        for suite in range(32):
+        for rep in range(repetitions):
             row = {
                 "schema_version": 1,
                 "block": block,
                 "capture_nonce": nonce,
-                "group": f"rep0|{suite_names[suite]}",
+                "group": f"rep{rep}|{story}",
                 "pid": 2000 + block,
                 "tid": 3000 + block,
                 "process_type": "renderer",
-                "emitted_monotonic_raw_ns": 2000 + suite,
-                "calls": 100 if suite == 0 else 0,
-                "applicable_calls": 80 if suite == 0 else 0,
-                "exclusive_cycles": value if suite == 0 else 0,
-                "avoidable_cycles": value // 2 if suite == 0 else 0,
-                "total_scored_cycles": total + suite * 101,
+                "emitted_monotonic_raw_ns": 2000 + rep,
+                "calls": 100 if rep == 0 else 0,
+                "applicable_calls": 80 if rep == 0 else 0,
+                "exclusive_cycles": value if rep == 0 else 0,
+                "avoidable_cycles": value // 2 if rep == 0 else 0,
+                "total_scored_cycles": total + rep * 101,
                 "probe_overhead_cycles": 100,
                 "time_enabled": 1000000,
                 "time_running": 1000000,
@@ -183,9 +181,9 @@ def raw(
             emitted = evidence.ROW_PREFIX + json.dumps(row, sort_keys=True)
             lines.append(emitted)
             browser_lines.extend([
-                f"[SP3_SCORE_TIME] {suite_names[suite]}.Test-start: 1.0",
+                f"[SP3_SCORE_TIME] {story}.Test-start: 1.0",
                 emitted,
-                f"[SP3_SCORE_TIME] {suite_names[suite]}.Test-sync-end: 2.0",
+                f"[SP3_SCORE_TIME] {story}.Test-sync-end: 2.0",
             ])
         log.write_text("\n".join(lines) + "\n")
         browser_log = root / f"browser.{variant}.{block}.log"
@@ -204,8 +202,9 @@ def raw(
             "opportunity_id": 7,
             "mechanism_key": "style/cache-match",
             "profile_id": "profile-2",
-            "stories": "all",
-            "score_suites": suite_names,
+            "stories": story,
+            "repetitions": repetitions,
+            "score_suites": [story],
             "exit_code": 0,
             "started_monotonic_raw_ns": 1000,
             "finished_monotonic_raw_ns": 10000,
@@ -229,7 +228,8 @@ def raw(
             "skill_tree_sha256": "test-only",
             "command": [
                 "vpython3", "./third_party/crossbench/cb.py",
-                "speedometer_3.0", "--stories=all", "--repetitions=1",
+                "speedometer_3.0", f"--stories={story}",
+                f"--repetitions={repetitions}",
             ],
             "build": provenance_value,
             "counter_log": log_ref,
@@ -248,11 +248,13 @@ def raw(
         "opportunity_id": 7,
         "mechanism_key": "style/cache-match",
         "profile_id": "profile-2",
+        "target_story": story,
         "variant": variant,
         "interval_kind": "exact-scored",
         "score_scope": {
             "classification": "score-critical",
-            "metric_model": "speedometer-geomean-v1",
+            "metric_model": "speedometer-story-v1",
+            "min_avoidable_pct_floor": 0.0,
             "trace_artifact": trace,
         },
         "build": {
@@ -275,7 +277,7 @@ def raw(
         for block, ref in enumerate(log_refs, 1)
     }
     suites_by_log = {
-        ref["path"]: set(suite_names)
+        ref["path"]: {story}
         for ref in log_refs
     }
     value["blocks"] = evidence.build_blocks_from_logs(
@@ -288,6 +290,22 @@ def raw(
 
 
 class MechanismEvidenceTest(unittest.TestCase):
+    def test_scaffold_binds_default_avoidable_floor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp) / "metadata.json"
+            self.assertEqual(0, evidence.main([
+                "scaffold", "--opp", "7",
+                "--mechanism-key", "style/cache-match",
+                "--profile-id", "profile-2",
+                "--target-story", "TodoMVC-React",
+                "--variant", "baseline", "--out", str(out),
+            ]))
+            metadata = json.loads(out.read_text())
+            self.assertEqual(
+                evidence.DEFAULT_MIN_AVOIDABLE_PCT,
+                metadata["score_scope"]["min_avoidable_pct_floor"],
+            )
+
     def test_calibrate_aa_is_recomputed_from_runner_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
             value = raw(tmp)

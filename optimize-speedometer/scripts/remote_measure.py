@@ -371,7 +371,11 @@ def run_remote(host, script):
 
 def fetch_file(host, remote_path, local_dir):
     local_dir.mkdir(parents=True, exist_ok=True)
-    run(["scp", "-q", f"{host}:{shlex.quote(remote_path)}", str(local_dir) + "/"], check=True)
+    run(
+        ["scp", "-C", "-q", f"{host}:{shlex.quote(remote_path)}",
+         str(local_dir) + "/"],
+        check=True,
+    )
 
 
 def fetch_score_evidence(host, remote_src, manifest_path, local_dir):
@@ -388,7 +392,7 @@ def fetch_score_evidence(host, remote_src, manifest_path, local_dir):
         raise RuntimeError("score manifest has an invalid evidence_dir")
     run(
         [
-            "scp", "-q", "-r",
+            "scp", "-C", "-q", "-r",
             f"{host}:{shlex.quote(f'{remote_src}/scratch/{evidence_dir}')}",
             str(local_dir) + "/",
         ],
@@ -410,7 +414,7 @@ def fetch_profile_results(host, remote_src, remote_stdout, local_dir):
     run(
         [
             "rsync",
-            "-a",
+            "-az",
             "--exclude",
             "perf_sampling.data",
             f"{host}:{shlex.quote(f'{remote_src}/{remote_dir}')}/",
@@ -428,42 +432,101 @@ def default_out_dir(root, mode):
 
 
 def profile_summary_paths(out_dir):
-    """Analysis artifacts promised by the profiler playbook, when present."""
+    """Analysis artifacts promised by the profiler playbook, when present.
+
+    The authoritative frontier inventory is the concatenation of the
+    per-story silo analyses under analysis/stories/ (story-qualified entry
+    keys, shares local to each story's scored cycles). The full-suite and
+    renderer views remain diagnostic only.
+    """
     import campaign
     paths = {}
-    full_frontier = out_dir / "analysis" / "full" / "candidate_frontier.json"
     paths["inventory_complete"] = False
-    if full_frontier.exists():
+    index_path = out_dir / "analysis" / "stories" / "stories_index.json"
+    if index_path.exists():
         try:
-            report = json.loads(full_frontier.read_text())
-            selection = report.get("selection", {})
-            quality = report.get("quality", {})
-            paths["inventory_complete"] = selection.get("inventory_complete") is True
-            paths["interval_kind"] = quality.get("interval_kind")
-            paths["metric_weighting"] = selection.get("metric_weighting")
-            paths["nominal_samples_at_floor"] = quality.get(
-                "nominal_samples_at_floor"
-            )
-            paths["build_provenance"] = quality.get("build_provenance")
-            paths["analyzer_min_marginal_share"] = selection.get(
+            index = json.loads(index_path.read_text())
+            stories = index.get("stories", [])
+            paths["stories_index_json"] = str(index_path)
+            paths["metric_weighting"] = index.get("metric_weighting")
+            paths["interval_kind"] = index.get("interval_kind")
+            paths["analyzer_min_marginal_share"] = index.get(
                 "min_marginal_share"
             )
-            paths["analyzer_min_inclusive_share"] = selection.get(
+            paths["analyzer_min_inclusive_share"] = index.get(
                 "min_inclusive_share"
             )
-            # The importer re-derives this inventory from the artifact with the
-            # same shared function and rejects the capture on any mismatch.
-            entries, inventory, problems = campaign.derive_frontier_inventory(
-                report
-            )
+            complete = bool(stories) and index.get("accepted") is True
+            entries = []
+            inventory = []
+            problems = []
+            story_frontiers = []
+            nominal_floor = None
+            build_provenance = None
+            for item in stories:
+                # The fetched result tree has a different absolute root from
+                # the measurement host. Resolve only within the local copy;
+                # older indexes that stored absolute remote paths remain
+                # readable through their relocatable `dir` field.
+                relative_artifact = pathlib.PurePath(
+                    item.get("candidate_frontier_json", "")
+                )
+                if relative_artifact.is_absolute() or ".." in relative_artifact.parts:
+                    relative_artifact = pathlib.PurePath(
+                        item.get("dir", item.get("story", ""))
+                    ) / "candidate_frontier.json"
+                artifact_path = index_path.parent / relative_artifact
+                report = json.loads(artifact_path.read_text())
+                quality = report.get("quality", {})
+                selection = report.get("selection", {})
+                if quality.get("accepted") is not True:
+                    complete = False
+                if selection.get("inventory_complete") is not True:
+                    complete = False
+                # The importer re-derives each story inventory from its
+                # artifact with the same shared function and rejects the
+                # capture on any mismatch.
+                story_entries, story_inventory, story_problems = (
+                    campaign.derive_frontier_inventory(report)
+                )
+                if story_problems:
+                    complete = False
+                    problems.extend(
+                        f"{item.get('story')}: {problem}"
+                        for problem in story_problems
+                    )
+                entries.extend(story_entries)
+                inventory.extend(story_inventory)
+                nominal = quality.get("nominal_samples_at_floor")
+                if isinstance(nominal, (int, float)):
+                    nominal_floor = (
+                        nominal if nominal_floor is None
+                        else min(nominal_floor, nominal)
+                    )
+                if build_provenance is None:
+                    build_provenance = quality.get("build_provenance")
+                story_frontiers.append({
+                    "story": item.get("story"),
+                    "artifact": str(artifact_path),
+                    "samples": quality.get("samples"),
+                    "nominal_samples_at_floor": nominal,
+                    "accepted": quality.get("accepted"),
+                    "frontier_count": len(story_entries),
+                })
+            paths["inventory_complete"] = complete
             if problems:
-                paths["inventory_complete"] = False
                 paths["inventory_problems"] = problems
+            paths["story_frontiers"] = story_frontiers
+            paths["story_count"] = len(story_frontiers)
+            # The weakest story bounds the whole capture: every silo must
+            # clear the 100-nominal-sample floor independently.
+            paths["nominal_samples_at_floor"] = nominal_floor
+            paths["build_provenance"] = build_provenance
             paths["frontier_count"] = len(entries)
             paths["frontier_entries"] = entries
             paths["frontier_inventory"] = inventory
         except (OSError, ValueError, TypeError):
-            pass
+            paths["inventory_complete"] = False
     for view in ("full", "renderer"):
         base = out_dir / "analysis" / view
         for key, name in (
@@ -594,7 +657,11 @@ def main(argv=None):
     )
     parser.add_argument("--stories", default="all")
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--repetitions", type=int, default=4, help="profile mode")
+    parser.add_argument(
+        "--repetitions", type=int, default=16,
+        help="profile mode (default: 16 so every story silo clears its "
+        "local sample floor)",
+    )
     parser.add_argument(
         "--enable-features",
         default=None,

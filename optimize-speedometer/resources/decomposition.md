@@ -23,34 +23,32 @@ Investigators must inspect the call tree and source code **from the root of the 
    - *Only if Layers 1–3 cannot eliminate the work: is the leaf execution tight?*
    - Examples: Inlining, removing indirect virtual dispatch, branch hints.
 
-## Per-Benchmark Silo Decomposition & Single-Benchmark Impact Ranking
+## Per-Story Silo Decomposition & Target-Story Impact Ranking
 
-Speedometer 3 comprises 32 distinct workloads. Analyzing each benchmark as an independent silo provides clean reads and avoids geometric-mean dilution.
+Speedometer 3 comprises 32 distinct workloads. Each story is profiled and explored as an independent silo (`analysis/stories/<story>/`), which gives clean local reads and avoids geometric-mean dilution.
 
-1. **Local Benchmark Floor ($\ge 0.3\%$):**
-   Decompose stacks for each individual story down to $\ge 0.3\%$ of that story's scored cycles. This discovers high-leverage workload-specific opportunities (e.g. Canvas 2D in `Charts-chartjs`, SVG paths in `React-Stockcharts-SVG`, DOM class mutations in `TodoMVC-jQuery`, layout ranges in `Editor-TipTap`).
+1. **Local Story Floor ($\ge 0.3\%$):**
+   Each story's stacks are decomposed in isolation down to $\ge 0.3\%$ of that story's scored cycles, with the 100-nominal-samples quality gate applied per story. This discovers high-leverage workload-specific opportunities (e.g. Canvas 2D in `Charts-chartjs`, SVG paths in `React-Stockcharts-SVG`, DOM class mutations in `TodoMVC-jQuery`, layout ranges in `Editor-TipTap`).
 
-2. **Combined Frontier Sorted by Maximum Single-Benchmark Impact:**
-   Aggregate all candidate mechanisms discovered across the 32 benchmark silos into a combined Master Ranked Frontier (retaining benchmark-specific entries, allowing duplicate mechanisms across different stories).
-   Sort the combined list strictly by **Estimated Single-Benchmark Impact (%)**:
-   $$\text{Estimated Single-Benchmark Impact} = \text{Local Story Share} \times \text{Avoidable Fraction}$$
-   We prioritize opportunities by the largest impact to an individual benchmark story so evaluation produces a clear, unmistakable signal.
+2. **Global Ranking by Target-Story Impact:**
+   Every frontier entry is story-qualified (`story:<name>/…`) and carries a `target_story`. The ledger ranks all opportunities globally by:
+   $$\text{Estimated Target-Story Impact} = \text{Local Story Share} \times \text{Avoidable Fraction}$$
+   measured against the entry's own target story. The same mechanism hot in several stories appears as separate story-qualified areas, each ranked by its own local impact — no cross-story summing, no division by 32. If a mechanism happens to also help other stories, that is a bonus recorded in notes; it never enters the ranking.
 
-3. **Classification of Discovered Mechanisms:**
-   - **Cross-Benchmark Shared Invariants:** Mechanisms that recur across multiple stories (e.g. `EventDispatcher`, `StyleResolver`, `PaintOpBuffer`), which will appear as separate entries for each benchmark with their benchmark-specific local impact.
-   - **Workload-Specific Invariants:** Mechanisms localized to specific framework paradigms.
+3. **One Mechanism Key Per Invariant, Across Silos:**
+   A source-level mechanism keeps one stable global `component/strategy` key even when it is discovered in several story silos. When the top-ranked entry's mechanism already exists in the ledger (landed, rejected, or in flight from another story), link the discovery to that mechanism (`known` disposition / `covered-by`) instead of creating a duplicate; sizing and verification then run against the highest-impact target story. Do not retry landed, rejected, or reverted mechanisms from a different story without genuinely contradictory new evidence.
 
 ## Opportunity Investigation Proposal
 
 Each investigated opportunity must be recorded as an investigation proposal containing:
 - `opportunity_id` and stable `component/strategy` mechanism key.
 - `subsystem`: e.g. `style`, `html-parser`, `events`, `layout`, `dom`.
-- `target_story`: specific story name.
+- `target_story`: the single story the opportunity targets; its silo profile sources every share and its `--stories=<target_story>` runs size and verify the mechanism.
 - `investigation_layer`: 1, 2, 3, or 4 (favoring Layers 1 & 2).
-- `target_stack_pattern`: exact regex / frames matching `profile.collapsed`.
-- `story_profile_share_pct`: exact profile share (%) within the targeted story.
+- `target_stack_pattern`: exact regex / frames matching the target story's `profile.collapsed`.
+- `story_profile_share_pct`: exact profile share (%) within the target story's silo.
 - `estimated_avoidable_fraction`: fraction of that stack that can be avoided (0.0 to 1.0).
-- `estimated_local_story_impact_pct`: `story_profile_share_pct * estimated_avoidable_fraction` (primary ranking metric).
+- `estimated_local_story_impact_pct`: `story_profile_share_pct * estimated_avoidable_fraction` (the global ranking metric; never rescaled to a full-suite share). `campaign.py decompose` derives the profile share from bound `work_refs`, recomputes this product, rejects mismatches/below-floor proposals, and stores it as the mechanism priority.
 - `subtree_pruned`: list of child functions and their combined profile share eliminated.
 - `invariant_description`: exact code condition, bypass logic, and invalidation rules.
 - `safety_and_spec_analysis`: explicit reasoning on HTML/DOM/CSS spec compliance and lifecycle safety.
@@ -85,4 +83,3 @@ python3 .agents/skills/optimize-speedometer/scripts/campaign.py exhaust \
 
 Any decomposition edit invalidates the prior review and requires a fresh
 scaffold. `audit-exhaustion` is the final machine check.
-

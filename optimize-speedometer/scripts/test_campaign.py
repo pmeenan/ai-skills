@@ -17,6 +17,9 @@ from unittest import mock
 import campaign
 
 
+TEST_STORY = "TodoMVC-Test"
+
+
 class CampaignTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -86,66 +89,117 @@ class CampaignTest(unittest.TestCase):
         prefix = prefix or profile_id
         for index in (1, 2):
             capture_id = f"{prefix}-{index}"
-            frontier = [
-                {
-                    "entry_key": f"symbol:{area.get('entry_name', area['area_key'])}",
-                    "kind": "symbol",
-                    "name": area.get("entry_name", area["area_key"]),
-                    "marginal_share": area.get("marginal_share_pct", 0.0) / 100,
-                    "related_hotspots": [
-                        {**item, "overlap_share": item.get("overlap_share", 0.002)}
-                        for item in area.get("related_hotspots", [])
-                    ],
-                }
-                for area in areas
-            ]
             local_results = self.dir / capture_id
-            artifact = local_results / "analysis" / "full" / "candidate_frontier.json"
-            artifact.parent.mkdir(parents=True)
-            alternatives = [
-                {
-                    "kind": "symbol",
-                    "name": item["name"],
-                    "entry_key": f"symbol:{item['name']}",
-                    "inclusive_share": item.get("inclusive_share", 0.002),
-                    "assigned_frontier_entry": (
-                        f"symbol:{area.get('entry_name', area['area_key'])}"
-                    ),
-                }
-                for area in areas
-                for item in area.get("assigned_alternatives", [])
-            ]
-            artifact.write_text(json.dumps({
-                "quality": {"accepted": True},
-                "selection": {
-                    "inventory_complete": True,
-                    "min_inclusive_share": 0.001,
-                    "min_marginal_share": 0.001,
-                },
-                "frontier": frontier,
-                "overlapping_alternatives": alternatives,
-            }))
-            inventory = [
-                {
-                    "entry_key": f"symbol:{area.get('entry_name', area['area_key'])}",
-                    "work_items": [{
-                        "hotspot_key": "@root",
-                        "semantic_key": (
-                            f"symbol:{area.get('entry_name', area['area_key'])}"
+            by_story = {}
+            for area in areas:
+                by_story.setdefault(area.get("story", TEST_STORY), []).append(
+                    area
+                )
+            if not by_story:
+                by_story = {TEST_STORY: []}
+            story_frontiers = []
+            entries = []
+            inventory = []
+            for story in sorted(by_story):
+                story_areas = by_story[story]
+                story_prefix = f"story:{story}/"
+                frontier = [
+                    {
+                        "entry_key": (
+                            story_prefix
+                            + f"symbol:{area.get('entry_name', area['area_key'])}"
                         ),
-                        "measured_share_pct": area.get("marginal_share_pct", 0.0),
-                    }] + [{
-                        "hotspot_key": item["name"],
-                        "semantic_key": f"symbol:{item['name']}",
-                        "measured_share_pct": item.get("overlap_share", 0.002) * 100,
-                    } for item in area.get("related_hotspots", [])] + [{
-                        "hotspot_key": f"alternative:symbol:{item['name']}",
-                        "semantic_key": f"symbol:{item['name']}",
-                        "measured_share_pct": item.get("inclusive_share", 0.002) * 100,
-                    } for item in area.get("assigned_alternatives", [])],
-                }
-                for area in areas
-            ]
+                        "kind": "symbol",
+                        "name": area.get("entry_name", area["area_key"]),
+                        "marginal_share": (
+                            area.get("marginal_share_pct", 0.0) / 100
+                        ),
+                        "related_hotspots": [
+                            {
+                                **item,
+                                "overlap_share": item.get(
+                                    "overlap_share", 0.002
+                                ),
+                            }
+                            for item in area.get("related_hotspots", [])
+                        ],
+                    }
+                    for area in story_areas
+                ]
+                alternatives = [
+                    {
+                        "kind": "symbol",
+                        "name": item["name"],
+                        "entry_key": story_prefix + f"symbol:{item['name']}",
+                        "inclusive_share": item.get("inclusive_share", 0.002),
+                        "assigned_frontier_entry": (
+                            story_prefix
+                            + f"symbol:{area.get('entry_name', area['area_key'])}"
+                        ),
+                    }
+                    for area in story_areas
+                    for item in area.get("assigned_alternatives", [])
+                ]
+                artifact = (
+                    local_results / "analysis" / "stories" / story
+                    / "candidate_frontier.json"
+                )
+                artifact.parent.mkdir(parents=True)
+                artifact.write_text(json.dumps({
+                    "quality": {"accepted": True},
+                    "selection": {
+                        "inventory_complete": True,
+                        "min_inclusive_share": 0.001,
+                        "min_marginal_share": 0.001,
+                        "metric_weighting": "speedometer-story-v1",
+                        "story": story,
+                    },
+                    "frontier": frontier,
+                    "overlapping_alternatives": alternatives,
+                }))
+                story_inventory = [
+                    {
+                        "entry_key": (
+                            story_prefix
+                            + f"symbol:{area.get('entry_name', area['area_key'])}"
+                        ),
+                        "work_items": [{
+                            "hotspot_key": "@root",
+                            "semantic_key": (
+                                f"symbol:{area.get('entry_name', area['area_key'])}"
+                            ),
+                            "measured_share_pct": area.get(
+                                "marginal_share_pct", 0.0
+                            ),
+                        }] + [{
+                            "hotspot_key": item["name"],
+                            "semantic_key": f"symbol:{item['name']}",
+                            "measured_share_pct": (
+                                item.get("overlap_share", 0.002) * 100
+                            ),
+                        } for item in area.get("related_hotspots", [])] + [{
+                            "hotspot_key": (
+                                "alternative:" + story_prefix
+                                + f"symbol:{item['name']}"
+                            ),
+                            "semantic_key": f"symbol:{item['name']}",
+                            "measured_share_pct": (
+                                item.get("inclusive_share", 0.002) * 100
+                            ),
+                        } for item in area.get("assigned_alternatives", [])],
+                    }
+                    for area in story_areas
+                ]
+                entries.extend(item["entry_key"] for item in story_inventory)
+                inventory.extend(story_inventory)
+                story_frontiers.append({
+                    "story": story,
+                    "artifact": str(artifact),
+                    "samples": 40000,
+                    "nominal_samples_at_floor": 120.0,
+                    "accepted": True,
+                    "frontier_count": len(story_inventory),
+                })
             summaries.append({
                 "mode": "profile",
                 "capture_id": capture_id,
@@ -158,12 +212,12 @@ class CampaignTest(unittest.TestCase):
                 "inventory_complete": True,
                 "analyzer_min_inclusive_share": 0.001,
                 "analyzer_min_marginal_share": 0.001,
-                "frontier_entries": [item["entry_key"] for item in inventory],
+                "frontier_entries": entries,
                 "frontier_inventory": inventory,
                 "frontier_count": len(inventory),
                 "local_results": str(local_results),
                 "remote_perf_data": f"/remote/{capture_id}/perf_sampling.data",
-                "full_candidate_frontier_json": str(artifact),
+                "story_frontiers": story_frontiers,
             })
         path = self.dir / f"captures-{profile_id}.json"
         path.write_text(json.dumps(summaries))
@@ -189,9 +243,10 @@ class CampaignTest(unittest.TestCase):
             ]
         capture_ids = [f"{profile_id}-{index}" for index in (1, 2)]
         for area in areas:
+            story = area.get("story", TEST_STORY)
             area["source_refs"] = [
                 {"capture_id": capture_id,
-                 "entry_key": f"symbol:{area['area_key']}"}
+                 "entry_key": f"story:{story}/symbol:{area['area_key']}"}
                 for capture_id in capture_ids
             ]
         path = self.dir / f"areas-{profile_id}.json"
@@ -286,7 +341,8 @@ class CampaignTest(unittest.TestCase):
         for area in areas:
             area["source_refs"] = [
                 {"capture_id": f"priority-{index}",
-                 "entry_key": f"symbol:{area['area_key']}"}
+                 "entry_key":
+                     f"story:{TEST_STORY}/symbol:{area['area_key']}"}
                 for index in (1, 2)
             ]
         manifest = self.dir / "areas-priority.json"
@@ -333,6 +389,8 @@ class CampaignTest(unittest.TestCase):
                 "anchor": "deep hot child",
                 "mechanism_key": "blink/deep-hot-fast-path",
                 "share_pct": 0.05,
+                "estimated_avoidable_fraction": 1.0,
+                "estimated_local_story_impact_pct": 2.0,
                 "evidence": "investigator estimate deliberately understates profile",
                 "work_refs": grouped["blink::DeepHotChild"],
             }],
@@ -471,7 +529,8 @@ class CampaignTest(unittest.TestCase):
         for area in areas:
             area["source_refs"] = [
                 {"capture_id": f"capture-{index}",
-                 "entry_key": f"symbol:{area['area_key']}"}
+                 "entry_key":
+                     f"story:{TEST_STORY}/symbol:{area['area_key']}"}
                 for index in (1, 2)
             ]
         path.write_text(json.dumps(self.reconciliation(areas)))
@@ -504,7 +563,7 @@ class CampaignTest(unittest.TestCase):
             "assigned_alternatives": [{"name": "blink::OptimizableChild"}],
             "source_refs": [
                 {"capture_id": f"capture-{index}",
-                 "entry_key": "symbol:script-dispatch"}
+                 "entry_key": f"story:{TEST_STORY}/symbol:script-dispatch"}
                 for index in (1, 2)
             ],
         }]
@@ -592,7 +651,8 @@ class CampaignTest(unittest.TestCase):
             "marginal_share_pct": 0.5,
             "source_refs": [
                 {"capture_id": f"profile-2-{index}",
-                 "entry_key": "symbol:blink::SharedF::Run()"}
+                 "entry_key":
+                     f"story:{TEST_STORY}/symbol:blink::SharedF::Run()"}
                 for index in (1, 2)
             ],
         }]
@@ -799,9 +859,9 @@ class CampaignTest(unittest.TestCase):
             "duplicate-capture", "deadbeef", []
         )
         summaries = json.loads(captures.read_text())
-        summaries[1]["full_candidate_frontier_json"] = summaries[0][
-            "full_candidate_frontier_json"
-        ]
+        summaries[1]["story_frontiers"][0]["artifact"] = summaries[0][
+            "story_frontiers"
+        ][0]["artifact"]
         captures.write_text(json.dumps(summaries))
         self.assertEqual(1, self.run_cmd(
             "profile", "--id", "duplicate-capture", "--sha", "deadbeef",
@@ -1093,11 +1153,12 @@ class CampaignTest(unittest.TestCase):
             "--out", str(manifest)))
         scaffolded = json.loads(manifest.read_text())
         self.assertEqual(
-            ["style-recalc", "layout"],
+            ["todomvc-test-style-recalc", "todomvc-test-layout"],
             [area["area_key"] for area in scaffolded["areas"]],
         )
         self.assertTrue(all(
             area["disposition"] == "discover"
+            and area["target_story"] == TEST_STORY
             and len(area["source_refs"]) == 2
             for area in scaffolded["areas"]
         ))
@@ -1153,18 +1214,25 @@ class CampaignTest(unittest.TestCase):
         summaries = []
         for capture_id, keys in entry_keys_by_capture.items():
             def display(key):
-                semantic = campaign.semantic_entry_identity(key)
+                bare = campaign.split_story_entry_key(key)[1]
+                semantic = campaign.semantic_entry_identity(bare)
                 return semantic.split(":", 1)[1]
             frontier = [{
                 "entry_key": key,
-                "kind": "context" if key.startswith("context:") else "symbol",
+                "kind": (
+                    "context"
+                    if campaign.split_story_entry_key(key)[1].startswith(
+                        "context:"
+                    ) else "symbol"
+                ),
                 "name": display(key),
                 "marginal_share": 0.005,
                 "related_hotspots": [],
             } for key in keys]
             local_results = self.dir / capture_id
             artifact = (
-                local_results / "analysis" / "full" / "candidate_frontier.json"
+                local_results / "analysis" / "stories" / TEST_STORY
+                / "candidate_frontier.json"
             )
             artifact.parent.mkdir(parents=True)
             artifact.write_text(json.dumps({
@@ -1173,6 +1241,8 @@ class CampaignTest(unittest.TestCase):
                     "inventory_complete": True,
                     "min_inclusive_share": 0.001,
                     "min_marginal_share": 0.001,
+                    "metric_weighting": "speedometer-story-v1",
+                    "story": TEST_STORY,
                 },
                 "frontier": frontier,
                 "overlapping_alternatives": [],
@@ -1202,7 +1272,14 @@ class CampaignTest(unittest.TestCase):
                 "frontier_count": len(inventory),
                 "local_results": str(local_results),
                 "remote_perf_data": f"/remote/{capture_id}/perf_sampling.data",
-                "full_candidate_frontier_json": str(artifact),
+                "story_frontiers": [{
+                    "story": TEST_STORY,
+                    "artifact": str(artifact),
+                    "samples": 40000,
+                    "nominal_samples_at_floor": 120.0,
+                    "accepted": True,
+                    "frontier_count": len(inventory),
+                }],
             })
         path = self.dir / f"captures-{profile_id}.json"
         path.write_text(json.dumps(summaries))
@@ -1217,19 +1294,19 @@ class CampaignTest(unittest.TestCase):
 
     def test_context_digest_drift_cannot_be_dropped_as_not_recurrent(self):
         captures = self.write_context_capture_summaries("ctx", {
-            "ctx-1": ["context:blink::F::Run()@aaaa000000000000"],
-            "ctx-2": ["context:blink::F::Run()@bbbb000000000000"],
+            "ctx-1": ["story:TodoMVC-Test/context:blink::F::Run()@aaaa000000000000"],
+            "ctx-2": ["story:TodoMVC-Test/context:blink::F::Run()@bbbb000000000000"],
         })
         manifest = self.dir / "ctx-drop.json"
         manifest.write_text(json.dumps({
             "areas": [],
             "source_exclusions": [
                 {"capture_id": "ctx-1",
-                 "entry_key": "context:blink::F::Run()@aaaa000000000000",
+                 "entry_key": "story:TodoMVC-Test/context:blink::F::Run()@aaaa000000000000",
                  "category": "not-recurrent",
                  "evidence": "absent from capture 2"},
                 {"capture_id": "ctx-2",
-                 "entry_key": "context:blink::F::Run()@bbbb000000000000",
+                 "entry_key": "story:TodoMVC-Test/context:blink::F::Run()@bbbb000000000000",
                  "category": "not-recurrent",
                  "evidence": "absent from capture 1"},
             ],
@@ -1239,19 +1316,19 @@ class CampaignTest(unittest.TestCase):
 
     def test_context_function_drift_cannot_be_dropped_as_not_recurrent(self):
         captures = self.write_context_capture_summaries("mixed", {
-            "mixed-1": ["context:blink::F::Run()@aaaa000000000000"],
-            "mixed-2": ["function:blink::F::Run()"],
+            "mixed-1": ["story:TodoMVC-Test/context:blink::F::Run()@aaaa000000000000"],
+            "mixed-2": ["story:TodoMVC-Test/function:blink::F::Run()"],
         })
         manifest = self.dir / "mixed-drop.json"
         manifest.write_text(json.dumps({
             "areas": [],
             "source_exclusions": [
                 {"capture_id": "mixed-1",
-                 "entry_key": "context:blink::F::Run()@aaaa000000000000",
+                 "entry_key": "story:TodoMVC-Test/context:blink::F::Run()@aaaa000000000000",
                  "category": "not-recurrent",
                  "evidence": "context aggregate absent from capture 2"},
                 {"capture_id": "mixed-2",
-                 "entry_key": "function:blink::F::Run()",
+                 "entry_key": "story:TodoMVC-Test/function:blink::F::Run()",
                  "category": "not-recurrent",
                  "evidence": "function aggregate absent from capture 1"},
             ],
@@ -1267,9 +1344,9 @@ class CampaignTest(unittest.TestCase):
                 "disposition": "discover",
                 "source_refs": [
                     {"capture_id": "mixed-1",
-                     "entry_key": "context:blink::F::Run()@aaaa000000000000"},
+                     "entry_key": "story:TodoMVC-Test/context:blink::F::Run()@aaaa000000000000"},
                     {"capture_id": "mixed-2",
-                     "entry_key": "function:blink::F::Run()"},
+                     "entry_key": "story:TodoMVC-Test/function:blink::F::Run()"},
                 ],
             }],
             "source_exclusions": [],
@@ -1279,8 +1356,8 @@ class CampaignTest(unittest.TestCase):
 
     def test_context_digest_drift_reconciles_as_one_area(self):
         captures = self.write_context_capture_summaries("ctx", {
-            "ctx-1": ["context:blink::F::Run()@aaaa000000000000"],
-            "ctx-2": ["context:blink::F::Run()@bbbb000000000000"],
+            "ctx-1": ["story:TodoMVC-Test/context:blink::F::Run()@aaaa000000000000"],
+            "ctx-2": ["story:TodoMVC-Test/context:blink::F::Run()@bbbb000000000000"],
         })
         manifest = self.dir / "ctx-area.json"
         manifest.write_text(json.dumps({
@@ -1291,9 +1368,9 @@ class CampaignTest(unittest.TestCase):
                 "disposition": "discover",
                 "source_refs": [
                     {"capture_id": "ctx-1",
-                     "entry_key": "context:blink::F::Run()@aaaa000000000000"},
+                     "entry_key": "story:TodoMVC-Test/context:blink::F::Run()@aaaa000000000000"},
                     {"capture_id": "ctx-2",
-                     "entry_key": "context:blink::F::Run()@bbbb000000000000"},
+                     "entry_key": "story:TodoMVC-Test/context:blink::F::Run()@bbbb000000000000"},
                 ],
             }],
             "source_exclusions": [],
@@ -1305,8 +1382,8 @@ class CampaignTest(unittest.TestCase):
 
     def test_profile_scaffold_reuses_area_key_across_context_digest_drift(self):
         captures = self.write_context_capture_summaries("p1", {
-            "p1-1": ["context:blink::F::Run()@aaaa000000000000"],
-            "p1-2": ["context:blink::F::Run()@bbbb000000000000"],
+            "p1-1": ["story:TodoMVC-Test/context:blink::F::Run()@aaaa000000000000"],
+            "p1-2": ["story:TodoMVC-Test/context:blink::F::Run()@bbbb000000000000"],
         })
         manifest = self.dir / "p1-area.json"
         manifest.write_text(json.dumps({
@@ -1317,9 +1394,9 @@ class CampaignTest(unittest.TestCase):
                 "disposition": "discover",
                 "source_refs": [
                     {"capture_id": "p1-1",
-                     "entry_key": "context:blink::F::Run()@aaaa000000000000"},
+                     "entry_key": "story:TodoMVC-Test/context:blink::F::Run()@aaaa000000000000"},
                     {"capture_id": "p1-2",
-                     "entry_key": "context:blink::F::Run()@bbbb000000000000"},
+                     "entry_key": "story:TodoMVC-Test/context:blink::F::Run()@bbbb000000000000"},
                 ],
             }],
             "source_exclusions": [],
@@ -1328,8 +1405,8 @@ class CampaignTest(unittest.TestCase):
         self.assertEqual(0, self.run_profile("p1", manifest, captures))
 
         captures = self.write_context_capture_summaries("p2", {
-            "p2-1": ["context:blink::F::Run()@cccc000000000000"],
-            "p2-2": ["context:blink::F::Run()@dddd000000000000"],
+            "p2-1": ["story:TodoMVC-Test/context:blink::F::Run()@cccc000000000000"],
+            "p2-2": ["story:TodoMVC-Test/context:blink::F::Run()@dddd000000000000"],
         })
         scaffold = self.dir / "p2-scaffold.json"
         self.assertEqual(0, self.run_cmd(
@@ -1345,10 +1422,10 @@ class CampaignTest(unittest.TestCase):
     def test_surplus_context_needs_area_backed_context_variant(self):
         entry_keys = {
             "ctx-1": [
-                "context:blink::F::Run()@aaaa000000000000",
-                "context:blink::F::Run()@cccc000000000000",
+                "story:TodoMVC-Test/context:blink::F::Run()@aaaa000000000000",
+                "story:TodoMVC-Test/context:blink::F::Run()@cccc000000000000",
             ],
-            "ctx-2": ["context:blink::F::Run()@bbbb000000000000"],
+            "ctx-2": ["story:TodoMVC-Test/context:blink::F::Run()@bbbb000000000000"],
         }
         area = {
             "area_key": "f-run-context",
@@ -1357,14 +1434,14 @@ class CampaignTest(unittest.TestCase):
             "disposition": "discover",
             "source_refs": [
                 {"capture_id": "ctx-1",
-                 "entry_key": "context:blink::F::Run()@aaaa000000000000"},
+                 "entry_key": "story:TodoMVC-Test/context:blink::F::Run()@aaaa000000000000"},
                 {"capture_id": "ctx-2",
-                 "entry_key": "context:blink::F::Run()@bbbb000000000000"},
+                 "entry_key": "story:TodoMVC-Test/context:blink::F::Run()@bbbb000000000000"},
             ],
         }
         surplus = {
             "capture_id": "ctx-1",
-            "entry_key": "context:blink::F::Run()@cccc000000000000",
+            "entry_key": "story:TodoMVC-Test/context:blink::F::Run()@cccc000000000000",
             "category": "context-variant",
             "evidence": "surplus same-symbol caller context",
         }
@@ -1384,7 +1461,7 @@ class CampaignTest(unittest.TestCase):
             "source_exclusions": [
                 orphan,
                 {"capture_id": "ctx-1",
-                 "entry_key": "context:blink::G::Run()@dddd000000000000",
+                 "entry_key": "story:TodoMVC-Test/context:blink::G::Run()@dddd000000000000",
                  "category": "context-variant",
                  "evidence": "no sibling area exists"},
             ],
@@ -1540,7 +1617,7 @@ class EnforcementRegressionTest(unittest.TestCase):
             check=True, capture_output=True, text=True,
         ).stdout.strip()
 
-    def checkpoint_manifest(self):
+    def checkpoint_manifest(self, stories="all"):
         evidence_name = "ab_evidence_" + "a" * 24
         evidence = self.repo / evidence_name
         evidence.mkdir()
@@ -1551,6 +1628,7 @@ class EnforcementRegressionTest(unittest.TestCase):
         for block_number, pattern in enumerate(schedule, 1):
             arm_results = {"a": [], "b": []}
             arm_scores = {"a": [], "b": []}
+            arm_stories = {"a": [], "b": []}
             for position, letter in enumerate(pattern, 1):
                 arm = letter.lower()
                 # Non-uniform, deterministic values exercise the real paired
@@ -1558,9 +1636,19 @@ class EnforcementRegressionTest(unittest.TestCase):
                 score = 100.0 + block_number * 0.07 + position * 0.013
                 if arm == "b":
                     score *= 1.004 + (block_number % 5) * 0.0001
+                selected = (
+                    [TEST_STORY] if stories == "all"
+                    else campaign.parse_story_selector(stories)
+                )
+                story_totals = {
+                    story: (100000.0 + offset * 1000.0) / score
+                    for offset, story in enumerate(selected)
+                }
                 name = f"rep-{block_number:02d}-{position}-{arm}.json"
                 path = evidence / name
-                path.write_text(json.dumps({"Score": score, "ignored": "raw"}))
+                path.write_text(json.dumps({
+                    "Score": score, "ignored": "raw", **story_totals,
+                }))
                 started = clock
                 clock += 31_000_000_000
                 result = {
@@ -1575,11 +1663,14 @@ class EnforcementRegressionTest(unittest.TestCase):
                 }
                 arm_results[arm].append(result)
                 arm_scores[arm].append(score)
+                arm_stories[arm].append(story_totals)
             blocks.append({
                 "block": block_number,
                 "pattern": pattern,
                 "a_scores": arm_scores["a"],
                 "b_scores": arm_scores["b"],
+                "a_stories": arm_stories["a"],
+                "b_stories": arm_stories["b"],
                 "a_results": arm_results["a"],
                 "b_results": arm_results["b"],
             })
@@ -1588,7 +1679,7 @@ class EnforcementRegressionTest(unittest.TestCase):
             "schema_version": campaign.SCORE_MANIFEST_SCHEMA_VERSION,
             "runner": campaign.SCORE_MANIFEST_RUNNER,
             "mode": "ab",
-            "stories": "all",
+            "stories": stories,
             "blocks": 32,
             "schedule": schedule,
             "evidence_dir": evidence_name,
@@ -1608,7 +1699,9 @@ class EnforcementRegressionTest(unittest.TestCase):
             },
             "started_monotonic_raw_ns": run_start,
             "finished_monotonic_raw_ns": clock,
-            "minimum_duration_ns": 32 * 4 * 30 * 1_000_000_000,
+            "minimum_duration_ns": (
+                32 * 4 * 30 * 1_000_000_000 if stories == "all" else 0
+            ),
             "block_details": blocks,
             **computed,
         }
@@ -1722,13 +1815,94 @@ class EnforcementRegressionTest(unittest.TestCase):
             def landed():
                 return [{"id": value} for value in range(5)]
 
-        with self.assertRaisesRegex(campaign.CampaignError, "checkpoint CI"):
+        with self.assertRaisesRegex(campaign.CampaignError, "checkpoint .*CI"):
             campaign.enforce_freshness_for_landing(FakeLedger())
 
     def test_checkpoint_recomputes_from_digest_bound_raw_results(self):
         manifest, path = self.checkpoint_manifest()
         computed = campaign.validate_and_recompute_checkpoint(manifest, path)
         self.assertEqual(manifest["geometric_delta_pct"], computed["geometric_delta_pct"])
+
+    def test_targeted_checkpoint_recomputes_preregistered_story_set(self):
+        selector = "Editor-TipTap,TodoMVC-Test"
+        manifest, path = self.checkpoint_manifest(selector)
+        computed = campaign.validate_and_recompute_checkpoint(manifest, path)
+        self.assertEqual(
+            manifest["geometric_delta_pct"], computed["geometric_delta_pct"]
+        )
+
+    def test_targeted_checkpoint_rejects_story_set_drift(self):
+        manifest, path = self.checkpoint_manifest(TEST_STORY)
+        manifest["block_details"][0]["a_stories"][0]["Extra-Story"] = 1.0
+        with self.assertRaisesRegex(
+            campaign.CampaignError, "per-story totals disagree|preregistered selector"
+        ):
+            campaign.validate_and_recompute_checkpoint(manifest, path)
+
+    def test_split_pilot_requires_both_current_tip_checkpoints(self):
+        class FakeLedger:
+            data = {
+                "pilot": {"status": "pending"},
+                "checkpoints": [{
+                    "type": "targeted", "landed_count": 5,
+                    "ci": [0.1, 0.5], "summary_sha256": "targeted",
+                }],
+            }
+
+            @staticmethod
+            def landed():
+                return [
+                    {"target_story": TEST_STORY} for _ in range(5)
+                ]
+
+        ledger = FakeLedger()
+        campaign.update_pilot_from_split_checkpoints(ledger, saved=0.4)
+        self.assertEqual("pending", ledger.data["pilot"]["status"])
+        ledger.data["checkpoints"].append({
+            "type": "full-suite", "landed_count": 5,
+            "ci": [-0.2, 0.3], "summary_sha256": "full",
+        })
+        campaign.update_pilot_from_split_checkpoints(ledger, saved=0.4)
+        self.assertEqual("passed", ledger.data["pilot"]["status"])
+
+    def test_checkpoint_attempt_policy_allows_one_larger_targeted_confirmation(self):
+        class FakeLedger:
+            data = {"checkpoints": [{
+                "type": "targeted", "sha": "tip", "landed_count": 5,
+                "blocks": 32, "ci": [-0.2, 0.5],
+            }]}
+
+        campaign.enforce_checkpoint_attempt_policy(
+            FakeLedger(), kind="targeted", sha="tip", landed_count=5,
+            blocks=64,
+        )
+        with self.assertRaisesRegex(campaign.CampaignError, "larger block count"):
+            campaign.enforce_checkpoint_attempt_policy(
+                FakeLedger(), kind="targeted", sha="tip", landed_count=5,
+                blocks=32,
+            )
+        FakeLedger.data["checkpoints"].append({
+            "type": "targeted", "sha": "tip", "landed_count": 5,
+            "blocks": 64, "ci": [-0.1, 0.3],
+        })
+        with self.assertRaisesRegex(campaign.CampaignError, "one allowed"):
+            campaign.enforce_checkpoint_attempt_policy(
+                FakeLedger(), kind="targeted", sha="tip", landed_count=5,
+                blocks=128,
+            )
+
+    def test_checkpoint_attempt_policy_rejects_duplicate_full_suite(self):
+        class FakeLedger:
+            data = {"checkpoints": [{
+                "type": "full-suite", "sha": "tip", "landed_count": 5,
+                "blocks": 32, "ci": [-0.2, 0.5],
+            }]}
+
+        with self.assertRaisesRegex(campaign.CampaignError, "already recorded"):
+            campaign.enforce_checkpoint_attempt_policy(
+                FakeLedger(), kind="full-suite", sha="tip", landed_count=5,
+                blocks=64,
+            )
 
     def test_checkpoint_rejects_copied_statistic(self):
         manifest, path = self.checkpoint_manifest()
@@ -1742,6 +1916,60 @@ class EnforcementRegressionTest(unittest.TestCase):
         first.write_text(json.dumps({"Score": 999.0}))
         with self.assertRaisesRegex(campaign.CampaignError, "digest changed"):
             campaign.validate_and_recompute_checkpoint(manifest, path)
+
+    def test_checkpoint_rejects_edited_per_story_totals(self):
+        manifest, path = self.checkpoint_manifest()
+        manifest["block_details"][0]["a_stories"][0][TEST_STORY] *= 2.0
+        with self.assertRaisesRegex(
+            campaign.CampaignError, "per-story totals disagree"
+        ):
+            campaign.validate_and_recompute_checkpoint(manifest, path)
+
+    def test_targeted_story_statistics_read_the_story_silo(self):
+        manifest, _ = self.checkpoint_manifest()
+        targeted = campaign.recompute_targeted_story_statistics(
+            manifest["block_details"], [TEST_STORY]
+        )
+        # Arm B scores are ~0.4% higher, so its story times are lower and the
+        # targeted-story delta must be positive with a positive lower bound.
+        self.assertEqual([TEST_STORY], targeted["targeted_stories"])
+        self.assertGreater(targeted["targeted_delta_pct"], 0.0)
+        self.assertGreater(targeted["targeted_ci_95_pct"][0], 0.0)
+
+    def test_targeted_story_statistics_reject_unknown_story(self):
+        manifest, _ = self.checkpoint_manifest()
+        with self.assertRaisesRegex(
+            campaign.CampaignError, "no measurements for targeted story"
+        ):
+            campaign.recompute_targeted_story_statistics(
+                manifest["block_details"], ["Missing-Story"]
+            )
+
+    def test_story_semantic_identity_stays_in_its_silo(self):
+        self.assertEqual(
+            "story:Charts-chartjs/symbol:blink::F::Run()",
+            campaign.semantic_entry_identity(
+                "story:Charts-chartjs/context:blink::F::Run()@aaaa000000000000"
+            ),
+        )
+        self.assertNotEqual(
+            campaign.semantic_entry_identity(
+                "story:Charts-chartjs/function:blink::F::Run()"
+            ),
+            campaign.semantic_entry_identity(
+                "story:TodoMVC-jQuery/function:blink::F::Run()"
+            ),
+        )
+        self.assertEqual(
+            ("Charts-chartjs", "function:blink::F::Run()"),
+            campaign.split_story_entry_key(
+                "story:Charts-chartjs/function:blink::F::Run()"
+            ),
+        )
+        self.assertEqual(
+            (None, "function:blink::F::Run()"),
+            campaign.split_story_entry_key("function:blink::F::Run()"),
+        )
 
     def test_gate_challenges_require_distinct_bound_tasks(self):
         skeptic = self.gate_challenge("skeptic", "task-skeptic")
@@ -1905,13 +2133,18 @@ class GitReviewVerificationTest(unittest.TestCase):
         for index in (1, 2):
             capture_id = f"{profile_id}-{index}"
             local_results = self.dir / capture_id
-            artifact = local_results / "analysis" / "full" / "candidate_frontier.json"
+            artifact = (
+                local_results / "analysis" / "stories" / TEST_STORY
+                / "candidate_frontier.json"
+            )
             artifact.parent.mkdir(parents=True)
             artifact.write_text(json.dumps({
                 "quality": {"accepted": True},
                 "selection": {"inventory_complete": True,
                               "min_inclusive_share": 0.001,
-                              "min_marginal_share": 0.001},
+                              "min_marginal_share": 0.001,
+                              "metric_weighting": "speedometer-story-v1",
+                              "story": TEST_STORY},
                 "frontier": [],
             }))
             summaries.append({
@@ -1928,7 +2161,14 @@ class GitReviewVerificationTest(unittest.TestCase):
                 "frontier_count": 0,
                 "local_results": str(local_results),
                 "remote_perf_data": f"/remote/{capture_id}/perf_sampling.data",
-                "full_candidate_frontier_json": str(artifact),
+                "story_frontiers": [{
+                    "story": TEST_STORY,
+                    "artifact": str(artifact),
+                    "samples": 40000,
+                    "nominal_samples_at_floor": 120.0,
+                    "accepted": True,
+                    "frontier_count": 0,
+                }],
             })
         path.write_text(json.dumps(summaries))
         return path

@@ -439,6 +439,15 @@ def per_story_stats(block_data):
     return results
 
 
+def manifest_block_details(block_data):
+    """Keep the runner/ledger block contract in one testable serializer."""
+    fields = (
+        "block", "pattern", "a_scores", "b_scores",
+        "a_stories", "b_stories", "a_results", "b_results",
+    )
+    return [{key: block[key] for key in fields} for block in block_data]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run randomized block-interleaved (ABBA/BAAB) A/B or A/A Speedometer benchmark.")
     parser.add_argument("--browser", default="out/release/chrome", help="Browser build path (aa and feature modes)")
@@ -722,13 +731,7 @@ def main():
         "harness": harness,
         "skill_tree_sha256": skill_digest,
         "evidence_dir": evidence_name,
-        "block_details": [
-            {k: b[k] for k in (
-                "block", "pattern", "a_scores", "b_scores",
-                "a_results", "b_results",
-            )}
-            for b in block_data
-        ],
+        "block_details": manifest_block_details(block_data),
         "geometric_delta_pct": suite["delta_pct"],
         "ci_95_pct": suite["ci_95_pct"],
         "significance_threshold_pct": suite["significance_threshold_pct"],

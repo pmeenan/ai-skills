@@ -47,6 +47,7 @@ import math
 import os
 import pathlib
 import re
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -68,6 +69,7 @@ MECHANISM_TERMINAL = ("landed", "reverted", "rejected")
 EXPECTED_VALUE_UNIT = "profile-share-equivalent-pct"
 MAX_LANDINGS_WITHOUT_PROFILE = 5
 MAX_LANDINGS_WITHOUT_CHECKPOINT = 5
+MAX_LANDINGS_WITHOUT_FULL_SUITE_CHECKPOINT = 10
 PILOT_MIN_LANDINGS = 3
 PILOT_MAX_LANDINGS = 5
 MIN_SCORE_BLOCKS = 32
@@ -198,6 +200,12 @@ def load_gate_evidence(path, *, opp, phase):
             raise CampaignError(
                 f"Evidence {field} {evidence.get(field)!r} does not match {expected!r}"
             )
+    expected_story = opp.get("target_story")
+    if expected_story and evidence.get("target_story") != expected_story:
+        raise CampaignError(
+            f"Evidence measured story {evidence.get('target_story')!r}, not "
+            f"the opportunity's target story {expected_story!r}"
+        )
     if evidence.get("score_scope", {}).get("classification") not in (
         "score-critical", "cpu-only"
     ):
@@ -309,6 +317,94 @@ def landings_since_sequence(ledger, sequence):
     )
 
 
+def checkpoint_type(checkpoint):
+    """Return the checkpoint type, treating pre-split records as legacy dual-use."""
+    return checkpoint.get("type") or "legacy"
+
+
+def latest_checkpoint(ledger, kind):
+    for checkpoint in reversed(ledger.data.get("checkpoints", [])):
+        recorded_kind = checkpoint_type(checkpoint)
+        if recorded_kind == kind or recorded_kind == "legacy":
+            return checkpoint
+    return None
+
+
+def landed_target_stories(ledger):
+    return sorted({
+        opp["target_story"]
+        for opp in ledger.landed()
+        if isinstance(opp.get("target_story"), str) and opp["target_story"]
+    })
+
+
+def story_selector(stories):
+    return ",".join(sorted(set(stories)))
+
+
+def parse_story_selector(value):
+    if value == "all":
+        return None
+    if not isinstance(value, str):
+        return []
+    return sorted({item.strip() for item in value.split(",") if item.strip()})
+
+
+def enforce_checkpoint_attempt_policy(ledger, *, kind, sha, landed_count, blocks):
+    """Prevent optional stopping through repeated same-tip checkpoints.
+
+    A targeted checkpoint gets one predeclared larger confirmation only when
+    its first interval is inconclusive. A full-suite checkpoint is a
+    regression/aggregate snapshot, so there is no same-tip retry loop.
+    """
+    attempts = [
+        checkpoint
+        for checkpoint in ledger.data.get("checkpoints", [])
+        if checkpoint_type(checkpoint) == kind
+        and checkpoint.get("sha") == sha
+        and checkpoint.get("landed_count") == landed_count
+    ]
+    if not attempts:
+        return
+    if kind == "full-suite":
+        raise CampaignError(
+            "A full-suite checkpoint is already recorded at this campaign tip; "
+            "do not repeat same-tip runs until one looks favorable"
+        )
+    previous = attempts[-1]
+    previous_ci = previous.get("ci")
+    if (
+        not isinstance(previous_ci, list)
+        or len(previous_ci) != 2
+        or not all(isinstance(value, (int, float)) for value in previous_ci)
+    ):
+        raise CampaignError("The prior targeted checkpoint has no usable CI")
+    if previous_ci[0] > 0:
+        raise CampaignError(
+            "The targeted checkpoint is already positive at this campaign tip"
+        )
+    if previous_ci[1] <= 0:
+        raise CampaignError(
+            "The targeted checkpoint is negative at this campaign tip; "
+            "diagnose or bisect instead of rerunning it"
+        )
+    if len(attempts) >= 2:
+        raise CampaignError(
+            "The one allowed larger targeted confirmation is already recorded "
+            "at this campaign tip"
+        )
+    previous_blocks = previous.get("blocks")
+    if (
+        isinstance(previous_blocks, bool)
+        or not isinstance(previous_blocks, int)
+        or isinstance(blocks, bool)
+        or not isinstance(blocks, int)
+        or blocks <= previous_blocks
+    ):
+        raise CampaignError(
+            "An inconclusive targeted checkpoint may be confirmed once only "
+            "with a preregistered larger block count"
+        )
 def enforce_freshness_for_landing(ledger):
     pilot = ledger.data.get("pilot", {})
     landed_count = len(ledger.landed())
@@ -328,26 +424,51 @@ def enforce_freshness_for_landing(ledger):
             f"Landing is blocked after {MAX_LANDINGS_WITHOUT_PROFILE} runtime changes; "
             "record a fresh flag-enabled profile"
         )
-    checkpoints = ledger.data.get("checkpoints", [])
-    checkpoint_count = checkpoints[-1]["landed_count"] if checkpoints else 0
-    latest_ci = checkpoints[-1].get("ci") if checkpoints else None
+    targeted_checkpoint = latest_checkpoint(ledger, "targeted")
+    full_checkpoint = latest_checkpoint(ledger, "full-suite")
+    targeted_count = targeted_checkpoint["landed_count"] if targeted_checkpoint else 0
+    full_count = full_checkpoint["landed_count"] if full_checkpoint else 0
+    gate_ci = targeted_checkpoint.get("ci") if targeted_checkpoint else None
     if (
-        checkpoints
-        and checkpoint_count == landed_count
+        targeted_checkpoint
+        and targeted_count == landed_count
         and landed_count >= PILOT_MIN_LANDINGS
-        and isinstance(latest_ci, list)
-        and len(latest_ci) == 2
-        and latest_ci[0] <= 0
+        and isinstance(gate_ci, list)
+        and len(gate_ci) == 2
+        and gate_ci[0] <= 0
+    ):
+        raise CampaignError(
+            f"Landing is blocked because the latest cumulative out/release "
+            f"targeted checkpoint CI [{gate_ci[0]:+.4f}%, "
+            f"{gate_ci[1]:+.4f}%] is not positive; increase balanced blocks, "
+            "diagnose the evidence chain, or bisect/revert"
+        )
+    latest_full_ci = full_checkpoint.get("ci") if full_checkpoint else None
+    if (
+        full_checkpoint
+        and isinstance(latest_full_ci, list)
+        and len(latest_full_ci) == 2
+        and latest_full_ci[1] <= 0
     ):
         raise CampaignError(
             "Landing is blocked because the latest cumulative out/release "
-            f"checkpoint CI [{latest_ci[0]:+.4f}%, {latest_ci[1]:+.4f}%] is not positive; "
-            "increase balanced blocks, diagnose the evidence chain, or bisect/revert"
+            f"checkpoint shows a stat-sig full-suite regression "
+            f"[{latest_full_ci[0]:+.4f}%, {latest_full_ci[1]:+.4f}%]; bisect/revert "
+            "before landing more work"
         )
-    if len(ledger.landed()) - checkpoint_count >= MAX_LANDINGS_WITHOUT_CHECKPOINT:
+    if landed_count - targeted_count >= MAX_LANDINGS_WITHOUT_CHECKPOINT:
         raise CampaignError(
             f"Landing is blocked after {MAX_LANDINGS_WITHOUT_CHECKPOINT} unchecked "
-            "landings; record a cumulative checkpoint"
+            "landings; record a targeted cumulative checkpoint"
+        )
+    if (
+        pilot.get("status") == "passed"
+        and landed_count - full_count >= MAX_LANDINGS_WITHOUT_FULL_SUITE_CHECKPOINT
+    ):
+        raise CampaignError(
+            "Landing is blocked after "
+            f"{MAX_LANDINGS_WITHOUT_FULL_SUITE_CHECKPOINT} landings without a "
+            "full-suite regression checkpoint"
         )
 
 
@@ -531,6 +652,7 @@ class Ledger:
             opp.setdefault("observations", [])
             opp.setdefault("expected_value_unit", None)
             opp.setdefault("measured_priority_pct", None)
+            opp.setdefault("target_story", None)
             opp.setdefault("sizing_evidence", None)
             opp.setdefault("sizing_evidence_sha256", None)
             opp.setdefault("verification_evidence", None)
@@ -830,7 +952,8 @@ class Ledger:
         if checkpoints:
             cp = checkpoints[-1]
             header += (
-                f" · Last checkpoint (after {cp['landed_count']} landed): "
+                f" · Last {checkpoint_type(cp)} checkpoint "
+                f"(after {cp['landed_count']} landed): "
                 f"{cp['delta_pct']:+.2f}% "
                 f"[{cp['ci'][0]:+.2f}%, {cp['ci'][1]:+.2f}%]"
             )
@@ -854,15 +977,23 @@ class Ledger:
             landings_since_sequence(self, profiles[-1].get("sequence", 0))
             if profiles else 0
         )
-        checkpoint_landed = checkpoints[-1]["landed_count"] if checkpoints else 0
-        unchecked_landings = max(0, len(landed) - checkpoint_landed)
+        targeted_checkpoint = latest_checkpoint(self, "targeted")
+        full_checkpoint = latest_checkpoint(self, "full-suite")
+        targeted_landed = (
+            targeted_checkpoint["landed_count"] if targeted_checkpoint else 0
+        )
+        full_landed = full_checkpoint["landed_count"] if full_checkpoint else 0
+        unchecked_landings = max(0, len(landed) - targeted_landed)
+        unchecked_full = max(0, len(landed) - full_landed)
         lines.append("")
         lines.append(
             "**Freshness:** "
             f"{profile_changes}/{MAX_LANDINGS_WITHOUT_PROFILE} runtime changes "
             "since profile · "
             f"{unchecked_landings}/{MAX_LANDINGS_WITHOUT_CHECKPOINT} landings "
-            "since checkpoint"
+            "since targeted checkpoint · "
+            f"{unchecked_full}/{MAX_LANDINGS_WITHOUT_FULL_SUITE_CHECKPOINT} "
+            "since full-suite checkpoint"
         )
 
         discoveries = [o for o in opps if o.get("kind") == "discovery"]
@@ -964,16 +1095,17 @@ class Ledger:
             lines.append("_(nothing in flight)_")
 
         lines.append("")
-        lines.append("## Next up (global impact priority)")
+        lines.append("## Next up (global ranking by target-story impact)")
         nxt = self.next_candidates(5)
         if nxt:
             for i, o in enumerate(nxt, 1):
                 priority, basis, measured = self.priority_info(o)
+                story = o.get("target_story") or "?"
                 lines.append(
                     f"{i}. #{o['id']:03d} [{o.get('kind', 'mechanism')}] "
                     f"{o['anchor']} "
-                    f"(priority {priority:.3f}, {basis}; "
-                    f"measured {measured:.3f}%, "
+                    f"(story {story}; priority {priority:.3f}, {basis}; "
+                    f"measured {measured:.3f}% of story, "
                     f"reported {o.get('share_pct', 0.0):.3f}%)"
                 )
         else:
@@ -993,13 +1125,14 @@ class Ledger:
             lines.append("_(none yet)_")
 
         lines.append("")
-        lines.append("## Checkpoints (cumulative flag on/off, full suite)")
+        lines.append("## Checkpoints (cumulative flag on/off)")
         if checkpoints:
-            lines.append("| After # landed | Delta | 95% CI | Date | Notes |")
-            lines.append("| --- | --- | --- | --- | --- |")
+            lines.append("| Type | Stories | After # landed | Delta | 95% CI | Date | Notes |")
+            lines.append("| --- | --- | --- | --- | --- | --- | --- |")
             for cp in checkpoints:
                 lines.append(
-                    f"| {cp['landed_count']} | {cp['delta_pct']:+.2f}% | "
+                    f"| {checkpoint_type(cp)} | `{cp.get('stories', 'all')}` | "
+                    f"{cp['landed_count']} | {cp['delta_pct']:+.2f}% | "
                     f"[{cp['ci'][0]:+.2f}%, {cp['ci'][1]:+.2f}%] | "
                     f"{cp['ts'][:10]} | {cp.get('notes') or ''} |"
                 )
@@ -1127,6 +1260,21 @@ def feature_names(value):
     return {item.strip() for item in (value or "").split(",") if item.strip()}
 
 
+def split_story_entry_key(entry_key):
+    """Split a story-qualified entry key into (story, bare_entry_key).
+
+    Per-story silo analyses namespace every frontier identity as
+    `story:<name>/<kind>:<identity>` so the same symbol stays independently
+    rankable in each story. Keys without the prefix return (None, key).
+    """
+    if isinstance(entry_key, str) and entry_key.startswith("story:"):
+        remainder = entry_key[len("story:"):]
+        story, separator, bare = remainder.partition("/")
+        if separator and story and bare:
+            return story, bare
+    return None, entry_key
+
+
 def semantic_entry_identity(entry_key):
     """Return the profiler work identity represented by a frontier root.
 
@@ -1135,14 +1283,20 @@ def semantic_entry_identity(entry_key):
     the root renames the key). A hot symbol can also move between a
     caller-sensitive context aggregate and a function aggregate across runs.
     Recurrence decisions must therefore compare the represented symbol, never
-    the raw aggregate kind or context digest.
+    the raw aggregate kind or context digest. Story-qualified keys keep their
+    story: the same symbol in two stories is two independent silo identities.
     """
-    kind, separator, identity = entry_key.partition(":")
+    story, bare_key = split_story_entry_key(entry_key)
+    kind, separator, identity = bare_key.partition(":")
     if separator and kind in ("context", "function", "symbol"):
         if kind == "context" and "@" in identity:
             identity = identity.rsplit("@", 1)[0]
-        return f"symbol:{identity}"
-    return entry_key
+        semantic = f"symbol:{identity}"
+    else:
+        semantic = bare_key
+    if story is not None:
+        return f"story:{story}/{semantic}"
+    return semantic
 
 
 def semantic_area_keys(source_area_keys):
@@ -1284,6 +1438,7 @@ def load_capture_summaries(
     seen_local_results = set()
     seen_remote_perf_data = set()
     repetition_counts = set()
+    story_sets = set()
     for index, summary in enumerate(summaries, 1):
         if not isinstance(summary, dict):
             raise CampaignError(f"Capture summary {index} must be an object")
@@ -1330,9 +1485,10 @@ def load_capture_summaries(
             raise CampaignError(
                 f"Capture {capture_id} is not scoped to exact Speedometer score timers"
             )
-        if strict_evidence and summary.get("metric_weighting") != "speedometer-geomean-v1":
+        if strict_evidence and summary.get("metric_weighting") != "speedometer-story-v1":
             raise CampaignError(
-                f"Capture {capture_id} does not use equal suite/repetition score weighting"
+                f"Capture {capture_id} is not a per-story silo decomposition "
+                "(metric_weighting speedometer-story-v1)"
             )
         if strict_evidence:
             nominal = require_finite_number(
@@ -1342,7 +1498,8 @@ def load_capture_summaries(
             )
             if nominal < 100:
                 raise CampaignError(
-                    f"Capture {capture_id} has only {nominal:.1f} nominal samples at floor"
+                    f"Capture {capture_id} has a story with only {nominal:.1f} "
+                    "nominal samples at its local floor; increase repetitions"
                 )
             build_provenance = summary.get("build_provenance")
             required_build = (
@@ -1388,85 +1545,148 @@ def load_capture_summaries(
             raise CampaignError(
                 f"Capture {capture_id} does not attest an exhaustive machine frontier"
             )
-        artifact_path = summary.get("full_candidate_frontier_json")
-        try:
-            resolved_artifact = pathlib.Path(artifact_path).resolve()
-            if resolved_artifact in seen_artifact_paths:
-                raise CampaignError(
-                    "Capture summaries reuse the same analyzer artifact"
-                )
-            if not resolved_artifact.is_relative_to(pathlib.Path(resolved_results)):
-                raise CampaignError(
-                    f"Capture {capture_id} analyzer artifact is outside local_results"
-                )
-            seen_artifact_paths.add(resolved_artifact)
-            artifact_bytes = resolved_artifact.read_bytes()
-            artifact = json.loads(artifact_bytes)
-        except CampaignError:
-            raise
-        except (TypeError, OSError, json.JSONDecodeError) as exc:
+        story_frontiers = summary.get("story_frontiers")
+        if not isinstance(story_frontiers, list) or not story_frontiers:
             raise CampaignError(
-                f"Capture {capture_id} analyzer artifact is unreadable: {exc}"
-            ) from exc
-        if artifact.get("quality", {}).get("accepted") is not True:
-            raise CampaignError(f"Capture {capture_id} analyzer artifact failed quality")
-        if strict_evidence and artifact.get("quality", {}).get("interval_kind") != "exact-scored":
-            raise CampaignError(f"Capture {capture_id} analyzer used broad intervals")
-        if strict_evidence:
-            artifact_nominal = require_finite_number(
-                artifact.get("quality", {}).get("nominal_samples_at_floor"),
-                f"Capture {capture_id} artifact nominal_samples_at_floor",
-                nonnegative=True,
+                f"Capture {capture_id} has no per-story silo analyses; rerun "
+                "remote_measure.py --mode profile with a per-story analyzer"
             )
-            if not math.isclose(
-                artifact_nominal, nominal, rel_tol=0, abs_tol=1e-9
-            ):
-                raise CampaignError(
-                    f"Capture {capture_id} sample-floor summary disagrees with analyzer artifact"
-                )
-            if artifact.get("quality", {}).get("build_provenance") != build_provenance:
-                raise CampaignError(
-                    f"Capture {capture_id} build provenance disagrees with analyzer artifact"
-                )
-        selection = artifact.get("selection", {})
-        if strict_evidence and selection.get("metric_weighting") != "speedometer-geomean-v1":
-            raise CampaignError(f"Capture {capture_id} analyzer is not score-weighted")
-        if selection.get("inventory_complete") is not True:
-            raise CampaignError(f"Capture {capture_id} analyzer inventory is incomplete")
-        derived_entries, derived_inventory, derivation_problems = (
-            derive_frontier_inventory(artifact)
-        )
-        if derivation_problems:
+        story_names = [item.get("story") for item in story_frontiers
+                       if isinstance(item, dict)]
+        if len(story_names) != len(story_frontiers) or any(
+            not isinstance(name, str) or not name for name in story_names
+        ):
             raise CampaignError(
-                f"Capture {capture_id} analyzer artifact cannot attest a "
-                "complete inventory: " + "; ".join(derivation_problems[:5])
+                f"Capture {capture_id} story_frontiers rows are malformed"
             )
-        summary["artifact_sha256"] = hashlib.sha256(artifact_bytes).hexdigest()
+        if len(set(story_names)) != len(story_names):
+            raise CampaignError(f"Capture {capture_id} repeats a story silo")
+        if strict_evidence and len(story_names) != 32:
+            raise CampaignError(
+                f"Capture {capture_id} decomposed only {len(story_names)} "
+                "story silos; a full-suite profile must analyze all 32"
+            )
+        expected_floor = floor_pct / 100.0
         for field in (
             "analyzer_min_inclusive_share", "analyzer_min_marginal_share"
         ):
             analyzer_floor = require_finite_number(
                 summary.get(field), f"Capture {capture_id} {field}", nonnegative=True
             )
-            selection_field = (
-                "min_inclusive_share" if field == "analyzer_min_inclusive_share"
-                else "min_marginal_share"
-            )
-            artifact_floor = require_finite_number(
-                selection.get(selection_field),
-                f"Capture {capture_id} artifact {selection_field}",
-                nonnegative=True,
-            )
-            expected_floor = floor_pct / 100.0
             if not math.isclose(
                 analyzer_floor, expected_floor, rel_tol=0, abs_tol=1e-12
-            ) or not math.isclose(
-                artifact_floor, expected_floor, rel_tol=0, abs_tol=1e-12
             ):
                 raise CampaignError(
-                    f"Capture {capture_id} {field} and analyzer artifact must "
-                    f"equal campaign fraction {expected_floor}"
+                    f"Capture {capture_id} {field} must equal campaign "
+                    f"fraction {expected_floor}"
                 )
+        derived_entries = []
+        derived_inventory = []
+        story_digests = []
+        min_story_nominal = None
+        for story_item in story_frontiers:
+            story = story_item["story"]
+            label = f"Capture {capture_id} story {story!r}"
+            artifact_path = story_item.get("artifact")
+            try:
+                resolved_artifact = pathlib.Path(artifact_path).resolve()
+                if resolved_artifact in seen_artifact_paths:
+                    raise CampaignError(
+                        "Capture summaries reuse the same analyzer artifact"
+                    )
+                if not resolved_artifact.is_relative_to(
+                    pathlib.Path(resolved_results)
+                ):
+                    raise CampaignError(
+                        f"{label} analyzer artifact is outside local_results"
+                    )
+                seen_artifact_paths.add(resolved_artifact)
+                artifact_bytes = resolved_artifact.read_bytes()
+                artifact = json.loads(artifact_bytes)
+            except CampaignError:
+                raise
+            except (TypeError, OSError, json.JSONDecodeError) as exc:
+                raise CampaignError(
+                    f"{label} analyzer artifact is unreadable: {exc}"
+                ) from exc
+            quality = artifact.get("quality", {})
+            selection = artifact.get("selection", {})
+            if quality.get("accepted") is not True:
+                raise CampaignError(f"{label} analyzer artifact failed quality")
+            if strict_evidence and quality.get("interval_kind") != "exact-scored":
+                raise CampaignError(f"{label} analyzer used broad intervals")
+            if strict_evidence:
+                story_nominal = require_finite_number(
+                    quality.get("nominal_samples_at_floor"),
+                    f"{label} nominal_samples_at_floor",
+                    nonnegative=True,
+                )
+                if story_nominal < 100:
+                    raise CampaignError(
+                        f"{label} has only {story_nominal:.1f} nominal samples "
+                        "at its local floor; increase repetitions"
+                    )
+                min_story_nominal = (
+                    story_nominal if min_story_nominal is None
+                    else min(min_story_nominal, story_nominal)
+                )
+                if quality.get("build_provenance") != build_provenance:
+                    raise CampaignError(
+                        f"{label} build provenance disagrees with the capture"
+                    )
+                if selection.get("metric_weighting") != "speedometer-story-v1":
+                    raise CampaignError(
+                        f"{label} analyzer is not story-silo weighted"
+                    )
+                if selection.get("story") != story:
+                    raise CampaignError(
+                        f"{label} analyzer artifact describes story "
+                        f"{selection.get('story')!r}"
+                    )
+            if selection.get("inventory_complete") is not True:
+                raise CampaignError(f"{label} analyzer inventory is incomplete")
+            for selection_field in ("min_inclusive_share", "min_marginal_share"):
+                artifact_floor = require_finite_number(
+                    selection.get(selection_field),
+                    f"{label} artifact {selection_field}",
+                    nonnegative=True,
+                )
+                if not math.isclose(
+                    artifact_floor, expected_floor, rel_tol=0, abs_tol=1e-12
+                ):
+                    raise CampaignError(
+                        f"{label} {selection_field} must equal campaign "
+                        f"fraction {expected_floor}"
+                    )
+            story_entries, story_inventory, derivation_problems = (
+                derive_frontier_inventory(artifact)
+            )
+            if derivation_problems:
+                raise CampaignError(
+                    f"{label} analyzer artifact cannot attest a complete "
+                    "inventory: " + "; ".join(derivation_problems[:5])
+                )
+            prefix = f"story:{story}/"
+            if any(not entry.startswith(prefix) for entry in story_entries):
+                raise CampaignError(
+                    f"{label} frontier entries are not story-qualified"
+                )
+            derived_entries.extend(story_entries)
+            derived_inventory.extend(story_inventory)
+            story_item["artifact_sha256"] = hashlib.sha256(
+                artifact_bytes
+            ).hexdigest()
+            story_digests.append(story_item["artifact_sha256"])
+        if strict_evidence and min_story_nominal is not None and not math.isclose(
+            min_story_nominal, nominal, rel_tol=0, abs_tol=1e-9
+        ):
+            raise CampaignError(
+                f"Capture {capture_id} nominal_samples_at_floor disagrees "
+                "with the weakest story artifact"
+            )
+        summary["artifact_sha256"] = hashlib.sha256(
+            "".join(story_digests).encode()
+        ).hexdigest()
         entries = summary.get("frontier_entries")
         inventory = summary.get("frontier_inventory")
         if not isinstance(entries, list) or not isinstance(inventory, list):
@@ -1510,8 +1730,14 @@ def load_capture_summaries(
             )
         if summary.get("frontier_count") != len(derived_entries):
             raise CampaignError(f"Capture {capture_id} frontier_count is inconsistent")
+        story_sets.add(frozenset(story_names))
     if len(repetition_counts) != 1:
         raise CampaignError("Capture repetition counts do not match")
+    if len(story_sets) != 1:
+        raise CampaignError(
+            "Captures decomposed different story sets; every capture must "
+            "analyze the same story silos"
+        )
     return summaries
 
 
@@ -2031,6 +2257,7 @@ def new_opportunity(ledger, *, kind, anchor, area_key, mechanism_key=None,
         "observations": [],
         "share_pct": share,
         "stories": stories,
+        "target_story": None,
         "dossier": dossier,
         "expected_value": expected_value,
         "expected_value_unit": expected_value_unit,
@@ -2075,10 +2302,18 @@ def record_mechanism_observation(opp, discovery, path, *, update_sizing=True):
         "area_key": path.get("area_key") or discovery["area_key"],
         "anchor": path["anchor"],
         "share_pct": path["share_pct"],
+        "target_story": discovery.get("target_story"),
         "stories": path.get("stories") or discovery.get("stories"),
         "dossier": path.get("dossier") or discovery.get("dossier"),
         "expected_value": path.get("expected_value"),
         "expected_value_unit": path.get("expected_value_unit"),
+        "story_profile_share_pct": path.get("story_profile_share_pct"),
+        "estimated_avoidable_fraction": path.get(
+            "estimated_avoidable_fraction"
+        ),
+        "estimated_local_story_impact_pct": path.get(
+            "estimated_local_story_impact_pct"
+        ),
         "measured_priority_pct": measured_priority,
         "evidence": path.get("evidence"),
         "work_fingerprints": sorted({
@@ -2092,12 +2327,36 @@ def record_mechanism_observation(opp, discovery, path, *, update_sizing=True):
         # wrapper observations are overlap provenance, not a replacement for
         # the owning mechanism's sizing identity.
         return
+    # A mechanism rediscovered in several story silos is sized against its
+    # highest estimated local-story impact. Once sizing begins, keep the
+    # evidence identity frozen and retain later observations as provenance.
+    current_value = opp.get("expected_value")
+    observation_value = observation.get("expected_value")
+    can_retarget = opp.get("status") in ("candidate", "investigating", "parked")
+    if (
+        can_retarget
+        and current_value is not None
+        and observation_value is not None
+        and float(observation_value) < float(current_value)
+    ):
+        return
+    if not can_retarget and opp.get("observations", [])[:-1]:
+        return
     opp["anchor"] = observation["anchor"]
     opp["share_pct"] = observation["share_pct"]
     opp["stories"] = observation["stories"]
+    if observation["target_story"] is not None:
+        opp["target_story"] = observation["target_story"]
     opp["dossier"] = observation["dossier"]
     opp["expected_value"] = observation["expected_value"]
     opp["expected_value_unit"] = observation["expected_value_unit"]
+    opp["story_profile_share_pct"] = observation["story_profile_share_pct"]
+    opp["estimated_avoidable_fraction"] = observation[
+        "estimated_avoidable_fraction"
+    ]
+    opp["estimated_local_story_impact_pct"] = observation[
+        "estimated_local_story_impact_pct"
+    ]
     if measured_priority is not None:
         opp["measured_priority_pct"] = measured_priority
 
@@ -2348,6 +2607,9 @@ def validate_source_accounting(areas, source_exclusions, summaries):
                 f"Profile area {index} coalesces distinct frontier entries; "
                 "each recurrent machine entry requires its own area"
             )
+        # Story-qualified entries pin the area to its silo; the recorded
+        # target story is what sizing and verification must measure against.
+        area["target_story"] = split_story_entry_key(refs[0][1])[0]
         ref_captures = sorted(capture_id for capture_id, _ in refs)
         if ref_captures != sorted(all_capture_ids):
             raise CampaignError(
@@ -2385,7 +2647,7 @@ def validate_source_accounting(areas, source_exclusions, summaries):
             # A surplus same-symbol caller context whose siblings are already
             # reconciled as an area; legal only when that area exists, so the
             # symbol's recurrence can never be dropped wholesale.
-            if not ref[1].startswith("context:"):
+            if not split_story_entry_key(ref[1])[1].startswith("context:"):
                 raise CampaignError(
                     f"Source entry {ref[1]!r} is not a caller context and "
                     "cannot use category context-variant"
@@ -2542,7 +2804,7 @@ def cmd_profile(args):
         "capture_provenance": [
             {
                 "capture_id": summary["capture_id"],
-                "artifact": summary["full_candidate_frontier_json"],
+                "story_frontiers": summary["story_frontiers"],
                 "artifact_sha256": summary["artifact_sha256"],
                 "stories": summary["stories"],
                 "enable_features": summary["enable_features"],
@@ -2583,6 +2845,7 @@ def cmd_profile(args):
         discovery["measured_priority_pct"] = measured_priority_from_refs(
             area["expected_work_refs"]
         )
+        discovery["target_story"] = area.get("target_story")
     record_gate_challenges(
         ledger,
         gate="reprofile" if len(ledger.data.get("profile_runs", [])) > 1 else "profile",
@@ -2622,8 +2885,10 @@ def load_scaffold_summaries(path):
 
 
 def entry_display_name(entry_key):
-    semantic = semantic_entry_identity(entry_key)
-    return semantic.split(":", 1)[1] if ":" in semantic else semantic
+    story, bare_key = split_story_entry_key(entry_key)
+    semantic = semantic_entry_identity(bare_key)
+    name = semantic.split(":", 1)[1] if ":" in semantic else semantic
+    return f"{story}/{name}" if story is not None else name
 
 
 def cmd_profile_scaffold(args):
@@ -2714,6 +2979,9 @@ def cmd_profile_scaffold(args):
                         [ref["entry_key"] for ref in refs]
                     ),
                     "anchor": entry_display_name(refs[0]["entry_key"]),
+                    "target_story": split_story_entry_key(
+                        refs[0]["entry_key"]
+                    )[0],
                     "marginal_share_pct": sum(shares) / len(shares),
                     "disposition": "discover",
                     "source_refs": refs,
@@ -2853,6 +3121,8 @@ def cmd_decompose_scaffold(args):
             "disposition": "",
             "anchor": anchor,
             "share_pct": hotspot_share(key),
+            "estimated_avoidable_fraction": None,
+            "estimated_local_story_impact_pct": None,
             "evidence": "",
             "work_refs": [
                 {
@@ -2884,6 +3154,9 @@ def cmd_decompose_scaffold(args):
             "Fill disposition (novel|known|covered-by|mandatory|below-floor|"
             "out-of-scope), evidence, and mechanism_key (novel/known) or "
             "covered_by (covered-by) on every path; fill accounting_evidence. "
+            "Novel/known paths also require estimated_avoidable_fraction; "
+            "campaign.py derives story_profile_share_pct and "
+            "estimated_local_story_impact_pct from profiler-bound work_refs. "
             "work_refs already satisfy the exactly-one-primary rule and "
             "normally need no edits. ledger_mechanisms_for_area lists keys "
             "that must be reconciled as known/below-floor/out-of-scope, "
@@ -2976,6 +3249,31 @@ def cmd_advance(args):
             evidence, evidence_digest = load_gate_evidence(
                 args.evidence_manifest, opp=opp, phase="sizing"
             )
+            campaign_floor = float(ledger.data["config"]["share_floor_pct"])
+            evidence_floor = require_finite_number(
+                evidence.get("min_avoidable_pct_floor"),
+                "sizing evidence min_avoidable_pct_floor",
+                nonnegative=True,
+            )
+            if not math.isclose(
+                evidence_floor, campaign_floor, rel_tol=0, abs_tol=1e-12
+            ):
+                raise CampaignError(
+                    f"Sizing evidence floor {evidence_floor}% does not match "
+                    f"campaign floor {campaign_floor}%"
+                )
+            avoidable_ci = evidence.get(
+                "avoidable_scored_cycle_share_ci95_pct"
+            )
+            if not isinstance(avoidable_ci, list) or len(avoidable_ci) != 2:
+                raise CampaignError("Sizing evidence lacks an avoidable-share CI")
+            if require_finite_number(
+                avoidable_ci[0], "sizing avoidable CI lower"
+            ) < campaign_floor:
+                raise CampaignError(
+                    "Sizing evidence does not clear the campaign's target-story "
+                    "avoidable-share floor"
+                )
             if (
                 not test_legacy
                 and evidence.get("build", {}).get("skill_tree_sha256")
@@ -3325,6 +3623,57 @@ def cmd_decompose(args):
                     f"the campaign floor {floor}%; it cannot be dispositioned "
                     "below-floor using an investigator-supplied share"
                 )
+            if path_item["disposition"] in ("novel", "known"):
+                story_share = max(measured_work[ref] for ref in path_primary)
+                fraction = path_item.get("estimated_avoidable_fraction")
+                if fraction is None and test_bypass_active():
+                    # Preserve compact legacy unit fixtures; production
+                    # decompositions are fail-closed below.
+                    fraction = min(
+                        1.0,
+                        path_item.get("share_pct", 0.0) / story_share
+                        if story_share else 0.0,
+                    )
+                fraction = require_finite_number(
+                    fraction,
+                    f"Path {path_item['anchor']!r} estimated_avoidable_fraction",
+                    nonnegative=True,
+                )
+                if fraction > 1.0:
+                    raise CampaignError(
+                        f"Path {path_item['anchor']!r} estimated_avoidable_fraction "
+                        "must be at most 1.0"
+                    )
+                impact = story_share * fraction
+                supplied_impact = path_item.get(
+                    "estimated_local_story_impact_pct"
+                )
+                if supplied_impact is not None:
+                    supplied_impact = require_finite_number(
+                        supplied_impact,
+                        f"Path {path_item['anchor']!r} "
+                        "estimated_local_story_impact_pct",
+                        nonnegative=True,
+                    )
+                    if not math.isclose(
+                        supplied_impact, impact, rel_tol=0, abs_tol=1e-9
+                    ):
+                        raise CampaignError(
+                            f"Path {path_item['anchor']!r} estimated impact "
+                            "does not equal profiler story share × avoidable fraction"
+                        )
+                if not test_bypass_active() and impact < floor:
+                    raise CampaignError(
+                        f"Path {path_item['anchor']!r} estimated target-story "
+                        f"impact {impact:.4f}% is below campaign floor {floor}%"
+                    )
+                path_item["story_profile_share_pct"] = story_share
+                path_item["estimated_avoidable_fraction"] = fraction
+                path_item["estimated_local_story_impact_pct"] = impact
+                # The priority value is machine-derived; investigator-typed
+                # expected_value values cannot override it.
+                path_item["expected_value"] = impact
+                path_item["expected_value_unit"] = EXPECTED_VALUE_UNIT
     invalid_counts = {
         ref: count for ref, count in primary_counts.items() if count != 1
     }
@@ -3417,6 +3766,7 @@ def cmd_decompose(args):
             expected_value_unit=path_item.get("expected_value_unit"),
             notes=path_item.get("notes"),
         )
+        opp["target_story"] = parent.get("target_story")
         record_mechanism_observation(opp, parent, path_item)
         created.append(opp)
     for opp, path_item in known:
@@ -3995,6 +4345,15 @@ def cmd_note(args):
     return 0
 
 
+def cmd_checkpoint_targets(args):
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    stories = landed_target_stories(ledger)
+    if not stories:
+        raise CampaignError("No landed target stories are available")
+    print(story_selector(stories))
+    return 0
+
+
 def score_t_power(df):
     if df >= 60:
         return 0.842
@@ -4048,6 +4407,91 @@ def recompute_score_statistics(block_details):
     }
 
 
+def raw_result_story_totals(raw):
+    """Extract per-story total times from one raw per-iteration result.
+
+    Mirrors run_ab_benchmark.py's parse exactly: any positive scalar (or
+    {"average": scalar}) metric that is not the suite Score, a Geomean, an
+    Iteration-* entry, or a nested "/" metric is a story total.
+    """
+    totals = {}
+    for key, value in raw.items():
+        if key == "Score" or key == "Geomean" or "/" in key \
+                or key.startswith("Iteration-"):
+            continue
+        if isinstance(value, dict):
+            value = value.get("average")
+        if (
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(float(value)) and float(value) > 0
+        ):
+            totals[key] = float(value)
+    return totals
+
+
+def recompute_targeted_story_statistics(block_details, targeted_stories):
+    """Recompute the geomean delta over the targeted-story silos.
+
+    Story values are per-repetition total times (lower is better); each
+    block's observation is the equally weighted mean over targeted stories of
+    mean(ln A_time) - mean(ln B_time), so positive means the flag arm is
+    faster on the targeted stories. Landed work is expected to move exactly
+    these stories, so this is the high-SNR landing gate; the full-suite delta
+    remains the aggregate campaign claim.
+    """
+    diffs = []
+    for index, block in enumerate(block_details, 1):
+        story_diffs = []
+        for story in targeted_stories:
+            a_vals = [rep[story] for rep in block.get("a_stories", [])
+                      if story in rep]
+            b_vals = [rep[story] for rep in block.get("b_stories", [])
+                      if story in rep]
+            if not a_vals or not b_vals:
+                available = sorted({
+                    key
+                    for arm in ("a_stories", "b_stories")
+                    for rep in block.get(arm, [])
+                    for key in rep
+                })
+                raise CampaignError(
+                    f"Checkpoint block {index} has no measurements for "
+                    f"targeted story {story!r}; available stories: "
+                    + ", ".join(available[:40])
+                )
+            mean_ln_a = statistics.fmean(math.log(value) for value in a_vals)
+            mean_ln_b = statistics.fmean(math.log(value) for value in b_vals)
+            story_diffs.append(mean_ln_a - mean_ln_b)
+        diffs.append(statistics.fmean(story_diffs))
+    count = len(diffs)
+    if count < MIN_SCORE_BLOCKS:
+        raise CampaignError("Checkpoint has too few complete raw blocks")
+    mean = statistics.fmean(diffs)
+    variance = sum((value - mean) ** 2 for value in diffs) / (count - 1)
+    std_err = math.sqrt(variance) / math.sqrt(count)
+    df = count - 1
+    if df >= 60:
+        critical = 1.960
+    else:
+        critical = mechanism_contract.T_CRIT_95[
+            max(value for value in mechanism_contract.T_CRIT_95 if value <= df)
+        ]
+
+    def pct(value):
+        return math.expm1(value) * 100
+
+    return {
+        "targeted_stories": list(targeted_stories),
+        "targeted_delta_pct": pct(mean),
+        "targeted_ci_95_pct": [
+            pct(mean - critical * std_err), pct(mean + critical * std_err)
+        ],
+        "targeted_mde_80_power_pct": pct(
+            (critical + score_t_power(df)) * std_err
+        ),
+    }
+
+
 def validate_score_result_artifact(result, *, manifest_dir, evidence_dir,
                                    expected_arm, expected_block, expected_score,
                                    run_start, run_finish):
@@ -4091,7 +4535,7 @@ def validate_score_result_artifact(result, *, manifest_dir, evidence_dir,
         or not run_start <= start < finish <= run_finish
     ):
         raise CampaignError("Checkpoint repetition has invalid monotonic bounds")
-    return start, finish, result.get("position")
+    return start, finish, result.get("position"), raw_result_story_totals(raw)
 
 
 def validate_and_recompute_checkpoint(manifest, manifest_path):
@@ -4100,8 +4544,10 @@ def validate_and_recompute_checkpoint(manifest, manifest_path):
         or manifest.get("runner") != SCORE_MANIFEST_RUNNER
     ):
         raise CampaignError("Checkpoint must be a runner-owned v3 manifest")
-    if manifest.get("mode") != "ab" or manifest.get("stories") != "all":
-        raise CampaignError("Checkpoint v3 manifest is not a full-suite feature A/B")
+    if manifest.get("mode") != "ab" or not isinstance(
+        manifest.get("stories"), str
+    ) or not manifest["stories"]:
+        raise CampaignError("Checkpoint v3 manifest is not a feature A/B")
     block_count = manifest.get("blocks")
     if (
         isinstance(block_count, bool) or not isinstance(block_count, int)
@@ -4151,6 +4597,7 @@ def validate_and_recompute_checkpoint(manifest, manifest_path):
     minimum = manifest.get("minimum_duration_ns")
     expected_minimum = (
         manifest.get("blocks", 0) * 4 * MIN_FULL_SUITE_REP_SECONDS * 1_000_000_000
+        if manifest.get("stories") == "all" else 0
     )
     if (
         isinstance(run_start, bool) or not isinstance(run_start, int)
@@ -4172,22 +4619,50 @@ def validate_and_recompute_checkpoint(manifest, manifest_path):
         for arm in ("a", "b"):
             results = block.get(f"{arm}_results")
             scores = block.get(f"{arm}_scores")
+            recorded_stories = block.get(f"{arm}_stories")
             if (
                 not isinstance(results, list) or len(results) != 2
                 or not isinstance(scores, list) or len(scores) != 2
             ):
                 raise CampaignError(f"Checkpoint block {index} lacks raw arm {arm} results")
-            for result, score in zip(results, scores):
-                start, finish, position = validate_score_result_artifact(
-                    result,
-                    manifest_dir=manifest_path.parent,
-                    evidence_dir=evidence_dir,
-                    expected_arm=arm,
-                    expected_block=index,
-                    expected_score=score,
-                    run_start=run_start,
-                    run_finish=run_finish,
+            if (
+                not isinstance(recorded_stories, list)
+                or len(recorded_stories) != 2
+                or any(not isinstance(item, dict) for item in recorded_stories)
+            ):
+                raise CampaignError(
+                    f"Checkpoint block {index} lacks raw arm {arm} per-story totals"
                 )
+            for result, score, rep_stories in zip(
+                results, scores, recorded_stories
+            ):
+                start, finish, position, raw_stories = (
+                    validate_score_result_artifact(
+                        result,
+                        manifest_dir=manifest_path.parent,
+                        evidence_dir=evidence_dir,
+                        expected_arm=arm,
+                        expected_block=index,
+                        expected_score=score,
+                        run_start=run_start,
+                        run_finish=run_finish,
+                    )
+                )
+                if {
+                    key: float(value) for key, value in rep_stories.items()
+                } != raw_stories:
+                    raise CampaignError(
+                        f"Checkpoint block {index} arm {arm} per-story totals "
+                        "disagree with the raw result artifact"
+                    )
+                selected_stories = parse_story_selector(manifest["stories"])
+                if selected_stories is not None and set(raw_stories) != set(
+                    selected_stories
+                ):
+                    raise CampaignError(
+                        f"Checkpoint block {index} arm {arm} measured stories "
+                        "do not match its preregistered selector"
+                    )
                 if position in by_position:
                     raise CampaignError(f"Checkpoint block {index} repeats a position")
                 by_position[position] = (arm.upper(), start, finish)
@@ -4277,6 +4752,16 @@ def require_clean_skill_repository(script_path=None):
 def cmd_checkpoint(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     checkpoint_challenges = []
+    kind = args.kind
+    target_stories = landed_target_stories(ledger)
+    if kind == "targeted" and not target_stories:
+        raise CampaignError(
+            "A targeted checkpoint requires at least one landed opportunity "
+            "with a target_story"
+        )
+    expected_stories = (
+        story_selector(target_stories) if kind == "targeted" else "all"
+    )
     if args.summary:
         path = pathlib.Path(args.summary)
         try:
@@ -4288,8 +4773,18 @@ def cmd_checkpoint(args):
             or summary.get("runner") != SCORE_MANIFEST_RUNNER
         ):
             raise CampaignError("Checkpoint summary is not from the v3 score runner")
-        if summary.get("mode") != "ab" or summary.get("stories") != "all":
-            raise CampaignError("Checkpoint must be a cumulative full-suite feature A/B")
+        if summary.get("mode") != "ab":
+            raise CampaignError("Checkpoint must be a cumulative feature A/B")
+        if kind == "targeted":
+            measured_stories = parse_story_selector(summary.get("stories"))
+            if measured_stories != target_stories:
+                raise CampaignError(
+                    "Targeted checkpoint story selector does not match the "
+                    "current landed target-story set; expected "
+                    f"{expected_stories!r}"
+                )
+        elif summary.get("stories") != "all":
+            raise CampaignError("Full-suite checkpoint must use --stories all")
         if summary.get("feature") != ledger.data["config"]["feature"]:
             raise CampaignError("Checkpoint toggled the wrong feature")
         if (
@@ -4383,6 +4878,7 @@ def cmd_checkpoint(args):
         evidence_sha256 = sha256_file(path)
         seed = summary.get("seed")
         mde = computed["mde_80_power_pct"]
+        blocks = summary.get("blocks")
         checkpoint_challenges = validate_gate_challenges(
             args,
             gate="checkpoint",
@@ -4392,22 +4888,35 @@ def cmd_checkpoint(args):
         delta, ci_low, ci_high = args.delta, args.ci_low, args.ci_high
         manifest, sha = args.manifest, args.sha
         evidence_sha256, seed, mde, manifest_sha256 = None, None, None, None
+        blocks = None
     else:
         raise CampaignError(
             "checkpoint requires --summary from remote_measure.py; manual deltas are rejected"
         )
+    if not test_bypass_active():
+        enforce_checkpoint_attempt_policy(
+            ledger,
+            kind=kind,
+            sha=sha,
+            landed_count=len(ledger.landed()),
+            blocks=blocks,
+        )
     ledger.data.setdefault("checkpoints", []).append(
         {
             "ts": utc_now(),
+            "type": kind,
             "landed_count": len(ledger.landed()),
             "delta_pct": delta,
             "ci": [ci_low, ci_high],
+            "stories": expected_stories,
+            "targeted_stories": target_stories if kind == "targeted" else None,
             "manifest": manifest,
             "manifest_sha256": manifest_sha256,
             "sha": sha,
             "summary": args.summary,
             "summary_sha256": evidence_sha256,
             "seed": seed,
+            "blocks": blocks,
             "mde_80_power_pct": mde,
             "notes": args.notes,
         }
@@ -4415,7 +4924,7 @@ def cmd_checkpoint(args):
     record_gate_challenges(
         ledger,
         gate="checkpoint",
-        subject=f"landed-{len(ledger.landed())}",
+        subject=f"{kind}-landed-{len(ledger.landed())}",
         reports=checkpoint_challenges,
     )
     pilot = ledger.data.get("pilot", {})
@@ -4432,38 +4941,72 @@ def cmd_checkpoint(args):
             ))
             for opp in ledger.landed()
         )
-        update_pilot_from_checkpoint(
-            pilot, landed_count=landed_count, saved=saved, delta=delta,
-            ci_low=ci_low, ci_high=ci_high,
-            evidence_sha256=evidence_sha256,
-        )
+        update_pilot_from_split_checkpoints(ledger, saved=saved)
     ledger.save()
-    print(f"Recorded checkpoint after {len(ledger.landed())} landed: {delta:+.2f}%")
+    message = (
+        f"Recorded {kind} checkpoint after {len(ledger.landed())} landed: "
+        f"{delta:+.2f}%"
+    )
+    if kind == "targeted":
+        message += f" on {', '.join(target_stories)}"
+    print(message)
     return 0
 
 
-def update_pilot_from_checkpoint(
-    pilot, *, landed_count, saved, delta, ci_low, ci_high, evidence_sha256
-):
-    common = {"checkpoint_sha256": evidence_sha256, "ts": utc_now()}
-    if saved > 0 and ci_low > 0:
+def update_pilot_from_split_checkpoints(ledger, *, saved):
+    """Require targeted efficacy and a same-tip full-suite regression guard."""
+    pilot = ledger.data.get("pilot", {})
+    landed_count = len(ledger.landed())
+    targeted = latest_checkpoint(ledger, "targeted")
+    full = latest_checkpoint(ledger, "full-suite")
+    if not targeted or not full:
+        pilot.update({
+            "status": "pending",
+            "reason": (
+                "pilot requires both targeted and full-suite checkpoints at "
+                f"the current {landed_count}-landing tip"
+            ),
+        })
+        return
+    if (
+        targeted.get("landed_count") != landed_count
+        or full.get("landed_count") != landed_count
+    ):
+        pilot.update({
+            "status": "pending",
+            "reason": (
+                "pilot checkpoints are stale; record targeted and full-suite "
+                f"measurements after {landed_count} landings"
+            ),
+        })
+        return
+    target_low, target_high = targeted["ci"]
+    full_low, full_high = full["ci"]
+    common = {
+        "targeted_checkpoint_sha256": targeted.get("summary_sha256"),
+        "full_suite_checkpoint_sha256": full.get("summary_sha256"),
+        "ts": utc_now(),
+    }
+    if saved > 0 and target_low > 0 and full_high > 0:
         pilot.update({
             **common,
             "status": "passed",
             "reason": (
-                f"mechanistic direction +{saved:.4f}% and cumulative A/B CI "
-                f"[{ci_low:+.4f}%, {ci_high:+.4f}%] is positive after "
-                f"{landed_count} candidates"
+                f"mechanistic direction +{saved:.4f}%, targeted CI "
+                f"[{target_low:+.4f}%, {target_high:+.4f}%] is positive, "
+                f"and full-suite CI [{full_low:+.4f}%, {full_high:+.4f}%] "
+                f"shows no stat-sig regression after {landed_count} candidates"
             ),
         })
-    elif saved <= 0 or ci_high <= 0:
+    elif saved <= 0 or target_high <= 0 or full_high <= 0:
         pilot.update({
             **common,
             "status": "failed",
             "reason": (
-                f"pilot contradicted the mechanistic evidence (mechanistic "
-                f"{saved:+.4f}%, cumulative A/B {delta:+.4f}% with CI "
-                f"[{ci_low:+.4f}%, {ci_high:+.4f}%]); stop and repair the pipeline"
+                "pilot contradicted the mechanistic evidence: "
+                f"mechanistic {saved:+.4f}%, targeted CI "
+                f"[{target_low:+.4f}%, {target_high:+.4f}%], full-suite CI "
+                f"[{full_low:+.4f}%, {full_high:+.4f}%]"
             ),
         })
     else:
@@ -4471,10 +5014,68 @@ def update_pilot_from_checkpoint(
             **common,
             "status": "pending",
             "reason": (
-                f"pilot is inconclusive: cumulative A/B {delta:+.4f}% with CI "
-                f"[{ci_low:+.4f}%, {ci_high:+.4f}%] does not prove a positive "
-                "effect; land no more than five pilot candidates, then increase "
-                "balanced block count and remeasure"
+                f"targeted checkpoint remains inconclusive "
+                f"[{target_low:+.4f}%, {target_high:+.4f}%]; choose one "
+                "larger preregistered balanced run from the measured MDE"
+            ),
+        })
+
+
+def update_pilot_from_checkpoint(
+    pilot, *, landed_count, saved, delta, ci_low, ci_high, evidence_sha256,
+    targeted=None,
+):
+    """Judge the pilot on the targeted-story silos, guarded by the suite.
+
+    Landed candidates are sized per story, so the positive-effect proof reads
+    the targeted-story CI from the cumulative A/B (high SNR); a stat-sig
+    full-suite regression still fails the pilot regardless.
+    """
+    common = {"checkpoint_sha256": evidence_sha256, "ts": utc_now()}
+    if targeted:
+        gate_ci_low, gate_ci_high = targeted["targeted_ci_95_pct"]
+        gate_delta = targeted["targeted_delta_pct"]
+        gate_label = (
+            "targeted-story A/B ("
+            + ", ".join(targeted["targeted_stories"]) + ")"
+        )
+    else:
+        gate_ci_low, gate_ci_high = ci_low, ci_high
+        gate_delta = delta
+        gate_label = "cumulative full-suite A/B"
+    suite_regressed = ci_high <= 0
+    if saved > 0 and gate_ci_low > 0 and not suite_regressed:
+        pilot.update({
+            **common,
+            "status": "passed",
+            "reason": (
+                f"mechanistic direction +{saved:.4f}% and {gate_label} CI "
+                f"[{gate_ci_low:+.4f}%, {gate_ci_high:+.4f}%] is positive "
+                f"after {landed_count} candidates (full-suite "
+                f"{delta:+.4f}% [{ci_low:+.4f}%, {ci_high:+.4f}%])"
+            ),
+        })
+    elif saved <= 0 or gate_ci_high <= 0 or suite_regressed:
+        pilot.update({
+            **common,
+            "status": "failed",
+            "reason": (
+                f"pilot contradicted the mechanistic evidence (mechanistic "
+                f"{saved:+.4f}%, {gate_label} {gate_delta:+.4f}% with CI "
+                f"[{gate_ci_low:+.4f}%, {gate_ci_high:+.4f}%], full-suite "
+                f"{delta:+.4f}% [{ci_low:+.4f}%, {ci_high:+.4f}%]); stop and "
+                "repair the pipeline"
+            ),
+        })
+    else:
+        pilot.update({
+            **common,
+            "status": "pending",
+            "reason": (
+                f"pilot is inconclusive: {gate_label} {gate_delta:+.4f}% with "
+                f"CI [{gate_ci_low:+.4f}%, {gate_ci_high:+.4f}%] does not "
+                "prove a positive effect; land no more than five pilot "
+                "candidates, then increase balanced block count and remeasure"
             ),
         })
 
@@ -4581,6 +5182,19 @@ def cmd_audit(args):
                 raise CampaignError("manifest digest changed")
             manifest = json.loads(manifest_path.read_text())
             validate_and_recompute_checkpoint(manifest, manifest_path)
+            if checkpoint.get("stories", manifest.get("stories")) != manifest.get(
+                "stories"
+            ):
+                raise CampaignError("checkpoint story selector changed")
+            if checkpoint.get("blocks", manifest.get("blocks")) != manifest.get(
+                "blocks"
+            ):
+                raise CampaignError("checkpoint block count changed")
+            recorded_type = checkpoint_type(checkpoint)
+            if recorded_type == "targeted" and manifest.get("stories") == "all":
+                raise CampaignError("targeted checkpoint contains a full-suite manifest")
+            if recorded_type == "full-suite" and manifest.get("stories") != "all":
+                raise CampaignError("full-suite checkpoint contains a targeted manifest")
             if (
                 manifest.get("skill_tree_sha256")
                 != ledger.data["config"].get("skill_tree_sha256")
@@ -4681,7 +5295,8 @@ def cmd_next(args):
     for o in ledger.next_candidates(args.count):
         priority, basis, measured = ledger.priority_info(o)
         print(
-            f"#{o['id']:03d} {o['anchor']} priority={priority:.3f} "
+            f"#{o['id']:03d} {o['anchor']} "
+            f"story={o.get('target_story') or '?'} priority={priority:.3f} "
             f"basis={basis} measured={measured:.3f}% "
             f"reported={o.get('share_pct', 0.0):.3f}%"
         )
@@ -4926,7 +5541,18 @@ def build_parser():
     p.add_argument("--text", required=True)
     p.set_defaults(func=cmd_note)
 
+    p = sub.add_parser(
+        "checkpoint-targets",
+        help="Print the preregistered landed target-story selector",
+    )
+    p.set_defaults(func=cmd_checkpoint_targets)
+
     p = sub.add_parser("checkpoint", help="Record a cumulative flag on/off measurement")
+    p.add_argument(
+        "--kind", choices=("targeted", "full-suite"), default="full-suite",
+        help="Targeted checkpoints gate landing efficacy; full-suite "
+        "checkpoints guard regressions and support aggregate claims",
+    )
     p.add_argument("--summary", help="remote_measure.py machine-readable summary JSON")
     p.add_argument("--delta", type=float, default=None, help=argparse.SUPPRESS)
     p.add_argument("--ci-low", type=float, default=None, help=argparse.SUPPRESS)

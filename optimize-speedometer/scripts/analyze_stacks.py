@@ -1243,150 +1243,53 @@ def read_input(
     return group, handle, None
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Create an overlap-aware optimization frontier from perf stacks."
-    )
-    parser.add_argument(
-        "--input",
-        action="append",
-        required=True,
-        metavar="[GROUP=]PATH",
-        help="perf.data or perf-script text; repeat for story/repetition groups",
-    )
-    parser.add_argument("--intervals", type=pathlib.Path)
-    parser.add_argument(
-        "--browser-log",
-        action="append",
-        type=pathlib.Path,
-        default=[],
-        help=(
-            "Extract exact SP3_SCORE_TIME intervals from a browser log; "
-            "legacy outer SP3_MONO_TIME is diagnostic fallback only"
-        ),
-    )
-    parser.add_argument(
-        "--role",
-        help="Keep only PIDs with this role in the --intervals manifest (for example renderer)",
-    )
-    parser.add_argument("--out-dir", type=pathlib.Path, required=True)
-    parser.add_argument("--perf-binary", default="perf")
-    inline_group = parser.add_mutually_exclusive_group()
-    inline_group.add_argument(
-        "--expand-inline",
-        dest="expand_inline",
-        action="store_true",
-        default=True,
-        help="Expand inline frames (the authoritative default)",
-    )
-    inline_group.add_argument(
-        "--no-inline",
-        dest="expand_inline",
-        action="store_false",
-        help="Skip inline expansion for a faster, lower-fidelity screen",
-    )
-    parser.add_argument("--weight", choices=("period", "samples"), default="period")
-    parser.add_argument("--min-share", type=float, default=0.003)
-    parser.add_argument("--min-marginal-share", type=float, default=0.003)
-    parser.add_argument(
-        "--limit", type=int, default=20,
-        help="Markdown presentation limit; JSON selection always runs to the marginal floor",
-    )
-    parser.add_argument(
-        "--tree-min-share",
-        type=float,
-        default=0.005,
-        help="Global profile-share floor for simplified text flame trees",
-    )
-    parser.add_argument(
-        "--tree-max-depth",
-        type=int,
-        default=10,
-        help="Maximum visible depth in simplified text flame trees",
-    )
-    parser.add_argument(
-        "--tree-max-children",
-        type=int,
-        default=8,
-        help="Maximum children displayed per text-tree node",
-    )
-    parser.add_argument("--include-regex", default=DEFAULT_INCLUDE.pattern)
-    parser.add_argument("--exclude-regex", default=DEFAULT_EXCLUDE.pattern)
-    parser.add_argument(
-        "--allow-low-quality",
-        action="store_true",
-        help="Write diagnostic output and exit successfully even if quality gates fail",
-    )
-    args = parser.parse_args()
-    if args.min_share < args.min_marginal_share:
-        parser.error(
-            "--min-share must be >= --min-marginal-share; a smaller inclusive "
-            "floor admits aggregates that can stay below the marginal floor "
-            "while overlapping no frontier entry, leaving the overlap-safe "
-            "inventory unable to assign them"
-        )
-    if not 0 < args.tree_min_share < 1:
-        parser.error("--tree-min-share must be between 0 and 1")
-    if args.tree_max_depth < 1:
-        parser.error("--tree-max-depth must be at least 1")
-    if args.tree_max_children < 1:
-        parser.error("--tree-max-children must be at least 1")
+def sample_story(sample: Sample) -> str | None:
+    """Return the Speedometer story (suite) a scored sample belongs to.
 
-    interval_records = load_interval_records(args.intervals)
-    intervals = [
-        (item["start_time_mono"], item["end_time_mono"])
-        for item in interval_records
-    ] + load_mark_intervals(args.browser_log)
-    intervals.sort()
-    role_pids: set[int] | None = None
-    if args.role:
-        if not args.intervals:
-            parser.error("--role requires a manifest passed with --intervals")
-        manifest = json.loads(args.intervals.read_text())
-        role_pids = {
-            int(process["pid"])
-            for process in manifest.get("processes", [])
-            if process.get("role") == args.role
-        }
-        if not role_pids:
-            print(f"No PIDs found for role {args.role!r}.", file=sys.stderr)
-            return 2
-    samples: list[Sample] = []
-    for spec in args.input:
-        group, lines, process = read_input(
-            spec, args.perf_binary, args.expand_inline, intervals, role_pids
-        )
-        try:
-            samples.extend(
-                parse_perf_script(
-                    lines,
-                    group,
-                    intervals=intervals,
-                    interval_records=interval_records,
-                    pids=role_pids,
+    Interval-matched sample groups end with `<browser-log>|<suite>`; samples
+    without a suite-scoped interval group carry no story.
+    """
+    if "|" in sample.group:
+        return sample.group.rsplit("|", 1)[1]
+    return None
+
+
+def qualify_report_story(report: dict, story: str) -> None:
+    """Namespace every frontier identity in a per-story report by its story.
+
+    The same symbol legitimately appears in several story silos; the story
+    prefix keeps those entries distinct (and independently rankable) when the
+    per-story frontiers are concatenated into one capture inventory.
+    """
+    prefix = f"story:{story}/"
+    for section in ("frontier", "overlapping_alternatives", "area_inventory"):
+        for item in report.get(section, []):
+            if isinstance(item.get("entry_key"), str):
+                item["entry_key"] = prefix + item["entry_key"]
+            if isinstance(item.get("assigned_frontier_entry"), str):
+                item["assigned_frontier_entry"] = (
+                    prefix + item["assigned_frontier_entry"]
                 )
-            )
-        finally:
-            if process:
-                return_code = process.wait()
-                if return_code:
-                    raise subprocess.CalledProcessError(return_code, process.args)
-            elif hasattr(lines, "close"):
-                lines.close()
-    if args.weight == "samples":
-        for sample in samples:
-            sample.weight = 1
-    if not samples:
-        print("No stack samples remained after parsing/filtering.", file=sys.stderr)
-        return 2
+    report["selection"]["story"] = story
+    report["selection"]["metric_weighting"] = "speedometer-story-v1"
 
-    interval_manifest = (
-        json.loads(args.intervals.read_text()) if args.intervals else {}
-    )
-    exact_scored = interval_manifest.get("interval_kind") == "exact-scored"
-    if exact_scored:
-        normalize_score_groups(samples)
 
+def analyze_and_report(
+    samples: list[Sample],
+    args: argparse.Namespace,
+    interval_manifest: dict,
+    intervals: list[tuple[float, float]],
+    exact_scored: bool,
+    role_pids: set[int] | None,
+    out_dir: pathlib.Path,
+    story: str | None = None,
+) -> tuple[dict, list[str]]:
+    """Aggregate samples, build the frontier, and write one analysis report.
+
+    With `story` set, `samples` must already be the story's exact-scored
+    subset: every share is then relative to that story's scored cycles (the
+    local story share used for global opportunity ranking).
+    """
     aggregates = aggregate_samples(samples)
     frontier, alternatives, areas = build_frontier(
         samples,
@@ -1473,24 +1376,252 @@ def main() -> int:
         "overlapping_alternatives": [public_candidate(item) for item in alternatives],
         "area_inventory": [public_candidate(item) for item in areas],
     }
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    (args.out_dir / "candidate_frontier.json").write_text(
+    if story is not None:
+        qualify_report_story(report, story)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "candidate_frontier.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n"
     )
-    write_markdown(report, args.out_dir / "candidate_frontier.md", args.limit)
+    write_markdown(report, out_dir / "candidate_frontier.md", args.limit)
     write_text_trees(
         samples,
         frontier,
-        args.out_dir / "opportunity_trees.txt",
+        out_dir / "opportunity_trees.txt",
         args.tree_min_share,
         args.tree_max_depth,
         args.tree_max_children,
     )
-    write_collapsed(samples, args.out_dir / "profile.collapsed")
+    write_collapsed(samples, out_dir / "profile.collapsed")
+    return report, quality_issues
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Create an overlap-aware optimization frontier from perf stacks."
+    )
+    parser.add_argument(
+        "--input",
+        action="append",
+        required=True,
+        metavar="[GROUP=]PATH",
+        help="perf.data or perf-script text; repeat for story/repetition groups",
+    )
+    parser.add_argument("--intervals", type=pathlib.Path)
+    parser.add_argument(
+        "--browser-log",
+        action="append",
+        type=pathlib.Path,
+        default=[],
+        help=(
+            "Extract exact SP3_SCORE_TIME intervals from a browser log; "
+            "legacy outer SP3_MONO_TIME is diagnostic fallback only"
+        ),
+    )
+    parser.add_argument(
+        "--role",
+        help="Keep only PIDs with this role in the --intervals manifest (for example renderer)",
+    )
+    parser.add_argument("--out-dir", type=pathlib.Path, required=True)
+    parser.add_argument("--perf-binary", default="perf")
+    inline_group = parser.add_mutually_exclusive_group()
+    inline_group.add_argument(
+        "--expand-inline",
+        dest="expand_inline",
+        action="store_true",
+        default=True,
+        help="Expand inline frames (the authoritative default)",
+    )
+    inline_group.add_argument(
+        "--no-inline",
+        dest="expand_inline",
+        action="store_false",
+        help="Skip inline expansion for a faster, lower-fidelity screen",
+    )
+    parser.add_argument("--weight", choices=("period", "samples"), default="period")
+    parser.add_argument("--min-share", type=float, default=0.003)
+    parser.add_argument("--min-marginal-share", type=float, default=0.003)
+    parser.add_argument(
+        "--limit", type=int, default=20,
+        help="Markdown presentation limit; JSON selection always runs to the marginal floor",
+    )
+    parser.add_argument(
+        "--tree-min-share",
+        type=float,
+        default=0.005,
+        help="Global profile-share floor for simplified text flame trees",
+    )
+    parser.add_argument(
+        "--tree-max-depth",
+        type=int,
+        default=10,
+        help="Maximum visible depth in simplified text flame trees",
+    )
+    parser.add_argument(
+        "--tree-max-children",
+        type=int,
+        default=8,
+        help="Maximum children displayed per text-tree node",
+    )
+    parser.add_argument("--include-regex", default=DEFAULT_INCLUDE.pattern)
+    parser.add_argument("--exclude-regex", default=DEFAULT_EXCLUDE.pattern)
+    parser.add_argument(
+        "--allow-low-quality",
+        action="store_true",
+        help="Write diagnostic output and exit successfully even if quality gates fail",
+    )
+    parser.add_argument(
+        "--stories-out-dir",
+        type=pathlib.Path,
+        default=None,
+        help=(
+            "Also decompose the capture per Speedometer story: one independent "
+            "analysis per story under <dir>/<story>/ with shares relative to "
+            "that story's scored cycles, plus a stories_index.json summary"
+        ),
+    )
+    args = parser.parse_args()
+    if args.min_share < args.min_marginal_share:
+        parser.error(
+            "--min-share must be >= --min-marginal-share; a smaller inclusive "
+            "floor admits aggregates that can stay below the marginal floor "
+            "while overlapping no frontier entry, leaving the overlap-safe "
+            "inventory unable to assign them"
+        )
+    if not 0 < args.tree_min_share < 1:
+        parser.error("--tree-min-share must be between 0 and 1")
+    if args.tree_max_depth < 1:
+        parser.error("--tree-max-depth must be at least 1")
+    if args.tree_max_children < 1:
+        parser.error("--tree-max-children must be at least 1")
+
+    interval_records = load_interval_records(args.intervals)
+    intervals = [
+        (item["start_time_mono"], item["end_time_mono"])
+        for item in interval_records
+    ] + load_mark_intervals(args.browser_log)
+    intervals.sort()
+    role_pids: set[int] | None = None
+    if args.role:
+        if not args.intervals:
+            parser.error("--role requires a manifest passed with --intervals")
+        manifest = json.loads(args.intervals.read_text())
+        role_pids = {
+            int(process["pid"])
+            for process in manifest.get("processes", [])
+            if process.get("role") == args.role
+        }
+        if not role_pids:
+            print(f"No PIDs found for role {args.role!r}.", file=sys.stderr)
+            return 2
+    samples: list[Sample] = []
+    for spec in args.input:
+        group, lines, process = read_input(
+            spec, args.perf_binary, args.expand_inline, intervals, role_pids
+        )
+        try:
+            samples.extend(
+                parse_perf_script(
+                    lines,
+                    group,
+                    intervals=intervals,
+                    interval_records=interval_records,
+                    pids=role_pids,
+                )
+            )
+        finally:
+            if process:
+                return_code = process.wait()
+                if return_code:
+                    raise subprocess.CalledProcessError(return_code, process.args)
+            elif hasattr(lines, "close"):
+                lines.close()
+    if args.weight == "samples":
+        for sample in samples:
+            sample.weight = 1
+    if not samples:
+        print("No stack samples remained after parsing/filtering.", file=sys.stderr)
+        return 2
+
+    interval_manifest = (
+        json.loads(args.intervals.read_text()) if args.intervals else {}
+    )
+    exact_scored = interval_manifest.get("interval_kind") == "exact-scored"
+    if exact_scored:
+        normalize_score_groups(samples)
+
+    _, quality_issues = analyze_and_report(
+        samples, args, interval_manifest, intervals, exact_scored,
+        role_pids, args.out_dir,
+    )
     print(args.out_dir / "candidate_frontier.md")
     print(args.out_dir / "opportunity_trees.txt")
-    if quality_issues and not args.allow_low_quality:
-        print("Profile rejected: " + "; ".join(quality_issues), file=sys.stderr)
+
+    rejected_stories = []
+    if args.stories_out_dir is not None:
+        if not exact_scored:
+            print(
+                "Per-story decomposition requires an exact-scored interval "
+                "manifest with per-suite groups.",
+                file=sys.stderr,
+            )
+            return 2
+        by_story: dict[str, list[Sample]] = {}
+        for sample in samples:
+            story = sample_story(sample)
+            if story is not None:
+                by_story.setdefault(story, []).append(sample)
+        if not by_story:
+            print(
+                "No suite-scoped sample groups found; cannot decompose per "
+                "story.",
+                file=sys.stderr,
+            )
+            return 2
+        index_entries = []
+        for story in sorted(by_story):
+            story_dir = args.stories_out_dir / story
+            report, story_issues = analyze_and_report(
+                by_story[story], args, interval_manifest, intervals,
+                exact_scored, role_pids, story_dir, story=story,
+            )
+            if story_issues:
+                rejected_stories.append(story)
+            index_entries.append({
+                "story": story,
+                "dir": story,
+                # Keep the index relocatable: remote_measure.py fetches this
+                # tree to a different absolute root before reopening it.
+                "candidate_frontier_json": str(
+                    pathlib.Path(story) / "candidate_frontier.json"
+                ),
+                "samples": report["quality"]["samples"],
+                "nominal_samples_at_floor": report["quality"][
+                    "nominal_samples_at_floor"
+                ],
+                "accepted": report["quality"]["accepted"],
+                "issues": story_issues,
+            })
+        args.stories_out_dir.mkdir(parents=True, exist_ok=True)
+        (args.stories_out_dir / "stories_index.json").write_text(json.dumps({
+            "schema_version": 1,
+            "metric_weighting": "speedometer-story-v1",
+            "interval_kind": "exact-scored",
+            "min_marginal_share": args.min_marginal_share,
+            "min_inclusive_share": args.min_share,
+            "story_count": len(index_entries),
+            "accepted": not rejected_stories,
+            "stories": index_entries,
+        }, indent=2, sort_keys=True) + "\n")
+        print(args.stories_out_dir / "stories_index.json")
+
+    if (quality_issues or rejected_stories) and not args.allow_low_quality:
+        problems = list(quality_issues)
+        if rejected_stories:
+            problems.append(
+                "story analyses below quality floor (need more repetitions): "
+                + ", ".join(rejected_stories)
+            )
+        print("Profile rejected: " + "; ".join(problems), file=sys.stderr)
         return 3
     return 0
 

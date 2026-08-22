@@ -35,7 +35,8 @@ the raw evidence.
 
 On the owning thread, call `CalibrateProbeOverhead()` and reject zero. Create
 fresh `CycleBlock` objects on that same thread for each block and
-`repetition|suite` group:
+`repetition|story` group (targeted single-story runs emit one group per
+repetition of the target story):
 
 - `scored_total`: wrap the exact scored interval with
   `Accounting::kInclusive`;
@@ -81,8 +82,9 @@ fresh `CycleBlock` objects on that same thread for each block and
    For operations called $>100,000$ times per suite run, set `sample_every` (e.g. 64
    or 256) so cumulative probe execution time remains strictly negligible.
 7. **Sampling Profile Ceiling Sanity Check:**
-   A mechanism's baseline exclusive cycle share cannot exceed the total sample share
-   of its enclosing function in the release `perf record` profile (`sp3-prof-*`).
+   A mechanism's baseline exclusive cycle share of its target story cannot exceed
+   the enclosing function's sample share in that story's silo analysis
+   (`analysis/stories/<story>/`) from the release `perf record` profile.
 
 Never put an `avoidable` probe inside the `mechanism` probe: exclusive
 parent accounting would subtract it from `mechanism.cycles`, making the row
@@ -124,6 +126,7 @@ First write the metadata skeleton:
 ```bash
 python3 .agents/skills/optimize-speedometer/scripts/mechanism_evidence.py scaffold \
   --opp <id> --mechanism-key <component/strategy> --profile-id <profile> \
+  --target-story <story> --min-avoidable-pct 0.3 \
   --variant baseline --out <baseline.metadata-skeleton.json>
 ```
 
@@ -158,11 +161,13 @@ probe-free tree; `instrumentation.revision` is the instrumentation patch
 SHA-256.
 
 Still on that same host and boot, do not invoke Crossbench yourself and do not
-create `[SP3_CYCLE_ROW]` text. Run at least three full-suite blocks through the
-capture subcommand. It chooses a fresh nonce, sets the block environment,
-invokes Crossbench, requires renderer PID/TID and kernel monotonic timestamps
-inside its run bounds, verifies all 32 exact-scored suites, and extracts rows
-directly from raw browser logs:
+create `[SP3_CYCLE_ROW]` text. Run at least three targeted single-story blocks
+through the capture subcommand. It reads the metadata's `target_story`,
+chooses a fresh nonce, sets the block environment, invokes Crossbench with
+`--stories=<target_story>` and the requested repetitions (default 10, minimum
+4), requires renderer PID/TID and kernel monotonic timestamps inside its run
+bounds, verifies the exact-scored marks of exactly the target story, and
+extracts rows directly from raw browser logs:
 
 ```bash
 for block in 1 2 3; do
@@ -204,7 +209,9 @@ Before authorizing 20–40 landings, complete this chain for 3–5 candidates:
 `emitted counters -> baseline sizing -> oracle -> candidate -> batch A/B`
 
 The sixth landing is locked until a 32-or-more-block cumulative `out/release`
-flag A/B has a positive 95% confidence interval. A positive point estimate
-whose interval crosses zero leaves the pilot pending: increase the balanced
-block count and remeasure. A statistically negative result fails the pilot.
-Fix the harness rather than explaining away disagreement.
+flag A/B over the exact ledger-emitted target-story selector shows a positive
+95% confidence interval and a separate same-tip full-suite A/B shows no
+stat-sig regression. A positive targeted point estimate whose interval crosses
+zero leaves the pilot pending: use its MDE to preregister one larger balanced
+confirmation run. A statistically negative result fails the pilot. Fix the
+harness rather than explaining away disagreement.

@@ -1,14 +1,16 @@
 # Investigator playbook
 
-Goal: turn one profiled subsystem into structured, 4-layer investigated opportunity proposals with exact stack attributions from `profile.collapsed`.
+Goal: turn one profiled story-silo area into structured, 4-layer investigated opportunity proposals with exact stack attributions from that story's `profile.collapsed`.
 
-Inputs: subsystem name, exact profile artifacts (`profile.collapsed`, `candidate_frontier.md`), and output directory.
+Inputs: target story name, subsystem/area name, exact per-story profile artifacts (`analysis/stories/<story>/profile.collapsed`, `analysis/stories/<story>/candidate_frontier.md`), and output directory.
+
+Each investigation is scoped to one story silo. Use only the target story's own artifacts; the full-suite view is diagnostic and must not source shares. If the same mechanism plausibly helps other stories, note that as an unquantified bonus in the proposal notes — it never enters the ranking.
 
 Procedure:
 
 1. **Subsystem Stack Decomposition:**
-   - Filter `profile.collapsed` for the target subsystem.
-   - Trace all major call paths from entry point down to leaf functions, quantifying exact sample counts and percentage shares.
+   - Filter the target story's `profile.collapsed` for the target subsystem.
+   - Trace all major call paths from entry point down to leaf functions, quantifying exact sample counts and percentage shares of the story's scored cycles.
 
 2. **Apply the 4-Layer Investigation Framework:**
    - **Layer 1 (Subtree / Branch Elimination):** Can an entire call tree or lifecycle step be avoided with a pre-condition, dirty flag, or fast-exit check?
@@ -21,10 +23,10 @@ Procedure:
    - State one invariant: “When condition C is measured true, work W (including downstream call tree T) can be avoided while preserving behavior B.”
 
 4. **Quantify Profile Headroom & Avoidable Share:**
-   - `story_profile_share_pct`: Exact sum of cycles in the targeted stack within the specific benchmark story silo.
+   - `story_profile_share_pct`: Exact sum of cycles in the targeted stack within the target story silo, as a percentage of that story's scored cycles.
    - `estimated_avoidable_fraction`: Realistic fraction of the stack avoided by the condition (0.0 to 1.0).
-   - `estimated_local_story_impact_pct` = `story_profile_share_pct * estimated_avoidable_fraction` (primary ranking metric).
-   - Local floor requirement: `estimated_local_story_impact_pct >= 0.30%`.
+   - `estimated_local_story_impact_pct` = `story_profile_share_pct * estimated_avoidable_fraction` (the primary metric for the global ranking; never divide by 32 or rescale to a full-suite share).
+   - Local floor requirement: `estimated_local_story_impact_pct >= 0.30%` of the target story.
 
 5. **Emit the Opportunity Investigation Proposal:**
    - Save to `.agents/campaigns/current/proposals/<mechanism_key>.json`.
@@ -37,7 +39,8 @@ Proposal JSON format:
   "opportunity_id": 0,
   "mechanism_key": "component/strategy",
   "subsystem": "style|html-parser|events|layout|dom|paint",
-  "target_story": "Charts-chartjs|TodoMVC-jQuery",
+  "target_story": "Charts-chartjs",
+  "possible_bonus_stories": ["TodoMVC-jQuery"],
   "investigation_layer": 1,
   "target_stack_pattern": "regex_or_stack_frames",
   "story_profile_share_pct": 23.0,

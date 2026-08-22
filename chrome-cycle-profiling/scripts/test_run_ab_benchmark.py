@@ -67,6 +67,21 @@ class PerStoryTest(unittest.TestCase):
         self.assertTrue(stats["stat_sig_regression"])
         self.assertTrue(stats["exceeds_2pct_regression"])
 
+    def test_manifest_preserves_per_repetition_story_totals(self):
+        block = {
+            "block": 1,
+            "pattern": "ABBA",
+            "a_scores": [30.0, 30.1],
+            "b_scores": [30.2, 30.3],
+            "a_stories": [{"TodoMVC-React": 10.0}] * 2,
+            "b_stories": [{"TodoMVC-React": 9.9}] * 2,
+            "a_results": [{"path": "a"}] * 2,
+            "b_results": [{"path": "b"}] * 2,
+        }
+        serialized = ab.manifest_block_details([block])[0]
+        self.assertEqual(block["a_stories"], serialized["a_stories"])
+        self.assertEqual(block["b_stories"], serialized["b_stories"])
+
 
 class ParseTest(unittest.TestCase):
     def test_only_scalar_score_files_counted(self):

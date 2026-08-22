@@ -26,19 +26,22 @@ benchmark noise floor. It deliberately separates three kinds of evidence:
 
 | Question | Authoritative evidence | Never use as a substitute |
 | --- | --- | --- |
-| Where should we look? | exact-scored, score-weighted cycle profile | flat self-time or an outer suite window |
-| Did one mechanism remove work? | counters plus paired baseline/oracle/candidate exclusive cycles | profile share, source inspection, or a typed estimate |
-| Did the campaign improve Speedometer? | randomized full-suite block A/B | sum of candidate ceilings |
+| Where should we look? | exact-scored per-story silo cycle profiles | flat self-time, an outer suite window, or the full-suite diagnostic view |
+| Did one mechanism remove work? | counters plus paired baseline/oracle/candidate exclusive cycles on the target story | profile share, source inspection, or a typed estimate |
+| Did the landed work improve its target stories? | randomized A/B restricted to the preregistered landed target-story set | sum of candidate ceilings or a post-hoc full-suite subset |
+| Did the campaign improve Speedometer overall? | randomized full-suite block A/B geomean | sum of targeted-story deltas |
 
 ## Hard invariants
 
 1. `interval_kind` is `exact-scored`. The only admitted intervals are the
    sync and async timers used by Speedometer's score. Outer suite intervals
    are diagnostic and never contribute candidate weight.
-2. Profile weights use exact-scored per-benchmark analysis: each benchmark story is
-   treated as an independent silo down to the 0.3% local benchmark floor. Stacks are
-   analyzed and sized cleanly within the targeted benchmark so the impact is clearly
-   visible and measurable without geometric-mean dilution.
+2. Discovery uses exact-scored per-story silo analysis
+   (`metric_weighting: speedometer-story-v1`): each of the 32 stories is
+   analyzed in isolation, every share is relative to that story's own scored
+   cycles, and frontier identities are story-qualified (`story:<name>/…`).
+   The full-suite equal-weight view is diagnostic only and never sources
+   campaign shares.
 3. Sampling profiles discover broad areas. They never size a mechanism or
    predict score delta. The default marginal floor is 0.3%, and an analysis
    fails if the floor has fewer than 100 nominal samples.
@@ -50,9 +53,10 @@ benchmark noise floor. It deliberately separates three kinds of evidence:
 6. A PASS review is bound to the reviewed Git tree and the exact sizing and
    verification artifact digests. Generate its checklist; never hand-author
    an unbound verdict.
-7. Reprofile after at most five runtime-changing landings. Record a cumulative
-   full-suite checkpoint after at most five landings. `campaign.py` blocks the
-   next landing when either artifact is stale.
+7. Reprofile and record a cumulative targeted-story checkpoint after at most
+   five runtime-changing landings. Record a full-suite regression checkpoint
+   after the pilot and at most every ten landings thereafter. `campaign.py`
+   blocks the next landing when a required artifact is stale.
 8. PGO, ThinLTO, symbols, and frame-pointer state are build provenance, not
    assumptions. Profile and release builds must both be official PGO phase 2
    ThinLTO builds. Validate a mechanism in a release-like instrumented twin.
@@ -66,13 +70,17 @@ benchmark noise floor. It deliberately separates three kinds of evidence:
     come only from nonce-bound `mechanism_evidence.py capture` browser logs.
     Typed success strings and hand-authored counter/capture JSON are invalid.
 12. The first five candidates are a fail-closed pilot. The sixth landing is
-    blocked until cumulative `out/release` A/B has a positive 95% CI.
+    blocked until a targeted `out/release` A/B over the exact landed
+    target-story set has a positive 95% CI and a separate same-tip full-suite
+    A/B shows no stat-sig regression.
 13. Mechanism provenance, rebuilds, captures, and candidate build/test
     receipts run on the configured bare-metal measurement host. Their host
     name, boot id, kernel, CPU, source tree, and candidate binary must agree.
-14. After the pilot, any current-tip cumulative checkpoint whose 95% CI is not
-    positive blocks the next landing. Add balanced blocks or diagnose/bisect;
-    do not bury a flat result under another patch batch.
+14. After the pilot, any current-tip targeted checkpoint whose 95% CI is not
+    positive blocks the next landing. Any retained full-suite checkpoint with
+    a stat-sig regression also blocks. Choose one larger preregistered balanced
+    run from the measured MDE or diagnose/bisect; do not repeatedly peek at
+    fresh 95% tests until one passes.
 15. Score evidence uses the v3 runner manifest. The ledger verifies every raw
     scalar-result digest, real ABBA/BAAB position, monotonic duration, host and
     harness identity, then recomputes delta, CI, significance, and MDE.
@@ -109,28 +117,31 @@ benchmark noise floor. It deliberately separates three kinds of evidence:
     yielding net cycle regressions. Optimization efforts MUST focus on **Layer 1 (Subtree /
     Lifecycle Phase Elimination)** and **Layer 2 (Cross-Call State Memoization / Caching)**
     where substantial blocks of work are pruned.
-21. **Per-Benchmark Silo Focus & Single-Benchmark Impact Ranking:**
-    Speedometer 3 comprises 32 diverse framework and application workloads. Rather than using
+21. **Per-Story Silo Focus & Target-Story Impact Ranking:**
+    Speedometer 3 comprises 32 diverse framework and application workloads. Rather than
     full-suite geometric-mean weighting or dividing local story impact by 32, the campaign
-    focuses on each benchmark as an independent silo:
-    - **Per-Story Profile Decomposition:** Profiler captures MUST be decomposed across each
-      of the 32 individual benchmark stories down to a **$0.3\%$ local benchmark marginal share floor**
-      (discovering high-leverage workload-specific hotspots that would otherwise be hidden below
-      full-suite noise).
-    - **Single-Benchmark Impact Ranking:** All candidate mechanisms discovered across the 32
-      benchmark silos are aggregated into a combined Master Ranked Frontier. The combined list
-      retains benchmark-specific entries (allowing duplicate mechanisms if they appear in multiple
-      benchmark silos) and is sorted strictly by **Maximum Single-Benchmark Local Impact (%)**:
-      $$\text{Estimated Single-Benchmark Impact} = \text{Local Story Share} \times \text{Avoidable Fraction}$$
-      We pick opportunities by the biggest impact to an individual benchmark so we can clearly see
-      the impact when evaluating.
-    - **High-SNR Single-Story Sizing & Candidate Verification:** Sizing and candidate verification
-      measurements MUST be executed against the targeted benchmark story (`--story <name>`).
-      Single-story runs execute in ~1–2 seconds, enabling 10–20 high-repetition blocks with tight
-      confidence intervals ($\pm 0.03\%$) and clean, unambiguous readouts on individual benchmark gains.
-    - **Periodic Full-Suite Checkpoints:** The full 32-story suite is reserved for release
-      A/B checkpoints on `out/release` after batches of landed optimizations to confirm overall
-      cumulative progression across the browser.
+    explores each story as an independent silo and ranks globally by impact on the
+    opportunity's own target story:
+    - **Per-Story Profile Decomposition:** Profile captures are decomposed by the analyzer
+      into one silo per story (`analysis/stories/<story>/`), each down to a **0.3% local
+      story marginal-share floor** with the 100-nominal-samples quality gate applied per
+      story. A story below its sample floor rejects the capture — increase repetitions
+      (default 16) rather than dropping the story.
+    - **Target-Story Impact Ranking:** Every area and mechanism carries a `target_story`,
+      and the ledger ranks all opportunities globally by
+      estimated impact on that one story (local story share × avoidable fraction).
+      The same symbol hot in several silos yields separate story-qualified entries, each
+      ranked by its own local impact. Benefit to other stories is a bonus noted in prose;
+      it is never summed into the ranking and never divided by 32.
+    - **High-SNR Single-Story Sizing & Candidate Verification:** `mechanism_evidence.py`
+      sizes and verifies against the mechanism's target story only
+      (`--stories=<target_story>`, at least 4 repetitions per block, default 10), so
+      counter shares are local to the story the change is supposed to move.
+    - **Split Targeted and Full-Suite Checkpoints:** `campaign.py checkpoint-targets`
+      emits the exact sorted landed target-story selector. A targeted `out/release` A/B
+      over that preregistered set is the high-power landing gate. A separate full-suite
+      A/B is the aggregate campaign claim and regression guardrail (mandatory for the
+      pilot, then at most ten landings stale).
 22. **Mandatory Remote Transfer Compression (`scp -C` / `rsync -z`):**
     The bare-metal measurement host is remote with constrained upstream/downstream bandwidth.
     Any time agents or automation scripts transfer files, patches, build logs, sizing manifests,
@@ -215,7 +226,9 @@ flag has a measurable cost.
 
 Before authorizing a long campaign, run the 3–5-candidate end-to-end pilot in
 `resources/instrumented_twin.md`. Continue only when the emitted-counter,
-oracle, and candidate gates pass and cumulative A/B has a positive 95% CI.
+oracle, and candidate gates pass, the preregistered targeted A/B has a
+positive 95% CI, and a separate same-tip full-suite A/B has no stat-sig
+regression.
 An inconclusive pilot permits more balanced measurement, not a sixth landing.
 
 ## Loop
@@ -228,20 +241,25 @@ the next numbered step.
 ### 1. Capture a fresh frontier
 
 Have the profiler produce at least two independent full-suite captures with
-the campaign flag enabled, four repetitions each:
+the campaign flag enabled, sixteen repetitions each (per-story silos need
+enough samples in every story to clear their local floors):
 
 ```bash
 python3 .agents/skills/optimize-speedometer/scripts/remote_measure.py \
-  --mode profile --ref <campaign-tip> --stories all --repetitions 4 \
+  --mode profile --ref <campaign-tip> --stories all --repetitions 16 \
   --share-floor-pct 0.3 --enable-features Speedometer3Optimizations \
   --summary-out <capture-1.json>
 ```
 
-Every summary must report:
+The analyzer decomposes each capture into 32 independent story silos
+(`analysis/stories/<story>/`) whose shares are local to each story's scored
+cycles. Every summary must report:
 
 - `interval_kind: exact-scored`;
-- `metric_weighting: speedometer-geomean-v1`;
-- accepted quality and at least 100 nominal samples at the floor;
+- `metric_weighting: speedometer-story-v1`;
+- all 32 story silos analyzed and accepted, each with at least 100 nominal
+  samples at its local floor (a failing story means rerun with more
+  repetitions);
 - `stories: all`, matching SHA/features/floor, complete inventory, and unique
   capture/perf/artifact provenance.
 
@@ -262,19 +280,20 @@ their shares. Exclude wait/idle and payload-only shells. Keep residual work
 from already-landed mechanisms visible until a follow-on profile shows it
 ### 2. Decompose and qualify candidate opportunities
 
-For each candidate discovery area (e.g. Style Recalc, HTML Parsing, Event Dispatch, Layout):
+For each candidate discovery area (a story-qualified silo entry, e.g. Style
+Recalc in `TodoMVC-jQuery`, Canvas paint in `Charts-chartjs`):
 
 1. **Invoke an Independent Investigator Subagent:**
-   - The investigator analyzes `profile.collapsed` and the target subsystem using the **4-Layer Investigation Framework** in `resources/decomposition.md` (favoring Layer 1 Subtree Elimination and Layer 2 Caching/Sharing over leaf tuning).
-   - Generates an Opportunity Investigation Proposal with exact stack share and estimated avoidable fraction ($\text{Estimated Net Impact} = \text{Stack Share} \times \text{Avoidable Fraction} \ge 0.30\%$).
+   - The investigator analyzes the target story's own `analysis/stories/<story>/profile.collapsed` and the target subsystem using the **4-Layer Investigation Framework** in `resources/decomposition.md` (favoring Layer 1 Subtree Elimination and Layer 2 Caching/Sharing over leaf tuning). The full-suite view never sources shares.
+   - Generates an Opportunity Investigation Proposal with the exact target-story stack share and estimated avoidable fraction ($\text{Estimated Target-Story Impact} = \text{Local Story Share} \times \text{Avoidable Fraction} \ge 0.30\%$ of that story).
 
 2. **Run Independent Adversarial Candidate Qualification:**
-   - An independent Adversary subagent reviews the proposal against Web specs, profile ground truth in `profile.collapsed`, lifecycle safety, and avoidable plausibility (`playbooks/adversary.md` Gate 1).
+   - An independent Adversary subagent reviews the proposal against Web specs, profile ground truth in the target story's `profile.collapsed`, lifecycle safety, and avoidable plausibility (`playbooks/adversary.md` Gate 1).
    - Only proposals that **PASS** adversarial review become official qualified candidates.
 
-3. **Master Ranking & Sizing Gate:**
-   - All qualified candidates across all benchmark silos are aggregated into the combined Master Ranked Frontier and sorted strictly by **Verified Estimated Single-Benchmark Impact (biggest to smallest)**, retaining benchmark-specific entries so that impact on individual workloads is clearly visible.
-   - We advance and instrument the top candidate in the ranking.
+3. **Global Ranking & Sizing Gate:**
+   - All qualified candidates across all story silos rank globally by **Verified Estimated Target-Story Impact (biggest to smallest)** — each entry judged only against its own target story, with any cross-story benefit left out of the ranking as a bonus. The ledger's `campaign.py next` implements this ordering.
+   - We advance and instrument the top candidate in the ranking. If its mechanism key already exists from another story, link it (`known`/`covered-by`) instead of duplicating it.
 
 ```bash
 python3 .agents/skills/optimize-speedometer/scripts/campaign.py advance --opp <discovery> --to investigating
@@ -294,9 +313,10 @@ rules in `resources/decomposition.md`.
 ### 3. Instrument and size the mechanism
 
 The investigator adds temporary flag-controlled counters to a release-like
-instrumented twin. Emit one row per repetition/suite inside each block (at
-least all 32 suites); the reducer gives every row equal score weight. Count at
-minimum in each row:
+instrumented twin. Sizing runs only the mechanism's target story: emit one
+row per repetition of that story inside each block (at least 4 repetitions,
+default 10); the reducer gives every repetition equal weight, so shares are
+local to the target story's scored cycles. Count at minimum in each row:
 
 - calls and applicable calls;
 - exclusive mechanism cycles;
@@ -326,18 +346,19 @@ on-CPU during an outer suite window.
 Generate a metadata skeleton and fill only trace/instrumentation fields. Use
 `provenance` plus `attach-provenance` for every build field; never type SHA,
 tree, binary, GN, toolchain, or PGO identities. Then let `capture` run each
-full-suite block. Never invoke Crossbench separately or type/paste counter
+target-story block. Never invoke Crossbench separately or type/paste counter
 rows or capture manifests:
 
 ```bash
 python3 .agents/skills/optimize-speedometer/scripts/mechanism_evidence.py scaffold --opp <id> \
   --mechanism-key <component/strategy> --profile-id <profile> \
+  --target-story <story> --min-avoidable-pct 0.3 \
   --variant baseline --out <baseline.metadata-skeleton.json>
 # Follow resources/instrumented_twin.md to bind the instrumentation tree,
 # emit build-provenance.json, and create baseline.metadata.json.
 python3 .agents/skills/optimize-speedometer/scripts/mechanism_evidence.py capture \
   --metadata <baseline.metadata.json> --variant baseline \
-  --browser out/perf_instrumented/chrome --block 1 \
+  --browser out/perf_instrumented/chrome --block 1 --repetitions 10 \
   --enable-features Speedometer3Optimizations \
   --out-dir <baseline-block-1> --out <baseline-capture-1.json>
 # Repeat capture for blocks 2 and 3 using distinct output paths.
@@ -355,10 +376,11 @@ python3 .agents/skills/optimize-speedometer/scripts/campaign.py advance --opp <i
 ```
 
 The capture runner verifies a staged source tree, browser/GN digest, fresh
-nonce, 32 real suite names, exact score marks, natural run variance, and the
-byte-exact extraction from raw browser logs. The stored bound is an upper
-confidence bound on avoidable scored CPU-cycle share, not a predicted score
-delta. Use at least three blocks. Record full build identity, GN-args digest,
+nonce, the exact target story's score marks (and only that story), natural
+run variance, and the byte-exact extraction from raw browser logs. The stored
+bound is an upper confidence bound on the avoidable share of the target
+story's scored CPU cycles, not a predicted score delta. Use at least three
+blocks. Record full build identity, GN-args digest,
 toolchain id, PGO-profile digest, probe revision, probe A/A overhead, and the
 trace digest. Probe A/A overhead above 1% fails the artifact.
 
@@ -447,26 +469,40 @@ Commit the exact reviewed tree and record it:
 python3 .agents/skills/optimize-speedometer/scripts/campaign.py advance --opp <id> --to landed --commit <sha>
 ```
 
-After at most five landings, run a cumulative full-suite flag A/B on the
-symbol-free official PGO2/ThinLTO `out/release` build with a fresh recorded
-seed and at least 32 blocks: 16 ABBA and 16 BAAB, 64 paired reps per arm. If
-the pilot interval crosses zero, increase the even block count and remeasure;
-the sixth landing stays blocked. Record machine output, not copied numbers:
+After at most five landings, print the ledger-derived target selector and run
+a cumulative flag A/B restricted to that exact set. This targeted checkpoint
+is the landing efficacy gate. For the pilot, also run a separate same-tip
+full-suite checkpoint; afterward the full-suite regression/aggregate-claim
+checkpoint may be at most ten landings stale. Both use symbol-free official
+PGO2/ThinLTO `out/release`, a fresh recorded seed, and at least 32 balanced
+blocks. Record machine output, not copied numbers:
 
 ```bash
+TARGETS=$(python3 .agents/skills/optimize-speedometer/scripts/campaign.py checkpoint-targets)
 python3 .agents/skills/optimize-speedometer/scripts/remote_measure.py \
   --mode ab --ref <campaign-tip> --feature Speedometer3Optimizations \
-  --stories all --blocks 32 --summary-out <remote-ab-summary.json>
+  --stories "$TARGETS" --blocks 32 --summary-out <targeted-ab-summary.json>
 python3 .agents/skills/optimize-speedometer/scripts/campaign.py checkpoint \
-  --summary <remote-ab-summary.json> \
+  --kind targeted --summary <targeted-ab-summary.json> \
   --gate-skeptic <checkpoint-skeptic.json> \
   --gate-adversary <checkpoint-adversary.json>
+
+# Required at the pilot tip and whenever the ten-landing full-suite cadence is due.
+python3 .agents/skills/optimize-speedometer/scripts/remote_measure.py \
+  --mode ab --ref <campaign-tip> --feature Speedometer3Optimizations \
+  --stories all --blocks 32 --summary-out <full-suite-ab-summary.json>
+python3 .agents/skills/optimize-speedometer/scripts/campaign.py checkpoint \
+  --kind full-suite --summary <full-suite-ab-summary.json> \
+  --gate-skeptic <full-checkpoint-skeptic.json> \
+  --gate-adversary <full-checkpoint-adversary.json>
 ```
 
-Thirty-two blocks means 128 full-suite repetitions. The hard duration floor is
-64 minutes and several hours including builds is normal. Wait for the real
-runner; silence is not permission to synthesize or shorten evidence. If the
-CI is too wide, increase the even block count in a fresh balanced run.
+Thirty-two blocks means 128 repetitions of the selected story set. Full-suite
+runs have a 64-minute hard duration floor and may take several hours. If the
+targeted CI is too wide, use its MDE to choose one larger preregistered balanced
+confirmation run; do not repeatedly test fresh runs until one is favorable.
+The ledger rejects a same-size confirmation, a third targeted look at the same
+campaign tip, and any duplicate same-tip full-suite checkpoint.
 
 Also reprofile the enabled campaign tip after at most five runtime changes,
 and immediately after two candidate verification misses or a checkpoint that

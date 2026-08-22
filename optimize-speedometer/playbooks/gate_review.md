@@ -20,12 +20,15 @@ Try to disprove the claimed performance conclusion:
 
 - **preflight/profile:** exact score-window scope, equal suite weighting,
   capture independence, sample power, frontier completeness, build fidelity;
-- **decomposition/sizing:** one invariant, measured applicability, oracle
-  validity, overlap, critical-path classification, CPU share versus score;
+- **decomposition/sizing:** one invariant, target-story profiler share,
+  plausible avoidable fraction, machine-recomputed local-story impact and
+  floor, measured applicability, oracle validity, overlap, critical-path
+  classification, CPU share versus score;
 - **candidate:** paired identity, positive lower bounds, moved work, probe tax,
   code-size/cold-path tax, distinct product trees/binaries;
-- **checkpoint/pilot:** `out/release`, block balance, MDE, CI, fresh seed,
-  cumulative direction, multiple testing, practical effect size;
+- **checkpoint/pilot:** `out/release`, exact preregistered target-story set for
+  targeted gates, full-suite scope for regression gates, block balance, MDE,
+  CI, fresh seed, cumulative direction, multiple testing, practical effect size;
 - **reprofile/exhaustion:** residual work, stale evidence, hidden known paths,
   and whether stopping is supported by the latest enabled profile.
 

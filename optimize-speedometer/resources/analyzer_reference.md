@@ -6,17 +6,24 @@ consumes only the resulting frontier summaries.
 
 ## Scope and weighting contract
 
-Campaign output is valid only when `quality.interval_kind` is
-`exact-scored` and `selection.metric_weighting` is
-`speedometer-geomean-v1`. Exact intervals are the sync/async timers that feed
-the Speedometer score. The broader suite windows are diagnostics and include
-setup/reporting work that is not scored.
+Campaign frontiers come from the per-story silo analyses under
+`analysis/stories/<story>/`: each story's exact-scored samples analyzed in
+isolation, with every share relative to that story's own scored cycles.
+Campaign output is valid only when `quality.interval_kind` is `exact-scored`
+and each story artifact's `selection.metric_weighting` is
+`speedometer-story-v1` with `selection.story` naming the silo. Exact
+intervals are the sync/async timers that feed the Speedometer score; the
+broader suite windows are diagnostics and include setup/reporting work that
+is not scored.
 
-The analyzer normalizes each capture/suite group to equal total weight before
-building the frontier. Speedometer uses a geometric mean across suite totals,
-so raw global cycle pooling would otherwise give slow suites more influence.
-This is appropriate for discovery; it does not turn cycle share into a score
-forecast. Size mechanisms with `mechanism_evidence.py`.
+Within a story silo, each repetition group gets equal weight, so one slow
+repetition cannot dominate the story's frontier. Entry keys are
+story-qualified (`story:<name>/…`): the same symbol hot in two stories is two
+independent, independently ranked identities. The full-suite view
+(`analysis/full/`, `speedometer-geomean-v1` weighting) remains a diagnostic
+cross-check only and never sources campaign shares. Local story shares are
+discovery evidence; they do not turn cycle share into a score forecast. Size
+mechanisms with `mechanism_evidence.py` against the same target story.
 
 ## Capture requirements (enforced by the collector)
 
@@ -28,16 +35,22 @@ The collector (`run_cycle_benchmark.py`, normally invoked remotely via
   importing an old capture; new campaign probes do not emit it;
 - PIDs and roles for browser, renderer, GPU, and utility processes;
 - the raw `perf.data` file (left on the remote host — record its path);
+- one per-story silo analysis per observed story under `analysis/stories/`,
+  plus `stories_index.json` summarizing per-story samples, floors, and
+  acceptance;
 - full-process-tree and renderer-only candidate frontiers and
-  `opportunity_trees.txt` reports;
-- `profile.collapsed` for interactive inspection.
+  `opportunity_trees.txt` reports (diagnostic views);
+- `profile.collapsed` for interactive inspection (per story and full).
 
 Reject a capture before candidate work if it has unmatched marks, fewer than
 5,000 retained samples, median stack depth below 3, more than 15% unknown
 user-space frames, disabled inline expansion, missing expected roles, or
-obvious harness/startup leakage. Kernel symbols are reported separately from
-user-space symbol quality. The collector still writes both diagnostic report
-sets on rejection, then exits with status 3.
+obvious harness/startup leakage — and apply the sample-count and
+100-nominal-samples-at-floor gates independently to **every** story silo: a
+story below its local floor rejects the capture (increase repetitions).
+Kernel symbols are reported separately from user-space symbol quality. The
+collector still writes the diagnostic report sets on rejection, then exits
+with status 3.
 
 To reanalyze an existing capture (or merge several):
 

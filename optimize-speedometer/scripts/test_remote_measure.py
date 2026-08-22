@@ -161,45 +161,99 @@ class ResultDiscoveryTest(unittest.TestCase):
             full = out / "analysis" / "full"
             full.mkdir(parents=True)
             (full / "candidate_frontier.md").write_text("x")
-            (full / "candidate_frontier.json").write_text(
-                '{"selection":{"inventory_complete":true,'
-                '"min_marginal_share":0.001,"min_inclusive_share":0.001},'
-                '"frontier":[{"entry_key":"symbol:blink::Hot",'
-                '"kind":"symbol","name":"blink::Hot",'
-                '"marginal_share":0.002}],'
-                '"overlapping_alternatives":[{"kind":"symbol",'
-                '"name":"blink::Shared","entry_key":"symbol:blink::Shared",'
-                '"inclusive_share":0.003,'
-                '"assigned_frontier_entry":"symbol:blink::Hot"}]}'
-            )
+            (full / "candidate_frontier.json").write_text("{}")
             (full / "opportunity_trees.txt").write_text("x")
+            stories = out / "analysis" / "stories"
+            story_dir = stories / "Charts-chartjs"
+            story_dir.mkdir(parents=True)
+            (story_dir / "candidate_frontier.json").write_text(json.dumps({
+                "quality": {
+                    "accepted": True,
+                    "samples": 40000,
+                    "nominal_samples_at_floor": 120.0,
+                    "build_provenance": {"required_release_args": {}},
+                },
+                "selection": {
+                    "inventory_complete": True,
+                    "metric_weighting": "speedometer-story-v1",
+                    "story": "Charts-chartjs",
+                    "min_marginal_share": 0.001,
+                    "min_inclusive_share": 0.001,
+                },
+                "frontier": [{
+                    "entry_key": "story:Charts-chartjs/symbol:blink::Hot",
+                    "kind": "symbol", "name": "blink::Hot",
+                    "marginal_share": 0.09,
+                }],
+                "overlapping_alternatives": [{
+                    "kind": "symbol", "name": "blink::Shared",
+                    "entry_key": "story:Charts-chartjs/symbol:blink::Shared",
+                    "inclusive_share": 0.03,
+                    "assigned_frontier_entry":
+                        "story:Charts-chartjs/symbol:blink::Hot",
+                }],
+            }))
+            (stories / "stories_index.json").write_text(json.dumps({
+                "schema_version": 1,
+                "metric_weighting": "speedometer-story-v1",
+                "interval_kind": "exact-scored",
+                "min_marginal_share": 0.001,
+                "min_inclusive_share": 0.001,
+                "story_count": 1,
+                "accepted": True,
+                "stories": [{
+                    "story": "Charts-chartjs",
+                    "dir": "Charts-chartjs",
+                    "candidate_frontier_json": (
+                        "/remote/chromium/scratch/results/analysis/stories/"
+                        "Charts-chartjs/candidate_frontier.json"
+                    ),
+                    "samples": 40000,
+                    "nominal_samples_at_floor": 120.0,
+                    "accepted": True,
+                    "issues": [],
+                }],
+            }))
             paths = rm.profile_summary_paths(out)
             self.assertEqual(True, paths.pop("inventory_complete"))
+            self.assertEqual(
+                "speedometer-story-v1", paths.pop("metric_weighting")
+            )
+            self.assertEqual("exact-scored", paths.pop("interval_kind"))
             self.assertEqual(0.001, paths.pop("analyzer_min_marginal_share"))
             self.assertEqual(0.001, paths.pop("analyzer_min_inclusive_share"))
             self.assertEqual(1, paths.pop("frontier_count"))
+            self.assertEqual(1, paths.pop("story_count"))
+            self.assertEqual(120.0, paths.pop("nominal_samples_at_floor"))
             self.assertEqual(
-                ["symbol:blink::Hot"], paths.pop("frontier_entries")
+                ["story:Charts-chartjs/symbol:blink::Hot"],
+                paths.pop("frontier_entries"),
             )
             self.assertEqual(
                 [{
-                    "entry_key": "symbol:blink::Hot",
+                    "entry_key": "story:Charts-chartjs/symbol:blink::Hot",
                     "work_items": [{
                         "hotspot_key": "@root",
                         "semantic_key": "symbol:blink::Hot",
-                        "measured_share_pct": 0.2,
+                        "measured_share_pct": 9.0,
                     }, {
-                        "hotspot_key": "alternative:symbol:blink::Shared",
+                        "hotspot_key": (
+                            "alternative:story:Charts-chartjs/"
+                            "symbol:blink::Shared"
+                        ),
                         "semantic_key": "symbol:blink::Shared",
-                        "measured_share_pct": 0.3,
+                        "measured_share_pct": 3.0,
                     }],
                 }],
                 paths.pop("frontier_inventory"),
             )
+            story_frontiers = paths.pop("story_frontiers")
+            self.assertEqual(1, len(story_frontiers))
+            self.assertEqual("Charts-chartjs", story_frontiers[0]["story"])
+            self.assertEqual(True, story_frontiers[0]["accepted"])
             self.assertEqual(
                 {"full_candidate_frontier", "full_candidate_frontier_json",
-                 "full_opportunity_trees", "interval_kind",
-                 "metric_weighting", "nominal_samples_at_floor",
+                 "full_opportunity_trees", "stories_index_json",
                  "build_provenance"}, set(paths))
 
 
@@ -297,10 +351,29 @@ class ScoreEvidenceFetchTest(unittest.TestCase):
                     "linux", "/src", manifest, root / "local"
                 )
             command = run.call_args.args[0]
+            self.assertIn("-C", command)
             self.assertIn(
                 "linux:/src/scratch/ab_evidence_" + "a" * 24,
                 command,
             )
+
+    def test_profile_fetch_uses_rsync_compression(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            rm, "run"
+        ) as run:
+            rm.fetch_profile_results(
+                "linux", "/src",
+                "Output Dir : scratch/results_perf_sampling_abc\n",
+                pathlib.Path(tmp),
+            )
+        self.assertIn("-az", run.call_args.args[0])
+
+    def test_manifest_fetch_uses_scp_compression(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            rm, "run"
+        ) as run:
+            rm.fetch_file("linux", "/src/manifest.json", pathlib.Path(tmp))
+        self.assertIn("-C", run.call_args.args[0])
 
     def test_rejects_unsafe_evidence_directory(self):
         with tempfile.TemporaryDirectory() as tmp:

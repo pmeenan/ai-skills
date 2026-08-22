@@ -8,17 +8,22 @@ reducer owns `blocks`, `capture_manifests`, `counter_logs`, and `ingested_by`.
 Hand-entered rows or manifests without matching raw browser output fail.
 
 Each raw file describes one variant (`baseline`, `oracle`, or `candidate`) of
-one opportunity and profile. It binds:
+one opportunity and profile, measured against the mechanism's single
+`target_story`. It binds:
 
+- the target story (sizing and verification run only that story via
+  `--stories=<target_story>`; shares are local to its scored cycles);
+- the campaign's minimum avoidable-share lower-bound floor (default 0.3%);
 - exact score scope and a digested trace used to classify criticality;
 - complete release-like build identity (SHA, binary id, GN args, toolchain,
   and PGO profile), bound to a digested provenance artifact;
 - probe revision and measured A/A overhead, bound to its A/A artifact;
 - at least three independent blocks with natural run variance;
-- inside every block, one `repetition|suite` row for all 32 Speedometer suites.
+- inside every block, one `repetition|story` row per repetition of the target
+  story, with at least 4 repetitions per block (default 10).
 
 Each log is SHA-256 bound to a staged source tree, real browser binary, fresh
-capture nonce, and 32-suite exact-score mark inventory. Ingestion rejects
+capture nonce, and the target story's exact-score mark inventory. Ingestion rejects
 placeholder suite names, repeated synthetic score totals, missing/failed perf events, zero
 calibration, invalid reads, thread-affinity or nesting violations, and a PMU
 time-running/time-enabled ratio below 0.99. See `instrumented_twin.md` for the
@@ -54,12 +59,13 @@ Group fields are raw harness output:
 | `avoidable_cycles` | Exclusive cycles specifically avoidable under the invariant, established by a dual-path counter or oracle |
 | `total_scored_cycles` | On-CPU cycles in this exact score group |
 
-The reducer computes a cycle share inside each group, then equally averages
-groups. It never pools raw cycles across suites. `summarize` reports an upper
-95% confidence bound on avoidable score-weighted CPU-cycle share. `compare`
+The reducer computes a cycle share inside each repetition group, then equally
+averages the repetitions of the target story. It never pools raw cycles
+across repetitions. `summarize` reports an upper 95% confidence bound on the
+avoidable CPU-cycle share of the target story's scored cycles. `compare`
 uses exactly matching block and group identities and requires positive lower
 95% confidence bounds for both relative exclusive-cycle reduction and net
-score-weighted cycle share saved.
+target-story cycle share saved.
 
 `compare` also reports the paired log-ratio change in `total_scored_cycles`
 with a 95% CI. This uses the baseline total as the saved-share denominator, so

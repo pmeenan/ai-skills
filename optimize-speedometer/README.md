@@ -19,16 +19,24 @@ aimed at finding ways an agent could satisfy the process without making Chrome
 faster. These challenges can pause work but cannot override a failed machine
 gate.
 
-The current workflow has three deliberately separate evidence layers:
+The current workflow has three deliberately separate evidence layers, each
+scoped per story:
 
-1. exact sync/async score-window profiles, normalized to equal suite weight,
-   discover broad areas;
-2. instrumented calls/applicability/avoidable/exclusive-cycle blocks prove one
-   mechanism; the probe emits machine rows which `mechanism_evidence.py`
-   digest-binds and reduces without transcription;
-3. fresh-seed randomized block A/B measures the aggregate score.
+1. exact sync/async score-window profiles, decomposed into 32 independent
+   story silos with shares local to each story's scored cycles, discover
+   broad areas; opportunities rank globally by impact on their own target
+   story (cross-story benefit is a bonus, never ranked);
+2. instrumented calls/applicability/avoidable/exclusive-cycle blocks prove
+   one mechanism on its target story only; the probe emits machine rows which
+   `mechanism_evidence.py` digest-binds and reduces without transcription;
+3. a fresh-seed randomized A/B over the ledger-preregistered target-story set
+   gates landing efficacy, while a separate periodic full-suite A/B guards
+   regressions and supports the aggregate score claim.
 
-Profile share is never converted to predicted score impact. Manual ceilings,
+Profile share alone is never treated as predicted score movement. The
+investigation ranking multiplies bound local-story share by a reviewed
+avoidable fraction, while only measured counters and A/B checkpoints prove
+effects. Manual ceilings,
 unbound or placeholder review prose, typed test claims, comment-only diffs,
 hand-authored counter JSON, and copied checkpoint numbers are rejected by the
 ledger. Checkpoint v3 preserves every raw scalar Crossbench result, its digest,
@@ -40,19 +48,21 @@ boot, kernel, CPU, source trees, ELF and executable-`.text` identities, and
 renderer PID/TID timestamps.
 The default discovery floor is
 0.3%, with a minimum of 100 nominal samples at that floor. The next landing is
-blocked after five runtime changes without a fresh enabled profile or five
-landings without a checkpoint.
+blocked after five runtime changes without a fresh enabled profile, five
+landings without a targeted checkpoint, or ten post-pilot landings without a
+full-suite checkpoint.
 
 The first five real candidates are a mandatory pilot. The sixth landing is
-blocked until a cumulative full-suite A/B has a positive 95% confidence
-interval. A positive point estimate whose interval crosses zero leaves the
-pilot pending; increase the balanced block count and remeasure. A statistically
-negative pilot fails permanently and requires repairing or restarting the
-campaign rather than explaining the result away.
-After the pilot, a current-tip cumulative checkpoint whose interval crosses
-zero also blocks the next landing until more balanced blocks establish a
-positive interval or the batch is diagnosed and repaired. A lazy agent cannot
-continue stacking patches over a flat checkpoint.
+blocked until a targeted A/B over the exact landed target-story set shows a
+positive 95% confidence interval and a separate same-tip full-suite A/B shows
+no stat-sig regression. A positive point estimate whose interval crosses zero
+leaves the pilot pending; use the MDE to preregister one larger confirmation
+run. The ledger permits only that one larger targeted confirmation at the same
+tip and rejects duplicate same-tip full-suite runs. A statistically negative
+pilot fails permanently and requires repairing
+or restarting the campaign rather than explaining the result away. After the
+pilot, a flat current-tip targeted checkpoint or any statistically negative
+full-suite checkpoint blocks further landings.
 
 The ledger deliberately separates a profiled **candidate area** from a
 specific **optimization mechanism**. An area investigation fans out into
@@ -156,11 +166,11 @@ state the config, workflow, and autonomy level explicitly on the first run:
 > campaign driving for a cumulative score improvement on `out/release`.
 > - **Campaign Configuration**: Campaign name `sp3-per-benchmark`, branch `speedometer`
 >   (checked out), remote host `linux` (skills already synced there).
-> - **Per-Benchmark Workflow**: Focus on each benchmark story as an independent silo.
->   Decompose exact-scored profiles across each of the 32 individual benchmark stories
->   down to a 0.3% local benchmark floor, sort the combined list (retaining benchmark-specific
->   entries with duplicates allowed) by biggest single-benchmark local impact, and run
->   high-SNR single-story sizing and candidate verification (`--story <name>`).
+> - **Per-Story Workflow**: Explore each of the 32 benchmark stories as an
+>   independent silo: per-story exact-scored profiles down to the 0.3% local
+>   story floor, a global opportunity ranking by impact on each entry's own
+>   target story (cross-story benefit is bonus, not ranked), and high-SNR
+>   single-story sizing and candidate verification against the target story.
 > - **Architectural Focus**: Reject Layer 4 ThinLTO/PGO micro-branch squeezes. Target
 >   Layer 1 (Subtree / Lifecycle Phase Bypasses) and Layer 2 (Cross-Call State Memoization).
 > - **Remote Transfers**: Always use compression flags (`scp -C` and `rsync -avz`) for all
@@ -186,12 +196,12 @@ evidence JSON, the ledger, campaign commits, and STATUS.md. The agent reads the
 ledger, runs `campaign.py audit`, regenerates status, verifies artifacts at the next gate, and resumes
 without reconstructing evidence from prose.
 
-A full 32-block checkpoint executes 128 complete Speedometer repetitions. Its
-hard plausibility floor is 64 minutes and normal runs can take several hours,
-including rebuild time. Long quiet periods are expected; keep the remote job
-alive and wait instead of replacing it with manually authored output. When a
-powered interval still crosses zero, add an even number of balanced blocks in
-one fresh run rather than rerunning seeds until one looks favorable.
+A targeted 32-block checkpoint executes 128 repetitions of only the landed
+target-story set; a full-suite checkpoint executes 128 complete Speedometer
+repetitions and has a 64-minute hard plausibility floor. Long quiet periods are
+expected. When a targeted interval crosses zero, use its MDE to select one
+larger preregistered balanced confirmation run rather than rerunning seeds
+until one looks favorable; the ledger enforces the one-confirmation limit.
 
 ## Situational extras
 

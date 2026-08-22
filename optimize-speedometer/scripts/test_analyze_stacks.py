@@ -722,5 +722,55 @@ class AnalyzeStacksTest(unittest.TestCase):
         )
 
 
+class PerStoryDecompositionTest(unittest.TestCase):
+    def make_sample(self, group, weight=10):
+        return MODULE.Sample(
+            group=group, comm="chrome", pid=1, tid=1, timestamp=1.0,
+            weight=weight, frames=(),
+        )
+
+    def test_sample_story_extracts_suite_from_interval_group(self):
+        self.assertEqual(
+            "Charts-chartjs",
+            MODULE.sample_story(
+                self.make_sample("perf:cb/browser.log|Charts-chartjs")
+            ),
+        )
+        self.assertIsNone(MODULE.sample_story(self.make_sample("perf")))
+
+    def test_qualify_report_story_namespaces_every_frontier_identity(self):
+        report = {
+            "frontier": [{"entry_key": "function:blink::Hot", "name": "x"}],
+            "overlapping_alternatives": [{
+                "entry_key": "symbol:blink::Shared",
+                "assigned_frontier_entry": "function:blink::Hot",
+            }],
+            "area_inventory": [{"entry_key": "class:blink::Hot"}],
+            "selection": {"metric_weighting": "speedometer-geomean-v1"},
+        }
+        MODULE.qualify_report_story(report, "TodoMVC-jQuery")
+        self.assertEqual(
+            "story:TodoMVC-jQuery/function:blink::Hot",
+            report["frontier"][0]["entry_key"],
+        )
+        alternative = report["overlapping_alternatives"][0]
+        self.assertEqual(
+            "story:TodoMVC-jQuery/symbol:blink::Shared",
+            alternative["entry_key"],
+        )
+        self.assertEqual(
+            "story:TodoMVC-jQuery/function:blink::Hot",
+            alternative["assigned_frontier_entry"],
+        )
+        self.assertEqual(
+            "story:TodoMVC-jQuery/class:blink::Hot",
+            report["area_inventory"][0]["entry_key"],
+        )
+        self.assertEqual(
+            "speedometer-story-v1", report["selection"]["metric_weighting"]
+        )
+        self.assertEqual("TodoMVC-jQuery", report["selection"]["story"])
+
+
 if __name__ == "__main__":
     unittest.main()

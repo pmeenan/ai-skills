@@ -27,8 +27,8 @@ This skill provides the authoritative runbook, instrumentation resources, and ve
      1. Full Chrome process-tree report partitioned into Browser, Renderer, GPU, and Utility roles.
      2. Renderer-specific deep-dive report for candidate investigation.
    * **Structured PID/Timestamp Manifest:** Poll the launched command's descendants while profiling and record every Chrome PID with its browser, renderer, GPU, or utility role. Preserve the labeled sync/async intervals used by the benchmark score. Outer suite windows are diagnostic only.
-   * **Score Weighting & Per-Benchmark Decomposition:** Preserve exact per-suite score intervals. Decompose sampling profiles per benchmark story down to the local floor so that workload-specific bottlenecks are analyzed as independent silos without geometric-mean dilution.
-   * **Quality Rejection Gate:** Reject profiles with unmatched score marks, poor call stack unwinding, overall `[unknown]` frames >15%, concentrated `[unknown]` frames >10% within any dominant call stack, insufficient total samples (<5,000), or fewer than 100 nominal samples at the requested marginal floor.
+   * **Score Weighting & Per-Story Decomposition:** Preserve exact per-suite score intervals. `run_cycle_benchmark.py` passes `--stories-out-dir` to the analyzer, which emits one independent silo analysis per observed story under `analysis/stories/<story>/` (shares local to that story's scored cycles, entry keys `story:<name>/…`) plus a `stories_index.json` summary. The full-suite and renderer views remain diagnostic. Workload-specific bottlenecks are therefore analyzed as independent silos without geometric-mean dilution.
+   * **Quality Rejection Gate:** Reject profiles with unmatched score marks, poor call stack unwinding, overall `[unknown]` frames >15%, concentrated `[unknown]` frames >10% within any dominant call stack, insufficient total samples (<5,000), or fewer than 100 nominal samples at the requested marginal floor — applying the sample gates independently to every story silo (a failing story rejects the capture; increase repetitions, default 16).
 5. **Mandatory Remote Transfer Compression (`scp -C` / `rsync -z`):**
    * The physical measurement host is remote with constrained upstream/downstream bandwidth.
    * All artifact, patch, log, manifest, and capture transfers to/from the remote host MUST specify compression flags: `scp -C` or `rsync -avz` / `rsync -z`.
@@ -81,7 +81,7 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
    - (b) Named JS frames (`JS:^runSync`, `JS:^layout`) present.
    - (c) Every `[SP3_SCORE_TIME]` sync/async start has its matching end.
    - (d) `scratch/perf_run_manifest.json` reports `interval_kind: exact-scored`, process roles, and labeled intervals.
-   - (e) Analyzer output reports `metric_weighting: speedometer-geomean-v1`; outer windows are never candidate weight.
+   - (e) Per-story analyzer artifacts report `metric_weighting: speedometer-story-v1` with their story name (the diagnostic full view stays `speedometer-geomean-v1`); outer windows are never candidate weight.
 
 ---
 

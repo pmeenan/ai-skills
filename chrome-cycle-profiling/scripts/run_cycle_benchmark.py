@@ -275,7 +275,12 @@ def main():
         "--stories", default="all", help="Speedometer stories to run (default: all)"
     )
     parser.add_argument(
-        "--repetitions", type=int, default=4, help="Number of repetitions (default: 4)"
+        "--repetitions", type=int, default=16,
+        help=(
+            "Number of repetitions (default: 16; per-story decomposition "
+            "needs enough samples in every story to clear its local "
+            "marginal-share floor)"
+        ),
     )
     parser.add_argument(
         "--skip-analysis",
@@ -428,7 +433,7 @@ def main():
         "perf_data_file": perf_data_file,
         "scoped_to_scored_work": bool(intervals),
         "interval_kind": "exact-scored" if intervals else "missing",
-        "metric_weighting": "speedometer-geomean-v1",
+        "metric_weighting": "speedometer-story-v1",
         "measurement_intervals": intervals,
         "outer_measurement_intervals": outer_intervals,
         "processes": sorted(process_manifest.values(), key=lambda item: item["pid"]),
@@ -458,6 +463,7 @@ def main():
             "analyze_stacks.py",
         )
         analysis_dir = os.path.join(temp_results_dir, "analysis", "full")
+        stories_dir = os.path.join(temp_results_dir, "analysis", "stories")
         rejected_analyses = []
         full_command = [
             sys.executable,
@@ -468,15 +474,20 @@ def main():
             manifest_file,
             "--out-dir",
             analysis_dir,
+            "--stories-out-dir",
+            stories_dir,
             "--min-marginal-share",
             str(args.min_marginal_share),
             "--min-share",
             str(args.min_share),
         ]
         if run_analyzer(full_command, cwd) == ANALYSIS_REJECTED_EXIT_CODE:
-            rejected_analyses.append("full process tree")
+            rejected_analyses.append("full process tree or story silo")
         print(
             f" Candidate Frontier: {os.path.join(analysis_dir, 'candidate_frontier.md')}"
+        )
+        print(
+            f" Per-Story Silos: {os.path.join(stories_dir, 'stories_index.json')}"
         )
         print(
             f" Opportunity Trees: {os.path.join(analysis_dir, 'opportunity_trees.txt')}"

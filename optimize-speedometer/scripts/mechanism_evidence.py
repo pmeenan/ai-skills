@@ -41,6 +41,12 @@ PROVENANCE_RUNNER = "mechanism_evidence.py/provenance-v2"
 MIN_BLOCKS = 3
 MIN_INSTRUMENTATION_AA_BLOCKS = 32
 MIN_DISTINCT_SCORED_TOTALS_PER_BLOCK = 4
+# Sizing and verification run against the mechanism's target story only:
+# single-story repetitions are fast, so every block holds many repetitions of
+# the one story and shares are local to that story's scored cycles.
+MIN_REPETITIONS_PER_BLOCK = 4
+DEFAULT_REPETITIONS_PER_BLOCK = 10
+DEFAULT_MIN_AVOIDABLE_PCT = 0.3
 ROW_COUNTER_FIELDS = (
     "calls",
     "applicable_calls",
@@ -371,8 +377,14 @@ def validate_capture_manifest(ref: dict, metadata: dict, index: int) -> dict:
     nonce = manifest.get("capture_nonce")
     if not isinstance(nonce, str) or not re.fullmatch(r"[0-9a-f]{32,}", nonce):
         raise EvidenceError(f"{path}: invalid capture nonce")
-    if manifest.get("exit_code") != 0 or manifest.get("stories") != "all":
-        raise EvidenceError(f"{path}: capture did not complete a full-suite run")
+    target_story = metadata.get("target_story")
+    if not isinstance(target_story, str) or not target_story.strip():
+        raise EvidenceError(f"{path}: metadata does not name a target_story")
+    if manifest.get("exit_code") != 0 or manifest.get("stories") != target_story:
+        raise EvidenceError(
+            f"{path}: capture did not complete a targeted run of story "
+            f"{target_story!r}"
+        )
     command = manifest.get("command")
     if not isinstance(command, list) or not all(isinstance(arg, str) for arg in command):
         raise EvidenceError(f"{path}: missing runner command")
@@ -380,14 +392,30 @@ def validate_capture_manifest(ref: dict, metadata: dict, index: int) -> dict:
         "vpython3",
         "./third_party/crossbench/cb.py",
         "speedometer_3.0",
-        "--stories=all",
-        "--repetitions=1",
+        f"--stories={target_story}",
     }
     if not required_command_args.issubset(command):
-        raise EvidenceError(f"{path}: command is not a full-suite Crossbench capture")
+        raise EvidenceError(
+            f"{path}: command is not a targeted single-story Crossbench capture"
+        )
+    repetition_args = [
+        arg for arg in command if arg.startswith("--repetitions=")
+    ]
+    try:
+        repetitions = int(repetition_args[0].split("=", 1)[1])
+    except (IndexError, ValueError) as exc:
+        raise EvidenceError(f"{path}: command lacks a repetition count") from exc
+    if repetitions < MIN_REPETITIONS_PER_BLOCK:
+        raise EvidenceError(
+            f"{path}: single-story blocks require at least "
+            f"{MIN_REPETITIONS_PER_BLOCK} repetitions"
+        )
     suites = manifest.get("score_suites")
-    if not isinstance(suites, list) or len(set(suites)) != 32:
-        raise EvidenceError(f"{path}: capture must observe exactly 32 named score suites")
+    if not isinstance(suites, list) or set(suites) != {target_story}:
+        raise EvidenceError(
+            f"{path}: capture must observe exactly the target story "
+            f"{target_story!r}"
+        )
     if any(re.fullmatch(r"suite-?\d+", str(suite), re.IGNORECASE) for suite in suites):
         raise EvidenceError(f"{path}: placeholder suite names are forbidden")
     build = manifest.get("build")
@@ -443,7 +471,7 @@ def validate_capture_manifest(ref: dict, metadata: dict, index: int) -> dict:
     emitted_rows, observed_suites, score_mark_count = parse_capture_logs(
         browser_logs, nonce, manifest.get("block"), start_ns, finish_ns
     )
-    if score_mark_count < 64:
+    if score_mark_count < 2 * repetitions:
         raise EvidenceError(
             f"{path}: only {score_mark_count} exact score boundary marks were emitted"
         )
@@ -556,7 +584,10 @@ def finite(value, name: str, *, positive: bool = False) -> float:
 def validate_raw(data: dict, path: pathlib.Path) -> list[dict]:
     if data.get("schema_version") != SCHEMA_VERSION:
         raise EvidenceError(f"{path}: schema_version must be {SCHEMA_VERSION}")
-    for field in ("opportunity_id", "mechanism_key", "profile_id", "variant"):
+    for field in (
+        "opportunity_id", "mechanism_key", "profile_id", "variant",
+        "target_story",
+    ):
         if data.get(field) in (None, ""):
             raise EvidenceError(f"{path}: missing {field}")
     if data["variant"] not in ("baseline", "oracle", "candidate"):
@@ -570,8 +601,8 @@ def validate_raw(data: dict, path: pathlib.Path) -> list[dict]:
         raise EvidenceError(
             f"{path}: score_scope.classification must be score-critical or cpu-only"
         )
-    if scope.get("metric_model") != "speedometer-geomean-v1":
-        raise EvidenceError(f"{path}: metric_model must be speedometer-geomean-v1")
+    if scope.get("metric_model") != "speedometer-story-v1":
+        raise EvidenceError(f"{path}: metric_model must be speedometer-story-v1")
     validate_trace_artifact(
         scope.get("trace_artifact"),
         f"{path}: trace_artifact",
@@ -654,9 +685,11 @@ def validate_raw(data: dict, path: pathlib.Path) -> list[dict]:
             raise EvidenceError(f"{path}: block ids must be present and unique")
         seen.add(block_id)
         groups = block.get("groups")
-        if not isinstance(groups, list) or len(groups) < 32:
+        if not isinstance(groups, list) or len(groups) < MIN_REPETITIONS_PER_BLOCK:
             raise EvidenceError(
-                f"{path}: block {block_id} requires at least 32 suite groups"
+                f"{path}: block {block_id} requires at least "
+                f"{MIN_REPETITIONS_PER_BLOCK} repetition groups of the "
+                "target story"
             )
         seen_groups = set()
         seen_suites = set()
@@ -719,9 +752,10 @@ def validate_raw(data: dict, path: pathlib.Path) -> list[dict]:
             }
         if data["variant"] == "baseline" and calls <= 0:
             raise EvidenceError(f"{path}: block {block_id} has no mechanism calls")
-        if len(seen_suites) < 32:
+        if seen_suites != {data["target_story"]}:
             raise EvidenceError(
-                f"{path}: block {block_id} covers only {len(seen_suites)} suites"
+                f"{path}: block {block_id} rows cover {sorted(seen_suites)}, "
+                f"not the target story {data['target_story']!r}"
             )
         normalized.append(
             {
@@ -754,7 +788,10 @@ def validate_raw(data: dict, path: pathlib.Path) -> list[dict]:
 
 
 def common_identity(left: dict, right: dict) -> None:
-    for field in ("opportunity_id", "mechanism_key", "profile_id", "interval_kind"):
+    for field in (
+        "opportunity_id", "mechanism_key", "profile_id", "target_story",
+        "interval_kind",
+    ):
         if left.get(field) != right.get(field):
             raise EvidenceError(f"raw artifacts disagree on {field}")
     if left.get("score_scope") != right.get("score_scope"):
@@ -803,6 +840,7 @@ def base_output(data: dict, source_paths: list[pathlib.Path]) -> dict:
         "opportunity_id": data["opportunity_id"],
         "mechanism_key": data["mechanism_key"],
         "profile_id": data["profile_id"],
+        "target_story": data["target_story"],
         "interval_kind": "exact-scored",
         "score_scope": data["score_scope"],
         "build": data["build"],
@@ -820,11 +858,13 @@ def cmd_scaffold(args: argparse.Namespace) -> None:
         "opportunity_id": args.opp,
         "mechanism_key": args.mechanism_key,
         "profile_id": args.profile_id,
+        "target_story": args.target_story,
         "variant": args.variant,
         "interval_kind": "exact-scored",
         "score_scope": {
             "classification": "REPLACE: score-critical or cpu-only",
-            "metric_model": "speedometer-geomean-v1",
+            "metric_model": "speedometer-story-v1",
+            "min_avoidable_pct_floor": args.min_avoidable_pct,
             "trace_artifact": {"path": "REPLACE", "sha256": "REPLACE"},
         },
         "build": {
@@ -1201,6 +1241,14 @@ def cmd_capture(args: argparse.Namespace) -> None:
     if hashlib.sha256(resolved_args.encode()).hexdigest() != build.get("gn_args_sha256"):
         raise EvidenceError("metadata gn_args_sha256 does not match the captured build")
 
+    target_story = metadata.get("target_story")
+    if not isinstance(target_story, str) or not target_story.strip():
+        raise EvidenceError("metadata does not name a target_story")
+    if args.repetitions < MIN_REPETITIONS_PER_BLOCK:
+        raise EvidenceError(
+            f"single-story blocks require at least {MIN_REPETITIONS_PER_BLOCK} "
+            "repetitions"
+        )
     out_dir = args.out_dir.resolve()
     if out_dir.exists() and any(out_dir.iterdir()):
         raise EvidenceError(f"capture output directory is not empty: {out_dir}")
@@ -1215,9 +1263,9 @@ def cmd_capture(args: argparse.Namespace) -> None:
         f"--browser={browser}",
         "--headless",
         "--no-sandbox",
-        "--repetitions=1",
+        f"--repetitions={args.repetitions}",
         f"--out-dir={out_dir / 'cb'}",
-        "--stories=all",
+        f"--stories={target_story}",
     ]
     if args.enable_features:
         command.append(f"--enable-features={args.enable_features}")
@@ -1241,9 +1289,12 @@ def cmd_capture(args: argparse.Namespace) -> None:
     )
     if not rows:
         raise EvidenceError("capture emitted no nonce-bound SP3_CYCLE_ROW records")
-    if len(suites) != 32:
-        raise EvidenceError(f"capture observed {len(suites)} scored suites, expected 32")
-    if score_mark_count < 64:
+    if set(suites) != {target_story}:
+        raise EvidenceError(
+            f"capture observed suites {suites}, expected exactly the target "
+            f"story {target_story!r}"
+        )
+    if score_mark_count < 2 * args.repetitions:
         raise EvidenceError(
             f"capture observed only {score_mark_count} exact score boundary marks"
         )
@@ -1264,7 +1315,8 @@ def cmd_capture(args: argparse.Namespace) -> None:
         "opportunity_id": metadata["opportunity_id"],
         "mechanism_key": metadata["mechanism_key"],
         "profile_id": metadata["profile_id"],
-        "stories": "all",
+        "stories": target_story,
+        "repetitions": args.repetitions,
         "score_suites": suites,
         "exit_code": completed.returncode,
         "started_at": started,
@@ -1355,17 +1407,28 @@ def cmd_summarize(args: argparse.Namespace) -> None:
     ]
     share, share_low, share_high = mean_ci95(shares)
     avoidable, avoidable_low, avoidable_high = mean_ci95(avoidable_shares)
-    floor = (
-        getattr(args, "min_avoidable_pct", None)
-        if getattr(args, "min_avoidable_pct", None) is not None
-        else data.get("score_scope", {}).get("min_avoidable_pct_floor", 0.0)
+    metadata_floor = finite(
+        data.get("score_scope", {}).get(
+            "min_avoidable_pct_floor", DEFAULT_MIN_AVOIDABLE_PCT
+        ),
+        "score_scope.min_avoidable_pct_floor",
     )
+    requested_floor = getattr(args, "min_avoidable_pct", None)
+    if requested_floor is not None:
+        requested_floor = finite(requested_floor, "--min-avoidable-pct")
+        if not math.isclose(
+            requested_floor, metadata_floor, rel_tol=0, abs_tol=1e-12
+        ):
+            raise EvidenceError(
+                "--min-avoidable-pct must match the floor bound into the raw metadata"
+            )
+    floor = metadata_floor
     result = {
         **base_output(data, [args.raw]),
         "phase": "sizing",
         "variant": data["variant"],
         "n_blocks": len(blocks),
-        "suite_groups_per_block": [len(row["groups"]) for row in blocks],
+        "story_repetition_groups_per_block": [len(row["groups"]) for row in blocks],
         "calls": int(sum(row["calls"] for row in blocks)),
         "applicable_calls": int(sum(row["applicable_calls"] for row in blocks)),
         "applicability_fraction": statistics.fmean(applicability),
@@ -1394,12 +1457,21 @@ def cmd_compare(args: argparse.Namespace) -> None:
     if variant["variant"] != expected:
         raise EvidenceError(f"--variant artifact must have variant={expected}")
     common_identity(baseline, variant)
+    flag_toggle = (
+        variant.get("enable_features") != baseline.get("enable_features")
+        or any(c.get("enable_features") for c in variant.get("capture_manifests", []))
+    )
     if baseline["build"]["product_tree"] == variant["build"]["product_tree"]:
-        if not (
-            variant.get("enable_features") != baseline.get("enable_features")
-            or any(c.get("enable_features") for c in variant.get("capture_manifests", []))
-        ):
+        if not flag_toggle:
             raise EvidenceError("baseline and variant are bound to the same product tree")
+    elif args.kind == "candidate" and (
+        baseline["build"].get("executable_text_sha256")
+        == variant["build"].get("executable_text_sha256")
+    ):
+        raise EvidenceError(
+            "baseline and candidate executable .text are byte-identical; the "
+            "candidate change compiled to a no-op and is not an optimization"
+        )
     reductions = []
     saved_shares = []
     total_change_logs = []
@@ -1444,7 +1516,7 @@ def cmd_compare(args: argparse.Namespace) -> None:
         "phase": phase,
         "baseline_build": baseline["build"],
         "n_paired_blocks": len(reductions),
-        "suite_groups_per_block": [len(row["groups"]) for row in base_blocks],
+        "story_repetition_groups_per_block": [len(row["groups"]) for row in base_blocks],
         "exclusive_cycle_reduction_pct": reduction,
         "exclusive_cycle_reduction_ci95_pct": [reduction_low, reduction_high],
         "net_scored_cycle_share_saved_pct": saved,
@@ -1467,16 +1539,34 @@ def parser() -> argparse.ArgumentParser:
     scaffold.add_argument("--opp", type=int, required=True)
     scaffold.add_argument("--mechanism-key", required=True)
     scaffold.add_argument("--profile-id", required=True)
+    scaffold.add_argument(
+        "--target-story", required=True,
+        help="Speedometer story the mechanism targets; sizing and "
+        "verification run only this story",
+    )
     scaffold.add_argument("--variant", choices=("baseline", "oracle", "candidate"), required=True)
+    scaffold.add_argument(
+        "--min-avoidable-pct", type=float,
+        default=DEFAULT_MIN_AVOIDABLE_PCT,
+        help="Minimum lower-confidence-bound avoidable share in percent "
+        f"(default: {DEFAULT_MIN_AVOIDABLE_PCT})",
+    )
     scaffold.add_argument("--out", type=pathlib.Path, required=True)
     scaffold.set_defaults(func=cmd_scaffold)
     capture = commands.add_parser(
-        "capture", help="run one full-suite instrumented block and bind its output"
+        "capture",
+        help="run one targeted single-story instrumented block and bind its output",
     )
     capture.add_argument("--metadata", type=pathlib.Path, required=True)
     capture.add_argument("--variant", choices=("baseline", "oracle", "candidate"), required=True)
     capture.add_argument("--browser", required=True)
     capture.add_argument("--block", type=int, required=True)
+    capture.add_argument(
+        "--repetitions", type=int, default=DEFAULT_REPETITIONS_PER_BLOCK,
+        help="Repetitions of the target story per block "
+        f"(default: {DEFAULT_REPETITIONS_PER_BLOCK}, minimum: "
+        f"{MIN_REPETITIONS_PER_BLOCK})",
+    )
     capture.add_argument("--enable-features", default="")
     capture.add_argument("--out-dir", type=pathlib.Path, required=True)
     capture.add_argument("--out", type=pathlib.Path, required=True)
