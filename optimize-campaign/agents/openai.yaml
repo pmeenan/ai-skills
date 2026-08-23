@@ -1,0 +1,4 @@
+interface:
+  display_name: "Optimize Benchmark Campaign"
+  short_description: "Run evidence-bound Chromium optimization campaigns"
+  default_prompt: "Use $optimize-campaign to run a benchmark optimization campaign with adapter-bound evidence."

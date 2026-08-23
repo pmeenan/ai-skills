@@ -7,6 +7,13 @@ description: High-precision Desktop Chromium profiling with hardware-cycle perf 
 
 This skill provides the authoritative runbook, instrumentation resources, and verification protocols for profiling and optimizing CPU performance in Desktop Chromium for Speedometer 3.
 
+For benchmark selection, payload provenance, campaign gates, and local versus
+SSH transport, read `../optimize-campaign/SKILL.md`. The score runner supports
+the shared `speedometer3` and `jetstream3` adapters. The cycle-profile runner's
+exact-window importer remains Speedometer-only until the JetStream custom-fork
+trace query is verified end-to-end; it must fail closed for JetStream rather
+than widening to an unscored whole-run interval.
+
 ---
 
 ## 1. Environment Constraints & Ground Truth Protocol
@@ -63,8 +70,8 @@ perf report -i /tmp/preflight-jit.data --stdio | head -50
 python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --browser=out/release/chrome --required-build-role=release --blocks=32 --aa
 
 # Step 5: Apply the bundled probe and validate the end-to-end Phase 1 pipeline
-git apply --check .agents/skills/optimize-speedometer/resources/performance_mark_monotonic_probe.patch
-git apply .agents/skills/optimize-speedometer/resources/performance_mark_monotonic_probe.patch
+git apply --check .agents/skills/optimize-campaign/assets/speedometer3/performance-mark-monotonic-probe.patch
+git apply .agents/skills/optimize-campaign/assets/speedometer3/performance-mark-monotonic-probe.patch
 autoninja -C out/perf chrome
 python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --browser=out/perf/chrome --stories=NewsSite-Next
 ```
@@ -114,7 +121,7 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
 
 ## 5. Worktree Isolation & Candidate Transfer
 
-* **Campaign profiling is remote and worktree-free:** Under the optimize-speedometer campaign, profiling runs on the measurement host from a committed sha via `remote_measure.py`, with the probes landed on the campaign branch — no local worktree and no patch dance. The disposable-worktree pattern below applies ONLY to standalone local use of this pipeline outside a campaign, where probes are applied as patches: use a dedicated disposable worktree (`git worktree add ../perf-profile-phase1`), commit probes on the disposable branch, sample, then remove the worktree. Note a fresh Chromium worktree needs a `gclient sync` before it can build. Broad `git clean -fd` across repo root is strictly forbidden in every mode.
+* **Campaign profiling uses the shared execution mode:** With `execution: ssh`, profiling runs on the measurement host from a committed SHA via `remote_measure.py`. With `execution: local`, it uses the existing local Chromium tree and never checks out or rewrites it. The disposable-worktree pattern below applies only to standalone use outside a campaign, where probes are applied as patches: use a dedicated disposable worktree (`git worktree add ../perf-profile-phase1`), commit probes on the disposable branch, sample, then remove the worktree. Note a fresh Chromium worktree needs a `gclient sync` before it can build. Broad `git clean -fd` across repo root is strictly forbidden in every mode.
 * **Targeted Probe Revert:** When working in local branches, revert only the bundled probe's target:
   ```bash
   git checkout -- third_party/blink/renderer/core/timing/performance.cc
@@ -132,7 +139,7 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
   - `--aa` for A/A calibration; `--browser-a=... --browser-b=...` for binary-vs-binary comparison (bisecting a batch regression). In aa/two-binary modes, `--enable-features=<flags>` applies identically to BOTH arms — required when comparing flag-gated campaign builds, which are otherwise baseline-identical.
   - `--feature` refuses feature names not defined in the source tree (Chrome silently ignores unknown features); `--skip-feature-check` overrides.
   - The manifest (`scratch/ab_results_manifest.json`) includes per-story block statistics; with ~30 stories at 95% CI, expect ~1 false-positive stat-sig story per run — confirm flagged stories with a targeted `--stories` rerun before acting.
-* **Remote Execution:** On the development machine, do not run these directly — use `python3 .agents/skills/optimize-speedometer/scripts/remote_measure.py`, which pushes a committed SHA to the measurement host, builds `out/perf` for profiles or `out/release` for score, and runs these scripts under a lock.
+* **Campaign Execution:** Use `python3 .agents/skills/optimize-campaign/scripts/remote_measure.py`. Its `--execution local` mode uses the current physical host without Git tree mutation; `--execution ssh` transfers committed refs, builds on the measurement host, and runs under a lock.
 * **Workspace Cleanup:** Delete only explicitly created output directories:
   ```bash
   rm -rf scratch/results_ab_interleaved_* scratch/results_perf_sampling_*

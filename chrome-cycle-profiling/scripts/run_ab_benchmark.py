@@ -2,7 +2,7 @@
 # Copyright 2026 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
-"""Randomized block-interleaved (ABBA/BAAB) Speedometer benchmark.
+"""Randomized block-interleaved (ABBA/BAAB) Crossbench benchmark.
 
 Modes (choose exactly one):
   --aa                        Genuine A/A calibration: identical binary and
@@ -21,9 +21,12 @@ single flagged stories as leads to confirm with a targeted rerun, not verdicts.
 """
 
 import argparse
+import atexit
 import datetime
 import fnmatch
+import functools
 import hashlib
+import http.server
 import json
 import math
 import os
@@ -36,14 +39,25 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 
-MANIFEST_SCHEMA_VERSION = 3
-MANIFEST_RUNNER = "run_ab_benchmark.py/v3"
+_CAMPAIGN_SCRIPTS = os.path.realpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "optimize-campaign", "scripts")
+)
+if _CAMPAIGN_SCRIPTS not in sys.path:
+    sys.path.append(_CAMPAIGN_SCRIPTS)
+import benchmark_adapters
+
+
+MANIFEST_SCHEMA_VERSION = 4
+MANIFEST_RUNNER = "run_ab_benchmark.py/v4"
 MIN_FULL_SUITE_REP_SECONDS = 30
 SKILL_DIRS = (
+    ".agents/skills/optimize-campaign",
     ".agents/skills/optimize-speedometer",
+    ".agents/skills/optimize-jetstream",
     ".agents/skills/chrome-cycle-profiling",
 )
 IGNORED_SKILL_GLOBS = (
@@ -96,6 +110,50 @@ def sha256_path(path):
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def sha256_tree(path):
+    """Digest a benchmark payload tree by relative name and file content."""
+    path = os.path.realpath(path)
+    entries = []
+    for dirpath, dirnames, filenames in os.walk(path):
+        for name in dirnames:
+            full = os.path.join(dirpath, name)
+            if os.path.islink(full):
+                raise RuntimeError(
+                    f"benchmark payload contains a symlink: {full}"
+                )
+        dirnames.sort()
+        for name in sorted(filenames):
+            full = os.path.join(dirpath, name)
+            if os.path.islink(full):
+                raise RuntimeError(
+                    f"benchmark payload contains a symlink: {full}"
+                )
+            entries.append((os.path.relpath(full, path), sha256_path(full)))
+    if not entries:
+        raise RuntimeError(f"benchmark payload is empty: {path}")
+    encoded = "".join(f"{digest}  {name}\n" for name, digest in entries)
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def serve_payload_tree(path):
+    """Serve a digest-bound payload on an ephemeral loopback port."""
+    class QuietHandler(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, format_string, *args):
+            pass
+
+    handler = functools.partial(QuietHandler, directory=path)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def stop():
+        server.shutdown()
+        server.server_close()
+
+    atexit.register(stop)
+    return f"http://127.0.0.1:{server.server_port}/"
 
 
 def artifact_ref(path, *, relative_to=None):
@@ -226,15 +284,18 @@ def build_provenance(cwd, browser, required_role="any"):
         if "=" in line:
             name, value = line.split("=", 1)
             resolved[name.strip()] = value.strip()
-    mismatches = [
-        f"{name}={resolved.get(name)!r} (need {expected})"
-        for name, expected in REQUIRED_RELEASE_GN_ARGS.items()
-        if resolved.get(name) != expected
-    ]
-    if mismatches:
-        raise RuntimeError(
-            "score build is not official PGO2 ThinLTO: " + ", ".join(mismatches)
-        )
+    mismatches = []
+    if required_role != "development":
+        mismatches = [
+            f"{name}={resolved.get(name)!r} (need {expected})"
+            for name, expected in REQUIRED_RELEASE_GN_ARGS.items()
+            if resolved.get(name) != expected
+        ]
+        if mismatches:
+            raise RuntimeError(
+                "score build is not official PGO2 ThinLTO: "
+                + ", ".join(mismatches)
+            )
     if required_role == "release" and resolved.get("symbol_level") != "0":
         raise RuntimeError(
             f"authoritative score build requires symbol_level=0, got "
@@ -246,6 +307,7 @@ def build_provenance(cwd, browser, required_role="any"):
         "git_sha": sha,
         "gn_args_sha256": hashlib.sha256(gn_output.encode()).hexdigest(),
         "build_role": required_role,
+        "release_args_enforced": required_role != "development",
         "symbol_level": resolved.get("symbol_level"),
         "enable_profiling": resolved.get("enable_profiling"),
         "required_release_args": REQUIRED_RELEASE_GN_ARGS,
@@ -277,7 +339,9 @@ def check_feature_registered(cwd, feature):
 
 
 def run_single_rep(browser, out_dir, stories, flag_option, state_str, rep_index,
-                   block_label, cwd):
+                   block_label, cwd, *, adapter,
+                   benchmark_source=None, benchmark_url=None, driver_path=None,
+                   iteration_count=None, worst_case_count=None):
     print(f"[Block {block_label} - Rep {rep_index+1}] Running {state_str}...")
     rep_out_dir = os.path.join(out_dir, f"rep_{rep_index}_{block_label}_{state_str.lower()}")
     full_out_dir = os.path.join(cwd, rep_out_dir)
@@ -285,8 +349,8 @@ def run_single_rep(browser, out_dir, stories, flag_option, state_str, rep_index,
         shutil.rmtree(full_out_dir)
 
     cmd = [
-        "vpython3", "./third_party/crossbench/cb.py", "speedometer_3.0",
-        "--network=third_party/speedometer/v3.0",
+        "vpython3", "./third_party/crossbench/cb.py",
+        *adapter.crossbench_args(benchmark_source, benchmark_url),
         "--env-validation=warn",
         f"--browser={browser}",
         "--headless",
@@ -295,6 +359,12 @@ def run_single_rep(browser, out_dir, stories, flag_option, state_str, rep_index,
         f"--out-dir={rep_out_dir}",
         f"--stories={stories}"
     ]
+    if driver_path:
+        cmd.append(f"--driver-path={driver_path}")
+    if iteration_count is not None:
+        cmd.append(f"--iteration-count={int(iteration_count)}")
+    if worst_case_count is not None:
+        cmd.append(f"--worst-case-count={int(worst_case_count)}")
     if flag_option:
         cmd.append(flag_option)
 
@@ -302,20 +372,8 @@ def run_single_rep(browser, out_dir, stories, flag_option, state_str, rep_index,
     return rep_out_dir
 
 
-def _scalar(value):
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    if (
-        isinstance(value, dict)
-        and isinstance(value.get("average"), (int, float))
-        and not isinstance(value.get("average"), bool)
-    ):
-        return float(value["average"])
-    return None
-
-
-def parse_run_metric_artifacts(cwd, out_dir):
-    """Return (suite_score, {story: total_time_ms}) for one crossbench rep.
+def parse_run_metric_artifacts(cwd, out_dir, *, adapter):
+    """Return parsed per-repetition metrics for one Crossbench invocation.
 
     Only per-iteration result files (where Score is a scalar) are trusted;
     aggregate files repeat the same numbers and would multiply-count them.
@@ -323,7 +381,7 @@ def parse_run_metric_artifacts(cwd, out_dir):
     runs = []
     for root, dirs, files in os.walk(os.path.join(cwd, out_dir)):
         for file in files:
-            if file != "speedometer_3.0.json":
+            if file != adapter.result_filename:
                 continue
             path = os.path.join(root, file)
             try:
@@ -332,32 +390,24 @@ def parse_run_metric_artifacts(cwd, out_dir):
             except (OSError, ValueError) as e:
                 print(f"Error parsing {path}: {e}", file=sys.stderr)
                 continue
-            score = data.get("Score")
-            if (
-                not isinstance(score, (int, float))
-                or isinstance(score, bool)
-                or not math.isfinite(float(score))
-                or score <= 0
-            ):
+            parsed = adapter.parse_result(data)
+            if parsed is None:
                 continue
-            stories = {}
-            for key, value in data.items():
-                if (
-                    key == "Score"
-                    or "/" in key
-                    or key == "Geomean"
-                    or key.startswith("Iteration-")
-                ):
-                    continue
-                num = _scalar(value)
-                if num is not None and num > 0:
-                    stories[key] = num
-            runs.append((float(score), stories, os.path.realpath(path)))
+            runs.append((
+                parsed.score,
+                parsed.workloads,
+                os.path.realpath(path),
+                parsed.components,
+            ))
     return runs
 
 
-def parse_run_metrics(cwd, out_dir):
-    return [item[:2] for item in parse_run_metric_artifacts(cwd, out_dir)]
+def parse_run_metrics(cwd, out_dir, *, adapter):
+    return [
+        item[:2] for item in parse_run_metric_artifacts(
+            cwd, out_dir, adapter=adapter
+        )
+    ]
 
 
 def summarize_block_diffs(block_diffs):
@@ -405,7 +455,7 @@ def suite_block_diffs(block_data):
     return diffs
 
 
-def per_story_stats(block_data):
+def per_story_stats(block_data, *, adapter):
     """Per-story block log-diffs from per-iteration total times.
 
     Story values are times (lower is better), so the sign is flipped:
@@ -427,7 +477,10 @@ def per_story_stats(block_data):
                 continue
             mean_ln_a = sum(math.log(x) for x in a_vals) / len(a_vals)
             mean_ln_b = sum(math.log(x) for x in b_vals) / len(b_vals)
-            diffs.append(mean_ln_a - mean_ln_b)
+            if adapter.workload_value_direction == "higher":
+                diffs.append(mean_ln_b - mean_ln_a)
+            else:
+                diffs.append(mean_ln_a - mean_ln_b)
         stats = summarize_block_diffs(diffs)
         if stats is None:
             continue
@@ -444,12 +497,47 @@ def manifest_block_details(block_data):
     fields = (
         "block", "pattern", "a_scores", "b_scores",
         "a_stories", "b_stories", "a_results", "b_results",
+        "a_components", "b_components",
     )
-    return [{key: block[key] for key in fields} for block in block_data]
+    return [{key: block[key] for key in fields if key in block}
+            for block in block_data]
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run randomized block-interleaved (ABBA/BAAB) A/B or A/A Speedometer benchmark.")
+    parser = argparse.ArgumentParser(description=(
+        "Run randomized block-interleaved (ABBA/BAAB) A/B or A/A "
+        "Crossbench benchmark."
+    ))
+    parser.add_argument(
+        "--benchmark", default="speedometer3",
+        choices=benchmark_adapters.available_benchmarks(),
+        help="Benchmark adapter (default: speedometer3)",
+    )
+    parser.add_argument(
+        "--benchmark-source", default=None,
+        help="Payload source: Speedometer local; JetStream live, official, "
+        "local, or investigation-only custom",
+    )
+    parser.add_argument(
+        "--benchmark-url", default=None,
+        help="URL for --benchmark-source=local",
+    )
+    parser.add_argument(
+        "--benchmark-payload-path", default=None,
+        help="Local payload tree served and digest-bound by this runner",
+    )
+    parser.add_argument(
+        "--driver-path", default=None,
+        help="Explicit matching chromedriver path (useful for local builds)",
+    )
+    parser.add_argument(
+        "--iteration-count", type=int, default=None,
+        help="JetStream iterations nested inside each page-load repetition",
+    )
+    parser.add_argument(
+        "--worst-case-count", type=int, default=None,
+        help="JetStream internal worst-case component count",
+    )
     parser.add_argument("--browser", default="out/release/chrome", help="Browser build path (aa and feature modes)")
     parser.add_argument("--browser-a", default="", help="Arm A browser path (two-binary mode)")
     parser.add_argument("--browser-b", default="", help="Arm B browser path (two-binary mode)")
@@ -457,10 +545,15 @@ def main():
     parser.add_argument("--aa", action="store_true", help="Run in genuine A/A baseline mode (identical binaries/flags on both arms)")
     parser.add_argument("--blocks", type=int, default=32, help="Even number of ABBA/BAAB blocks (default: 32 = 64 paired reps per arm)")
     parser.add_argument(
-        "--required-build-role", choices=("any", "release"), default="any",
-        help="Use release to require a symbol-free official PGO2 ThinLTO binary",
+        "--required-build-role", choices=("any", "release", "development"),
+        default="any",
+        help="development permits functional characterization builds; release "
+        "requires a symbol-free official PGO2 ThinLTO binary",
     )
-    parser.add_argument("--stories", default="all", help="Speedometer stories to run (default: all)")
+    parser.add_argument(
+        "--stories", default=None,
+        help="Crossbench story/workload selector (benchmark default if omitted)",
+    )
     parser.add_argument(
         "--seed", type=int, default=None,
         help="Random seed for block ordering (default: a fresh recorded seed)",
@@ -473,6 +566,53 @@ def main():
     parser.add_argument("--skip-feature-check", action="store_true",
                         help="Skip verifying that --feature is defined in the source tree")
     args = parser.parse_args()
+    adapter = benchmark_adapters.get_adapter(args.benchmark)
+    if adapter.benchmark_id != "jetstream3" and (
+        args.iteration_count is not None or args.worst_case_count is not None
+    ):
+        parser.error("iteration/worst-case counts are JetStream-only")
+    if args.iteration_count is not None and args.iteration_count < 1:
+        parser.error("--iteration-count must be positive")
+    if args.worst_case_count is not None and args.worst_case_count < 1:
+        parser.error("--worst-case-count must be positive")
+    if args.stories is None:
+        args.stories = adapter.default_workload_selector
+    source = args.benchmark_source or adapter.score_sources[0]
+    try:
+        payload_provenance = adapter.source_provenance(source, args.benchmark_url)
+        adapter.crossbench_args(source, args.benchmark_url)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.benchmark_payload_path:
+        payload_path = os.path.realpath(
+            os.path.join(get_repo_root(), args.benchmark_payload_path)
+        )
+        if source != "local":
+            parser.error("--benchmark-payload-path requires --benchmark-source=local")
+        if not os.path.isdir(payload_path):
+            parser.error(f"benchmark payload directory does not exist: {payload_path}")
+        payload_digest = sha256_tree(payload_path)
+        args.benchmark_url = serve_payload_tree(payload_path)
+        payload_provenance = adapter.source_provenance(
+            source, args.benchmark_url
+        )
+        payload_provenance.update({
+            "resolved_payload_path": payload_path,
+            "payload_sha256": payload_digest,
+            "content_pinned": True,
+            "served_by_runner": True,
+        })
+    if args.required_build_role == "release":
+        if payload_provenance["investigation_only"]:
+            parser.error(
+                "an investigation-only benchmark payload cannot produce score evidence"
+            )
+        if not payload_provenance["content_pinned"]:
+            parser.error(
+                "authoritative score evidence requires an immutable benchmark "
+                "payload; use --benchmark-source=local with "
+                "--benchmark-payload-path"
+            )
     if args.blocks < 2 or args.blocks % 2:
         print("Error: --blocks must be even for exact ABBA/BAAB balance.", file=sys.stderr)
         sys.exit(1)
@@ -495,7 +635,7 @@ def main():
     environment = capture_environment()
     harness = harness_identity(cwd)
     skill_digest = skill_tree_digest(cwd)
-    expected_skill_digest = os.environ.get("SP3_SKILL_DIGEST", skill_digest)
+    expected_skill_digest = os.environ.get("OPTIMIZE_CAMPAIGN_SKILL_DIGEST", skill_digest)
     if (
         not re.fullmatch(r"[0-9a-f]{64}", expected_skill_digest)
         or expected_skill_digest != skill_digest
@@ -540,7 +680,8 @@ def main():
     print(f" Mode         : {mode_str}")
     print(f" Output Dir   : {rel_out_dir}")
     print(f" Blocks       : {args.blocks} (Total paired runs: {args.blocks * 2} per arm)")
-    print(f" Stories      : {args.stories}")
+    print(f" Benchmark    : {adapter.benchmark_id}")
+    print(f" Workloads    : {args.stories}")
     print(f" Seed         : {actual_seed}")
     print(f"=======================================================\n")
 
@@ -578,12 +719,14 @@ def main():
     }
     run_started_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
     run_started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    observed_workloads = None
 
     for b_idx in range(args.blocks):
         pattern = block_patterns[b_idx]
         print(f"\n--- Block {b_idx + 1}/{args.blocks} Pattern: {pattern} ---")
         a_scores, b_scores = [], []
         a_stories, b_stories = [], []
+        a_components, b_components = [], []
         a_results, b_results = [], []
 
         for char in pattern:
@@ -591,18 +734,43 @@ def main():
             browser, flag_option, state_str = arm_config(enable)
             block_label = f"B{b_idx+1}_{char}"
             rep_started_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
-            out_d = run_single_rep(browser, rel_out_dir, args.stories, flag_option,
-                                   state_str, total_rep, block_label, cwd)
+            out_d = run_single_rep(
+                browser, rel_out_dir, args.stories, flag_option, state_str,
+                total_rep, block_label, cwd, adapter=adapter,
+                benchmark_source=source, benchmark_url=args.benchmark_url,
+                driver_path=args.driver_path,
+                iteration_count=args.iteration_count,
+                worst_case_count=args.worst_case_count,
+            )
             rep_finished_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
-            runs = parse_run_metric_artifacts(cwd, out_d)
+            runs = parse_run_metric_artifacts(cwd, out_d, adapter=adapter)
             if len(runs) != 1:
                 print(
                     f"Error: repetition {total_rep + 1} emitted {len(runs)} "
-                    "scalar Speedometer results; expected exactly one.",
+                    f"scalar {adapter.crossbench_name} results; expected "
+                    "exactly one.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
-            score, stories, source_result = runs[0]
+            score, stories, source_result, components = runs[0]
+            expected_count = adapter.expected_workload_count(args.stories)
+            if expected_count is not None and len(stories) != expected_count:
+                print(
+                    f"Error: selector {args.stories!r} produced {len(stories)} "
+                    f"workloads; {adapter.benchmark_id} expects "
+                    f"{expected_count}.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            current_workloads = set(stories)
+            if observed_workloads is None:
+                observed_workloads = current_workloads
+            elif current_workloads != observed_workloads:
+                print(
+                    "Error: observed workload set changed between repetitions.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             copied_name = f"rep-{total_rep + 1:04d}-{block_label}-{state_str.lower()}.json"
             copied_result = os.path.join(evidence_dir, copied_name)
             shutil.copy2(source_result, copied_result)
@@ -618,10 +786,12 @@ def main():
             if enable:
                 b_scores.append(score)
                 b_stories.append(stories)
+                b_components.append(components)
                 b_results.append(result)
             else:
                 a_scores.append(score)
                 a_stories.append(stories)
+                a_components.append(components)
                 a_results.append(result)
             total_rep += 1
 
@@ -629,6 +799,7 @@ def main():
             "block": b_idx + 1, "pattern": pattern,
             "a_scores": a_scores, "b_scores": b_scores,
             "a_stories": a_stories, "b_stories": b_stories,
+            "a_components": a_components, "b_components": b_components,
             "a_results": a_results, "b_results": b_results,
         })
 
@@ -636,7 +807,8 @@ def main():
     run_finished_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
     minimum_duration_ns = (
         args.blocks * 4 * MIN_FULL_SUITE_REP_SECONDS * 1_000_000_000
-        if args.stories == "all" else 0
+        if adapter.benchmark_id == "speedometer3" and args.stories == "all"
+        else 0
     )
     if run_finished_ns - run_started_ns < minimum_duration_ns:
         print(
@@ -659,12 +831,15 @@ def main():
     if final_browser_hashes != initial_browser_hashes:
         print("Error: a measured browser changed during the run.", file=sys.stderr)
         sys.exit(1)
+    if args.benchmark_payload_path and sha256_tree(payload_path) != payload_digest:
+        print("Error: benchmark payload changed during the run.", file=sys.stderr)
+        sys.exit(1)
 
     suite = summarize_block_diffs(suite_block_diffs(block_data))
     if suite is None:
         print("Error: fewer than 2 complete blocks; no statistics possible.", file=sys.stderr)
         sys.exit(1)
-    stories = per_story_stats(block_data)
+    stories = per_story_stats(block_data, adapter=adapter)
 
     stat_sig_regressions = sorted(
         (name for name, s in stories.items() if s["stat_sig_regression"]),
@@ -712,6 +887,12 @@ def main():
     res_manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "runner": MANIFEST_RUNNER,
+        "benchmark": adapter.benchmark_id,
+        "metric_model": adapter.metric_model,
+        "workload_value_direction": adapter.workload_value_direction,
+        "payload_provenance": payload_provenance,
+        "iteration_count": args.iteration_count,
+        "worst_case_count": args.worst_case_count,
         "mode": mode_key,
         "feature": args.feature,
         "enable_features": args.enable_features,
@@ -719,6 +900,10 @@ def main():
         "browser_a": args.browser_a,
         "browser_b": args.browser_b,
         "stories": args.stories,
+        "observed_workloads": sorted(observed_workloads or ()),
+        "expected_workload_count": adapter.expected_workload_count(
+            args.stories
+        ),
         "blocks": suite["n_blocks"],
         "seed": actual_seed,
         "schedule": block_patterns,

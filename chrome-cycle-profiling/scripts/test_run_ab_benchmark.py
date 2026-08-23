@@ -54,7 +54,9 @@ class PerStoryTest(unittest.TestCase):
         # B is consistently 5% faster (lower time) -> positive delta.
         blocks = [self.block(100.0 * (1 + 0.001 * i), 95.0 * (1 + 0.001 * i))
                   for i in range(5)]
-        stats = ab.per_story_stats(blocks)["TodoMVC-React"]
+        stats = ab.per_story_stats(
+            blocks, adapter=ab.benchmark_adapters.SPEEDOMETER_3
+        )["TodoMVC-React"]
         self.assertGreater(stats["delta_pct"], 4.0)
         self.assertFalse(stats["stat_sig_regression"])
 
@@ -62,10 +64,21 @@ class PerStoryTest(unittest.TestCase):
         # B is consistently 5% slower -> stat-sig regression, exceeds 2%.
         blocks = [self.block(100.0 * (1 + 0.001 * i), 105.0 * (1 + 0.001 * i))
                   for i in range(5)]
-        stats = ab.per_story_stats(blocks)["TodoMVC-React"]
+        stats = ab.per_story_stats(
+            blocks, adapter=ab.benchmark_adapters.SPEEDOMETER_3
+        )["TodoMVC-React"]
         self.assertLess(stats["delta_pct"], -4.0)
         self.assertTrue(stats["stat_sig_regression"])
         self.assertTrue(stats["exceeds_2pct_regression"])
+
+    def test_jetstream_higher_score_is_gain(self):
+        blocks = [self.block(500.0 * (1 + 0.001 * i),
+                             525.0 * (1 + 0.001 * i), story="hash-map")
+                  for i in range(5)]
+        stats = ab.per_story_stats(
+            blocks, adapter=ab.benchmark_adapters.JETSTREAM_3
+        )["hash-map"]
+        self.assertGreater(stats["delta_pct"], 4.0)
 
     def test_manifest_preserves_per_repetition_story_totals(self):
         block = {
@@ -101,12 +114,61 @@ class ParseTest(unittest.TestCase):
                            "Geomean": 19.0,
                            "Iteration-0-Total": 21.0,
                            "TodoMVC-React/Adding100Items": 12.0}, f)
-            runs = ab.parse_run_metrics(tmp, "res")
+            runs = ab.parse_run_metrics(
+                tmp, "res", adapter=ab.benchmark_adapters.SPEEDOMETER_3
+            )
             self.assertEqual(1, len(runs))
             score, stories = runs[0]
             self.assertAlmostEqual(35.0, score)
             # Sub-metric keys (with '/') are excluded from the story table.
             self.assertEqual({"TodoMVC-React": 20.0}, stories)
+
+    def test_jetstream_per_run_score_and_components(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = os.path.join(tmp, "res", "stories", "hash-map", "0",
+                                   "0_default")
+            os.makedirs(run_dir)
+            with open(os.path.join(run_dir, "jetstream_3.0.json"), "w") as f:
+                json.dump({
+                    "hash-map/Score": 525.0,
+                    "hash-map/First": 235.0,
+                    "hash-map/Worst": 724.0,
+                    "hash-map/Average": 853.0,
+                    "Total/Score": 525.0,
+                }, f)
+            runs = ab.parse_run_metric_artifacts(
+                tmp, "res", adapter=ab.benchmark_adapters.JETSTREAM_3
+            )
+            self.assertEqual(1, len(runs))
+            score, workloads, _, components = runs[0]
+            self.assertEqual(525.0, score)
+            self.assertEqual({"hash-map": 525.0}, workloads)
+            self.assertEqual(235.0, components["hash-map"]["First"])
+
+
+class PayloadDigestTest(unittest.TestCase):
+    def test_tree_digest_binds_names_and_contents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "sub"))
+            first = os.path.join(tmp, "index.html")
+            second = os.path.join(tmp, "sub", "benchmark.js")
+            with open(first, "w") as f:
+                f.write("one")
+            with open(second, "w") as f:
+                f.write("two")
+            before = ab.sha256_tree(tmp)
+            with open(second, "w") as f:
+                f.write("changed")
+            self.assertNotEqual(before, ab.sha256_tree(tmp))
+
+    def test_tree_digest_rejects_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "target")
+            with open(target, "w") as f:
+                f.write("payload")
+            os.symlink(target, os.path.join(tmp, "link"))
+            with self.assertRaisesRegex(RuntimeError, "symlink"):
+                ab.sha256_tree(tmp)
 
 
 class SuiteDiffTest(unittest.TestCase):

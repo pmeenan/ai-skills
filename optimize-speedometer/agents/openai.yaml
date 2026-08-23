@@ -1,0 +1,4 @@
+interface:
+  display_name: "Optimize Speedometer"
+  short_description: "Optimize Chromium against Speedometer with Crossbench"
+  default_prompt: "Use $optimize-speedometer to optimize Chromium against Speedometer through the shared campaign pipeline."

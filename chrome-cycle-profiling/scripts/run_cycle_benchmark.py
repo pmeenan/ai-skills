@@ -15,6 +15,13 @@ import sys
 import tempfile
 import time
 
+_CAMPAIGN_SCRIPTS = os.path.realpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "optimize-campaign", "scripts")
+)
+if _CAMPAIGN_SCRIPTS not in sys.path:
+    sys.path.append(_CAMPAIGN_SCRIPTS)
+import benchmark_adapters
+
 
 PROCESS_POLL_INTERVAL_SECONDS = 0.25
 ANALYSIS_REJECTED_EXIT_CODE = 3
@@ -267,6 +274,11 @@ def main():
         description="Run Speedometer 3 full Chrome process-tree perf cycle sampling with V8 basic-prof symbolization."
     )
     parser.add_argument(
+        "--benchmark", default="speedometer3",
+        choices=benchmark_adapters.available_benchmarks(),
+    )
+    parser.add_argument("--benchmark-source", default=None)
+    parser.add_argument(
         "--browser",
         default="out/perf/chrome",
         help="Browser build path (default: out/perf/chrome)",
@@ -310,6 +322,13 @@ def main():
         help="Fractional profile-share floor for the exhaustive candidate inventory",
     )
     args = parser.parse_args()
+    adapter = benchmark_adapters.get_adapter(args.benchmark)
+    if adapter.benchmark_id != "speedometer3":
+        parser.error(
+            "exact-window cycle-profile import is not yet verified for "
+            "JetStream; use the custom-fork Crossbench trace probes for "
+            "investigation and do not substitute a whole-run interval"
+        )
 
     cwd = get_repo_root()
     provenance = build_provenance(cwd, args.browser)
@@ -458,7 +477,7 @@ def main():
             cwd,
             ".agents",
             "skills",
-            "optimize-speedometer",
+            "optimize-campaign",
             "scripts",
             "analyze_stacks.py",
         )

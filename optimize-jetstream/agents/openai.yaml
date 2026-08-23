@@ -1,0 +1,4 @@
+interface:
+  display_name: "Optimize JetStream"
+  short_description: "Optimize Chromium against JetStream with Crossbench"
+  default_prompt: "Use $optimize-jetstream to optimize Chromium against JetStream through the shared campaign pipeline."
