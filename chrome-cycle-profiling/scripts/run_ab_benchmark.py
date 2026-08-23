@@ -180,7 +180,7 @@ def skill_tree_digest(cwd):
     return hashlib.sha256("".join(lines).encode()).hexdigest()
 
 
-def capture_environment():
+def capture_environment(required_role="any"):
     with open("/proc/sys/kernel/random/boot_id") as source:
         boot_id = source.read().strip().lower()
     with open("/proc/cpuinfo", errors="replace") as source:
@@ -194,7 +194,7 @@ def capture_environment():
         ["systemd-detect-virt"], capture_output=True, text=True, check=False
     )
     virtualization = detected.stdout.strip() if detected.returncode == 0 else "none"
-    if not model or virtualization != "none":
+    if not model or (required_role != "development" and virtualization != "none"):
         raise RuntimeError(
             f"score evidence requires an identified bare-metal host; "
             f"cpu={model!r}, virtualization={virtualization!r}"
@@ -632,7 +632,7 @@ def main():
         sys.exit(1)
 
     cwd = get_repo_root()
-    environment = capture_environment()
+    environment = capture_environment(args.required_build_role)
     harness = harness_identity(cwd)
     skill_digest = skill_tree_digest(cwd)
     expected_skill_digest = os.environ.get("OPTIMIZE_CAMPAIGN_SKILL_DIGEST", skill_digest)
