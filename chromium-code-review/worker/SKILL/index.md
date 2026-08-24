@@ -27,4 +27,5 @@ preamble, so its rules travel with every section.
 | Phase 8 — Synthesis Challenge | phase-8-synthesis-challenge.md | 7 |
 | Phase 9 — Delivery | phase-9-delivery.md | 34 |
 | Degraded Modes | degraded-modes.md | 14 |
-| Severity, Output, And Tone | severity-output-and-tone.md | 7 |
+| Severity, Output, And Tone | severity-output-and-tone.md | 8 |
+| Troubleshooting Orchestration Bottlenecks | troubleshooting-orchestration-bottlenecks.md | 4 |

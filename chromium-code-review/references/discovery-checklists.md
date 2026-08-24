@@ -122,6 +122,12 @@ manual thread work, and the script's output says which is which.
   `base::Unretained`, and new timers. For each, name the object that owns the
   callback target and the line that guarantees the callback cannot outlive
   it.
+- Scan added or modified lines for raw child pointers passed into asynchronous
+  helper methods or async starter factories:
+  `git diff --color=never --unified=0 <parent> <revision> -- '*.cc' '*.h' | rg -n '^[+][^+].*(CreateAndStart|StartAsync|GetBackend|PostTask)\(.*->.*\.get\(\)'`.
+  For each hit on an object whose lifetime is dynamically managed (e.g.,
+  transient sessions, profiles, workers), audit whether the completion closure
+  anchors the parent object's lifetime.
 - For each new symbol used in a changed file (`std::move`, `std::fill`,
   containers, base helpers, test utilities), confirm the file has the direct
   include. Do not rely on transitive includes for STL, base, or test helpers.
@@ -212,6 +218,22 @@ Answer per changed callback, timer, posted task, or async operation:
   callback or consume a shared resource twice?
 - What is the object's lifetime obligation after invoking a user-provided
   callback?
+- **Asynchronous Resource Escape & Unanchored Callbacks:** When a raw pointer,
+  child member (`parent->child.get()`), or unowned interface is passed into an
+  asynchronous helper (`CreateAndStart`, `StartAsync`, async factories, `PostTask`):
+  1. Distinguish between *synchronous fan-out* (where a local smart-pointer vector
+     is sufficient) and *asynchronous fan-out* (where the initiating function
+     returns while background work is in flight). If asynchronous, a local
+     `scoped_refptr` vector or stack-allocated pointer is destroyed upon return,
+     leaving the async helper referencing unanchored memory.
+  2. Confirm that the completion callback/closure captures a strong lifetime
+     anchor (`scoped_refptr<Parent>` or `std::unique_ptr`) ensuring the parent
+     object, its sub-resources, and any internal `raw_ptr` members outlive the
+     asynchronous operation.
+  3. Walk the mandatory destruction race trace: *Initiate async operation ->
+     immediately invoke reset/clear/retire on the parent -> drain background task
+     queue.* If the parent or its backend is destroyed before the helper's
+     destructor runs, flag as a P1 MiraclePtr/DPD dangling pointer blocker.
 
 Required traces — walk each that applies through the real code before leaving
 this section:
@@ -223,6 +245,8 @@ this section:
   exhausted.
 - Reset, disconnect, or destructor running before a posted callback runs.
 - A callback that destroys its owner.
+- An async operation initiated on a retirable/transient object followed
+  immediately by teardown, clearing, or replacement before task completion.
 - Out-of-order use of the public API: call A arriving before expected event B.
 - Multiple queued items — including the front item changing — for anything
   that queues, buffers, batches, or coalesces work.

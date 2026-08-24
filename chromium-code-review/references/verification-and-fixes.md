@@ -59,8 +59,14 @@ code, not from memory.
 - For async-lifetime claims, identify who retains the caller buffer or
   operation state after an `ERR_IO_PENDING`-style return, then trace
   cancellation and callback invalidation through destruction on each backend.
-  Local variable death, declaration order, or callback capture syntax alone
-  cannot confirm a use-after-free.
+  Distinguish between *synchronous local scope* (where a local variable lives
+  for the duration of the loop/operation) and *asynchronous handoffs* (where the
+  initiating method returns while background tasks run). If an asynchronous
+  helper receives a raw child pointer (`parent->child.get()`), verify that the
+  callback closure holds an owning anchor (`scoped_refptr<Parent>` or
+  `std::unique_ptr`) until completion. Local variable death, declaration order,
+  or callback capture syntax alone cannot confirm a use-after-free without
+  tracing the asynchronous completion path.
 - For style claims, cite authority applicable to the changed directory.
   Blink/WebKit naming guidance is not a Chromium-wide convention, and a
   mechanical `bool` hit without local authority or concrete callsite ambiguity

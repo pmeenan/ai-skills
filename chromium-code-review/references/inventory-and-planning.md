@@ -204,6 +204,21 @@ shape from `references/templates.md`.
   patchset added — often by the fix itself), or `pre-existing` (in the
   surrounding codebase). The delta review exists to catch the middle class;
   do not let it collapse into the first.
+- **Adversarial Scrutiny of New Fixes (Fix Regression Audit):**
+  Every code change introduced to address prior feedback must undergo adversarial
+  falsification, not just happy-path confirmation:
+  1. *Conflict & Overwrite Tracing:* When a fix synchronizes state between two
+     entities (e.g., merging caches, copying credentials, propagating flags):
+     trace the concurrent modification path where both entities were updated
+     independently. Does bulk copying from one overwrite newer state in the other?
+  2. *Asynchronous Lifetime of Fix Infrastructure:* If a fix introduces new helper
+     objects, vectors, or ref-counted handles, verify whether any asynchronous
+     operation outlives the local function scope where the handle was instantiated.
+  3. *Bounded Container Matching:* If a fix adds collection tracking (e.g.,
+     caches, sets, vectors of tokens/hints) to prevent duplicate work, verify
+     whether the underlying subsystem has a fixed capacity or eviction policy
+     (e.g., LRU limits). Unbounded tracking will diverge from the underlying
+     subsystem over long-running sessions.
 
 ## Pass 3 — The Thread Plan
 

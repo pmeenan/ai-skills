@@ -120,7 +120,7 @@ cache globally; archived lease logs older than 30 days are pruned.
 
 After pinning: the orchestrator reads `pin.md` (it is small and is the one
 per-CL artifact the orchestrator holds in context), writes `directives.md`,
-and initializes `progress.md` and `orchestration.tsv`. If the user requested
+and initializes `progress.md`, `orchestration.tsv` (with line `phase\twork_id\tattempt\tstate\ttier\ttask_id\tbrief\tartifact\tremaining_scope\tdepends_on`), and `input-manifest.tsv` (with line `work_id\tattempt\tphase\tbrief\tinput_path\trole\tbytes\tsha256`). If the user requested
 a non-current patchset, pass that exact patchset to `fetch-cl.sh`, record
 `mode: historical patchset` in `directives.md`, and do not silently substitute
 the current revision. Otherwise the initial pin must be Gerrit's current
