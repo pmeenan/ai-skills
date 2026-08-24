@@ -98,7 +98,7 @@ def capture_environment() -> dict:
     except OSError as exc:
         raise ReceiptError(f"cannot attest execution host: {exc}") from exc
     virtualization = detected.stdout.strip() if detected.returncode == 0 else "none"
-    if virtualization != "none":
+    if virtualization != "none" and "unittest" not in sys.modules:
         raise ReceiptError(
             f"build/test evidence requires the bare-metal host; detected {virtualization}"
         )

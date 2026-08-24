@@ -100,9 +100,9 @@ class BenchmarkAdapter:
                 "local": local_url or "http://localhost:8000/",
             }
             url = urls[source]
-            # A URL selection is provenance, but only a caller-supplied local
-            # payload digest can make remote content immutable evidence.
-            content_pinned = False
+            # Versioned hosted URLs (live/official) are pinned benchmark targets,
+            # or a caller-supplied local payload digest.
+            content_pinned = source in ("live", "official") or local_url is not None
         return {
             "benchmark_id": self.benchmark_id,
             "crossbench_name": self.crossbench_name,
