@@ -2347,6 +2347,26 @@ def validate_new_identity(ledger, *, kind, area_key, mechanism_key,
     else:
         if not mechanism_key:
             raise CampaignError("mechanism records require --mechanism-key")
+        if not test_bypass_active():
+            if not ledger.data.get("profile_runs"):
+                raise CampaignError(
+                    f"No profile has been ingested for benchmark "
+                    f"'{ledger.data['config']['benchmark']}'. Grounding in an exact-window "
+                    "profile is mandatory; run 'remote_measure.py --mode profile' and "
+                    "'campaign.py profile' first."
+                )
+            if parent_id is None:
+                raise CampaignError(
+                    "Mechanism candidates must specify --parent <discovery_id> pointing to "
+                    "an active discovery opportunity from an ingested profile. Ungrounded "
+                    "candidate additions are forbidden."
+                )
+            parent = ledger.opp(parent_id)
+            if parent.get("kind") != "discovery":
+                raise CampaignError(
+                    f"Parent opportunity #{parent_id:03d} must be a discovery record, "
+                    f"not {parent.get('kind')}"
+                )
         existing = ledger.mechanism(area_key, mechanism_key)
         if existing:
             raise CampaignError(

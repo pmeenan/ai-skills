@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import pathlib
 import re
 import shlex
 import shutil
@@ -262,6 +263,59 @@ def parse_mono_intervals(out_dir, cwd):
     )
 
 
+def parse_jetstream_mono_intervals(out_dir, cwd):
+    intervals = []
+    outer_intervals = []
+
+    for root, dirs, files in os.walk(os.path.join(cwd, out_dir)):
+        if "performance.entries.json" in files:
+            entry_path = os.path.join(root, "performance.entries.json")
+            try:
+                with open(entry_path, "r") as f:
+                    data = json.load(f)
+            except Exception:
+                continue
+
+            story = None
+            parts = pathlib.Path(entry_path).parts
+            if "stories" in parts:
+                idx = parts.index("stories")
+                if idx + 1 < len(parts):
+                    story = parts[idx + 1]
+
+            start_time = None
+            end_time = None
+
+            for key, val in data.items():
+                if isinstance(val, list) and len(val) > 0:
+                    val_time = float(val[0])
+                    if story and key.startswith(f"mark/{story}") and key.endswith("/startTime"):
+                        start_time = val_time
+                    elif key.startswith("mark/update-ui") and key.endswith("/startTime"):
+                        end_time = val_time
+
+            if start_time is not None and end_time is not None and end_time > start_time:
+                rel_log = os.path.relpath(entry_path, cwd)
+                intervals.append({
+                    "start_time_mono": start_time / 1000.0,
+                    "end_time_mono": end_time / 1000.0,
+                    "browser_log": entry_path,
+                    "suite": story or "jetstream",
+                    "test": "run",
+                    "phase": "run",
+                    "group": f"{rel_log}|{story}",
+                })
+                outer_intervals.append({
+                    "start_time_mono": start_time / 1000.0,
+                    "end_time_mono": end_time / 1000.0,
+                    "browser_log": entry_path,
+                })
+    return (
+        sorted(intervals, key=lambda interval: interval["start_time_mono"]),
+        sorted(outer_intervals, key=lambda interval: interval["start_time_mono"]),
+    )
+
+
 def run_analyzer(command, cwd):
     completed = subprocess.run(command, cwd=cwd, check=False)
     if completed.returncode not in (0, ANALYSIS_REJECTED_EXIT_CODE):
@@ -271,7 +325,7 @@ def run_analyzer(command, cwd):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run Speedometer 3 full Chrome process-tree perf cycle sampling with V8 basic-prof symbolization."
+        description="Run benchmark full Chrome process-tree perf cycle sampling with V8 basic-prof symbolization."
     )
     parser.add_argument(
         "--benchmark", default="speedometer3",
@@ -284,7 +338,7 @@ def main():
         help="Browser build path (default: out/perf/chrome)",
     )
     parser.add_argument(
-        "--stories", default="all", help="Speedometer stories to run (default: all)"
+        "--stories", default="all", help="Stories to run (default: all)"
     )
     parser.add_argument(
         "--repetitions", type=int, default=16,
@@ -301,12 +355,11 @@ def main():
     )
     parser.add_argument(
         "--enable-features",
-        default="Speedometer3Optimizations",
+        default=None,
         help=(
-            "Comma-separated Chrome features passed to Crossbench. The default is "
-            "the campaign flag Speedometer3Optimizations so captures reflect "
-            "already-landed work; pass an empty value for a baseline capture. "
-            "Chrome silently ignores names that are not defined in the binary."
+            "Comma-separated Chrome features passed to Crossbench. Defaults to "
+            "the campaign flag (e.g. Speedometer3Optimizations / JetStream3Optimizations); "
+            "pass an empty value for a baseline capture."
         ),
     )
     parser.add_argument(
@@ -323,11 +376,14 @@ def main():
     )
     args = parser.parse_args()
     adapter = benchmark_adapters.get_adapter(args.benchmark)
-    if adapter.benchmark_id != "speedometer3":
-        parser.error(
-            "exact-window cycle-profile import is not yet verified for "
-            "JetStream; use the custom-fork Crossbench trace probes for "
-            "investigation and do not substitute a whole-run interval"
+    if adapter.benchmark_id not in ("speedometer3", "jetstream3"):
+        parser.error(f"unsupported benchmark {args.benchmark}")
+
+    if args.enable_features is None:
+        args.enable_features = (
+            "Speedometer3Optimizations"
+            if adapter.benchmark_id == "speedometer3"
+            else "JetStream3Optimizations"
         )
 
     cwd = get_repo_root()
@@ -341,11 +397,19 @@ def main():
 
     perf_data_file = os.path.join(temp_results_dir, "perf_sampling.data")
 
+    if adapter.benchmark_id == "speedometer3":
+        cb_benchmark = "speedometer_3.0"
+        cb_source_flags = ["--network=third_party/speedometer/v3.0"]
+    else:
+        cb_benchmark = "jetstream_3.0"
+        source = args.benchmark_source or "custom"
+        cb_source_flags = [f"--{source}", "--probe=performance.entries"]
+
     cb_cmd = [
         "vpython3",
         "./third_party/crossbench/cb.py",
-        "speedometer_3.0",
-        "--network=third_party/speedometer/v3.0",
+        cb_benchmark,
+        *cb_source_flags,
         "--env-validation=warn",
         f"--browser={args.browser}",
         "--headless",
@@ -402,7 +466,13 @@ def main():
     if capture.returncode:
         raise subprocess.CalledProcessError(capture.returncode, perf_cmd)
 
-    intervals, outer_intervals = parse_mono_intervals(rel_out_dir, cwd)
+    if adapter.benchmark_id == "jetstream3":
+        intervals, outer_intervals = parse_jetstream_mono_intervals(rel_out_dir, cwd)
+        if not intervals:
+            intervals, outer_intervals = parse_mono_intervals(rel_out_dir, cwd)
+    else:
+        intervals, outer_intervals = parse_mono_intervals(rel_out_dir, cwd)
+
     if intervals and not outer_intervals:
         raise RuntimeError("Exact score intervals exist without outer diagnostic windows")
     for interval in intervals:
@@ -452,7 +522,7 @@ def main():
         "perf_data_file": perf_data_file,
         "scoped_to_scored_work": bool(intervals),
         "interval_kind": "exact-scored" if intervals else "missing",
-        "metric_weighting": "speedometer-story-v1",
+        "metric_weighting": adapter.metric_model,
         "measurement_intervals": intervals,
         "outer_measurement_intervals": outer_intervals,
         "processes": sorted(process_manifest.values(), key=lambda item: item["pid"]),

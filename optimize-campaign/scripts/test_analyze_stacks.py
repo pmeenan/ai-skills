@@ -772,6 +772,23 @@ class PerStoryDecompositionTest(unittest.TestCase):
         )
         self.assertEqual("TodoMVC-jQuery", report["selection"]["story"])
 
+    def test_qualify_report_story_jetstream(self):
+        report = {
+            "frontier": [{"entry_key": "function:v8::Hot", "name": "x"}],
+            "overlapping_alternatives": [],
+            "area_inventory": [],
+            "selection": {"metric_weighting": "jetstream-workload-score-v1"},
+        }
+        MODULE.qualify_report_story(report, "hash-map", "jetstream-workload-score-v1")
+        self.assertEqual(
+            "story:hash-map/function:v8::Hot",
+            report["frontier"][0]["entry_key"],
+        )
+        self.assertEqual(
+            "jetstream-workload-score-v1", report["selection"]["metric_weighting"]
+        )
+        self.assertEqual("hash-map", report["selection"]["story"])
+
 
 if __name__ == "__main__":
     unittest.main()

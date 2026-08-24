@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import json
 import pathlib
 import subprocess
 import sys
@@ -100,6 +101,27 @@ class RunCycleBenchmarkTest(unittest.TestCase):
             self.assertIn(300, procs)
             self.assertEqual("renderer", procs[300]["role"])
 
+    def test_jetstream_exact_score_intervals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            log_dir = root / "results" / "cb" / "stories" / "hash-map" / "0" / "0_default"
+            log_dir.mkdir(parents=True)
+            entries = {
+                "mark/hash-map/startTime": [500.0],
+                "mark/hash-map/duration": [0],
+                "mark/update-ui/startTime": [2500.0],
+                "mark/update-ui/duration": [0],
+            }
+            (log_dir / "performance.entries.json").write_text(json.dumps(entries))
+            intervals, outer = MODULE.parse_jetstream_mono_intervals("results", tmp)
+            self.assertEqual(1, len(intervals))
+            self.assertEqual("hash-map", intervals[0]["suite"])
+            self.assertEqual(0.5, intervals[0]["start_time_mono"])
+            self.assertEqual(2.5, intervals[0]["end_time_mono"])
+            self.assertEqual(2.0, intervals[0]["end_time_mono"] - intervals[0]["start_time_mono"])
+            self.assertTrue(intervals[0]["group"].endswith("|hash-map"))
+
 
 if __name__ == "__main__":
+    import json
     unittest.main()

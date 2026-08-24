@@ -1254,7 +1254,9 @@ def sample_story(sample: Sample) -> str | None:
     return None
 
 
-def qualify_report_story(report: dict, story: str) -> None:
+def qualify_report_story(
+    report: dict, story: str, metric_weighting: str = "speedometer-story-v1"
+) -> None:
     """Namespace every frontier identity in a per-story report by its story.
 
     The same symbol legitimately appears in several story silos; the story
@@ -1271,7 +1273,7 @@ def qualify_report_story(report: dict, story: str) -> None:
                     prefix + item["assigned_frontier_entry"]
                 )
     report["selection"]["story"] = story
-    report["selection"]["metric_weighting"] = "speedometer-story-v1"
+    report["selection"]["metric_weighting"] = metric_weighting
 
 
 def analyze_and_report(
@@ -1364,7 +1366,8 @@ def analyze_and_report(
             "tree_max_children": args.tree_max_children,
             "weight": args.weight,
             "metric_weighting": (
-                "speedometer-geomean-v1" if exact_scored else "raw-cycles"
+                interval_manifest.get("metric_weighting")
+                or ("speedometer-geomean-v1" if exact_scored else "raw-cycles")
             ),
             "note": (
                 "Inclusive and marginal shares retain descendant engine work as an "
@@ -1377,7 +1380,13 @@ def analyze_and_report(
         "area_inventory": [public_candidate(item) for item in areas],
     }
     if story is not None:
-        qualify_report_story(report, story)
+        manifest_weighting = interval_manifest.get("metric_weighting") or ""
+        story_weighting = (
+            "jetstream-workload-score-v1"
+            if "jetstream" in manifest_weighting
+            else "speedometer-story-v1"
+        )
+        qualify_report_story(report, story, story_weighting)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "candidate_frontier.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n"
@@ -1604,7 +1613,11 @@ def main() -> int:
         args.stories_out_dir.mkdir(parents=True, exist_ok=True)
         (args.stories_out_dir / "stories_index.json").write_text(json.dumps({
             "schema_version": 1,
-            "metric_weighting": "speedometer-story-v1",
+            "metric_weighting": (
+                "jetstream-workload-score-v1"
+                if "jetstream" in (interval_manifest.get("metric_weighting") or "")
+                else "speedometer-story-v1"
+            ),
             "interval_kind": "exact-scored",
             "min_marginal_share": args.min_marginal_share,
             "min_inclusive_share": args.min_share,

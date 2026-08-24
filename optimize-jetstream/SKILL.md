@@ -49,10 +49,6 @@ python3 .agents/skills/optimize-campaign/scripts/remote_measure.py \
 After characterization, calibrate page-load repetitions and block noise before
 setting campaign policy. Do not reuse Speedometer's thresholds.
 
-## Fail-closed profile rule
+## Mandatory exact-window profile grounding
 
-The custom Chromium JetStream fork emits user-timing marks and Crossbench
-contains `jetstream_3/perf_sample_span.sql`. Until those marks, query output,
-workload coverage, and component mapping are verified end-to-end by the shared
-profile importer, do not label a JetStream profile exact-scored and do not use
-whole-run CPU time as a substitute.
+JetStream 3 campaigns MUST capture exact-window CPU profiles (`remote_measure.py --mode profile --benchmark jetstream3`) and ingest them into the campaign ledger before any candidate addition or implementation. Free-floating or ungrounded candidate additions are strictly rejected by the campaign ledger. All candidate opportunities are decomposed top-down from the ingested profile tree and must clear the campaign's cycle-share floor.

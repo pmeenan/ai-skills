@@ -2389,6 +2389,13 @@ class GitReviewVerificationTest(unittest.TestCase):
             reopened = json.load(ledger_file)
         self.assertEqual("candidate", reopened["opportunities"][0]["status"])
 
+    def test_ungrounded_mechanism_addition_fails_closed(self):
+        os.environ.pop("OPTIMIZE_CAMPAIGN_TEST_ALLOW_UNVERIFIED", None)
+        try:
+            self.assertEqual(1, self.run_cmd("add", "--anchor", "Blink::Style", "--share", "0.5"))
+        finally:
+            os.environ["OPTIMIZE_CAMPAIGN_TEST_ALLOW_UNVERIFIED"] = "1"
+
 
 if __name__ == "__main__":
     unittest.main()

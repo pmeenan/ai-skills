@@ -8,11 +8,9 @@ description: High-precision Desktop Chromium profiling with hardware-cycle perf 
 This skill provides the authoritative runbook, instrumentation resources, and verification protocols for profiling and optimizing CPU performance in Desktop Chromium for Speedometer 3.
 
 For benchmark selection, payload provenance, campaign gates, and local versus
-SSH transport, read `../optimize-campaign/SKILL.md`. The score runner supports
-the shared `speedometer3` and `jetstream3` adapters. The cycle-profile runner's
-exact-window importer remains Speedometer-only until the JetStream custom-fork
-trace query is verified end-to-end; it must fail closed for JetStream rather
-than widening to an unscored whole-run interval.
+SSH transport, read `../optimize-campaign/SKILL.md`. The score runner and
+cycle-profile runner support both `speedometer3` and `jetstream3` adapters with
+exact-window score interval profiling.
 
 ---
 
