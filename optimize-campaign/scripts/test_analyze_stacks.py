@@ -681,10 +681,10 @@ class AnalyzeStacksTest(unittest.TestCase):
         aggregates = MODULE.aggregate_samples(parsed)
         inner = aggregates[("function", "blink::Inner::Leaf()")]
         outer = aggregates[("function", "blink::Outer::Call()")]
-        self.assertEqual(0b1, inner.sample_mask)
-        self.assertEqual(0b1, inner.owner_exclusive_mask)
-        self.assertEqual(0b1, outer.sample_mask)
-        self.assertEqual(0, outer.owner_exclusive_mask)
+        self.assertEqual({0}, inner.sample_mask)
+        self.assertEqual({0}, inner.owner_exclusive_mask)
+        self.assertEqual({0}, outer.sample_mask)
+        self.assertEqual(set(), outer.owner_exclusive_mask)
 
     def test_parent_opportunity_includes_descendant_v8_cycles(self):
         lines = sample(

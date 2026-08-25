@@ -832,6 +832,8 @@ def make_candidate(
     group_totals: collections.Counter[str],
     uncovered: int,
 ) -> dict:
+    if isinstance(uncovered, int):
+        uncovered = {i for i in range(uncovered.bit_length()) if (uncovered & (1 << i))}
     inclusive = agg.inclusive_weight
     owner_exclusive = agg.owner_exclusive_weight
     self_weight = agg.self_weight
