@@ -373,6 +373,7 @@ def load_mark_intervals(paths: list[pathlib.Path]) -> list[tuple[float, float]]:
     return sorted(intervals)
 
 
+@functools.lru_cache(maxsize=32768)
 def function_head(symbol: str) -> str:
     protected = symbol.replace("(anonymous namespace)", "{anonymous namespace}")
     angle_depth = 0
@@ -387,7 +388,8 @@ def function_head(symbol: str) -> str:
     return protected.replace("{anonymous namespace}", "(anonymous namespace)").strip()
 
 
-def split_qualified(head: str) -> list[str]:
+@functools.lru_cache(maxsize=32768)
+def split_qualified(head: str) -> tuple[str, ...]:
     parts = []
     start = 0
     angle_depth = 0
@@ -403,9 +405,10 @@ def split_qualified(head: str) -> list[str]:
             index += 1
         index += 1
     parts.append(head[start:])
-    return parts
+    return tuple(parts)
 
 
+@functools.lru_cache(maxsize=32768)
 def collapse_templates(value: str) -> str:
     output = []
     depth = 0
@@ -703,10 +706,14 @@ def sample_is_addressable(
 
 
 def sample_has_chromium_opportunity(
-    sample: Sample, include: re.Pattern[str] = DEFAULT_INCLUDE
+    sample: Sample,
+    include: re.Pattern[str] = DEFAULT_INCLUDE,
+    is_inc_fn: collections.abc.Callable[[str], bool] | None = None,
 ) -> bool:
     return any(
-        not frame.kernel and include.search(frame.symbol) for frame in sample.frames
+        not frame.kernel
+        and (is_inc_fn(frame.symbol) if is_inc_fn else include.search(frame.symbol))
+        for frame in sample.frames
     )
 
 
@@ -1020,10 +1027,27 @@ def build_frontier(
     exclude: re.Pattern[str],
 ) -> tuple[list[dict], list[dict], list[dict]]:
     total_weight = sum(sample.weight for sample in samples)
+    include_cache: dict[str, bool] = {}
+    exclude_cache: dict[str, bool] = {}
+
+    def is_included(sym: str) -> bool:
+        res = include_cache.get(sym)
+        if res is None:
+            res = bool(include.search(sym))
+            include_cache[sym] = res
+        return res
+
+    def is_excluded(sym: str) -> bool:
+        res = exclude_cache.get(sym)
+        if res is None:
+            res = bool(exclude.search(sym))
+            exclude_cache[sym] = res
+        return res
+
     addressable_mask = {
         index
         for index, sample in enumerate(samples)
-        if sample_has_chromium_opportunity(sample, include)
+        if sample_has_chromium_opportunity(sample, include, is_inc_fn=is_included)
     }
     group_totals = collections.Counter()
     for sample in samples:
@@ -1031,10 +1055,11 @@ def build_frontier(
     eligible = []
     area_eligible = []
     all_ids = addressable_mask
+
     for agg in aggregates.values():
-        if not include.search(agg.name) or exclude.search(agg.name):
-            continue
         if total_weight and (agg.inclusive_weight / total_weight) < min_share:
+            continue
+        if not is_included(agg.name) or is_excluded(agg.name):
             continue
         candidate = make_candidate(agg, samples, total_weight, group_totals, all_ids)
         destination = area_eligible if agg.kind == "class" else eligible
