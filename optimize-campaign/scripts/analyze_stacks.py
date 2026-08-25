@@ -133,15 +133,9 @@ class Aggregate:
     inclusive_weight: int = 0
     owner_exclusive_weight: int = 0
     self_weight: int = 0
-    callers: collections.Counter[str] = dataclasses.field(
-        default_factory=collections.Counter
-    )
-    callees: collections.Counter[str] = dataclasses.field(
-        default_factory=collections.Counter
-    )
-    groups: collections.Counter[str] = dataclasses.field(
-        default_factory=collections.Counter
-    )
+    callers: dict[str, int] = dataclasses.field(default_factory=dict)
+    callees: dict[str, int] = dataclasses.field(default_factory=dict)
+    groups: dict[str, int] = dataclasses.field(default_factory=dict)
     depth_sum: int = 0
     occurrences: int = 0
 
@@ -704,9 +698,9 @@ def class_area(symbol: str) -> str | None:
     return collapse_templates("::".join(parts[:-1]))
 
 
-def add_weighted(counter: collections.Counter[str], key: str, weight: int) -> None:
+def add_weighted(mapping: dict[str, int], key: str, weight: int | float) -> None:
     if key:
-        counter[key] += weight
+        mapping[key] = mapping.get(key, 0) + int(weight)
 
 
 def addressable_start(
@@ -863,11 +857,12 @@ def weight_of(sample_mask: set[int] | collections.abc.Collection[int], samples: 
     return sum(int(samples[idx].weight) for idx in sample_mask)
 
 
-def top_counter(counter: collections.Counter[str], limit: int = 5) -> list[dict]:
+def top_counter(counter: dict[str, int], limit: int = 5) -> list[dict]:
     total = sum(counter.values()) or 1
+    items = sorted(counter.items(), key=lambda x: x[1], reverse=True)[:limit]
     return [
         {"name": name, "weight": weight, "share": weight / total}
-        for name, weight in counter.most_common(limit)
+        for name, weight in items
     ]
 
 
