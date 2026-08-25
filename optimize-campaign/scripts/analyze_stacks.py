@@ -117,6 +117,9 @@ class Sample:
     timestamp: float
     weight: float
     frames: tuple[Frame, ...]  # root to leaf
+    tree_cache: dict[str | None, tuple[tuple[str, str], ...]] = dataclasses.field(
+        default_factory=dict
+    )
 
 
 @dataclasses.dataclass(slots=True)
@@ -480,13 +483,15 @@ def tree_frame_is_noise(frame: Frame) -> bool:
     )
 
 
-@functools.lru_cache(maxsize=16384)
-def projected_tree_frames_cached(
-    frames: tuple[Frame, ...], area: str | None
+def projected_tree_frames(
+    sample: Sample, area: str | None
 ) -> tuple[tuple[str, str], ...]:
+    cached = sample.tree_cache.get(area)
+    if cached is not None:
+        return cached
     start_index = 0
     if area is not None:
-        recognized = [tree_area(frame) for frame in frames]
+        recognized = [tree_area(frame) for frame in sample.frames]
         owner_index = next(
             (
                 index
@@ -496,13 +501,14 @@ def projected_tree_frames_cached(
             None,
         )
         if owner_index is None or recognized[owner_index] != area:
+            sample.tree_cache[area] = ()
             return ()
         for index in range(owner_index - 1, -1, -1):
             if recognized[index] is not None and recognized[index] != area:
                 start_index = index + 1
                 break
     projected = []
-    for frame in frames[start_index:]:
+    for frame in sample.frames[start_index:]:
         frame_area = tree_area(frame)
         if frame_area is None or (area is not None and frame_area != area):
             continue
@@ -511,13 +517,9 @@ def projected_tree_frames_cached(
         item = (tree_symbol(frame.symbol), frame_area)
         if not projected or projected[-1] != item:
             projected.append(item)
-    return tuple(projected)
-
-
-def projected_tree_frames(
-    sample: Sample, area: str | None
-) -> tuple[tuple[str, str], ...]:
-    return projected_tree_frames_cached(sample.frames, area)
+    res = tuple(projected)
+    sample.tree_cache[area] = res
+    return res
 
 
 def build_text_tree(samples: list[Sample], area: str | None = None) -> TreeNode:
@@ -526,13 +528,18 @@ def build_text_tree(samples: list[Sample], area: str | None = None) -> TreeNode:
         frames = projected_tree_frames(sample, area)
         if not frames:
             continue
-        root.weight += sample.weight
+        weight = sample.weight
+        root.weight += weight
         node = root
         for name, frame_area in frames:
             key = (name, frame_area)
-            node = node.children.setdefault(key, TreeNode(name, frame_area))
-            node.weight += sample.weight
-        node.self_weight += sample.weight
+            next_node = node.children.get(key)
+            if next_node is None:
+                next_node = TreeNode(name, frame_area)
+                node.children[key] = next_node
+            node = next_node
+            node.weight += weight
+        node.self_weight += weight
     return root
 
 
