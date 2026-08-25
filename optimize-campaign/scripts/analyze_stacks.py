@@ -421,6 +421,7 @@ def collapse_templates(value: str) -> str:
     return "".join(output)
 
 
+@functools.lru_cache(maxsize=32768)
 def tree_area(frame: Frame) -> str | None:
     symbol = frame.symbol
     if symbol.startswith(("blink::", "WTF::")):
@@ -438,6 +439,7 @@ def tree_area(frame: Frame) -> str | None:
     return None
 
 
+@functools.lru_cache(maxsize=32768)
 def tree_symbol(symbol: str, max_length: int = 140) -> str:
     if APPLICATION_SCRIPT_FRAME.search(symbol):
         return "[application script execution]"
@@ -448,6 +450,7 @@ def tree_symbol(symbol: str, max_length: int = 140) -> str:
     return shortened
 
 
+@functools.lru_cache(maxsize=32768)
 def tree_frame_is_noise(frame: Frame) -> bool:
     symbol = frame.symbol
     if frame.kernel or symbol == "[unknown]" or symbol.startswith("0x"):
