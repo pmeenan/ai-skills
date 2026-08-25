@@ -703,6 +703,11 @@ def add_weighted(mapping: dict[str, int], key: str, weight: int | float) -> None
         mapping[key] = mapping.get(key, 0) + int(weight)
 
 
+@functools.lru_cache(maxsize=32768)
+def is_out_of_scope_owner(sym: str) -> bool:
+    return bool(OUT_OF_SCOPE_OWNER.search(sym))
+
+
 def addressable_start(
     sample: Sample,
     include: re.Pattern[str] = DEFAULT_INCLUDE,
@@ -714,7 +719,7 @@ def addressable_start(
         if frame.kernel:
             continue
         sym = frame.symbol
-        if OUT_OF_SCOPE_OWNER.search(sym):
+        if is_out_of_scope_owner(sym):
             owner_is_chromium = False
             last_engine_boundary = index
         elif is_inc_fn(sym) if is_inc_fn else include.search(sym):
