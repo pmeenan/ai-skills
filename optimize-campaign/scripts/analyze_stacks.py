@@ -154,6 +154,7 @@ class TreeNode:
     )
 
 
+@functools.lru_cache(maxsize=32768)
 def normalize_symbol(raw: str) -> tuple[str, str]:
     body = raw.rstrip()
     dso = ""
@@ -164,6 +165,25 @@ def normalize_symbol(raw: str) -> tuple[str, str]:
     body = OFFSET_RE.sub("", body)
     body = CLONE_RE.sub("", body)
     return body.strip(), dso
+
+
+@functools.lru_cache(maxsize=32768)
+def parse_frame_line(line: str) -> Frame | None:
+    stripped = line.strip()
+    if not stripped:
+        return None
+    parts = stripped.split(maxsplit=1)
+    if len(parts) < 2:
+        return None
+    ip, body = parts
+    symbol, dso = normalize_symbol(body)
+    if not symbol:
+        return None
+    return Frame(
+        ip.lower().startswith("ffff"),
+        sys.intern(symbol),
+        sys.intern(dso),
+    )
 
 
 def parse_perf_script(
@@ -206,27 +226,20 @@ def parse_perf_script(
         leaf_to_root = []
 
     for line in lines:
+        if line.startswith(("\t", " ")):
+            if header is not None:
+                frame = parse_frame_line(line)
+                if frame is not None:
+                    leaf_to_root.append(frame)
+            continue
+        if not line.strip():
+            finish()
+            continue
         match = HEADER_RE.match(line)
         if match:
             finish()
             header = match
             continue
-        if not line.strip():
-            finish()
-            continue
-        if header:
-            match = FRAME_RE.match(line)
-            if match:
-                symbol, dso = normalize_symbol(match.group("body"))
-                if symbol:
-                    ip = match.group("ip")
-                    leaf_to_root.append(
-                        Frame(
-                            ip.lower().startswith("ffff"),
-                            sys.intern(symbol),
-                            sys.intern(dso),
-                        )
-                    )
     finish()
     return samples
 
