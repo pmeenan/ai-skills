@@ -55,7 +55,9 @@ DEFAULT_EXCLUDE = re.compile(
     r"^cc::ProxyMain$|^cc::ProxyMain::BeginMainFrame|"
     r"^cc::CategorizedWorkerPoolJob::Run|"
     r"^(?:blink::WidgetBase|blink::WebFrameWidgetImpl)(?:::BeginMainFrame)?(?:\(|$)|"
-    r"^blink::scheduler::NonMainThreadImpl::SimpleThreadImpl::Run|"
+    r"^(?:blink::scheduler::(?:MainThreadSchedulerImpl|ThreadSchedulerBase|"
+    r"NonMainThreadImpl|TaskQueueThrottler)|blink::ThreadSchedulerBase)::|"
+    r"^blink::scheduler::.*::(?:OnTaskCompleted|ExecuteTask|RunTask|PostTask)|"
     r"^blink::(?:V8ScriptRunner::CallFunction|"
     r"\(anonymous namespace\)::v8_.*(?:Operation|Attribute).*Callback|"
     r"bindings::CallbackInvokeHelper<|"
@@ -86,7 +88,11 @@ TREE_TRUNK_NOISE = re.compile(
     r"base::Thread::(?:ThreadMain|Run)|"
     r"base::sequence_manager::internal::ThreadControllerWithMessagePump|"
     r"base::\(anonymous namespace\)::ThreadFunc|"
-    r"base::TaskAnnotator::RunTask)|(?:Invoker<|TaskAnnotator::RunTask)"
+    r"base::TaskAnnotator::RunTask|"
+    r"blink::scheduler::MainThreadSchedulerImpl::OnTaskCompleted|"
+    r"blink::scheduler::.*::ExecuteTask|"
+    r"blink::ThreadSchedulerBase::DispatchOnTaskCompletionCallbacks)|"
+    r"(?:Invoker<|TaskAnnotator::RunTask)"
 )
 V8_TREE_AREA = re.compile(
     r"^(?:v8::|JS:|JIT:|LazyCompile:|Function:|Builtin:|Stub:|Builtins_|"
