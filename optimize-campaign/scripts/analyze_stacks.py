@@ -1016,10 +1016,11 @@ def build_frontier(
     for agg in aggregates.values():
         if not include.search(agg.name) or exclude.search(agg.name):
             continue
+        if total_weight and (agg.inclusive_weight / total_weight) < min_share:
+            continue
         candidate = make_candidate(agg, samples, total_weight, group_totals, all_ids)
-        if candidate["inclusive_share"] >= min_share:
-            destination = area_eligible if agg.kind == "class" else eligible
-            destination.append((candidate["score"], agg))
+        destination = area_eligible if agg.kind == "class" else eligible
+        destination.append((candidate["score"], agg))
     eligible.sort(key=lambda item: item[0], reverse=True)
     area_eligible.sort(key=lambda item: item[0], reverse=True)
 
