@@ -311,16 +311,18 @@ class MechanismEvidenceTest(unittest.TestCase):
                 metadata["score_scope"]["min_avoidable_pct_floor"],
             )
 
-    def test_jetstream_mechanism_scaffold_fails_closed(self):
+    def test_jetstream_mechanism_scaffold_succeeds(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(SystemExit) as raised:
-                evidence.main([
-                    "scaffold", "--benchmark", "jetstream3", "--opp", "7",
-                    "--mechanism-key", "runtime/hash-map", "--profile-id", "p1",
-                    "--target-story", "hash-map", "--variant", "baseline",
-                    "--out", str(pathlib.Path(tmp) / "metadata.json"),
-                ])
-            self.assertEqual(2, raised.exception.code)
+            out = pathlib.Path(tmp) / "metadata.json"
+            self.assertEqual(0, evidence.main([
+                "scaffold", "--benchmark", "jetstream3", "--opp", "7",
+                "--mechanism-key", "runtime/hash-map", "--profile-id", "p1",
+                "--target-story", "hash-map", "--variant", "baseline",
+                "--out", str(out),
+            ]))
+            metadata = json.loads(out.read_text())
+            self.assertEqual("jetstream3", metadata["benchmark"])
+            self.assertEqual("jetstream-workload-score-v1", metadata["metric_model"])
 
     def test_calibrate_aa_is_recomputed_from_runner_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:

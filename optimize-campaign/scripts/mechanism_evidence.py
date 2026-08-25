@@ -49,7 +49,7 @@ MIN_DISTINCT_SCORED_TOTALS_PER_BLOCK = 4
 MIN_REPETITIONS_PER_BLOCK = 4
 DEFAULT_REPETITIONS_PER_BLOCK = 10
 DEFAULT_MIN_AVOIDABLE_PCT = 0.3
-SUPPORTED_BENCHMARK = "speedometer3"
+SUPPORTED_BENCHMARKS = benchmark_adapters.available_benchmarks()
 ROW_COUNTER_FIELDS = (
     "calls",
     "applicable_calls",
@@ -394,10 +394,11 @@ def validate_capture_manifest(ref: dict, metadata: dict, index: int) -> dict:
     command = manifest.get("command")
     if not isinstance(command, list) or not all(isinstance(arg, str) for arg in command):
         raise EvidenceError(f"{path}: missing runner command")
+    adapter = mechanism_adapter(metadata.get("benchmark"))
     required_command_args = {
         "vpython3",
         "./third_party/crossbench/cb.py",
-        "speedometer_3.0",
+        adapter.crossbench_name,
         f"--stories={target_story}",
     }
     if not required_command_args.issubset(command):
@@ -593,7 +594,7 @@ def mechanism_adapter(benchmark) -> benchmark_adapters.BenchmarkAdapter:
         adapter = benchmark_adapters.get_adapter(benchmark)
     except ValueError as exc:
         raise EvidenceError(str(exc)) from exc
-    if adapter.benchmark_id != SUPPORTED_BENCHMARK:
+    if adapter.benchmark_id not in SUPPORTED_BENCHMARKS:
         raise EvidenceError(
             f"mechanism sizing is not operational for {adapter.benchmark_id}; "
             "its exact scored-window capture must be verified first"
@@ -1294,8 +1295,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
     command = [
         "vpython3",
         "./third_party/crossbench/cb.py",
-        "speedometer_3.0",
-        "--network=third_party/speedometer/v3.0",
+        *adapter.crossbench_args(getattr(args, "benchmark_source", None)),
         "--env-validation=warn",
         f"--browser={browser}",
         "--headless",
@@ -1320,7 +1320,9 @@ def cmd_capture(args: argparse.Namespace) -> None:
         raise EvidenceError(f"instrumented Crossbench failed with {completed.returncode}")
     if ensure_authoritative_index(root) != source_tree:
         raise EvidenceError("source tree changed during the capture")
-    browser_logs = sorted((out_dir / "cb").rglob("browser.*.log"))
+    browser_logs = sorted(
+        [p for p in (out_dir / "cb").rglob("*.log") if p.name.startswith("browser")]
+    )
     rows, suites, score_mark_count = parse_capture_logs(
         browser_logs, nonce, args.block, started_ns, finished_ns
     )
@@ -1331,7 +1333,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
             f"capture observed suites {suites}, expected exactly the target "
             f"story {target_story!r}"
         )
-    if score_mark_count < 2 * args.repetitions:
+    if score_mark_count < (args.repetitions if adapter.benchmark_id == "jetstream3" else 2 * args.repetitions):
         raise EvidenceError(
             f"capture observed only {score_mark_count} exact score boundary marks"
         )
@@ -1677,7 +1679,7 @@ def main(argv: list[str] | None = None) -> int:
     args = argument_parser.parse_args(argv)
     if (
         hasattr(args, "benchmark")
-        and args.benchmark != SUPPORTED_BENCHMARK
+        and args.benchmark not in SUPPORTED_BENCHMARKS
     ):
         argument_parser.error(
             f"mechanism sizing is not operational for {args.benchmark}; "
