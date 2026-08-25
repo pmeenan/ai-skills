@@ -1432,11 +1432,11 @@ def analyze_and_report(
             quality_issues.append(
                 "interval manifest is not exact-scored; outer suite windows are diagnostic only"
             )
-    min_samples = 500 if (args.story or getattr(args, "metric_weighting", "") == "jetstream-workload-score-v1") else 5000
+    min_samples = 500 if (getattr(args, "story", None) or getattr(args, "metric_weighting", "") == "jetstream-workload-score-v1") else 5000
     if len(samples) < min_samples:
         quality_issues.append(f"fewer than {min_samples} samples")
     nominal_floor_samples = len(samples) * args.min_marginal_share
-    min_nominal = 5 if (args.story or getattr(args, "metric_weighting", "") == "jetstream-workload-score-v1") else 100
+    min_nominal = 5 if (getattr(args, "story", None) or getattr(args, "metric_weighting", "") == "jetstream-workload-score-v1") else 100
     if nominal_floor_samples < min_nominal:
         quality_issues.append(
             f"fewer than {min_nominal} nominal samples at the marginal-share floor"
