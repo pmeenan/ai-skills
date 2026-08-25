@@ -264,6 +264,7 @@ def parse_mono_intervals(out_dir, cwd):
 
 
 JETSTREAM_STORIES = {
+    "8bitbench-wasm", "argon2-wasm", "babel-minify-wtb",
     "zlib-wasm", "WSL", "web-ssr", "validatorjs", "UniPoker", "typescript-octane",
     "typescript-lib", "tsf-wasm", "transformersjs-whisper-wasm", "transformersjs-bert-wasm",
     "threejs", "tfjs-wasm-simd", "tfjs-wasm", "sync-fs", "Sunspider", "stanford-crypto-sha256",
