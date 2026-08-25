@@ -467,10 +467,13 @@ def tree_frame_is_noise(frame: Frame) -> bool:
     )
 
 
-def projected_tree_frames(sample: Sample, area: str | None) -> list[tuple[str, str]]:
+@functools.lru_cache(maxsize=16384)
+def projected_tree_frames_cached(
+    frames: tuple[Frame, ...], area: str | None
+) -> tuple[tuple[str, str], ...]:
     start_index = 0
     if area is not None:
-        recognized = [tree_area(frame) for frame in sample.frames]
+        recognized = [tree_area(frame) for frame in frames]
         owner_index = next(
             (
                 index
@@ -480,13 +483,13 @@ def projected_tree_frames(sample: Sample, area: str | None) -> list[tuple[str, s
             None,
         )
         if owner_index is None or recognized[owner_index] != area:
-            return []
+            return ()
         for index in range(owner_index - 1, -1, -1):
             if recognized[index] is not None and recognized[index] != area:
                 start_index = index + 1
                 break
     projected = []
-    for frame in sample.frames[start_index:]:
+    for frame in frames[start_index:]:
         frame_area = tree_area(frame)
         if frame_area is None or (area is not None and frame_area != area):
             continue
@@ -495,7 +498,13 @@ def projected_tree_frames(sample: Sample, area: str | None) -> list[tuple[str, s
         item = (tree_symbol(frame.symbol), frame_area)
         if not projected or projected[-1] != item:
             projected.append(item)
-    return projected
+    return tuple(projected)
+
+
+def projected_tree_frames(
+    sample: Sample, area: str | None
+) -> tuple[tuple[str, str], ...]:
+    return projected_tree_frames_cached(sample.frames, area)
 
 
 def build_text_tree(samples: list[Sample], area: str | None = None) -> TreeNode:
