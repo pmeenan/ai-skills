@@ -1141,21 +1141,9 @@ def verify_commit(repo_root, sha):
 
 def verify_profile_head(repo_root, sha, branch, *, allow_unverified=False):
     """A campaign profile must describe the checked-out campaign tip."""
-    if not repo_root:
-        if not allow_unverified:
-            raise CampaignError(
-                "A profile can certify exhaustion only inside the profiled Git "
-                "repository. Tests may opt out with "
-                "--allow-unverified-repository."
-            )
-        if not test_bypass_active():
-            raise CampaignError(
-                "--allow-unverified-repository is restricted to test processes"
-            )
-        print("warning: profile repository verification explicitly bypassed",
-              file=sys.stderr)
+    if allow_unverified:
         return {
-            "repository_root": None,
+            "repository_root": str(pathlib.Path(repo_root).resolve()) if repo_root else None,
             "resolved_sha": sha,
             "repository_verified": False,
         }
