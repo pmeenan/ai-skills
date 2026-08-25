@@ -14,6 +14,7 @@ import argparse
 import bisect
 import collections
 import dataclasses
+import functools
 import hashlib
 import json
 import pathlib
