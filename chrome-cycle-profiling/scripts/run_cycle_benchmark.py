@@ -267,6 +267,13 @@ def parse_jetstream_mono_intervals(out_dir, cwd):
     intervals = []
     outer_intervals = []
 
+    IGNORED_MARKS = {
+        "update-ui", "update-ui-start", "update-ui-end",
+        "theme-set", "theme-set-start", "theme-set-end",
+        "app-creation-start", "app-creation-end",
+        "sp3-measurement-start", "sp3-measurement-end",
+    }
+
     for root, dirs, files in os.walk(os.path.join(cwd, out_dir)):
         for log_file in ("browser.chromium.log", "browser.log"):
             if log_file in files:
@@ -283,21 +290,37 @@ def parse_jetstream_mono_intervals(out_dir, cwd):
 
                 marks.sort(key=lambda item: item[1])
                 rel_log = os.path.relpath(log_file_path, cwd)
-                for i in range(len(marks) - 1):
+                for i in range(len(marks)):
                     name, start_sec = marks[i]
-                    next_name, end_sec = marks[i + 1]
-                    if name in ("update-ui", "update-ui-start", "sp3-measurement-start", "sp3-measurement-end"):
-                        continue
-                    if end_sec > start_sec:
-                        intervals.append({
-                            "start_time_mono": start_sec,
-                            "end_time_mono": end_sec,
-                            "browser_log": log_file_path,
-                            "suite": name,
-                            "test": "run",
-                            "phase": "run",
-                            "group": f"{rel_log}|{name}",
-                        })
+                    if (
+                        name not in IGNORED_MARKS
+                        and not name.endswith("-end")
+                        and "-iteration-" not in name
+                    ):
+                        story_name = name
+                        end_sec = None
+                        for j in range(i + 1, len(marks)):
+                            next_name, next_ts = marks[j]
+                            if next_name == f"{story_name}-end" or next_name == "update-ui-start":
+                                end_sec = next_ts
+                                break
+                            if (
+                                next_name not in IGNORED_MARKS
+                                and not next_name.endswith("-end")
+                                and "-iteration-" not in next_name
+                            ):
+                                end_sec = next_ts
+                                break
+                        if end_sec is not None and end_sec > start_sec:
+                            intervals.append({
+                                "start_time_mono": start_sec,
+                                "end_time_mono": end_sec,
+                                "browser_log": log_file_path,
+                                "suite": story_name,
+                                "test": "run",
+                                "phase": "run",
+                                "group": f"{rel_log}|{story_name}",
+                            })
                 if marks and len(marks) >= 2:
                     outer_intervals.append({
                         "start_time_mono": marks[0][1],
