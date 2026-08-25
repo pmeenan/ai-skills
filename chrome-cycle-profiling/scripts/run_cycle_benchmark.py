@@ -640,6 +640,7 @@ def main():
             str(args.min_marginal_share),
             "--min-share",
             str(args.min_share),
+            "--no-inline",
         ]
         if run_analyzer(full_command, cwd) == ANALYSIS_REJECTED_EXIT_CODE:
             rejected_analyses.append("full process tree or story silo")
@@ -672,6 +673,7 @@ def main():
                 str(args.min_marginal_share),
                 "--min-share",
                 str(args.min_share),
+                "--no-inline",
             ]
             if run_analyzer(renderer_command, cwd) == ANALYSIS_REJECTED_EXIT_CODE:
                 rejected_analyses.append("renderer")
