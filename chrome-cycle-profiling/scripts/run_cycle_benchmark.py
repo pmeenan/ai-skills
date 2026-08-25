@@ -263,16 +263,31 @@ def parse_mono_intervals(out_dir, cwd):
     )
 
 
+JETSTREAM_STORIES = {
+    "zlib-wasm", "WSL", "web-ssr", "validatorjs", "UniPoker", "typescript-octane",
+    "typescript-lib", "tsf-wasm", "transformersjs-whisper-wasm", "transformersjs-bert-wasm",
+    "threejs", "tfjs-wasm-simd", "tfjs-wasm", "sync-fs", "Sunspider", "stanford-crypto-sha256",
+    "stanford-crypto-pbkdf2", "stanford-crypto-aes", "sqlite3-wasm", "splay", "source-map-wtb",
+    "segmentation", "richards-wasm", "richards", "regexp-octane", "raytrace-public-class-fields",
+    "raytrace-private-class-fields", "raytrace", "quicksort-wasm", "proxy-vue", "proxy-mobx",
+    "prismjs-startup-es6", "prismjs-startup-es5", "prettier-wtb", "postcss-wtb", "pdfjs",
+    "OfflineAssembler", "octane-code-load", "navier-stokes", "multi-inspector-code-load",
+    "mobx-startup", "ML", "mandreel", "lebab-wtb", "lazy-collections", "Kotlin-compose-wasm",
+    "json-stringify-inspector", "json-parse-inspector", "jsdom-d3-startup", "js-tokens",
+    "j2cl-box2d-wasm", "intl", "HashSet-wasm", "hash-map", "gcc-loops-wasm", "gbemu",
+    "gaussian-blur", "FlightPlanner", "first-inspector-code-load", "esprima-next-wtb",
+    "espree-wtb", "earley-boyer", "doxbee-promise", "doxbee-async", "dotnet-interp-wasm",
+    "dotnet-aot-wasm", "delta-blue", "Dart-flute-todomvc-wasm", "Dart-flute-complex-wasm",
+    "crypto", "chai-wtb", "cdjs", "Box2D", "bomb-workers", "bigint-paillier",
+    "bigint-noble-secp256k1", "bigint-noble-ed25519", "bigint-noble-bls12-381", "bigint-bigdenary",
+    "Basic", "babylonjs-startup-es6", "babylonjs-startup-es5", "babylonjs-scene-es6",
+    "babylonjs-scene-es5", "babylon-wtb", "Babylon", "babel-wtb", "async-fs", "Air", "ai-astar", "acorn-wtb"
+}
+
+
 def parse_jetstream_mono_intervals(out_dir, cwd):
     intervals = []
     outer_intervals = []
-
-    IGNORED_MARKS = {
-        "update-ui", "update-ui-start", "update-ui-end",
-        "theme-set", "theme-set-start", "theme-set-end",
-        "app-creation-start", "app-creation-end",
-        "sp3-measurement-start", "sp3-measurement-end",
-    }
 
     for root, dirs, files in os.walk(os.path.join(cwd, out_dir)):
         for log_file in ("browser.chromium.log", "browser.log"):
@@ -292,23 +307,12 @@ def parse_jetstream_mono_intervals(out_dir, cwd):
                 rel_log = os.path.relpath(log_file_path, cwd)
                 for i in range(len(marks)):
                     name, start_sec = marks[i]
-                    if (
-                        name not in IGNORED_MARKS
-                        and not name.endswith("-end")
-                        and "-iteration-" not in name
-                    ):
+                    if name in JETSTREAM_STORIES:
                         story_name = name
                         end_sec = None
                         for j in range(i + 1, len(marks)):
                             next_name, next_ts = marks[j]
-                            if next_name == f"{story_name}-end" or next_name == "update-ui-start":
-                                end_sec = next_ts
-                                break
-                            if (
-                                next_name not in IGNORED_MARKS
-                                and not next_name.endswith("-end")
-                                and "-iteration-" not in next_name
-                            ):
+                            if next_name == f"{story_name}-end" or next_name == "update-ui-start" or next_name in JETSTREAM_STORIES:
                                 end_sec = next_ts
                                 break
                         if end_sec is not None and end_sec > start_sec:
@@ -321,10 +325,10 @@ def parse_jetstream_mono_intervals(out_dir, cwd):
                                 "phase": "run",
                                 "group": f"{rel_log}|{story_name}",
                             })
-                if marks and len(marks) >= 2:
+                if intervals:
                     outer_intervals.append({
-                        "start_time_mono": marks[0][1],
-                        "end_time_mono": marks[-1][1],
+                        "start_time_mono": intervals[0]["start_time_mono"],
+                        "end_time_mono": intervals[-1]["end_time_mono"],
                         "browser_log": log_file_path,
                     })
 
