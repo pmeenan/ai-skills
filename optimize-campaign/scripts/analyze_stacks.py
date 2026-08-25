@@ -660,6 +660,7 @@ def write_text_trees(
     path.write_text("\n".join(lines) + "\n")
 
 
+@functools.lru_cache(maxsize=32768)
 def class_area(symbol: str) -> str | None:
     parts = split_qualified(function_head(symbol))
     if len(parts) < 3:
@@ -673,17 +674,20 @@ def add_weighted(counter: collections.Counter[str], key: str, weight: int) -> No
 
 
 def addressable_start(
-    sample: Sample, include: re.Pattern[str] = DEFAULT_INCLUDE
+    sample: Sample,
+    include: re.Pattern[str] = DEFAULT_INCLUDE,
+    is_inc_fn: collections.abc.Callable[[str], bool] | None = None,
 ) -> int | None:
     owner_is_chromium = False
     last_engine_boundary = -1
     for index, frame in enumerate(sample.frames):
         if frame.kernel:
             continue
-        if OUT_OF_SCOPE_OWNER.search(frame.symbol):
+        sym = frame.symbol
+        if OUT_OF_SCOPE_OWNER.search(sym):
             owner_is_chromium = False
             last_engine_boundary = index
-        elif include.search(frame.symbol):
+        elif is_inc_fn(sym) if is_inc_fn else include.search(sym):
             owner_is_chromium = True
     return last_engine_boundary + 1 if owner_is_chromium else None
 
@@ -709,6 +713,15 @@ def aggregate_samples(
     context_ids: dict[tuple[int, str], int] = {}
     next_context_id = 1
 
+    include_cache: dict[str, bool] = {}
+
+    def is_included(sym: str) -> bool:
+        res = include_cache.get(sym)
+        if res is None:
+            res = bool(include.search(sym))
+            include_cache[sym] = res
+        return res
+
     def get(
         kind: str,
         name: str,
@@ -720,7 +733,7 @@ def aggregate_samples(
         )
 
     for sample_id, sample in enumerate(samples):
-        start_depth = addressable_start(sample, include)
+        start_depth = addressable_start(sample, include, is_inc_fn=is_included)
         seen_functions: set[str] = set()
         seen_areas: set[str] = set()
         parent_context_id = 0
@@ -728,6 +741,7 @@ def aggregate_samples(
         for depth in range(len(sample.frames)):
             frame = sample.frames[depth]
             symbol = frame.symbol
+            sym_included = is_included(symbol)
             caller = sample.frames[depth - 1].symbol if depth else "[root]"
             callee = (
                 sample.frames[depth + 1].symbol
@@ -741,7 +755,7 @@ def aggregate_samples(
                 next_context_id += 1
                 context_ids[context_identity] = context_id
             context_path = context_path + (symbol,)
-            if include.search(symbol):
+            if sym_included:
                 context = get("context", symbol, context_id, path=context_path)
                 context.sample_mask.add(sample_id)
                 context.inclusive_weight += sample.weight
@@ -754,7 +768,7 @@ def aggregate_samples(
                 add_weighted(context.callees, callee, sample.weight)
                 add_weighted(context.groups, sample.group, sample.weight)
             parent_context_id = context_id
-            if include.search(symbol) and symbol not in seen_functions:
+            if sym_included and symbol not in seen_functions:
                 agg = get("function", symbol)
                 agg.sample_mask.add(sample_id)
                 agg.inclusive_weight += sample.weight
@@ -767,11 +781,11 @@ def aggregate_samples(
             if (
                 start_depth is not None
                 and depth >= start_depth
-                and include.search(symbol)
+                and sym_included
             ):
                 get("function", symbol).owner_exclusive_mask.add(sample_id)
                 get("function", symbol).owner_exclusive_weight += sample.weight
-            area = class_area(symbol) if include.search(symbol) else None
+            area = class_area(symbol) if sym_included else None
             if area and area not in seen_areas:
                 agg = get("class", area)
                 agg.sample_mask.add(sample_id)
@@ -785,7 +799,7 @@ def aggregate_samples(
             if area and start_depth is not None and depth >= start_depth:
                 get("class", area).owner_exclusive_mask.add(sample_id)
                 get("class", area).owner_exclusive_weight += sample.weight
-        if sample.frames and include.search(sample.frames[-1].symbol):
+        if sample.frames and is_included(sample.frames[-1].symbol):
             f_agg = get("function", sample.frames[-1].symbol)
             f_agg.self_mask.add(sample_id)
             f_agg.self_weight += sample.weight
