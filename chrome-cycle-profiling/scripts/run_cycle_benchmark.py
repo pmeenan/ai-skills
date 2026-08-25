@@ -268,48 +268,92 @@ def parse_jetstream_mono_intervals(out_dir, cwd):
     outer_intervals = []
 
     for root, dirs, files in os.walk(os.path.join(cwd, out_dir)):
-        if "performance.entries.json" in files:
-            entry_path = os.path.join(root, "performance.entries.json")
-            try:
-                with open(entry_path, "r") as f:
-                    data = json.load(f)
-            except Exception:
-                continue
+        for log_file in ("browser.chromium.log", "browser.log"):
+            if log_file in files:
+                log_file_path = os.path.join(root, log_file)
+                marks = []
+                with open(log_file_path, "r", errors="replace") as f:
+                    for line in f:
+                        m = re.search(r"\[SP3_SCORE_TIME\]\s+(.+?):\s*([\d.]+)", line)
+                        if m:
+                            name, timestamp = m.group(1), float(m.group(2))
+                            marks.append((name, timestamp))
+                if not marks:
+                    continue
 
-            story = None
-            parts = pathlib.Path(entry_path).parts
-            if "stories" in parts:
-                idx = parts.index("stories")
-                if idx + 1 < len(parts):
-                    story = parts[idx + 1]
+                marks.sort(key=lambda item: item[1])
+                rel_log = os.path.relpath(log_file_path, cwd)
+                for i in range(len(marks) - 1):
+                    name, start_sec = marks[i]
+                    next_name, end_sec = marks[i + 1]
+                    if name in ("update-ui", "update-ui-start", "sp3-measurement-start", "sp3-measurement-end"):
+                        continue
+                    if end_sec > start_sec:
+                        intervals.append({
+                            "start_time_mono": start_sec,
+                            "end_time_mono": end_sec,
+                            "browser_log": log_file_path,
+                            "suite": name,
+                            "test": "run",
+                            "phase": "run",
+                            "group": f"{rel_log}|{name}",
+                        })
+                if marks and len(marks) >= 2:
+                    outer_intervals.append({
+                        "start_time_mono": marks[0][1],
+                        "end_time_mono": marks[-1][1],
+                        "browser_log": log_file_path,
+                    })
 
-            start_time = None
-            end_time = None
+    if not intervals:
+        for root, dirs, files in os.walk(os.path.join(cwd, out_dir)):
+            if "performance.entries.json" in files:
+                entry_path = os.path.join(root, "performance.entries.json")
+                try:
+                    with open(entry_path, "r") as f:
+                        data = json.load(f)
+                except Exception:
+                    continue
 
-            for key, val in data.items():
-                if isinstance(val, list) and len(val) > 0:
-                    val_time = float(val[0])
-                    if story and key.startswith(f"mark/{story}") and key.endswith("/startTime"):
-                        start_time = val_time
-                    elif key.startswith("mark/update-ui") and key.endswith("/startTime"):
-                        end_time = val_time
+                marks = []
+                for key, val in data.items():
+                    if (
+                        key.startswith("mark/")
+                        and key.endswith("/startTime")
+                        and isinstance(val, list)
+                        and len(val) > 0
+                    ):
+                        mark_name = key[len("mark/") : -len("/startTime")]
+                        val_time = float(val[0])
+                        marks.append((mark_name, val_time))
+                marks.sort(key=lambda item: item[1])
 
-            if start_time is not None and end_time is not None and end_time > start_time:
                 rel_log = os.path.relpath(entry_path, cwd)
-                intervals.append({
-                    "start_time_mono": start_time / 1000.0,
-                    "end_time_mono": end_time / 1000.0,
-                    "browser_log": entry_path,
-                    "suite": story or "jetstream",
-                    "test": "run",
-                    "phase": "run",
-                    "group": f"{rel_log}|{story}",
-                })
-                outer_intervals.append({
-                    "start_time_mono": start_time / 1000.0,
-                    "end_time_mono": end_time / 1000.0,
-                    "browser_log": entry_path,
-                })
+                for i in range(len(marks) - 1):
+                    name, start_ms = marks[i]
+                    next_name, end_ms = marks[i + 1]
+                    if name in ("update-ui", "update-ui-start"):
+                        continue
+                    if end_ms > start_ms:
+                        start_sec = start_ms / 1000.0
+                        end_sec = end_ms / 1000.0
+                        intervals.append({
+                            "start_time_mono": start_sec,
+                            "end_time_mono": end_sec,
+                            "browser_log": entry_path,
+                            "suite": name,
+                            "test": "run",
+                            "phase": "run",
+                            "group": f"{rel_log}|{name}",
+                        })
+
+                if marks and len(marks) >= 2:
+                    outer_intervals.append({
+                        "start_time_mono": marks[0][1] / 1000.0,
+                        "end_time_mono": marks[-1][1] / 1000.0,
+                        "browser_log": entry_path,
+                    })
+
     return (
         sorted(intervals, key=lambda interval: interval["start_time_mono"]),
         sorted(outer_intervals, key=lambda interval: interval["start_time_mono"]),
@@ -536,7 +580,7 @@ def main():
     )
 
     if not intervals:
-        raise RuntimeError("No matched Speedometer measurement intervals were captured")
+        raise RuntimeError("No matched benchmark measurement intervals were captured")
     if missing_roles:
         raise RuntimeError(
             "Missing required Chrome process roles: " + ", ".join(missing_roles)

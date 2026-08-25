@@ -1424,12 +1424,12 @@ def load_capture_summaries(
         strict_evidence = not test_bypass_active()
         if strict_evidence and summary.get("interval_kind") != "exact-scored":
             raise CampaignError(
-                f"Capture {capture_id} is not scoped to exact Speedometer score timers"
+                f"Capture {capture_id} is not scoped to exact score timers"
             )
-        if strict_evidence and summary.get("metric_weighting") != "speedometer-story-v1":
+        if strict_evidence and summary.get("metric_weighting") != metric_model:
             raise CampaignError(
                 f"Capture {capture_id} is not a per-story silo decomposition "
-                "(metric_weighting speedometer-story-v1)"
+                f"(metric_weighting {metric_model})"
             )
         if strict_evidence:
             nominal = require_finite_number(
@@ -1502,10 +1502,12 @@ def load_capture_summaries(
             )
         if len(set(story_names)) != len(story_names):
             raise CampaignError(f"Capture {capture_id} repeats a story silo")
-        if strict_evidence and len(story_names) != 32:
+        adapter = benchmark_adapters.get_adapter(benchmark)
+        expected_workloads = adapter.expected_workload_count("all")
+        if strict_evidence and expected_workloads is not None and len(story_names) != expected_workloads:
             raise CampaignError(
                 f"Capture {capture_id} decomposed only {len(story_names)} "
-                "story silos; a full-suite profile must analyze all 32"
+                f"story silos; a full-suite profile must analyze all {expected_workloads}"
             )
         expected_floor = floor_pct / 100.0
         for field in (

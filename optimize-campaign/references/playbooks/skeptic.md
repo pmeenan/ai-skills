@@ -18,6 +18,8 @@ counter logs, raw baseline/candidate files, and derived artifacts. Verify:
 - `applicability_measured`: calls and applicable calls were counted;
 - `sampling_ceiling_checked`: baseline exclusive share does not exceed the
   parent symbol's sample share in the release `perf record` sampling profile;
+- `subtree_pruning_verified`: the staged diff actually eliminates the claimed child call chains (`subtree_pruned`) via short-circuiting, caching, or algorithmic hoisting, rather than merely modifying a wrapper before still executing the full child tree;
+- `in_situ_cycle_reduction_verified`: a machine-generated `mechanism_evidence.py compare` (or targeted single-story cycle diff) proves statistically significant scored-cycle reduction on the target story before advancing to review or macro A/B runs;
 - `probe_symmetry_verified`: baseline and candidate probe placement and call
   counts are 100% structurally symmetric (probes are not conditionally bypassed);
 - `net_work_removed`: paired lower confidence bounds are positive;

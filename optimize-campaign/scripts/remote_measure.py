@@ -906,11 +906,15 @@ def main(argv=None):
     args.benchmark_source = (
         args.benchmark_source
         or (
-            ledger_source
-            if cli_benchmark is None or ledger_benchmark == args.benchmark
-            else None
+            adapter.profile_source
+            if args.mode == "profile"
+            else (
+                ledger_source
+                if cli_benchmark is None or ledger_benchmark == args.benchmark
+                else None
+            )
+            or adapter.score_sources[0]
         )
-        or adapter.score_sources[0]
     )
     if args.stories is None:
         args.stories = adapter.default_workload_selector
@@ -954,11 +958,6 @@ def main(argv=None):
         )
     if args.characterization and args.execution != "local":
         parser.error("--characterization is intentionally local-only")
-    if args.mode == "profile" and args.benchmark == "jetstream3":
-        parser.error(
-            "JetStream exact-window profile import is not enabled yet; use "
-            "score characterization or Crossbench's custom-fork trace probes"
-        )
 
     root = repo_root()
     if args.mode == "profile" and args.share_floor_pct is None:

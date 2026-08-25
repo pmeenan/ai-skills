@@ -33,8 +33,8 @@ Keep these questions and artifacts separate:
 
 | Question | Authoritative evidence | Never substitute |
 | --- | --- | --- |
-| Where is CPU opportunity? | adapter-qualified exact scored-window workload profiles | flat self-time, whole-page time, or outer-suite samples |
-| Did one mechanism remove work? | paired baseline/oracle/candidate counters inside the same scored scope | profile share, source inspection, or an estimate |
+| Where is CPU opportunity? | adapter-qualified exact scored-window workload profiles (ranked by inclusive ceiling) | flat self-time, whole-page time, or outer-suite samples |
+| Did one mechanism remove work? | paired baseline/oracle/candidate counters inside the same scored scope (`mechanism_evidence.py compare`) | profile share, source inspection, or an estimate |
 | Did landed work move its targets? | randomized A/B over the preregistered target workload set | summed mechanism ceilings or a post-hoc subset |
 | Did the campaign improve overall? | randomized default-suite block A/B | targeted deltas or diagnostic components |
 
@@ -44,11 +44,14 @@ Keep these questions and artifacts separate:
    payload provenance, build role, source tree, and skill-tree digest.
 2. Admit profile evidence only when the selected adapter defines and verifies
    its `exact-scored` interval. An outer suite or page interval is diagnostic.
-3. Sampling profiles discover areas; they never size a mechanism or predict
-   benchmark movement.
-4. Advance to `sized` only with a passing artifact emitted by
-   `mechanism_evidence.py`. Advance to review only with a passing paired
-   candidate artifact from the same tool.
+3. Sampling profiles discover areas and provide inclusive opportunity ceilings;
+   they never size a mechanism or predict benchmark movement. Sized impact must
+   reflect the specific child call chains actually pruned by the proposed
+   mechanism (`subtree_pruned`).
+4. **Mandatory In-Situ Cycle Verification (Gate 3):** Advance to `sized` only with
+   a passing artifact emitted by `mechanism_evidence.py`. Advance to review only
+   with a passing paired candidate reduction artifact from the same tool. Never
+   bypass Gate 3 or bundle unmeasured candidates into a macro A/B suite run.
 5. Implement one invariant per opportunity. Do not bundle unrelated fast
    paths, adjacent cleanup, or several speculative squeezes.
 6. Bind PASS reviews to the reviewed Git tree and exact evidence digests.

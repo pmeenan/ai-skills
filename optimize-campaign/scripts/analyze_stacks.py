@@ -126,6 +126,9 @@ class Aggregate:
     sample_mask: int = 0
     owner_exclusive_mask: int = 0
     self_mask: int = 0
+    inclusive_weight: int = 0
+    owner_exclusive_weight: int = 0
+    self_weight: int = 0
     callers: collections.Counter[str] = dataclasses.field(
         default_factory=collections.Counter
     )
@@ -741,8 +744,10 @@ def aggregate_samples(
             if include.search(symbol):
                 context = get("context", symbol, context_id, path=context_path)
                 context.sample_mask |= 1 << sample_id
+                context.inclusive_weight += sample.weight
                 if start_depth is not None and depth >= start_depth:
                     context.owner_exclusive_mask |= 1 << sample_id
+                    context.owner_exclusive_weight += sample.weight
                 context.depth_sum += depth
                 context.occurrences += 1
                 add_weighted(context.callers, caller, sample.weight)
@@ -752,6 +757,7 @@ def aggregate_samples(
             if include.search(symbol) and symbol not in seen_functions:
                 agg = get("function", symbol)
                 agg.sample_mask |= 1 << sample_id
+                agg.inclusive_weight += sample.weight
                 agg.depth_sum += depth
                 agg.occurrences += 1
                 add_weighted(agg.callers, caller, sample.weight)
@@ -764,10 +770,12 @@ def aggregate_samples(
                 and include.search(symbol)
             ):
                 get("function", symbol).owner_exclusive_mask |= 1 << sample_id
+                get("function", symbol).owner_exclusive_weight += sample.weight
             area = class_area(symbol) if include.search(symbol) else None
             if area and area not in seen_areas:
                 agg = get("class", area)
                 agg.sample_mask |= 1 << sample_id
+                agg.inclusive_weight += sample.weight
                 agg.depth_sum += depth
                 agg.occurrences += 1
                 add_weighted(agg.callers, caller, sample.weight)
@@ -776,24 +784,33 @@ def aggregate_samples(
                 seen_areas.add(area)
             if area and start_depth is not None and depth >= start_depth:
                 get("class", area).owner_exclusive_mask |= 1 << sample_id
+                get("class", area).owner_exclusive_weight += sample.weight
         if sample.frames and include.search(sample.frames[-1].symbol):
-            get("function", sample.frames[-1].symbol).self_mask |= 1 << sample_id
-            get(
+            f_agg = get("function", sample.frames[-1].symbol)
+            f_agg.self_mask |= 1 << sample_id
+            f_agg.self_weight += sample.weight
+            c_agg = get(
                 "context",
                 sample.frames[-1].symbol,
                 parent_context_id,
                 path=context_path,
-            ).self_mask |= (
-                1 << sample_id
             )
+            c_agg.self_mask |= 1 << sample_id
+            c_agg.self_weight += sample.weight
     return aggregates
 
 
 def weight_of(sample_mask: int, samples: list[Sample]) -> int:
+    if not sample_mask or not samples:
+        return 0
+    w0 = samples[0].weight
+    # Fast path for uniform weight samples (covers 99.9% of cycle profiles)
+    if all(s.weight == w0 for s in samples):
+        return sample_mask.bit_count() * int(w0)
     weight = 0
     while sample_mask:
         lowest_bit = sample_mask & -sample_mask
-        weight += samples[lowest_bit.bit_length() - 1].weight
+        weight += int(samples[lowest_bit.bit_length() - 1].weight)
         sample_mask ^= lowest_bit
     return weight
 
@@ -821,11 +838,15 @@ def make_candidate(
     group_totals: collections.Counter[str],
     uncovered: int,
 ) -> dict:
-    inclusive = weight_of(agg.sample_mask, samples)
-    owner_exclusive = weight_of(agg.owner_exclusive_mask, samples)
-    self_weight = weight_of(agg.self_mask, samples)
+    inclusive = agg.inclusive_weight
+    owner_exclusive = agg.owner_exclusive_weight
+    self_weight = agg.self_weight
     marginal_mask = agg.sample_mask & uncovered
-    marginal = weight_of(marginal_mask, samples)
+    marginal = (
+        inclusive
+        if (marginal_mask == agg.sample_mask)
+        else weight_of(marginal_mask, samples)
+    )
     max_caller = max(agg.callers.values(), default=inclusive)
     caller_diversity = 1.0 - (max_caller / inclusive if inclusive else 1.0)
     group_shares = [
@@ -920,8 +941,12 @@ def add_related_hotspots(
             overlap_mask = candidate_mask & agg.sample_mask
             if not overlap_mask:
                 continue
-            overlap_weight = weight_of(overlap_mask, samples)
-            hotspot_weight = weight_of(agg.sample_mask, samples)
+            hotspot_weight = agg.inclusive_weight
+            overlap_weight = (
+                agg.inclusive_weight
+                if overlap_mask == agg.sample_mask
+                else weight_of(overlap_mask, samples)
+            )
             contained_fraction = overlap_weight / hotspot_weight
             if contained_fraction < 0.5:
                 continue
@@ -1013,7 +1038,12 @@ def build_frontier(
     # entry that still holds floor-worthy uncovered samples must be selected,
     # or it would end up an alternative overlapping no frontier entry.
     def marginal_entry(agg, base):
-        marginal_weight = weight_of(agg.sample_mask & uncovered, samples)
+        marginal_mask = agg.sample_mask & uncovered
+        marginal_weight = (
+            agg.inclusive_weight
+            if marginal_mask == agg.sample_mask
+            else weight_of(marginal_mask, samples)
+        )
         candidate = dict(base)
         candidate["marginal_weight"] = marginal_weight
         candidate["marginal_share"] = marginal_weight / total_weight
@@ -1068,8 +1098,13 @@ def build_frontier(
         candidate = make_candidate(agg, samples, total_weight, group_totals, uncovered)
         overlaps = []
         for frontier_candidate in frontier:
-            overlap_weight = weight_of(
-                agg.sample_mask & frontier_candidate["sample_mask"], samples
+            overlap_mask = agg.sample_mask & frontier_candidate["sample_mask"]
+            if not overlap_mask:
+                continue
+            overlap_weight = (
+                agg.inclusive_weight
+                if overlap_mask == agg.sample_mask
+                else weight_of(overlap_mask, samples)
             )
             if not overlap_weight:
                 continue

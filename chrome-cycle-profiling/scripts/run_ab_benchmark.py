@@ -365,6 +365,8 @@ def run_single_rep(browser, out_dir, stories, flag_option, state_str, rep_index,
         cmd.append(f"--iteration-count={int(iteration_count)}")
     if worst_case_count is not None:
         cmd.append(f"--worst-case-count={int(worst_case_count)}")
+    if adapter.benchmark_id == "jetstream3":
+        cmd.append("--timeout-scale=3")
     if flag_option:
         cmd.append(flag_option)
 
