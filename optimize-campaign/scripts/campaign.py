@@ -1464,9 +1464,11 @@ def load_capture_summaries(
             )
         if feature not in actual_features:
             raise CampaignError(f"Capture {capture_id} did not enable {feature}")
-        if summary.get("stories") != "all":
+        adapter = benchmark_adapters.get_adapter(benchmark)
+        allowed_selectors = {adapter.default_workload_selector, "all"}
+        if summary.get("stories") not in allowed_selectors:
             raise CampaignError(
-                f"Capture {capture_id} is not a full-suite stories=all profile"
+                f"Capture {capture_id} is not a full-suite profile: stories={summary.get('stories')} not in {allowed_selectors}"
             )
         repetitions = summary.get("repetitions")
         if not isinstance(repetitions, int) or repetitions < 1:
@@ -1502,8 +1504,7 @@ def load_capture_summaries(
             )
         if len(set(story_names)) != len(story_names):
             raise CampaignError(f"Capture {capture_id} repeats a story silo")
-        adapter = benchmark_adapters.get_adapter(benchmark)
-        expected_workloads = adapter.expected_workload_count("all")
+        expected_workloads = adapter.expected_workload_count(summary.get("stories", "all"))
         if strict_evidence and expected_workloads is not None and len(story_names) != expected_workloads:
             raise CampaignError(
                 f"Capture {capture_id} decomposed only {len(story_names)} "
@@ -1577,7 +1578,11 @@ def load_capture_summaries(
                     raise CampaignError(
                         f"{label} build provenance disagrees with the capture"
                     )
-                if selection.get("metric_weighting") != "speedometer-story-v1":
+                if selection.get("metric_weighting") not in (
+                    "speedometer-story-v1",
+                    "jetstream-workload-score-v1",
+                    metric_model,
+                ):
                     raise CampaignError(
                         f"{label} analyzer is not story-silo weighted"
                     )

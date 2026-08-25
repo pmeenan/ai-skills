@@ -1443,7 +1443,7 @@ def analyze_and_report(
         quality_issues.append("more than 15% unknown user-space frames")
     if statistics.median(depths) < 3:
         quality_issues.append("median stack depth below 3")
-    if not args.expand_inline:
+    if not args.expand_inline and not getattr(args, "no_inline", False):
         quality_issues.append("inline expansion disabled; diagnostic output only")
     report = {
         "quality": {
