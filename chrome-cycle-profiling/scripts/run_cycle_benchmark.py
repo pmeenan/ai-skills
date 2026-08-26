@@ -144,17 +144,19 @@ def parse_mono_intervals(out_dir, cwd):
     outer_intervals = []
 
     for root, dirs, files in os.walk(os.path.join(cwd, out_dir)):
-        for file in files:
-            if file == "browser.stdout.log":
-                log_file_path = os.path.join(root, file)
+        for log_file in ("browser.chromium.log", "browser.stdout.log", "browser.log"):
+            if log_file in files:
+                log_file_path = os.path.join(root, log_file)
                 pending_start = None
                 score_starts = {}
-                with open(log_file_path, "r") as f:
+                found_any = False
+                with open(log_file_path, "r", errors="replace") as f:
                     for line in f:
                         score = re.search(
                             r"\[SP3_SCORE_TIME\]\s+(.+?):\s*([\d.]+)", line
                         )
                         if score:
+                            found_any = True
                             name, timestamp = score.group(1), float(score.group(2))
                             if name == "sp3-measurement-start":
                                 if pending_start is not None:
@@ -228,6 +230,7 @@ def parse_mono_intervals(out_dir, cwd):
                                             f"Unmatched measurement start in {log_file_path}"
                                         )
                                     pending_start = float(m.group(1))
+                                    found_any = True
                             elif "sp3-measurement-end" in line:
                                 m = re.search(r"sp3-measurement-end:\s*([\d\.]+)", line)
                                 if m:
@@ -248,6 +251,7 @@ def parse_mono_intervals(out_dir, cwd):
                                         }
                                     )
                                     pending_start = None
+                                    found_any = True
                 if pending_start is not None:
                     raise RuntimeError(
                         f"Unmatched measurement start in {log_file_path}"
@@ -257,6 +261,8 @@ def parse_mono_intervals(out_dir, cwd):
                         f"Unmatched score starts in {log_file_path}: "
                         + ", ".join(sorted(score_starts)[:3])
                     )
+                if found_any:
+                    break
     return (
         sorted(intervals, key=lambda interval: interval["start_time_mono"]),
         sorted(outer_intervals, key=lambda interval: interval["start_time_mono"]),
