@@ -280,6 +280,54 @@ Reprofile the enabled tip at the adapter's cadence and after repeated candidate
 verification misses or a checkpoint that moves contrary to expectation.
 Downstream sizing must use the residual profile, not a stale baseline.
 
+### 7. End-of-campaign reporting, ledger tracking, and upstream CL preparation
+
+When the campaign concludes (e.g., candidate quota reached, frontier exhausted,
+or target benchmark gain achieved):
+
+1. **Cumulative Full-Suite Sweep:**
+   Run an authoritative 32-block randomized A/B measurement sweep across all
+   benchmark workloads with all banked optimizations enabled vs. baseline HEAD.
+   Record the overall geometric score delta, 95% CI, MDE, $t$-statistic, and the
+   per-workload scorecard to verify zero stat-sig regressions.
+
+2. **Campaign Ledger Mapping:**
+   Maintain an explicit mapping in `OPTIMIZATION_LEDGER.md` (and `ledger.json`)
+   linking:
+   - **Optimization Number** (1..$N$)
+   - **Git Commit SHA** (on the campaign branch)
+   - **Internal Candidate Ref** (Batch & Candidate ID)
+   - **Target Subsystem & Source Files** (exact file paths and functions)
+   - **Target Workloads** (primary benchmark stories)
+   - **Measured Isolated Delta & $t$-statistic**
+   - **Upstream Landing Status** (e.g., Pending CL Series vs. Already Landed
+     Upstream in a recent commit / merged CL)
+   - **Optimization Mechanism Summary**
+   - **Discarded Candidates Log** with exact discard rationale and measured
+     regressions/invariants to prevent re-trying failed approaches.
+
+3. **Multi-Tab Campaign Dossier Generation:**
+   Store all reports **inside the campaign directory**
+   (`.agents/campaigns/<campaign-name>/reports/`), never in the skill directory:
+   - `00_OVERALL_CAMPAIGN_REPORT.md`: Executive overview, cumulative
+     benchmark scorecard, per-story scorecard, candidate mapping table,
+     discarded candidates log, and upstream CL landing strategy.
+   - Individual candidate dossiers (`01_...md`, `02_...md`, ...): Formatted
+     specifically for copy-pasting into separate tabs of a Google Document,
+     containing:
+     - Target subsystem, source files, and benchmark workloads
+     - Problem analysis and selection rationale (from profiles)
+     - Detailed C++ patch mechanics with code snippets
+     - Safety, invariants, and web specification compliance
+     - Measured isolated evidence, confidence intervals, and $t$-statistics
+
+4. **Upstream CL Grouping & Landing Strategy:**
+   Group the banked commits into cohesive, modular CL series by Blink
+   subsystem (e.g., Canvas 2D, DOM Core, CSSOM/Selectors, HTML/Events,
+   Layout Engine, Geometry/Navigation). Ensure each commit is cleanly rebased,
+   preserves isolated production invariants, and includes required metadata
+   tags (`TAG=agy` and `CONV=<conversation_id>`) at the bottom of the CL description.
+
 ## Stop rules
 
 Stop and report when any condition holds:
@@ -295,3 +343,4 @@ Stop and report when any condition holds:
 Never claim aggregate improvement when the confidence interval crosses zero.
 Report the point estimate, 95% CI, MDE, blocks, seed, SHAs, payload, workload
 inventory, and build provenance. Run `campaign.py audit` before a final claim.
+

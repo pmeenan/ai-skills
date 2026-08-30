@@ -1425,7 +1425,7 @@ def load_capture_summaries(
                 f"Capture {capture_id} nominal_samples_at_floor",
                 nonnegative=True,
             )
-            min_nominal = 5 if benchmark == "jetstream3" else 100
+            min_nominal = 5 if benchmark in ("jetstream3", "speedometer3") else 100
             if nominal < min_nominal:
                 raise CampaignError(
                     f"Capture {capture_id} has a story with only {nominal:.1f} "
@@ -1554,7 +1554,7 @@ def load_capture_summaries(
                     f"{label} nominal_samples_at_floor",
                     nonnegative=True,
                 )
-                min_nominal = 5 if benchmark == "jetstream3" else 100
+                min_nominal = 5 if benchmark in ("jetstream3", "speedometer3") else 100
                 if story_nominal < min_nominal:
                     raise CampaignError(
                         f"{label} has only {story_nominal:.1f} nominal samples "

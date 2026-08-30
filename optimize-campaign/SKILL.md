@@ -108,6 +108,19 @@ Read `references/adapter-contract.md`. Extend the adapter registry and tests,
 then update only the benchmark trigger/reference. Keep Chromium as the fixed
 platform until a real non-Chromium consumer forces a platform abstraction.
 
+### End-of-campaign reporting and upstream CL preparation
+
+When concluding a campaign:
+1. Run an authoritative 32-block full-suite randomized A/B measurement sweep.
+2. Generate multi-tab markdown dossiers (`00_OVERALL_CAMPAIGN_REPORT.md` and
+   individual optimization write-ups `01_...md` through `NN_...md`) inside the
+   active campaign directory (`.agents/campaigns/<campaign-name>/reports/`).
+3. Maintain full candidate mapping in `OPTIMIZATION_LEDGER.md` (Opt # -> Git SHA ->
+   Candidate Ref -> Subsystem -> Workloads -> Measured Delta -> Upstream Status).
+4. Organize banked commits into modular, independent Chromium CL series by
+   subsystem, tagged with `TAG=agy` and `CONV=<conversation_id>`.
+
+
 ## Non-negotiable invariants
 
 - One reviewed skill-tree digest covers the core, benchmark triggers,
