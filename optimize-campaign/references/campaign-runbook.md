@@ -171,10 +171,23 @@ visible until a follow-on profile proves its residual state.
 
 ### 2. Decompose and qualify an opportunity
 
-Have the investigator analyze the workload-local profile and source, enumerate
-concrete paths using `decomposition.md`, and propose one testable invariant per
-novel mechanism. Have the adversary challenge profile grounding, semantics,
-lifecycle safety, and avoidable-work reasoning.
+Have the investigator analyze the workload-local profile and source:
+1. **First-Principles Top-Down Discovery:** Decompose high-inclusive call trees
+   to locate unharvested bottlenecks. Use `references/optimization-patterns.md`
+   as an "also explore" inspiration reference without letting it narrow the
+   investigation scope.
+2. **Checkout Freshness & Durable Ledger Pre-Check:** Ensure the checkout is
+   up-to-date with `origin/main`. Inspect the persistent campaign ledger
+   (`OPTIMIZATION_LEDGER.md`) for prior attempts in the area.
+3. **No Premature Path Closing:** If a prior attempt in an area failed or was
+   discarded, do not close off the whole subsystem or function. Read the exact
+   failure rationale (e.g., specific micro-check, branch overhead, or spec corner
+   case); if a fundamentally different mechanism addresses the inclusive
+   hotspot, continue exploring it.
+
+Enumerate concrete paths using `decomposition.md`, and propose one testable
+invariant per novel mechanism. Have the adversary challenge profile grounding,
+semantics, lifecycle safety, and avoidable-work reasoning.
 
 ```bash
 python3 .agents/skills/optimize-campaign/scripts/campaign.py advance \
