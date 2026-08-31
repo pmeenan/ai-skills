@@ -303,7 +303,7 @@ def build_and_run_script(args, sha, sha_b=None, expected_digest=None):
                 f"  cp out/release/args.gn {out_dir}/",
                 f"  gn gen {out_dir}",
                 "fi",
-                f"autoninja -C {out_dir} chrome",
+                f"autoninja -C {out_dir} chrome chromedriver",
             ]
         lines.append(
             f"vpython3 {bench} --browser-a=out/release_a/chrome "
@@ -315,7 +315,7 @@ def build_and_run_script(args, sha, sha_b=None, expected_digest=None):
         out_dir = "out/perf" if args.mode == "profile" else "out/release"
         lines += [
             f"git checkout --quiet --detach {q(sha)}",
-            f"autoninja -C {out_dir} chrome",
+            f"autoninja -C {out_dir} chrome chromedriver",
         ]
         if args.mode == "aa":
             lines.append(
