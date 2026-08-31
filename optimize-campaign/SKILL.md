@@ -115,8 +115,8 @@ When concluding a campaign:
 2. Generate multi-tab markdown dossiers (`00_OVERALL_CAMPAIGN_REPORT.md` and
    individual optimization write-ups `01_...md` through `NN_...md`) inside the
    active campaign directory (`.agents/campaigns/<campaign-name>/reports/`).
-3. Maintain full candidate mapping in `OPTIMIZATION_LEDGER.md` (Opt # -> Git SHA ->
-   Candidate Ref -> Subsystem -> Workloads -> Measured Delta -> Upstream Status).
+3. Maintain authoritative candidate state and metrics in `ledger.json` and export
+   clean summaries via `campaign.py status`. Never use untracked shadow ledgers.
 4. Organize banked commits into modular, independent Chromium CL series by
    subsystem, tagged with `TAG=agy` and `CONV=<conversation_id>`.
 

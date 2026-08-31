@@ -748,6 +748,36 @@ def ledger_share_floor_pct(default=0.3):
         raise SystemExit(1)
 
 
+def verify_opportunity_ready_for_ab(opp_id, feature_name):
+    """Verify that an opportunity has passed Gate 3 (sized) before running candidate A/B."""
+    import campaign
+    path = campaign.default_campaign_dir() / "ledger.json"
+    if not path.exists():
+        print(f"error: cannot verify opportunity #{opp_id}: no active campaign ledger at {path}", file=sys.stderr)
+        raise SystemExit(1)
+    try:
+        data = json.loads(path.read_text())
+    except Exception as exc:
+        print(f"error: cannot read campaign ledger at {path}: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+
+    opps = [o for o in data.get("opportunities", []) if o.get("id") == opp_id]
+    if not opps:
+        print(f"error: opportunity #{opp_id} not found in active campaign ledger {path}", file=sys.stderr)
+        raise SystemExit(1)
+
+    opp = opps[0]
+    status = opp.get("status")
+    # Verify that the opportunity has passed sizing
+    if status not in ("sized", "implementing", "review", "landed"):
+        print(
+            f"error: opportunity #{opp_id} is in status '{status}'; candidate A/B measurement "
+            "requires the opportunity to have passed Gate 3 (sized) via mechanism_evidence.py first.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+
 def resolve_remote(args_host, args_src, root):
     """Precedence: CLI flag > env var > campaign ledger > fallback.
 
@@ -892,6 +922,12 @@ def main(argv=None):
     parser.add_argument("--allow-unstaged", action="store_true",
                         help="Allow STAGED to proceed despite unstaged/untracked "
                         "changes (they are excluded from the measurement)")
+    parser.add_argument(
+        "--opp",
+        type=int,
+        default=None,
+        help="Campaign opportunity ID under evaluation (enforces Gate 3 sized status)",
+    )
     args = parser.parse_args(argv)
     cli_benchmark = args.benchmark
     if args.execution and args.benchmark:
@@ -944,6 +980,8 @@ def main(argv=None):
 
     if args.mode == "ab" and not args.feature:
         parser.error("--mode ab requires --feature")
+    if args.mode == "ab" and args.opp is not None and not args.characterization:
+        verify_opportunity_ready_for_ab(args.opp, args.feature)
     if args.mode == "ab" and args.enable_features:
         parser.error("--mode ab manages the flag itself; --enable-features "
                      "applies only to aa/ab2/profile modes")

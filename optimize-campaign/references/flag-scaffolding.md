@@ -1,62 +1,51 @@
-# Shared campaign feature-flag scaffolding
+# Shared Campaign Feature-Flag Scaffolding
 
-Every optimization in the campaign is gated behind **one** feature so the
-whole set can be toggled for aggregate A/B measurement:
-`Speedometer3Optimizations` (the campaign ledger's `feature` value is
-authoritative if it differs). This lands as the first commit on the campaign
-branch, before any optimization.
+## Clean Branch Candidate Isolation Pattern
 
-## Design requirements
+All optimizations in the campaign use **one shared feature flag**: `Speedometer3Optimizations`. 
 
-1. **Default off.** The flag is enabled only via
-   `--enable-features=Speedometer3Optimizations` on measurement runs.
-2. **Zero overhead when checked.** Hot Blink paths must see a plain static
-   bool load, not a `base::FeatureList` lookup.
-3. **One flag, not one per optimization.** Runtime bisection is deliberately
-   traded away; each optimization is one commit, so build-level bisection
-   (`remote_measure.py --mode ab2`) covers regression hunting. Do not add
-   per-optimization sub-flags unless a shipped regression forces it.
-4. **Fixed for process lifetime.** Code may cache flag-dependent state at
-   initialization; nothing may assume a mid-process toggle.
+To guarantee **100% isolated measurement** and prevent cumulative false positives without adding per-candidate flags, all candidate evaluation follows the **Clean Branch Isolation Workflow**:
 
-## Implementation sketch
+### 1. The Clean Branch Rule
+- **Every candidate MUST be implemented and evaluated on a clean branch created directly from baseline `origin/main`** (or using a staged commit on baseline HEAD via `STAGED`).
+- The candidate code is guarded by:
+  ```cpp
+  if (RuntimeEnabledFeatures::Speedometer3OptimizationsEnabled()) {
+    // Candidate fast-path logic
+  }
+  ```
+- **Isolated A/B Measurement:** When running `remote_measure.py --mode ab --ref <candidate_branch_sha> --feature Speedometer3Optimizations`:
+  - **Arm A (Flag OFF):** The binary at `<candidate_branch_sha>` executes with the feature disabled, which is identical to clean `origin/main` baseline.
+  - **Arm B (Flag ON):** Enables the flag, activating **ONLY this candidate's fast-path** (since no prior campaign commits exist on the clean candidate branch).
+- **CRITICAL ANTI-PATTERN TO AVOID:** Never measure an unverified candidate on top of the main `speedometer` branch with `--feature Speedometer3Optimizations`. Toggling the shared flag on a branch with prior landed commits enables all banked commits simultaneously, falsely attributing aggregate suite gains to the new candidate.
 
-The exact wiring conventions move over time — read the header comments of
-`third_party/blink/renderer/platform/runtime_enabled_features.json5` and copy
-a current feature that uses `base_feature`, rather than trusting this sketch
-blindly.
+### 2. Sizing & Verification Gates on the Clean Branch
+- On the clean candidate branch, run `mechanism_evidence.py` to satisfy Gate 3 (`sized`).
+- Run code review and `remote_measure.py --mode ab` on the clean branch commit to establish the isolated score impact.
 
-1. **Runtime-enabled feature (renderer-side check).** Add to
-   `runtime_enabled_features.json5`:
+### 3. Landing onto the Campaign Branch
+- Once verified and approved, land the commit onto the main `speedometer` campaign branch via `campaign.py land`.
+- The cumulative `speedometer` branch is used for periodic multi-candidate checkpoints and the final end-of-campaign full-suite sweep.
 
-   ```json5
-   {
-     name: "Speedometer3Optimizations",
-     base_feature: "Speedometer3Optimizations",
-     base_feature_status: "disabled",
-   }
-   ```
+## Feature Implementation
 
-   This generates the `base::Feature` and wires `--enable-features` through
-   to Blink automatically. Renderer hot paths then use:
+In `third_party/blink/renderer/platform/runtime_enabled_features.json5`:
 
-   ```cpp
-   if (RuntimeEnabledFeatures::Speedometer3OptimizationsEnabled()) { ... }
-   ```
+```json5
+{
+  name: "Speedometer3Optimizations",
+  base_feature: "Speedometer3Optimizations",
+  base_feature_status: "disabled",
+}
+```
 
-   (Some call sites need the `ExecutionContext`-taking overload; prefer the
-   static one where the feature is not origin-trial dependent.)
+In Blink C++ source:
 
-2. **Browser-process / non-Blink check (only if ever needed).** Call
-   `base::FeatureList::IsEnabled(blink::features::kSpeedometer3Optimizations)`
-   directly at the call site. Do **not** hand-cache the result in a
-   function-local static: `base::Feature` already caches its resolved state
-   internally (see `Feature::cached_value` in `base/feature_list.h`), so the
-   check is a cheap atomic read after first use — and a hand-rolled static
-   breaks `ScopedFeatureList`-based tests and can freeze a wrong value if
-   the code path runs before `FeatureList` registration. If a profiled hot
-   loop measurably suffers from the per-call check, hoist the result into a
-   plain local variable at the start of the operation instead.
+```cpp
+if (RuntimeEnabledFeatures::Speedometer3OptimizationsEnabled()) {
+  // Fast-path
+}
+```
 
 3. **Probe scaffolding (second commit).** Land the `[SP3_SCORE_TIME]`
    `performance.mark()` probe from

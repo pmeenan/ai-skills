@@ -52,31 +52,43 @@ Keep these questions and artifacts separate:
    a passing artifact emitted by `mechanism_evidence.py`. Advance to review only
    with a passing paired candidate reduction artifact from the same tool. Never
    bypass Gate 3 or bundle unmeasured candidates into a macro A/B suite run.
-5. Implement one invariant per opportunity. Do not bundle unrelated fast
-   paths, adjacent cleanup, or several speculative squeezes.
-6. Bind PASS reviews to the reviewed Git tree and exact evidence digests.
+5. **Single Authority & Strict Ban on Shadow Ledgers:** `campaign.py` and `ledger.json`
+   are the sole authority for campaign progress, opportunity state transitions, and
+   measured metrics. Creating untracked markdown ledgers (e.g. `OPTIMIZATION_LEDGER.md`)
+   to bypass gate enforcement or schema validation is strictly prohibited.
+6. **Clean Branch Candidate Isolation:** Every candidate MUST be implemented and
+   measured on a clean branch created directly from baseline `origin/main` (or via
+   `STAGED` on baseline HEAD) using the shared `Speedometer3Optimizations` flag.
+   Measuring an unverified candidate on top of the main `speedometer` branch with
+   the shared flag is strictly forbidden, as toggling the flag would activate all
+   prior banked commits and falsely inflate the new candidate's numbers. Bank
+   commits onto the main campaign branch only AFTER passing Gate 3 sizing and
+   isolated A/B verification.
+7. **One invariant per opportunity.** Implement one invariant per opportunity. Do not
+   bundle unrelated fast paths, adjacent cleanup, or several speculative squeezes.
+8. **Bind PASS reviews to the reviewed Git tree and exact evidence digests.**
    Generate review scaffolds; never hand-author an unbound verdict.
-7. Treat PGO, ThinLTO, symbols, frame pointers, host identity, and
-   virtualization as recorded provenance rather than assumptions.
-8. Require executable production semantics and a changed executable `.text`
-   section. Comments, tests, ledger files, and compiler-erased changes are not
-   optimizations.
-9. Accept build/test receipts only from `command_evidence.py` and mechanism
-   rows only from nonce-bound `mechanism_evidence.py capture` output.
-10. Preserve specification, security, privacy, lifecycle, and behavior outside
-    the campaign feature.
-11. Use balanced randomized ABBA/BAAB blocks. Treat each page-load repetition
+9. **Treat PGO, ThinLTO, symbols, frame pointers, host identity, and
+   virtualization as recorded provenance rather than assumptions.**
+10. **Require executable production semantics and a changed executable `.text`
+    section.** Comments, tests, ledger files, and compiler-erased changes are not
+    optimizations.
+11. **Accept build/test receipts only from `command_evidence.py` and mechanism
+    rows only from nonce-bound `mechanism_evidence.py capture` output.**
+12. **Preserve specification, security, privacy, lifecycle, and behavior outside
+    the campaign feature.**
+13. **Use balanced randomized ABBA/BAAB blocks.** Treat each page-load repetition
     as one independent observation; nested benchmark iterations stay within it.
-12. Verify the v4 score manifest's raw-result digests, schedule positions,
+14. **Verify the v4 score manifest's raw-result digests, schedule positions,
     monotonic times, host, harness, workload inventory, and payload provenance;
-    recompute all reported statistics.
-13. Use the selected adapter's target-checkpoint and full-suite cadence. A
+    recompute all reported statistics.**
+15. **Use the selected adapter's target-checkpoint and full-suite cadence.** A
     stale required profile or checkpoint blocks landing.
-14. Start only from a clean, committed skill repository. Audit the
+16. **Start only from a clean, committed skill repository. Audit the
     tamper-evident ledger history and artifact digests before trusting a resumed
-    or completed campaign.
-15. If a required field or artifact is unavailable, stop that opportunity.
-    Never replace missing evidence with prose.
+    or completed campaign.**
+17. **If a required field or artifact is unavailable, stop that opportunity.
+    Never replace missing evidence with prose.**
 
 ## Files and roles
 
@@ -304,20 +316,19 @@ or target benchmark gain achieved):
    Record the overall geometric score delta, 95% CI, MDE, $t$-statistic, and the
    per-workload scorecard to verify zero stat-sig regressions.
 
-2. **Campaign Ledger Mapping:**
-   Maintain an explicit mapping in `OPTIMIZATION_LEDGER.md` (and `ledger.json`)
+2. **Campaign Ledger Authority & Export:**
+   All opportunity state transitions, git hashes, and verified sizing/score metrics
+   must be authoritatively recorded in `ledger.json` via `campaign.py`. At campaign
+   close, generate `STATUS.md` and candidate summary tables directly from `ledger.json`
    linking:
-   - **Optimization Number** (1..$N$)
+   - **Opportunity ID & Optimization Index**
    - **Git Commit SHA** (on the campaign branch)
-   - **Internal Candidate Ref** (Batch & Candidate ID)
    - **Target Subsystem & Source Files** (exact file paths and functions)
    - **Target Workloads** (primary benchmark stories)
-   - **Measured Isolated Delta & $t$-statistic**
-   - **Upstream Landing Status** (e.g., Pending CL Series vs. Already Landed
-     Upstream in a recent commit / merged CL)
+   - **Verified Isolated In-Situ Cycle Reduction & Score Delta**
+   - **Upstream Landing Status** (e.g., Pending CL Series vs. Merged Upstream)
    - **Optimization Mechanism Summary**
-   - **Discarded Candidates Log** with exact discard rationale and measured
-     regressions/invariants to prevent re-trying failed approaches.
+   - **Discarded / Parked Candidates Log** with exact failure mechanics to prevent re-trying failed approaches.
 
 3. **Multi-Tab Campaign Dossier Generation:**
    Store all reports **inside the campaign directory**

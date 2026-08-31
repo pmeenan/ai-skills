@@ -86,6 +86,33 @@ repetition of the target story):
    the enclosing function's sample share in that story's silo analysis
    (`analysis/stories/<story>/`) from the release `perf record` profile.
 
+### Minimal C++ Instrumentation Template
+
+```cpp
+#include "chrome-cycle-profiling/resources/cycle_profiler.h"
+
+void TargetFunction(const Parameter& param) {
+  // 1. Mechanism probe: tracks total entries and exclusive cycles in this operation
+  perf_instrumentation::ScopedCycleProbe mechanism_probe(
+      perf_instrumentation::GetGlobalResolveStyleBlock(),
+      /*applicable=*/true,
+      perf_instrumentation::Accounting::kExclusive);
+
+  // 2. Avoidable probe: active ONLY when the fast-path condition / invariant is met
+  bool is_avoidable = (param.IsRedundant());
+  perf_instrumentation::ScopedCycleProbe avoidable_probe(
+      perf_instrumentation::GetGlobalAvoidableBlock(),
+      /*applicable=*/is_avoidable,
+      perf_instrumentation::Accounting::kExclusive);
+
+  // 3. Normal execution (or candidate branch gated by candidate feature flag)
+  if (RuntimeEnabledFeatures::Speedometer3Candidate_418Enabled() && is_avoidable) {
+    return;
+  }
+  ExecuteOriginalWork();
+}
+```
+
 Never put an `avoidable` probe inside the `mechanism` probe: exclusive
 parent accounting would subtract it from `mechanism.cycles`, making the row
 invalid or misleading. Keep every scope participating in exclusive nesting
