@@ -272,16 +272,46 @@ the paired reduction and `command_evidence.py` for direct build and test
 receipts. Advance to review only when lower confidence bounds establish both
 exclusive-cycle reduction and net scored-cycle share saved.
 
-### 5. Run bound reviews
+### 5. Isolated candidate A/B measurement and gate evaluation
+
+Every candidate commit is evaluated in pure isolation on a clean branch off the
+scaffold baseline using the full suite (`--stories=all`) under the aggregate feature flag.
+
+```bash
+python3 .agents/skills/optimize-campaign/scripts/remote_measure.py \
+  --execution ssh --mode ab --ref <candidate-sha> \
+  --feature <campaign-feature> --blocks 32
+```
+
+#### Acceptance Criteria (Dual Path):
+1. **Targeted Improvement (Path A):**
+   Demonstrates a statistically significant or clear in-situ improvement on the
+   candidate's pre-registered target workload(s) without regressing other workloads.
+2. **Unexpected Real Improvement (Path B):**
+   Demonstrates a statistically significant improvement on untargeted workload(s),
+   provided the mechanism's cross-cutting leverage is investigated and understood
+   (e.g., cross-framework DOM/SVG listener overhead in WebComponent shadow roots).
+
+#### Rejection Criteria (Strict Regression Guardrail):
+- A candidate is **rejected** if it causes a statistically significant regression
+  on any workload across the suite, or causes a net negative drag on the geometric mean.
+
+#### Targeted Anomaly Confirmation Protocol:
+- If a candidate flags a single-story borderline win or regression near the noise
+  floor, run a fast targeted 32-block confirmation on that specific workload
+  (`--stories=<flagged_story> --blocks=32`) to definitively distinguish a true effect
+  from a multiple-comparison false positive before making the final accept/reject decision.
+
+### 6. Run bound reviews
 
 Generate skeptic and adversary review scaffolds after entering review. Each
 reviewer inspects the staged diff and raw artifacts identified by the bound
 digests. A PASS requires every check true and no unresolved finding. A FAIL
 returns the opportunity to an allowed rework round or rejects it.
 
-### 6. Land, checkpoint, and reprofile
+### 7. Land, checkpoint, and reprofile
 
-Commit the exact reviewed tree and record its SHA. At the adapter's cadence,
+Commit the exact reviewed tree to the campaign branch and record its SHA. At the adapter's cadence,
 run a cumulative targeted A/B over the ledger-derived target selector and a
 separate default-suite A/B for the aggregate claim and regression guardrail.
 

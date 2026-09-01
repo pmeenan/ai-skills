@@ -75,6 +75,17 @@ Use randomized, balanced ABBA/BAAB blocks, a bare-metal host, release-role
 builds, and the benchmark's calibrated campaign policy. The score runner
 preserves each page-load repetition as one independent observation.
 
+Every isolated candidate commit is evaluated in pure isolation against baseline
+using the full suite (`--stories=all`). Acceptance uses a dual-path model:
+1. **Targeted Improvement (Path A):** Significant in-situ or story-level win on
+   the candidate's pre-registered target workload(s) with zero regressions.
+2. **Unexpected Real Improvement (Path B):** Significant win on untargeted workload(s),
+   provided the cross-cutting mechanism is investigated and understood.
+Candidates causing statistically significant regressions on any workload or dragging
+down the geometric mean are rejected. When borderline single-story anomalies occur near
+the noise floor, run a fast targeted 32-block confirmation on that story
+(`--stories=<flagged_story> --blocks=32`) to separate real effects from multiple-comparison noise.
+
 For JetStream, an online URL is provenance but not an immutable payload.
 Authoritative evidence requires `--benchmark-source local` and
 `--benchmark-payload-path`; the runner hashes and serves that tree itself on an

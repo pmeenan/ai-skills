@@ -183,7 +183,8 @@ def main() -> int:
                 if pathspecs:
                     command += ["--", *pathspecs]
                 result = subprocess.run(
-                    command, capture_output=True, text=True, check=False)
+                    command, capture_output=True, text=True,
+                    errors="replace", check=False)
                 if result.returncode not in (0, 1):
                     fail(f"git grep failed for '{symbol}': "
                          f"{result.stderr.strip()}")
