@@ -25,7 +25,7 @@ def parse_pin(pin_md: Path) -> dict[str, str]:
     if not pin_md.is_file():
         fail(f"missing pin.md at {pin_md}")
     text = pin_md.read_text(encoding="utf-8")
-    cl_match = re.search(r"# CL (\d+) — patchset (\d+) pin", text)
+    cl_match = re.search(r"# CL ([0-9a-zA-Z_-]+) — patchset (\d+) pin", text)
     if not cl_match:
         fail("could not parse CL/patchset from pin.md")
     cl, ps = cl_match.group(1), cl_match.group(2)

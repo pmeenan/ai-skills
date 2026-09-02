@@ -261,6 +261,11 @@ explicit revision name in their artifact contract.
   - net/streams/delay_buffer_unittest.cc
 ```
 
+For local branch self-reviews (pinned with `scripts/pin-local.sh`), `pin.md` records:
+- `- Status: LOCAL`
+- `- Mode: local branch`
+- `- Ref: refs/heads/<branch>` (or `HEAD`)
+
 ## profile.json, profile.md, And Context Budgets
 
 Run `scripts/profile-review.py` after pinning. The complete classification and

@@ -183,7 +183,7 @@ def main() -> int:
         manifest_path.read_bytes()).hexdigest()
     pin_text = (review_dir / "pin.md").read_text(
         encoding="utf-8", errors="replace")
-    title = re.search(r"^# CL (\d+).*patchset (\d+)", pin_text, re.M)
+    title = re.search(r"^# CL ([0-9a-zA-Z_-]+).*patchset (\d+)", pin_text, re.M)
     cl = title.group(1) if title else "unknown"
     patchset = title.group(2) if title else safe(
         field(pin_text, "Pinned patchset"))

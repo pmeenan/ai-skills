@@ -25,6 +25,8 @@ MECHANICAL = SCRIPTS / "mechanical-leads.sh"
 PROFILE = SCRIPTS / "profile-review.py"
 INDEXES = SCRIPTS / "build-review-indexes.py"
 LEASE = SCRIPTS / "worktree-lease.py"
+PIN_LOCAL = SCRIPTS / "pin-local.sh"
+REFRESH = SCRIPTS / "refresh-delivery-gate.py"
 ROSTER = (
     "Desk-Check Simulation + Arithmetic Drills",
     "Data Lineage",
@@ -3851,6 +3853,105 @@ Return partial with explicit remaining scope when needed.
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(run.returncode, 1)
         self.assertIn("pre-output gate line 3 is not affirmatively complete", run.stdout)
+
+
+class PinLocalTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+        self.repo = self.base / "checkout" / "src"
+        self.repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Fixture"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "fixture@example.test"], check=True)
+        (self.repo / "a.cc").write_text("int value = 1;\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.repo), "add", "a.cc"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "base commit"], check=True)
+        self.parent = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
+        (self.repo / "a.cc").write_text("int value = 2;\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qam", "feature commit"], check=True)
+        self.sha = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def environment(self) -> dict[str, str]:
+        return {
+            **os.environ,
+            "CHROMIUM_SRC": str(self.repo),
+            "CHROMIUM_REVIEW_HOLDER": "holder-local",
+        }
+
+    def test_pins_local_commit_and_validates(self) -> None:
+        review = self.base / "review"
+        run = subprocess.run(
+            [str(PIN_LOCAL), "HEAD", "HEAD~1", str(review)],
+            env=self.environment(), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue((review / "pin.md").is_file())
+        self.assertTrue((review / "detail.json").is_file())
+        self.assertTrue((review / "comments.json").is_file())
+        self.assertTrue((review / "lease-state.json").is_file())
+        pin_text = (review / "pin.md").read_text(encoding="utf-8")
+        self.assertIn("- Mode: local branch", pin_text)
+        self.assertIn("- Status: LOCAL", pin_text)
+        self.assertIn(f"- Revision SHA: {self.sha}", pin_text)
+        self.assertIn(f"- Parent SHA: {self.parent}", pin_text)
+
+        validation = subprocess.run(
+            [str(VALIDATE), str(review), "--phase", "pin", "--require-active-lease"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(validation.returncode, 0, validation.stdout + validation.stderr)
+
+        subprocess.run([str(LEASE), "release", str(review), "done"], check=True)
+
+    def test_captures_uncommitted_changes(self) -> None:
+        (self.repo / "a.cc").write_text("int value = 42;\n", encoding="utf-8")
+        review = self.base / "review-dirty"
+        run = subprocess.run(
+            [str(PIN_LOCAL), "--include-uncommitted", "HEAD", str(self.parent), str(review)],
+            env=self.environment(), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        pin_text = (review / "pin.md").read_text(encoding="utf-8")
+        self.assertIn("LOCAL UNCOMMITTED", pin_text)
+        validation = subprocess.run(
+            [str(VALIDATE), str(review), "--phase", "pin", "--require-active-lease"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(validation.returncode, 0, validation.stdout + validation.stderr)
+        subprocess.run([str(LEASE), "release", str(review), "done"], check=True)
+
+    def test_delivery_gate_refresh_in_local_mode(self) -> None:
+        review = self.base / "review-gate"
+        run = subprocess.run(
+            [str(PIN_LOCAL), "HEAD", "HEAD~1", str(review)],
+            env=self.environment(), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        (review / "directives.md").write_text("- Mode: local branch\n", encoding="utf-8")
+        (review / "reconciliation.md").write_text(
+            "1. **Gate 1:** yes\n2. **Freshness:** pending\n3. **Gate 3:** yes\n",
+            encoding="utf-8")
+        (review / "draft-review.md").write_text(
+            f"- Draft revision: 1\n- Reviewed pin: {self.sha}\n", encoding="utf-8")
+        (review / "challenge.md").write_text(
+            "- Round 1: challenge/round-1/index.md\n", encoding="utf-8")
+        round_dir = review / "challenge" / "round-1"
+        round_dir.mkdir(parents=True)
+        (round_dir / "index.md").write_text(
+            "- Draft revision: 1\n- Result: pass\n", encoding="utf-8")
+
+        gate_run = subprocess.run(
+            ["python3", str(REFRESH), str(review)],
+            env=self.environment(), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(gate_run.returncode, 0, gate_run.stdout + gate_run.stderr)
+        self.assertIn("current: yes", gate_run.stdout)
+        gate_text = (review / "delivery-gate.md").read_text(encoding="utf-8")
+        self.assertIn("- Result: current", gate_text)
+        self.assertIn("- Gate line: yes", gate_text)
+        subprocess.run([str(LEASE), "release", str(review), "done"], check=True)
 
 
 if __name__ == "__main__":

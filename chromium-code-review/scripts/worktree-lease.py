@@ -50,7 +50,7 @@ TAKEOVER_EVENTS = frozenset(
 # an archived `<holder>.<state>-<stamp>-<token>-<random>.log`.
 HOLDER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 HOLDER_LOG_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\.log")
-PIN_DIR_PATTERN = re.compile(r"cl-[0-9]+-ps[0-9]+")
+PIN_DIR_PATTERN = re.compile(r"(?:cl-[0-9a-zA-Z_-]+|local(?:-[0-9a-zA-Z_-]+)?)-ps[0-9]+")
 LEASE_STATE_NAME = "lease-state.json"
 
 
@@ -335,7 +335,7 @@ def pin_identity(review_dir: Path) -> dict[str, str]:
     except (OSError, UnicodeError) as error:
         fail(f"cannot read {pin}: {error}")
     heading = re.search(
-        r"^# CL ([0-9]+) — patchset ([0-9]+) pin$", text, re.MULTILINE
+        r"^# CL ([0-9a-zA-Z_-]+) — patchset ([0-9]+) pin$", text, re.MULTILINE
     )
     revision = re.search(
         r"^- Revision SHA: ([0-9a-fA-F]{40,64})$", text, re.MULTILINE
@@ -796,8 +796,10 @@ def prune_archived_leases(lock_root: Path) -> None:
         return
     archives = [
         *lock_root.glob("cl-*-ps*/*.*-*.log"),
+        *lock_root.glob("local-*-ps*/*.*-*.log"),
         # Pre-ref-count archives written directly into the lock root.
         *lock_root.glob("cl-*-ps*.*-*.log"),
+        *lock_root.glob("local-*-ps*.*-*.log"),
     ]
     for archive in archives:
         if archive.is_file() and lease_age(archive) > ARCHIVE_RETENTION_SECONDS:
@@ -847,7 +849,10 @@ def gc_cache(arguments: argparse.Namespace) -> None:
     stale_seconds = validate_stale_seconds(arguments.stale_seconds)
     with mutation_guard(lock_root):
         registered = registered_worktrees(repo)
-        for candidate in sorted(worktree_root.glob("cl-*-ps*")):
+        candidates = sorted(
+            set(worktree_root.glob("cl-*-ps*")) | set(worktree_root.glob("local-*-ps*"))
+        )
+        for candidate in candidates:
             if not candidate.is_dir() or candidate.resolve() == exclude:
                 continue
             pin_dir = lock_root / candidate.name

@@ -8,6 +8,7 @@ import datetime as dt
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -53,9 +54,11 @@ def fetch_detail(url: str) -> dict[str, Any]:
     raise ValueError(f"Gerrit detail fetch failed after 3 attempts: {error}")
 
 
-def load_detail(args: argparse.Namespace, cl: str) -> dict[str, Any]:
+def load_detail(args: argparse.Namespace, cl: str, mode: str = "current", root: Path | None = None) -> dict[str, Any]:
     if args.detail_json:
         return decode_json(args.detail_json.read_bytes(), str(args.detail_json))
+    if mode == "local" and root is not None and (root / "detail.json").is_file():
+        return decode_json((root / "detail.json").read_bytes(), str(root / "detail.json"))
     qualified = f"{args.gerrit_project}~{cl}"
     encoded = urllib.parse.quote(qualified, safe="")
     base = args.gerrit_base.rstrip("/")
@@ -83,14 +86,26 @@ def pinned_data(root: Path) -> tuple[str, str, str, str]:
     pin_path = root / "pin.md"
     text = pin_path.read_text(encoding="utf-8")
     values = fields(text)
-    cl_match = re.search(r"^# CL\s+(\d+)\b", text, re.MULTILINE)
+    cl_match = re.search(r"^# CL\s+([0-9a-zA-Z_-]+)\b", text, re.MULTILINE)
     patchset = values.get("Pinned patchset", "")
     sha = values.get("Revision SHA", "")
     if not cl_match or not patchset.isdigit() or not SHA_RE.fullmatch(sha):
         raise ValueError("pin.md lacks a CL number, pinned patchset, or full revision SHA")
     directives = (root / "directives.md").read_text(encoding="utf-8") if (root / "directives.md").is_file() else ""
     historical = bool(re.search(r"(?im)^- Mode:\s*historical patchset\b", directives))
-    return cl_match.group(1), patchset, sha, "historical" if historical else "current"
+    local = bool(
+        re.search(r"(?im)^- Mode:\s*local\b", directives)
+        or values.get("Mode") == "local branch"
+        or values.get("Status") == "LOCAL"
+        or cl_match.group(1) in {"0", "local"}
+    )
+    if local:
+        mode = "local"
+    elif historical:
+        mode = "historical"
+    else:
+        mode = "current"
+    return cl_match.group(1), patchset, sha, mode
 
 
 def current_data(detail: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
@@ -196,7 +211,7 @@ def main() -> int:
     reconciliation_update = None
     try:
         cl, pinned_ps, pinned_sha, mode = pinned_data(root)
-        detail = load_detail(args, cl)
+        detail = load_detail(args, cl, mode=mode, root=root)
         current_ps, current_sha, revisions = current_data(detail)
         gerrit_updated = str(detail.get("updated") or "unavailable")
         pinned_revision = revisions.get(pinned_sha)
@@ -206,6 +221,27 @@ def main() -> int:
         if mode == "historical":
             result = "historical pin verified"
             reason = f"pinned PS{pinned_ps}/SHA mapping remains present; current is PS{current_ps}"
+        elif mode == "local":
+            branch_head = None
+            pin_values = fields((root / "pin.md").read_text(encoding="utf-8"))
+            ref_val = pin_values.get("Ref", "")
+            wt_val = pin_values.get("Worktree", "").split(" (", 1)[0]
+            if ref_val.startswith("refs/heads/") and wt_val and Path(wt_val).is_dir():
+                branch = ref_val.removeprefix("refs/heads/")
+                try:
+                    p = subprocess.run(
+                        ["git", "-C", wt_val, "rev-parse", f"refs/heads/{branch}"],
+                        check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    )
+                    branch_head = p.stdout.strip()
+                except subprocess.CalledProcessError:
+                    pass
+            if branch_head and branch_head != pinned_sha:
+                result = "newer patchset"
+                reason = f"local branch has moved from {pinned_sha[:10]} to {branch_head[:10]}; re-pin required"
+            else:
+                result = "current"
+                reason = "local review pin is current"
         elif current_sha == pinned_sha:
             result = "current"
             reason = "Gerrit current revision equals the pinned revision"

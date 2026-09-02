@@ -310,6 +310,13 @@ orchestrator never loads these):
   smaller candidate universe.
 - **Short summary:** honor the shorter format, but still pin the patchset and
   disclose important unverified areas.
+- **Local branch self-review:** inspect a local branch, commit, or uncommitted
+  working tree changes prior to uploading a Gerrit CL. Run `scripts/pin-local.sh`
+  instead of `scripts/fetch-cl.sh`. It captures the target change (or ephemeral
+  `git stash create` commit if dirty), resolves base against `origin/main` (or
+  `main`/`HEAD~1`), provisions a clean detached worktree, and runs the full review
+  pipeline offline with `Mode: local branch`. Delivery freshness is validated
+  against the local branch `HEAD` without remote Gerrit calls.
 
 Record the mode and any user directives (scope limits, format requests,
 prior-review text location, model-tier/cost preference such as "flash-level"
@@ -351,8 +358,18 @@ rather than transcribing their content.
 
 ## Phase 0 — Fetch And Pin
 
-**Run `scripts/fetch-cl.sh <CL> [patchset] [review-dir]` to fetch, pin, and
-atomically acquire the worktree lease.** Leases are ref-counted per pin: the
+**For uploaded Gerrit CLs:** run `scripts/fetch-cl.sh <CL> [patchset] [review-dir]`
+to fetch, pin, and atomically acquire the worktree lease.
+
+**For local branches, commits, or uncommitted changes:** run
+`scripts/pin-local.sh [--force-restart] [--holder KEY] [--cl CL] [--patchset PS] [--include-uncommitted] [target_ref_or_commit] [base_ref] [review-dir]`
+to lease, materialize, and pin the local change. It computes diffs against
+the base commit, creates a clean detached worktree at `<src-parent>/codereview/worktrees/cl-<CL>-ps<PS>`,
+and generates `pin.md` (marked `Status: LOCAL` and `Mode: local branch`),
+`detail.json`, `comments.json`, and `lease-state.json`. In `directives.md`, record
+`- Mode: local branch`.
+
+Leases are ref-counted per pin: the
 lock directory `<src-parent>/codereview/locks/cl-<CL>-ps<PS>/` holds one
 append-only JSON-lines progress log per holder, `<holder>.log`, and `pin.md`
 records the initial pin while mutable `lease-state.json` records the
