@@ -21,9 +21,11 @@ Procedure:
    - **Layer 4 (Leaf-Level Micro-Optimizations):** Only if Layers 1–3 cannot eliminate the work.
      * **CRITICAL ThinLTO & PGO WARNING:** Do NOT propose speculative micro-branch guards, outer trivial null checks, or empty collection checks in tight loops. In official PGO2/ThinLTO builds, LLVM already inlines and branch-predicts fast-paths; adding redundant outer branches increases BTB pressure and icache footprint, consistently causing net cycle regressions. Focus exclusively on Layers 1–2 where significant work (>100 cycles per avoided call) is pruned.
 
-3. **Durable Ledger History & Up-to-Date Checkout Pre-Check:**
+3. **Durable Ledger History, Discarded Candidates & Up-to-Date Checkout Pre-Check:**
    - **Checkout Freshness:** Ensure the working branch is based on an up-to-date checkout of `origin/main` to avoid re-implementing recently landed upstream optimizations.
+   - **Benchmark Discarded Candidates Catalog:** Consult the benchmark adapter's `references/discarded-candidates/INDEX.md` and the matching subsystem file (e.g. `../optimize-speedometer/references/discarded-candidates/INDEX.md`). Check if the conceptual mechanism, call site, or invariant has been previously rejected. Do NOT re-propose discarded mechanisms unless the root cause (e.g. branch overhead, spec hazard) is structurally bypassed.
    - **Durable Ledger Inspection:** Check the campaign ledger (`OPTIMIZATION_LEDGER.md`) for previous candidate evaluations in the target area.
+   - **Recording New Rejections:** Whenever a candidate is rejected during initial review, adversarial review, in-situ sizing, or macro A/B measurement, record the rejection in the benchmark's matching `references/discarded-candidates/<subsystem>.md` file and update `INDEX.md` using the refactor-durable format (Subsystem, Concept, Mechanism, Empirical Result, Causal Failure Mode, and Durable Invariant).
    - **No Premature Path Closing:** If a previous attempt in an area failed or was discarded, **do NOT close off or blacklist the entire subsystem or function**. Instead, inspect the *specific failure mechanism* (e.g. branch overhead, spec edge-case, or compiler inlining). If a novel, structurally distinct mechanism can harvest that inclusive hotspot without repeating the specific flaw, it remains a high-priority candidate.
 
 4. **Formulate the Opportunity Invariant:**

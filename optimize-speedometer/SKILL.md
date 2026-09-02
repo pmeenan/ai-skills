@@ -13,7 +13,10 @@ tools, reviews, and ledger are owned by that shared skill.
 
 1. Read `../optimize-campaign/SKILL.md`.
 2. Read `references/speedometer3.md`.
-3. Load the shared detailed runbook, evidence model, execution reference, or
+3. Read `references/discarded-candidates/INDEX.md` and the relevant subsystem
+   file before proposing or investigating opportunities to avoid repeating
+   previously invalidated hypotheses.
+4. Load the shared detailed runbook, evidence model, execution reference, or
    role playbook only when the current campaign operation needs it.
 
 ## Adapter defaults

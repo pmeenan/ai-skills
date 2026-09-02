@@ -36,6 +36,9 @@ the aggregate score.
   campaign shares or mechanism priorities.
 - Rank each opportunity by its estimated effect on its own `target_story`.
   Cross-story benefit is a noted bonus, never summed or divided by 32.
+- Consult `references/discarded-candidates/INDEX.md` and the relevant subsystem
+  file to verify that proposed mechanisms do not duplicate previously invalidated
+  hypotheses or anti-patterns.
 
 Install the exact mark probe from
 `../../optimize-campaign/assets/speedometer3/performance-mark-monotonic-probe.patch`
