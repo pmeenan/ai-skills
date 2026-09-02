@@ -424,7 +424,10 @@ Set positive Chromium specialist rows' `discovery triggers` to exactly
 `<PREFIX> absent` for that entry and use the exact roster name as `surface`.
 Soft amplifiers appear only in the later generalist assessments. An N/A plan row may cite only
 associated rows carrying that explicit absence marker; an unrelated or
-positive existing `T` ID is not evidence.
+positive existing `T` ID is not evidence. When `directives.md` contains
+`- Skip test coverage: true`, test-focused entries (`Fuzzing And Test Strategy`
+and `Tests As Specifications`) are routed to `not-applicable` citing the directive;
+workers and synthesis agents suppress findings regarding missing unit/browser tests.
 
 | roster entry | hard full-sweep trigger | soft likelihood amplifiers (not triggers) |
 | --- | --- | --- |

@@ -75,6 +75,13 @@ Use randomized, balanced ABBA/BAAB blocks, a bare-metal host, release-role
 builds, and the benchmark's calibrated campaign policy. The score runner
 preserves each page-load repetition as one independent observation.
 
+When an implementation is deemed "ready to be tested" (staged, builds cleanly, passes
+focused smoke checks), run the **Pre-Testing Local Code Review Gate**: spawn a dedicated
+review subagent using `invoke_subagent` following `chromium-code-review` in local mode
+(`scripts/pin-local.sh`) with `directives.md` setting `- Mode: local branch` and
+`- Skip test coverage: true`. The candidate must achieve a clean PASS review before
+advancing to the 32-block remote benchmark.
+
 Every isolated candidate commit is evaluated in pure isolation against baseline
 using the full suite (`--stories=all`). Acceptance uses a dual-path model:
 1. **Targeted Improvement (Path A):** Significant in-situ or story-level win on

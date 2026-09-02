@@ -41,9 +41,14 @@ Procedure:
 6. Stop if either lower 95% confidence bound is non-positive. Do not use a
    suite-score screen to waive this gate.
 7. Measure code-size/cold-path tax where the change adds code or branches.
-8. Remove temporary probes, restage the complete production/test diff, rerun
-   the receipt commands against that exact staged tree, and enter review with
-   `campaign.py advance --opp <id> --to review --build-manifest <build.json>
+8. Remove temporary probes, restage the complete production/test diff, and rerun
+   the receipt commands against that exact staged tree. When the implementation is
+   deemed "ready to be tested", execute the **Pre-Testing Local Code Review Gate**:
+   spawn a dedicated code review subagent via `invoke_subagent` following
+   `chromium-code-review` in local mode (`scripts/pin-local.sh`) with
+   `directives.md` setting `- Mode: local branch` and `- Skip test coverage: true`.
+   Verify the review reports `PASS` (or all findings are resolved) before entering
+   review with `campaign.py advance --opp <id> --to review --build-manifest <build.json>
    --test-manifest <test.json> --verification-manifest <candidate.json>`.
 
 Return only:

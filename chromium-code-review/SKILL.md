@@ -311,18 +311,27 @@ orchestrator never loads these):
 - **Short summary:** honor the shorter format, but still pin the patchset and
   disclose important unverified areas.
 - **Local branch self-review:** inspect a local branch, commit, or uncommitted
-  working tree changes prior to uploading a Gerrit CL. Run `scripts/pin-local.sh`
-  instead of `scripts/fetch-cl.sh`. It captures the target change (or ephemeral
-  `git stash create` commit if dirty), resolves base against `origin/main` (or
-  `main`/`HEAD~1`), provisions a clean detached worktree, and runs the full review
-  pipeline offline with `Mode: local branch`. Delivery freshness is validated
-  against the local branch `HEAD` without remote Gerrit calls.
+  working tree changes prior to uploading a Gerrit CL (or as a pre-test verification
+  gate in optimization campaigns). Run `scripts/pin-local.sh` instead of `scripts/fetch-cl.sh`.
+  It captures the target change (or ephemeral `git stash create` commit if dirty),
+  resolves base against `origin/main` (or `main`/`HEAD~1`), provisions a clean detached
+  worktree, and runs the full review pipeline offline with `Mode: local branch`.
+  Delivery freshness is validated against the local branch `HEAD` without remote Gerrit calls.
+  When invoked from an optimization campaign or external orchestrator, execute the review
+  via subagents (`invoke_subagent`) to parallelize discovery/verification and preserve context boundaries.
+- **Skip test coverage directive:** when reviewing in-development optimization
+  patches, experimental prototypes, or pre-test campaign candidates where tests
+  have not yet been written or are not required at this stage, record
+  `- Skip test coverage: true` in `directives.md`. Workers honor this directive
+  by skipping checks for missing unit/browser tests or test coverage gaps,
+  allowing the review to focus strictly on correctness, memory safety, lifecycle,
+  threading, performance, and Blink conventions without flagging absent tests.
 
 Record the mode and any user directives (scope limits, format requests,
-prior-review text location, model-tier/cost preference such as "flash-level"
-or "pro-level only for verification") in `directives.md` at the start; every
-phase brief echoes it so workers see the user's constraints without the
-orchestrator restating them. A user tier preference overrides the annotated
+prior-review text location, skip-test-coverage flag, model-tier/cost preference
+such as "flash-level" or "pro-level only for verification") in `directives.md`
+at the start; every phase brief echoes it so workers see the user's constraints
+without the orchestrator restating them. A user tier preference overrides the annotated
 tiers, and Verification Notes disclose every phase run below its recommended
 tier.
 

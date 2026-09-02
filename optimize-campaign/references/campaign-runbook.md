@@ -272,7 +272,29 @@ the paired reduction and `command_evidence.py` for direct build and test
 receipts. Advance to review only when lower confidence bounds establish both
 exclusive-cycle reduction and net scored-cycle share saved.
 
-### 5. Isolated candidate A/B measurement and gate evaluation
+### 5. Pre-Testing Local Code Review Gate
+
+When an implementation is complete, compiles cleanly, and passes focused smoke checks, it is deemed **"ready to be tested"**. Before dispatching the change to the expensive remote 32-block macro measurement pipeline (128 iterations / ~1.5 hours), the candidate MUST pass a thorough offline code review via the `chromium-code-review` skill in **local mode** as a final pre-test quality gate.
+
+#### Review Gate Protocol:
+1. **Explicit Subagent Delegation:** The orchestrator agent MUST explicitly spawn a dedicated code review subagent via `invoke_subagent` (e.g. `Role: "Local Code Reviewer"`, `TypeName: "self"`) to execute the multi-phase review pipeline. Do NOT attempt to run all review phases directly in the orchestrator's main context.
+2. **Local Pinning:** The review subagent runs `scripts/pin-local.sh` from `chromium-code-review`:
+   ```bash
+   bash .agents/skills/chromium-code-review/scripts/pin-local.sh <candidate_ref_or_sha> <baseline_ref> <review_dir>
+   ```
+   This creates a clean, detached read-only worktree and initializes review artifacts with `Mode: local branch`.
+3. **Directives Configuration:** In `<review_dir>/directives.md`, the review MUST include:
+   ```markdown
+   - Mode: local branch
+   - Skip test coverage: true
+   - User directives: In-development optimization campaign candidate; skip reviewing for test coverage and do not flag missing unit/browser tests or test coverage gaps. Focus strictly on correctness, memory safety, lifecycle, threading, performance, and Blink invariants.
+   ```
+4. **Subagent Orchestration:** The review subagent executes the discovery, verification, and synthesis phases using worker subagents as specified by `chromium-code-review`. Test-related lenses (`TAS`, `FTS`) are routed to `not-applicable`.
+5. **Gate Decision:**
+   - **PASS:** Zero blocking findings or defects found; the candidate is certified ready for remote A/B benchmarking.
+   - **FAIL / FINDINGS:** The candidate must be reworked and re-reviewed locally before any remote benchmark cycles are spent.
+
+### 6. Isolated candidate A/B measurement and gate evaluation
 
 Every candidate commit is evaluated in pure isolation on a clean branch off the
 scaffold baseline using the full suite (`--stories=all`) under the aggregate feature flag.
@@ -302,14 +324,14 @@ python3 .agents/skills/optimize-campaign/scripts/remote_measure.py \
   (`--stories=<flagged_story> --blocks=32`) to definitively distinguish a true effect
   from a multiple-comparison false positive before making the final accept/reject decision.
 
-### 6. Run bound reviews
+### 7. Run bound reviews
 
 Generate skeptic and adversary review scaffolds after entering review. Each
 reviewer inspects the staged diff and raw artifacts identified by the bound
 digests. A PASS requires every check true and no unresolved finding. A FAIL
 returns the opportunity to an allowed rework round or rejects it.
 
-### 7. Land, checkpoint, and reprofile
+### 8. Land, checkpoint, and reprofile
 
 Commit the exact reviewed tree to the campaign branch and record its SHA. At the adapter's cadence,
 run a cumulative targeted A/B over the ledger-derived target selector and a

@@ -328,6 +328,7 @@ into every brief):
 # Directives — CL 9999999 PS3
 
 - Mode: follow-up review (prior review text saved to prior-feedback-input.md)
+- Skip test coverage: true  # (when testing in-development optimization patches or user requested skipping tests)
 - User directives: focus requested on net/streams; short-summary format NOT
   requested; no other constraints.
 ```
