@@ -74,6 +74,7 @@ REQUESTED_REVIEW_DIR="${3:-}"
 
 GERRIT_HOST="${GERRIT_HOST:-https://chromium-review.googlesource.com}"
 GERRIT_PROJECT="${GERRIT_PROJECT:-chromium/src}"
+GIT_REMOTE="${GIT_REMOTE:-origin}"
 CURL_CONNECT_TIMEOUT="${CURL_CONNECT_TIMEOUT:-15}"
 CURL_MAX_TIME="${CURL_MAX_TIME:-90}"
 CURL_RETRIES="${CURL_RETRIES:-3}"
@@ -429,7 +430,8 @@ if [[ -e "$WT" ]]; then
 else
   registered_worktree && die "$WT is registered but absent; run 'git -C "$REPO" worktree prune' after checking the path"
   echo "Fetching $REF ..." >&2
-  git -C "$REPO" fetch "$GERRIT_HOST/$GERRIT_PROJECT" "$REF" \
+  git -C "$REPO" fetch "$GIT_REMOTE" "$REF" 2>/dev/null \
+    || git -C "$REPO" fetch "$GERRIT_HOST/$GERRIT_PROJECT" "$REF" \
     || die "git fetch $REF failed"
   git -C "$REPO" cat-file -e "$SHA^{commit}" 2>/dev/null \
     || die "pinned SHA $SHA not present after fetch — refusing to guess"
@@ -442,7 +444,8 @@ ACTUAL="$(git -C "$WT" rev-parse HEAD)" || die "rev-parse in worktree failed"
 
 if ! git -C "$REPO" cat-file -e "$PARENT^{commit}" 2>/dev/null; then
   echo "Parent $PARENT not present locally; attempting bounded fetch ..." >&2
-  git -C "$REPO" fetch "$GERRIT_HOST/$GERRIT_PROJECT" "$PARENT" \
+  git -C "$REPO" fetch "$GIT_REMOTE" "$PARENT" 2>/dev/null \
+    || git -C "$REPO" fetch "$GERRIT_HOST/$GERRIT_PROJECT" "$PARENT" \
     || die "parent commit $PARENT is unavailable; cannot compute or review the pinned diff"
 fi
 git -C "$REPO" cat-file -e "$PARENT^{commit}" 2>/dev/null \

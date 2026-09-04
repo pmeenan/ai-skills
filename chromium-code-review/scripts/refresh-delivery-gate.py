@@ -236,7 +236,16 @@ def main() -> int:
                     branch_head = p.stdout.strip()
                 except subprocess.CalledProcessError:
                     pass
-            if branch_head and branch_head != pinned_sha:
+            is_uncommitted = pin_values.get("Subject", "").startswith("[LOCAL UNCOMMITTED]")
+            if is_uncommitted:
+                parent_sha = pin_values.get("Parent SHA")
+                if branch_head and parent_sha and branch_head != parent_sha:
+                    result = "newer patchset"
+                    reason = f"local branch has moved from parent {parent_sha[:10]} to {branch_head[:10]}; re-pin required"
+                else:
+                    result = "current"
+                    reason = "local review pin is current"
+            elif branch_head and branch_head != pinned_sha:
                 result = "newer patchset"
                 reason = f"local branch has moved from {pinned_sha[:10]} to {branch_head[:10]}; re-pin required"
             else:
