@@ -293,6 +293,14 @@ def build_and_run_script(args, sha, sha_b=None, expected_digest=None):
         else ""
     )
 
+    tune_script = ".agents/skills/optimize-campaign/scripts/tune_benchmark_host.py"
+    tune_lines = [
+        f'if [ -f "{tune_script}" ] && sudo -n true 2>/dev/null; then',
+        f'  python3 "{tune_script}" enable || true',
+        f'  trap \'python3 "{tune_script}" disable || true\' EXIT INT TERM',
+        "fi",
+    ] if getattr(args, "tune_host", True) else []
+
     if args.mode == "ab2":
         for arm, arm_sha in (("a", sha), ("b", sha_b)):
             out_dir = f"out/release_{arm}"
@@ -305,6 +313,7 @@ def build_and_run_script(args, sha, sha_b=None, expected_digest=None):
                 "fi",
                 f"autoninja -C {out_dir} chrome chromedriver",
             ]
+        lines += tune_lines
         lines.append(
             f"vpython3 {bench} --browser-a=out/release_a/chrome "
             f"--browser-b=out/release_b/chrome --required-build-role=release "
@@ -317,6 +326,7 @@ def build_and_run_script(args, sha, sha_b=None, expected_digest=None):
             f"git checkout --quiet --detach {q(sha)}",
             f"autoninja -C {out_dir} chrome chromedriver",
         ]
+        lines += tune_lines
         if args.mode == "aa":
             lines.append(
                 f"vpython3 {bench} --browser=out/release/chrome --aa "
@@ -387,6 +397,14 @@ def build_local_script(args, root, expected_digest):
     if not args.skip_build:
         build_dir = os.path.dirname(browser)
         lines.append(f"autoninja -C {q(build_dir)} chrome chromedriver")
+    if getattr(args, "tune_host", True):
+        tune_script = ".agents/skills/optimize-campaign/scripts/tune_benchmark_host.py"
+        lines += [
+            f'if [ -f "{tune_script}" ] && sudo -n true 2>/dev/null; then',
+            f'  python3 "{tune_script}" enable || true',
+            f'  trap \'python3 "{tune_script}" disable || true\' EXIT INT TERM',
+            "fi",
+        ]
     if args.mode == "profile":
         features = args.enable_features or ""
         lines.append(
@@ -922,6 +940,13 @@ def main(argv=None):
     parser.add_argument("--allow-unstaged", action="store_true",
                         help="Allow STAGED to proceed despite unstaged/untracked "
                         "changes (they are excluded from the measurement)")
+    parser.add_argument(
+        "--tune-host",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable consistent benchmark host tuning (clocks, ASLR, SMT) "
+        "before measurement and restore on exit (default: true)",
+    )
     parser.add_argument(
         "--opp",
         type=int,

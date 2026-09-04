@@ -244,6 +244,12 @@ python3 .agents/skills/optimize-campaign/scripts/mechanism_evidence.py capture \
   --out-dir <baseline-block-1> --out <baseline-capture-1.json>
 ```
 
+`capture` automatically enables host tuning via `tune_benchmark_host.py` by default
+(`--tune-host`), locking the base clock (3.5 GHz), disabling Turbo Boost, disabling
+ASLR, and disabling SMT to minimize variance across `_rdpmc` cycle probe reads,
+restoring the host upon block exit.
+
+
 Ingest at least the adapter-required block count, summarize, and advance:
 
 ```bash
@@ -294,16 +300,67 @@ When an implementation is complete, compiles cleanly, and passes focused smoke c
    - **PASS:** Zero blocking findings or defects found; the candidate is certified ready for remote A/B benchmarking.
    - **FAIL / FINDINGS:** The candidate must be reworked and re-reviewed locally before any remote benchmark cycles are spent.
 
-### 6. Isolated candidate A/B measurement and gate evaluation
+### 6. Isolated candidate evaluation and two-stage measurement gate
 
 Every candidate commit is evaluated in pure isolation on a clean branch off the
-scaffold baseline using the full suite (`--stories=all`) under the aggregate feature flag.
+scaffold baseline using a **two-stage verification funnel**:
+
+#### Stage 1: Dedicated Bare-Metal Measurement (Exploration & Sizing)
+Evaluate the candidate commit in pure isolation using the full suite (`--stories=all`)
+under the aggregate feature flag on the dedicated bare-metal host (or local):
 
 ```bash
 python3 .agents/skills/optimize-campaign/scripts/remote_measure.py \
   --execution ssh --mode ab --ref <candidate-sha> \
   --feature <campaign-feature> --blocks 32
 ```
+
+Stage 1 confirms in-situ cycle reduction, PMU counter shifts, and initial absence of
+macro regressions with rapid turnaround.
+
+##### Automatic Benchmark Host Tuning:
+`remote_measure.py` automatically enables benchmark host tuning via
+`scripts/tune_benchmark_host.py` by default (`--tune-host`):
+- **Timing:** Tuning is activated *after* `autoninja` compilation (ensuring builds use
+  all threads and full turbo frequencies) and *before* Crossbench benchmark execution.
+- **Tuning Controls:** Locks CPU clock scaling (disables Turbo Boost to prevent thermal
+  stepping, locks CPU frequency to base clock, sets `performance` governor and EPP,
+  disables ASLR, turns off SMT to isolate physical cores, and disables NMI watchdog).
+- **Guaranteed Cleanup:** Pre-tuning host state is snapshotted to `/tmp/bench_host_tuning_state.json`.
+  A shell trap (`trap ... EXIT INT TERM`) ensures host settings are always restored to their
+  exact original state upon completion or failure, never leaving the machine locked.
+
+
+#### Stage 2: Pinpoint Fleet Validation Gate (Fleet Checkpoint & PGO Verification)
+Candidates demonstrating Stage 1 wins or strong signal advance to authoritative fleet
+validation on production-configured bots (default: `mac-m1_mini_2020-perf-pgo`, 150 attempts)
+using `scripts/pinpoint_measure.py`:
+
+```bash
+python3 .agents/skills/optimize-campaign/scripts/pinpoint_measure.py run \
+  --benchmark speedometer3 \
+  --bot mac-m1_mini_2020-perf-pgo \
+  --attempts 150 \
+  --out candidate_pinpoint_summary.json
+```
+
+##### Try CL Policy & Result Provenance:
+- **Lightweight Try CL:** It is **completely acceptable if the Gerrit CL is NOT a full
+  implementation** with feature-specific flags, enterprise toggles, or unit/browser tests at
+  this stage. Its purpose is validating the isolated optimization on production PGO builds.
+- **Durable Provenance:** The Gerrit CL URL (e.g. `https://chromium-review.googlesource.com/c/chromium/src/+/123456`)
+  and the Pinpoint Job ID must be recorded directly in the candidate's measurement summary and
+  campaign ledger, serving as the durable code foundation for the upstream landing CL if accepted.
+
+##### Mandatory Abandonment of Failed CLs:
+- If a candidate is rejected (statistically significant regression, negative score drag, or
+  abandoned path), **the try CL MUST BE IMMEDIATELY ABANDONED** on Gerrit:
+  ```bash
+  python3 .agents/skills/optimize-campaign/scripts/pinpoint_measure.py abandon \
+    --cl <gerrit_cl_url_or_number> \
+    --reason "optimize-campaign: candidate failed fleet validation"
+  ```
+  Failed, discarded, or unviable experiment CLs must never be left open in Gerrit.
 
 #### Acceptance Criteria (Dual Path):
 1. **Targeted Improvement (Path A):**

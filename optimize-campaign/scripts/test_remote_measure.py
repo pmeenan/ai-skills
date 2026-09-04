@@ -142,6 +142,15 @@ class ScriptGenerationTest(unittest.TestCase):
         self.assertIn("--iteration-count=4", script)
         self.assertIn("--driver-path=out/Default/chromedriver", script)
 
+    def test_tune_host_in_remote_script_enabled_by_default(self):
+        script = rm.build_and_run_script(make_args(), SHA_A)
+        self.assertIn('tune_benchmark_host.py" enable', script)
+        self.assertIn("trap 'python3 \".agents/skills/optimize-campaign/scripts/tune_benchmark_host.py\" disable || true' EXIT INT TERM", script)
+
+    def test_tune_host_disabled_via_flag(self):
+        script = rm.build_and_run_script(make_args(tune_host=False), SHA_A)
+        self.assertNotIn("tune_benchmark_host.py", script)
+
 
 class QuotingTest(unittest.TestCase):
     def test_metacharacters_are_quoted(self):

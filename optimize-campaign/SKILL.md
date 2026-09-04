@@ -83,7 +83,28 @@ review subagent using `invoke_subagent` following `chromium-code-review` in loca
 advancing to the 32-block remote benchmark.
 
 Every isolated candidate commit is evaluated in pure isolation against baseline
-using the full suite (`--stories=all`). Acceptance uses a dual-path model:
+using a **two-stage measurement pipeline**:
+
+1. **Stage 1: Dedicated Bare-Metal Measurement (Exploration & Sizing):**
+   Run isolated 32-block balanced ABBA/BAAB runs via `scripts/remote_measure.py` (or local)
+   and cycle sizing via `scripts/mechanism_evidence.py`. This verifies cycle reduction, PMU
+   counter behavior, and absence of regressions on dedicated hardware with rapid turnaround.
+
+2. **Stage 2: Pinpoint Fleet Validation Gate (Fleet Checkpoint):**
+   Candidates demonstrating Stage 1 wins or signal advance to the production hardware fleet
+   (default: `mac-m1_mini_2020-perf-pgo`, 150 attempts) using `scripts/pinpoint_measure.py`:
+   - **Try CL Policy:** The candidate is uploaded as a lightweight Gerrit try CL (`git cl upload`).
+     It is completely acceptable if this initial try CL is NOT a full production implementation
+     with feature-specific flags or unit tests; it only needs the isolated optimization logic.
+   - **Provenance Tracking:** The Gerrit CL URL and Pinpoint job ID are authoritatively recorded
+     with the results in candidate manifests and ledger, serving as the basis for the full
+     implementation if the candidate succeeds.
+   - **Mandatory Abandonment Rule:** Any try CL that fails the validation gate (stat-sig
+     regression, net negative score drag, or candidate rejection) **MUST BE IMMEDIATELY ABANDONED**
+     on Gerrit (`pinpoint_measure.py abandon --cl <url>` or `git cl set-close -i <issue>`).
+     Unviable experiment CLs must never linger in review queues.
+
+Acceptance uses a dual-path model:
 1. **Targeted Improvement (Path A):** Significant in-situ or story-level win on
    the candidate's pre-registered target workload(s) with zero regressions.
 2. **Unexpected Real Improvement (Path B):** Significant win on untargeted workload(s),

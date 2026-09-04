@@ -14,6 +14,7 @@ artifacts accepted by campaign.py's sizing and candidate-verification gates.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
@@ -32,6 +33,10 @@ import tempfile
 import time
 
 import benchmark_adapters
+try:
+    import tune_benchmark_host
+except ImportError:
+    tune_benchmark_host = None
 
 SCHEMA_VERSION = 4
 ROW_PREFIX = "[SP3_CYCLE_ROW] "
@@ -1311,11 +1316,18 @@ def cmd_capture(args: argparse.Namespace) -> None:
         "SP3_CYCLE_CAPTURE_NONCE": nonce,
         "SP3_CYCLE_CAPTURE_BLOCK": str(args.block),
     }
-    started_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
-    started = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    completed = subprocess.run(command, cwd=root, env=env, check=False)
-    finished = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    finished_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
+    tune = getattr(args, "tune_host", True) and tune_benchmark_host is not None
+    tune_ctx = (
+        tune_benchmark_host.tuned_host_context()
+        if tune
+        else contextlib.nullcontext()
+    )
+    with tune_ctx:
+        started_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
+        started = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        completed = subprocess.run(command, cwd=root, env=env, check=False)
+        finished = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        finished_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
     if completed.returncode != 0:
         raise EvidenceError(f"instrumented Crossbench failed with {completed.returncode}")
     if ensure_authoritative_index(root) != source_tree:
@@ -1619,6 +1631,13 @@ def parser() -> argparse.ArgumentParser:
     capture.add_argument("--enable-features", default="")
     capture.add_argument("--out-dir", type=pathlib.Path, required=True)
     capture.add_argument("--out", type=pathlib.Path, required=True)
+    capture.add_argument(
+        "--tune-host",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable consistent benchmark host tuning (clocks, ASLR, SMT) "
+        "before capture and restore on exit (default: true)",
+    )
     capture.set_defaults(func=cmd_capture)
     ingest = commands.add_parser(
         "ingest", help="reduce runner-owned capture manifests into bound raw JSON"

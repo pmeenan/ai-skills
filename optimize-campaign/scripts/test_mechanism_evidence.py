@@ -527,6 +527,22 @@ class MechanismEvidenceTest(unittest.TestCase):
                     metric_model="speedometer-story-v1",
                 )
 
+    def test_capture_parser_tune_host_flag(self):
+        p = evidence.parser()
+        args = p.parse_args([
+            "capture", "--benchmark", "speedometer3", "--metadata", "meta.json",
+            "--variant", "baseline", "--browser", "chrome", "--block", "1",
+            "--out-dir", "out_dir", "--out", "out.json",
+        ])
+        self.assertTrue(args.tune_host)
+
+        args_no_tune = p.parse_args([
+            "capture", "--benchmark", "speedometer3", "--metadata", "meta.json",
+            "--variant", "baseline", "--browser", "chrome", "--block", "1",
+            "--out-dir", "out_dir", "--out", "out.json", "--no-tune-host",
+        ])
+        self.assertFalse(args_no_tune.tune_host)
+
 
 if __name__ == "__main__":
     unittest.main()
