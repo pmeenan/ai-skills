@@ -6664,7 +6664,7 @@ def forward_if_remote(raw_argv):
     digest = None
     if root is not None:
         import remote_measure
-        digest = remote_measure.skills_digest(root)
+        digest = remote_measure.skills_digest(pathlib.Path(root))
     rc = campaign_host.forward(host, remote_src, name, argv, digest)
     if rc == 0 and command == "init" and root is not None:
         campaign_host.save_pointer(root, host, remote_src, name)
