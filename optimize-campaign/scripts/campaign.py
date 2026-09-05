@@ -964,6 +964,14 @@ class Ledger:
             "since full-suite checkpoint"
         )
 
+        hold = self.data.get("hold") or {}
+        if hold.get("active"):
+            lines.append("")
+            lines.append(
+                f"**REVIEW HOLD ACTIVE** since {hold.get('changed_at')}: {hold.get('note')} · "
+                "sizing and implementation are blocked; export with "
+                "`campaign.py export-candidates`, release with `campaign.py hold --release --note ...`"
+            )
         lines.append("")
         lines.append("## Calibration and qualification floors")
         calibration = cfg.get("calibration") or {}
@@ -2441,6 +2449,188 @@ def verify_performance_evidence(config, opp, paths, repo_root, unexpected=False)
     return {"candidate_sha": next(iter(candidate_shas)), "local": local, "fleet": receipts["fleet"]}
 
 
+HOLD_BLOCKED_TRANSITIONS = ("sized", "implementing")
+
+
+def hold_state(ledger):
+    return ledger.data.get("hold") or {"active": False, "stage": "sizing", "history": []}
+
+
+def set_hold(ledger, active, note, source):
+    state = hold_state(ledger)
+    state.setdefault("history", []).append({
+        "ts": utc_now(), "active": active, "note": note, "source": source,
+    })
+    state.update({"active": active, "stage": "sizing", "note": note,
+                  "changed_at": utc_now()})
+    ledger.data["hold"] = state
+    return state
+
+
+def require_not_on_hold(ledger, dst):
+    state = hold_state(ledger)
+    if state.get("active") and dst in HOLD_BLOCKED_TRANSITIONS:
+        raise CampaignError(
+            f"Campaign is on review hold before sizing (set {state.get('changed_at')}: "
+            f"{state.get('note')!r}). The candidate list is complete for external "
+            "review; run `campaign.py export-candidates --out <dir>` to hand it "
+            "over, and only a human releases the hold with "
+            "`campaign.py hold --release --note '<who reviewed what>'`. Do not "
+            "work around it by measuring or implementing outside the ledger."
+        )
+
+
+def cmd_rebind_skills(args):
+    """Deliberately move the campaign onto a newer committed skill tree.
+
+    The recorded digest is what makes every import refuse evidence produced
+    by different tooling. Skill tweaks between measurements (for example after
+    reviewing the candidate list) are expected; record them here with a note
+    instead of starting a new campaign or editing the ledger.
+    """
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    note = (args.note or "").strip()
+    if len(note) < 8:
+        raise CampaignError("--note must say what changed in the skills and why")
+    repo_root = find_repo_root(pathlib.Path.cwd())
+    if not test_bypass_active():
+        require_clean_skill_repository()
+    new_digest = current_skill_tree_digest(repo_root)
+    old_digest = ledger.data["config"].get("skill_tree_sha256")
+    if new_digest == old_digest:
+        print("skill tree unchanged; nothing to rebind")
+        return 0
+    ledger.data.setdefault("skill_rebinds", []).append({
+        "ts": utc_now(), "from": old_digest, "to": new_digest, "note": note,
+    })
+    ledger.data["config"]["skill_tree_sha256"] = new_digest
+    ledger.save()
+    print(f"campaign rebound to skill tree {new_digest[:16]} (was {str(old_digest)[:16]}): {note}")
+    return 0
+
+
+def cmd_hold(args):
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    if args.set == args.release:
+        state = hold_state(ledger)
+        print(json.dumps({k: v for k, v in state.items() if k != "history"}, indent=2))
+        return 0
+    note = (args.note or "").strip()
+    if len(note) < 8:
+        raise CampaignError("--note must say who is holding/releasing and why (8+ characters)")
+    state = set_hold(ledger, bool(args.set), note, "hold command")
+    ledger.data.setdefault("hold_log", []).append({
+        "ts": utc_now(), "active": bool(args.set), "note": note,
+    })
+    ledger.save()
+    print(f"review hold {'ACTIVE' if state['active'] else 'released'}: {note}")
+    return 0
+
+
+EXPORT_OPP_FIELDS = (
+    "id", "kind", "status", "status_since", "key", "mechanism_key", "anchor",
+    "target_story", "subsystem", "share_pct", "measured_priority_pct",
+    "story_profile_share_pct", "estimated_avoidable_fraction",
+    "estimated_local_story_impact_pct", "qualification_floor_pct",
+    "qualification_floor_basis", "investigation_layer", "win_shape",
+    "subtree_pruned", "invariant_description", "safety_and_spec_analysis",
+    "redundancy_summary", "redundancy_evidence", "opportunity_budget",
+    "parent", "children", "profile_id", "evidence", "reason", "notes",
+    "platform_sensitivity",
+)
+
+
+def cmd_export_candidates(args):
+    """Bundle the candidate list for review outside the workhorse session."""
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    cfg = ledger.data["config"]
+    out_dir = pathlib.Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    opps = []
+    for o in ledger.data.get("opportunities", []):
+        if o.get("status") in MECHANISM_TERMINAL and not args.include_terminal:
+            continue
+        priority, basis, measured = ledger.priority_info(o)
+        row = {k: o.get(k) for k in EXPORT_OPP_FIELDS if k in o}
+        row.update({"priority": priority, "priority_basis": basis, "measured_priority_pct": measured})
+        story = o.get("target_story")
+        if story:
+            row["story_floor_pct"], row["story_floor_basis"] = story_floor_pct(cfg, story)
+        opps.append(row)
+    opps.sort(key=lambda r: (-(r.get("priority") or 0), r["id"]))
+
+    def listing(sub):
+        base = ledger.dir / sub
+        if not base.is_dir():
+            return []
+        return [{"path": str(path), "sha256": sha256_file(path), "bytes": path.stat().st_size}
+                for path in sorted(base.rglob("*")) if path.is_file()]
+
+    profiles = []
+    for run in ledger.data.get("profile_runs", []):
+        profiles.append({k: run.get(k) for k in (
+            "id", "ts", "sha", "enable_features", "artifacts", "captures",
+            "area_count", "inventory_count", "total_share_pct", "areas_manifest",
+            "areas_manifest_sha256", "capture_summaries", "notes") if k in run})
+    export = {
+        "schema_version": 1,
+        "kind": "candidate-export",
+        "exported_at": utc_now(),
+        "campaign": {k: cfg.get(k) for k in (
+            "name", "benchmark", "branch", "baseline_sha", "feature", "share_floor_pct",
+            "display", "statistics", "fleet_bot", "skill_tree_sha256")},
+        "calibration": cfg.get("calibration"),
+        "hold": hold_state(ledger),
+        "profiles": profiles,
+        "opportunities": opps,
+        "proposals": listing("proposals"),
+        "dossiers": listing("dossiers"),
+        "reviews": listing("reviews"),
+        "ledger_revision": ledger.data.get("ledger_revision"),
+    }
+    (out_dir / "candidates.json").write_text(json.dumps(export, indent=2, sort_keys=True) + "\n")
+    lines = [
+        f"# Candidate export: {cfg.get('name')}",
+        "",
+        f"Baseline `{cfg.get('baseline_sha')}` · feature `{cfg.get('feature')}` · "
+        f"surface {json.dumps((cfg.get('display') or {}).get('mode'))} · exported {export['exported_at']}",
+        "",
+        "Review hold: " + ("ACTIVE (sizing/implementation blocked until released)" if export["hold"].get("active") else "not set"),
+        "",
+        "## Qualification floors",
+        "",
+    ]
+    calibration = cfg.get("calibration") or {}
+    if calibration.get("story_mde_pct"):
+        lines += ["| Story | MDE | Floor |", "| --- | ---: | ---: |"]
+        for story, mde in sorted(calibration["story_mde_pct"].items(), key=lambda kv: -kv[1]):
+            lines.append(f"| {story} | {mde:.2f}% | {story_floor_pct(cfg, story)[0]:.2f}% |")
+    else:
+        lines.append(f"No calibration recorded; floor {cfg.get('share_floor_pct')}% everywhere.")
+    lines += ["", "## Opportunities (by priority)", "",
+              "| # | Kind | Status | Story | Anchor / key | Share | Est. impact | Floor | Layer | Shape |",
+              "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |"]
+    for r in opps:
+        impact = r.get("estimated_local_story_impact_pct")
+        lines.append(
+            f"| {r['id']} | {r.get('kind')} | {r.get('status')} | {r.get('target_story') or ''} | "
+            f"`{r.get('mechanism_key') or r.get('key') or r.get('anchor') or ''}` | "
+            f"{(r.get('measured_priority_pct') or 0):.2f}% | "
+            f"{'' if impact is None else f'{impact:.2f}%'} | "
+            f"{'' if r.get('story_floor_pct') is None else f'{r['story_floor_pct']:.2f}%'} | "
+            f"{r.get('investigation_layer') or ''} | {r.get('win_shape') or ''} |"
+        )
+    lines += ["", "## Files", ""]
+    for section in ("proposals", "dossiers", "reviews"):
+        lines.append(f"- {section}: {len(export[section])} file(s)")
+    lines += ["", "Full detail, including invariants, redundancy summaries and artifact "
+              "digests, is in `candidates.json` next to this file."]
+    (out_dir / "candidates.md").write_text("\n".join(lines) + "\n")
+    print(out_dir / "candidates.md")
+    print(out_dir / "candidates.json")
+    return 0
+
+
 def story_floor_pct(config, story):
     """Qualification floor for one story: the campaign share floor, raised to
     twice the story's calibrated MDE once an A/A calibration is recorded."""
@@ -2678,6 +2868,14 @@ def cmd_init(args):
             "reason": None,
         },
         "source_area_keys": {},
+        "hold": {
+            "active": bool(getattr(args, "hold_before_sizing", False)),
+            "stage": "sizing",
+            "note": "set at init: external review of the candidate list before sizing"
+            if getattr(args, "hold_before_sizing", False) else None,
+            "changed_at": utc_now(),
+            "history": [],
+        },
     }
     (ledger.dir / "dossiers").mkdir(parents=True, exist_ok=True)
     (ledger.dir / "reviews").mkdir(parents=True, exist_ok=True)
@@ -3719,6 +3917,7 @@ def cmd_advance(args):
             f"Illegal transition {src} -> {dst} for #{opp['id']:03d}. "
             f"Allowed from {src}: {sorted(FORWARD_TRANSITIONS.get(src, set()))}"
         )
+    require_not_on_hold(ledger, dst)
     if dst == "sized":
         if not test_legacy:
             from opportunity_budget import rank
@@ -6052,6 +6251,11 @@ def build_parser():
         help="Land on local evidence alone (not recommended; the Mac bot is the reference)",
     )
     p.add_argument(
+        "--hold-before-sizing", action="store_true",
+        help="Pause the campaign once the candidate list is built: sizing and "
+        "implementation stay blocked until a human runs `campaign.py hold --release`",
+    )
+    p.add_argument(
         "--display", default="headless",
         help="Rendering surface for every profile, mechanism and score run: "
         "'headless' or an X display such as ':1' backed by the GPU",
@@ -6339,6 +6543,28 @@ def build_parser():
     p.add_argument("--opp", type=int, default=None)
     p.add_argument("--area-key", default=None, help="Show all history for one area")
     p.set_defaults(func=cmd_show)
+
+    p = sub.add_parser(
+        "rebind-skills",
+        help="Record a deliberate move to the current committed skill tree (between measurements)",
+    )
+    p.add_argument("--note", required=True, help="What changed in the skills and why")
+    p.set_defaults(func=cmd_rebind_skills)
+
+    p = sub.add_parser("hold", help="Show, set or release the pre-sizing review hold")
+    p.add_argument("--set", action="store_true", help="Block sizing/implementation until released")
+    p.add_argument("--release", action="store_true", help="Release the hold (human action)")
+    p.add_argument("--note", default=None, help="Who is holding/releasing and why")
+    p.set_defaults(func=cmd_hold)
+
+    p = sub.add_parser(
+        "export-candidates",
+        help="Write candidates.json/.md (floors, opportunities, proposals, artifacts) for external review",
+    )
+    p.add_argument("--out", required=True, help="Output directory")
+    p.add_argument("--include-terminal", action="store_true",
+                   help="Also include landed/rejected/reverted mechanisms")
+    p.set_defaults(func=cmd_export_candidates)
 
     p = sub.add_parser("next", help="Print the next candidates by priority")
     p.add_argument("--count", type=int, default=3)

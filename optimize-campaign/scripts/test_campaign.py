@@ -2509,6 +2509,56 @@ class CalibrationFloorTest(unittest.TestCase):
             "--manifest", str(self.dir / "aa-wrong.json"), "--tolerance-pct", "5", "--max-mde-pct", "10"]))
 
 
+class ReviewHoldTest(CampaignTest):
+    def mechanism(self):
+        discovery = self.record_profile("profile-1")[0]
+        self.assertEqual(0, self.decompose(discovery, [
+            {"anchor": "Rule collector", "mechanism_key": "style/cache-rule-match",
+             "share_pct": 0.35},
+        ]))
+        return [o["id"] for o in self.ledger()["opportunities"] if o.get("kind") == "mechanism"][0]
+
+    def test_hold_blocks_sizing_until_released_with_note(self):
+        self.assertEqual(0, self.run_cmd("hold", "--set", "--note", "external review of the candidate list"))
+        self.assertTrue(self.ledger()["hold"]["active"])
+        self.assertIn("REVIEW HOLD", self.status_text())
+        opp = self.mechanism()
+        self.assertEqual(1, self.run_cmd(
+            "advance", "--opp", str(opp), "--to", "sized", "--ceiling", "0.4", "--evidence", "oracle"))
+        self.assertEqual(1, self.run_cmd("hold", "--release", "--note", "x"))
+        self.assertEqual(0, self.run_cmd(
+            "hold", "--release", "--note", "reviewed by a second model, nothing changed"))
+        self.assertFalse(self.ledger()["hold"]["active"])
+        self.assertEqual(2, len(self.ledger()["hold"]["history"]))
+        self.assertEqual(0, self.run_cmd(
+            "advance", "--opp", str(opp), "--to", "sized", "--ceiling", "0.4", "--evidence", "oracle"))
+
+    def test_rebind_skills_records_history(self):
+        self.assertEqual(1, self.run_cmd("rebind-skills", "--note", "x"))
+        with mock.patch.object(campaign, "current_skill_tree_digest", return_value="e" * 64):
+            self.assertEqual(0, self.run_cmd(
+                "rebind-skills", "--note", "profiler playbook reworded after candidate review"))
+        data = self.ledger()
+        self.assertEqual("e" * 64, data["config"]["skill_tree_sha256"])
+        self.assertEqual(1, len(data["skill_rebinds"]))
+        self.assertEqual("test-only", data["skill_rebinds"][0]["from"])
+
+    def test_export_candidates_writes_bundle(self):
+        opp = self.mechanism()
+        (self.dir / "proposals").mkdir(exist_ok=True)
+        (self.dir / "proposals" / "style_cache.json").write_text("{}")
+        out = self.dir / "export"
+        self.assertEqual(0, self.run_cmd("export-candidates", "--out", str(out)))
+        data = json.loads((out / "candidates.json").read_text())
+        self.assertEqual("candidate-export", data["kind"])
+        ids = {row["id"] for row in data["opportunities"]}
+        self.assertIn(opp, ids)
+        keys = {row.get("mechanism_key") for row in data["opportunities"]}
+        self.assertIn("style/cache-rule-match", keys)
+        self.assertEqual(1, len(data["proposals"]))
+        self.assertIn("style/cache-rule-match", (out / "candidates.md").read_text())
+
+
 class DisplayPolicyTest(unittest.TestCase):
     def test_headless_default(self):
         policy = campaign.display_policy_from_args(argparse.Namespace())
