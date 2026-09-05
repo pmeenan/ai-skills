@@ -33,6 +33,8 @@ import sys
 
 POINTER_NAME = "current.remote"
 DOWNLOAD_FLAGS = ("--out", "--summary-out")
+# First contact with a new host is accepted; a changed key is still refused.
+SSH_OPTS = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new"]
 LOCAL_HOST_ALIASES = ("localhost", "127.0.0.1", "::1")
 
 
@@ -155,7 +157,7 @@ def plan_forward(argv, remote_dir, is_file=None):
 
 def _ssh(host, script, stdin_data=None):
     proc = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", host, "bash", "-s"],
+        ["ssh", *SSH_OPTS, host, "bash", "-s"],
         input=(script if stdin_data is None else script).encode(),
         capture_output=True,
     )
@@ -174,7 +176,7 @@ def forward(host, remote_src, name, argv, expected_digest=None):
         if rc:
             raise HostError(f"cannot create inbox on {host}: {err.strip()}")
         for local, remote in uploads:
-            subprocess.run(["scp", "-C", "-q", local, f"{host}:{remote}"], check=True)
+            subprocess.run(["scp", *SSH_OPTS, "-C", "-q", local, f"{host}:{remote}"], check=True)
     if downloads:
         dirs = sorted({str(pathlib.PurePosixPath(remote).parent) for remote, _ in downloads})
         rc, _, err = _ssh(host, "mkdir -p " + " ".join(q(d) for d in dirs) + "\n")
@@ -183,13 +185,16 @@ def forward(host, remote_src, name, argv, expected_digest=None):
     lines = ["set -euo pipefail", f"cd {q(remote_src)}"]
     if expected_digest:
         lines += sync_gate_lines(expected_digest)
+    # init creates <campaigns>/<name> itself and repoints the host's `current`
+    # link, which host-side tools (remote_measure in local mode) rely on.
+    dir_option = "" if remote_argv and remote_argv[0] == "init" else f"--dir {q(remote_dir)} "
     lines.append(
-        "python3 .agents/skills/optimize-campaign/scripts/campaign.py --dir "
-        + q(remote_dir) + " " + " ".join(q(a) for a in remote_argv)
+        "python3 .agents/skills/optimize-campaign/scripts/campaign.py "
+        + dir_option + " ".join(q(a) for a in remote_argv)
     )
     script = "\n".join(lines) + "\n"
     print(f"+ ssh {host} campaign.py --dir {remote_dir} {' '.join(remote_argv)}", file=sys.stderr)
-    proc = subprocess.Popen(["ssh", "-o", "BatchMode=yes", host, "bash", "-s"],
+    proc = subprocess.Popen(["ssh", *SSH_OPTS, host, "bash", "-s"],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     proc.stdin.write(script.encode())
     proc.stdin.close()
@@ -199,7 +204,7 @@ def forward(host, remote_src, name, argv, expected_digest=None):
     if proc.returncode == 0 and downloads:
         for remote, local in downloads:
             pathlib.Path(local).parent.mkdir(parents=True, exist_ok=True)
-            subprocess.run(["rsync", "-az", f"{host}:{remote}", local], check=True)
+            subprocess.run(["rsync", "-az", "-e", "ssh " + " ".join(SSH_OPTS), f"{host}:{remote}", local], check=True)
     return proc.returncode
 
 
@@ -246,7 +251,7 @@ def rewrite_paths(value, local_prefix, remote_prefix):
 def write_host_file(host, remote_path, text):
     q = shlex.quote
     script = f"mkdir -p {q(str(pathlib.PurePosixPath(remote_path).parent))} && cat > {q(remote_path)}\n"
-    proc = subprocess.run(["ssh", "-o", "BatchMode=yes", host, "bash", "-c", script],
+    proc = subprocess.run(["ssh", *SSH_OPTS, host, "bash", "-c", script],
                           input=text.encode(), capture_output=True)
     if proc.returncode:
         raise HostError(f"cannot write {remote_path} on {host}: {proc.stderr.decode(errors='replace').strip()}")
@@ -254,7 +259,7 @@ def write_host_file(host, remote_path, text):
 
 
 def read_host_json(host, remote_path):
-    proc = subprocess.run(["ssh", "-o", "BatchMode=yes", host, "cat", shlex.quote(remote_path)],
+    proc = subprocess.run(["ssh", *SSH_OPTS, host, "cat", shlex.quote(remote_path)],
                           capture_output=True)
     if proc.returncode:
         raise HostError(f"cannot read {remote_path} on {host}: {proc.stderr.decode(errors='replace').strip()}")
