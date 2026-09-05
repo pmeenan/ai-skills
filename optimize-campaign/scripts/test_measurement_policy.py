@@ -57,6 +57,9 @@ class StatisticsTest(unittest.TestCase):
         self.assertTrue(stats.calibrate([a,b],.1,.1,.9)['gate_pass'])
         b=manifest(0,noise=.03);b.update(mode='aa',session_id='b')
         self.assertFalse(stats.calibrate([a,b],.1,.1,.9)['gate_pass'])
+    def test_calibration_requires_session_ids(self):
+        a=dict(manifest(0),mode='aa'); b=dict(manifest(0),mode='aa')
+        with self.assertRaisesRegex(ValueError,'session identities'):stats.calibrate([a,b],.1,.1,.9)
     def test_calibration_rejects_surface_change(self):
         a=dict(manifest(0),session_id='one',mode='aa',capture_environment={'host_name':'h','display':{'mode':'headless'}})
         b=dict(manifest(0),session_id='two',mode='aa',capture_environment={'host_name':'h','display':{'mode':'x11','display':':1','viewport':'1500x1000','gpu_renderer':'NVIDIA'}})

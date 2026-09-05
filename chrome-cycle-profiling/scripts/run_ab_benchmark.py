@@ -1036,6 +1036,8 @@ def main():
             args.stories
         ),
         "blocks": suite["n_blocks"],
+        # One id per launch: calibrate() refuses two manifests from one session.
+        "session_id": f"{run_started_at}/{evidence_name}",
         "seed": actual_seed,
         "schedule": block_patterns,
         "started_at": run_started_at,
