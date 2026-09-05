@@ -65,7 +65,12 @@ Return only:
 
 PASS is not “the files exist.” It means the reviewer independently opened the
 raw evidence and found no credible path by which this gate could pass without
-the claimed real-world conclusion. A CHALLENGE pauses the orchestrator until
+the claimed real-world conclusion. Every challenge and every
+`artifact_digests_checked` entry must be a real digest from the bound
+artifacts; the orchestrator rejects reviews that repeat one sentence or cite
+nothing that can be opened. Skeptic and adversary reviews of profile,
+decomposition and sizing gates are the three places to use the strongest
+available model. A CHALLENGE pauses the orchestrator until
 the evidence is regenerated, the candidate is rejected, or the concern is
 explicitly shown irrelevant. No prose review can turn a failed machine gate
 into a pass.

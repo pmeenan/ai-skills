@@ -27,13 +27,31 @@ Speedometer currently supports all three capabilities. JetStream supports
 score characterization and immutable-payload score evidence, but its exact
 profile and mechanism paths remain fail-closed pending end-to-end verification.
 
+## Per-state checklist (what the workhorse actually runs)
+
+| State | Command | Must show before moving on |
+| --- | --- | --- |
+| init | `campaign.py init ... --display :1 --display-vt 9` | ledger `config.display.mode` matches the host policy |
+| calibrate | two `remote_measure.py --mode aa` sessions hours apart, then `campaign.py calibrate --manifest A --manifest B` | `gate_pass`, per-story MDE table printed; floors now 2 × MDE |
+| profile | two `remote_measure.py --mode profile --repetitions 32` | `stories_scope: main-thread`, `display.gpu_renderer` not SwiftShader, 100+ nominal samples per story |
+| investigate | redundancy probe on the site, `redundancy_evidence.py` | packet `applicable_fraction` / `repeat_fraction` support the claimed avoidable fraction |
+| decompose | `campaign.py decompose --children paths.json` | no floor or redundancy rejection; reviews cite artifacts and numbers |
+| size | `mechanism_evidence.py capture` × 3+ blocks per arm, `summarize`, `advance --to sized` | avoidable-share lower bound above the story floor |
+| implement | `command_evidence.py` build and test receipts, local code review | receipts bound to the staged tree, review PASS |
+| measure | `remote_measure.py --mode ab --opp <id>` | family-adjusted story flags; fixed-plan verdict from `statistics_policy.py` |
+| land | `advance --to landed --commit <sha> --performance-receipt <local manifest> --performance-receipt <pinpoint summary>` | local fixed-plan IMPROVEMENT on the target story, fleet IMPROVEMENT on the campaign bot |
+
+Paste the real command output into the transcript at each step. If a step's
+"must show" line is missing, stop and report it; do not reinterpret.
+
 ## Evidence layers
 
 Keep these questions and artifacts separate:
 
 | Question | Authoritative evidence | Never substitute |
 | --- | --- | --- |
-| Where is CPU opportunity? | adapter-qualified exact scored-window workload profiles (ranked by inclusive ceiling) | flat self-time, whole-page time, or outer-suite samples |
+| Where is main-thread opportunity? | adapter-qualified exact scored-window, renderer main-thread story profiles (ranked by inclusive ceiling, with portability flags and score-time composition) | flat self-time, whole-page time, other threads/processes, or outer-suite samples |
+| How often does the work run and repeat? | redundancy probe packet (`redundancy_evidence.py`) inside the scored window | a typed avoidable fraction |
 | Did one mechanism remove work? | paired baseline/oracle/candidate counters inside the same scored scope (`mechanism_evidence.py compare`) | profile share, source inspection, or an estimate |
 | Did landed work move its targets? | randomized A/B over the preregistered target workload set | summed mechanism ceilings or a post-hoc subset |
 | Did the campaign improve overall? | randomized default-suite block A/B | targeted deltas or diagnostic components |
@@ -47,7 +65,14 @@ Keep these questions and artifacts separate:
 3. Sampling profiles discover areas and provide inclusive opportunity ceilings;
    they never size a mechanism or predict benchmark movement. Sized impact must
    reflect the specific child call chains actually pruned by the proposed
-   mechanism (`subtree_pruned`).
+   mechanism (`subtree_pruned`), and a Layer 1/2 claim binds a redundancy
+   packet whose counts support the avoidable fraction.
+3a. **Floors come from calibration.** A proposal's estimated target-story
+   impact and a mechanism's sized lower bound must clear
+   max(share floor, 2 × the story's calibrated MDE). Below that, the fixed-plan
+   run cannot read the effect, so nothing downstream is worth running.
+3b. **One rendering surface.** Every profile, capture and score run uses the
+   display policy frozen at init; imports from another surface are rejected.
 4. **Mandatory In-Situ Cycle Verification (Gate 3):** Advance to `sized` only with
    a passing artifact emitted by `mechanism_evidence.py`. Advance to review only
    with a passing paired candidate reduction artifact from the same tool. Never
@@ -127,19 +152,39 @@ python3 .agents/skills/optimize-campaign/scripts/campaign.py init \
   --name <campaign-name> \
   --benchmark <adapter-id> \
   --benchmark-source <source> \
-  --execution <local-or-ssh> \
+  --execution ssh \
   --branch <branch> \
   --feature <campaign-feature> \
-  --share-floor <adapter-floor>
+  --share-floor <adapter-floor> \
+  --baseline <full-sha> \
+  --display :1 --display-vt 9 --viewport 1500x1000 --pause-service ollama
 ```
+
+Init freezes the fixed statistical plan (32 blocks, 1% story and 0.2% suite
+regression margins, alpha 0.05) and the fleet bot (`--fleet-bot`, Mac M1 PGO
+by default). The minimum useful effect is raised to the calibrated MDE once
+`calibrate` has run.
 
 For SSH execution, also provide the measurement host and remote Chromium
 source. For local execution, use the current checkout and never ask the runner
-to check out or rewrite a ref.
+to check out or rewrite a ref. `--display headless` is allowed only for
+diagnostic characterization; it renders through SwiftShader.
 
-Before optimizing, run the adapter's A/A calibration and empty-feature null
-check. Keep both runner-owned summaries. Do not proceed when the calibration
-is unstable or the empty feature has measurable cost.
+Before optimizing, run two separately timed A/A sessions and the empty-feature
+null check on the campaign surface, then record the calibration:
+
+```bash
+python3 .agents/skills/optimize-campaign/scripts/remote_measure.py \
+  --mode aa --ref <baseline> --blocks 32 --summary-out <aa-1.json>
+# ... hours later, a second session ...
+python3 .agents/skills/optimize-campaign/scripts/campaign.py calibrate \
+  --manifest <aa-1 manifest> --manifest <aa-2 manifest> \
+  --tolerance-pct 0.5 --max-mde-pct 3.0
+```
+
+The command prints every story's MDE and the resulting qualification floor.
+Do not proceed when the calibration fails its gate or the empty feature has
+measurable cost.
 
 ## Campaign loop
 
@@ -154,15 +199,19 @@ and quality floor:
 python3 .agents/skills/optimize-campaign/scripts/remote_measure.py \
   --mode profile --benchmark <adapter-id> --ref <campaign-tip> \
   --stories <adapter-default-selector> \
-  --repetitions <adapter-profile-repetitions> \
+  --repetitions 32 \
   --share-floor-pct <adapter-floor> \
   --enable-features <campaign-feature> \
   --summary-out <capture.json>
 ```
 
-Every capture must bind the campaign benchmark and metric model, report
-`interval_kind: exact-scored`, pass the adapter's workload-level sample gate,
-and carry unique raw capture and artifact provenance.
+The wrapper applies the campaign display policy, keeps ASLR on, samples at a
+fixed period (about 4 kHz per CPU at the locked base clock) and scopes story
+silos to the renderer main thread. Every capture must bind the campaign
+benchmark and metric model, report `interval_kind: exact-scored` and
+`stories_scope: main-thread`, record the campaign display identity, pass the
+100-nominal-sample gate in every story, and carry unique raw capture and
+artifact provenance.
 
 Generate, review, and import the reconciliation:
 
@@ -183,14 +232,21 @@ visible until a follow-on profile proves its residual state.
 
 ### 2. Decompose and qualify an opportunity
 
-Have the investigator analyze the workload-local profile and source:
-1. **First-Principles Top-Down Discovery:** Decompose high-inclusive call trees
-   to locate unharvested bottlenecks. Use `references/optimization-patterns.md`
-   as an "also explore" inspiration reference without letting it narrow the
-   investigation scope.
+Have the investigator analyze the story's main-thread profile, its score-time
+composition and source (see `playbooks/investigator.md`):
+1. **Shape first, then count.** Name which win shape the idea is (skip the
+   subtree, reuse a result, change the representation, shorten a wait). For
+   the first two, instrument the site with `redundancy_probe.h`, run the
+   target story, and reduce the log with `redundancy_evidence.py`; the packet
+   is bound at `decompose` and caps the avoidable fraction. Use
+   `references/optimization-patterns.md` as an "also explore" reference
+   without letting it narrow the scope; note which patterns are Mac-only.
+1a. **Route the judgment call.** Send the frontier, composition and the top
+   two hypotheses to the strongest available model for the architectural
+   counterfactual and spec-risk pass before writing a proposal.
 2. **Checkout Freshness & Durable Ledger Pre-Check:** Ensure the checkout is
    up-to-date with `origin/main`. Inspect the persistent campaign ledger
-   (`OPTIMIZATION_LEDGER.md`) for prior attempts in the area.
+   (`ledger.json`) for prior attempts in the area.
 3. **No Premature Path Closing:** If a prior attempt in an area failed or was
    discarded, do not close off the whole subsystem or function. Read the exact
    failure rationale (e.g., specific micro-check, branch overhead, or spec corner
@@ -217,7 +273,9 @@ reverted mechanisms without genuinely contradictory evidence.
 
 ### 3. Instrument and size one mechanism
 
-Proceed only when mechanism capture is operational for the selected adapter.
+Proceed only when mechanism capture is operational for the selected adapter
+and the proposal's estimated impact clears the story floor; sizing must then
+show an avoidable-share lower bound above the same floor.
 Use `instrumented-twin.md` and `mechanism-evidence.md`. Bind the same
 instrumentation-only patch across baseline, oracle, and candidate builds;
 record release-like build provenance and an instrumented A/A overhead check.
@@ -276,7 +334,7 @@ Advance to `implementing`, preserve the temporary counters, and repeat the
 same blocks with `variant: candidate`. Use `mechanism_evidence.py compare` for
 the paired reduction and `command_evidence.py` for direct build and test
 receipts. Advance to review only when lower confidence bounds establish both
-exclusive-cycle reduction and net scored-cycle share saved.
+scoped work reduction with total-work checks, or the separate trace-backed latency route. Scoped savings are not a net score estimate.
 
 ### 5. Pre-Testing Local Code Review Gate
 
@@ -300,119 +358,34 @@ When an implementation is complete, compiles cleanly, and passes focused smoke c
    - **PASS:** Zero blocking findings or defects found; the candidate is certified ready for remote A/B benchmarking.
    - **FAIL / FINDINGS:** The candidate must be reworked and re-reviewed locally before any remote benchmark cycles are spent.
 
-### 6. Isolated candidate evaluation and two-stage measurement gate
+### 6. Isolated candidate evaluation and performance gates
 
-Every candidate commit is evaluated in pure isolation on a clean branch off the
-scaffold baseline using a **two-stage verification funnel**:
+Use [measurement-policy.md](measurement-policy.md) for the fixed-plan local
+and fleet stages. Every launch is recorded in the ledger before it starts,
+including failures and cancellations; the runner's manifest is the evidence
+and is recomputed from raw results at import. A workload-specific primary
+retains the entire default regression family.
 
-#### Stage 1: Dedicated Bare-Metal Measurement (Exploration & Sizing)
-Evaluate the candidate commit in pure isolation using the full suite (`--stories=all`)
-under the aggregate feature flag on the dedicated bare-metal host (or local):
+Build and pass focused correctness checks and an independent local code review
+before launching the expensive score stages. Prepare an immutable Gerrit
+patchset only within the user's authorized publication scope. The Pinpoint
+base and experiment must use the frozen baseline, exact Speedometer 3.1
+20-workload payload, and explicit candidate feature activation on the
+experiment. Record host/architecture/display differences rather than implying
+identical environments. A missing metric, failed run or ambiguous result is
+not a pass and is not an automatic permission to abandon a review remotely.
 
-```bash
-python3 .agents/skills/optimize-campaign/scripts/remote_measure.py \
-  --execution ssh --mode ab --ref <candidate-sha> \
-  --feature <campaign-feature> --blocks 32
-```
+Advance to landed only with a local fixed-plan IMPROVEMENT manifest on the
+candidate's target story and a Pinpoint IMPROVEMENT summary on the campaign
+bot, plus a separately seeded confirmation for an unexpected hypothesis. Pass
+repeated `--performance-receipt <file>` arguments and `--unexpected-win` when
+applicable. This does not replace source review, build/test receipts,
+mechanism/latency evidence or freshness requirements.
 
-Stage 1 confirms in-situ cycle reduction, PMU counter shifts, and initial absence of
-macro regressions with rapid turnaround.
-
-##### Automatic Benchmark Host Tuning:
-`remote_measure.py` automatically enables benchmark host tuning via
-`scripts/tune_benchmark_host.py` by default (`--tune-host`):
-- **Timing:** Tuning is activated *after* `autoninja` compilation (ensuring builds use
-  all threads and full turbo frequencies) and *before* Crossbench benchmark execution.
-- **Tuning Controls:** Locks CPU clock scaling (disables Turbo Boost to prevent thermal
-  stepping, locks CPU frequency to base clock, sets `performance` governor and EPP,
-  disables ASLR, turns off SMT to isolate physical cores, and disables NMI watchdog).
-- **Guaranteed Cleanup:** Pre-tuning host state is snapshotted to `/tmp/bench_host_tuning_state.json`.
-  A shell trap (`trap ... EXIT INT TERM`) ensures host settings are always restored to their
-  exact original state upon completion or failure, never leaving the machine locked.
-
-
-#### Stage 2: Pinpoint Fleet Validation Gate (Fleet Checkpoint & PGO Verification)
-Candidates demonstrating Stage 1 wins or strong signal advance to authoritative fleet
-validation on production-configured bots (default: `mac-m1_mini_2020-perf-pgo`, 150 attempts)
-using `scripts/pinpoint_measure.py`:
-
-```bash
-python3 .agents/skills/optimize-campaign/scripts/pinpoint_measure.py run \
-  --benchmark speedometer3 \
-  --bot mac-m1_mini_2020-perf-pgo \
-  --attempts 150 \
-  --out candidate_pinpoint_summary.json
-```
-
-##### Try CL Policy & Result Provenance:
-- **Lightweight Try CL:** It is **completely acceptable if the Gerrit CL is NOT a full
-  implementation** with feature-specific flags, enterprise toggles, or unit/browser tests at
-  this stage. Its purpose is validating the isolated optimization on production PGO builds.
-- **Durable Provenance:** The Gerrit CL URL (e.g. `https://chromium-review.googlesource.com/c/chromium/src/+/123456`)
-  and the Pinpoint Job ID must be recorded directly in the candidate's measurement summary and
-  campaign ledger, serving as the durable code foundation for the upstream landing CL if accepted.
-
-##### Mandatory Abandonment of Failed CLs:
-- If a candidate is rejected (statistically significant regression, negative score drag, or
-  abandoned path), **the try CL MUST BE IMMEDIATELY ABANDONED** on Gerrit:
-  ```bash
-  python3 .agents/skills/optimize-campaign/scripts/pinpoint_measure.py abandon \
-    --cl <gerrit_cl_url_or_number> \
-    --reason "optimize-campaign: candidate failed fleet validation"
-  ```
-  Failed, discarded, or unviable experiment CLs must never be left open in Gerrit.
-
-#### Acceptance Criteria (Dual Path):
-1. **Targeted Improvement (Path A):**
-   Demonstrates a statistically significant or clear in-situ improvement on the
-   candidate's pre-registered target workload(s) without regressing other workloads.
-2. **Unexpected Real Improvement (Path B):**
-   Demonstrates a statistically significant improvement on untargeted workload(s),
-   provided the mechanism's cross-cutting leverage is investigated and understood
-   (e.g., cross-framework DOM/SVG listener overhead in WebComponent shadow roots).
-
-#### Rejection Criteria (Strict Regression Guardrail):
-- A candidate is **rejected** if it causes a statistically significant regression
-  on any workload across the suite, or causes a net negative drag on the geometric mean.
-
-#### Targeted Anomaly Confirmation Protocol:
-- If a candidate flags a single-story borderline win or regression near the noise
-  floor, run a fast targeted 32-block confirmation on that specific workload
-  (`--stories=<flagged_story> --blocks=32`) to definitively distinguish a true effect
-  from a multiple-comparison false positive before making the final accept/reject decision.
-
-### 7. Run bound reviews
-
-Generate skeptic and adversary review scaffolds after entering review. Each
-reviewer inspects the staged diff and raw artifacts identified by the bound
-digests. A PASS requires every check true and no unresolved finding. A FAIL
-returns the opportunity to an allowed rework round or rejects it.
-
-### 8. Land, checkpoint, and reprofile
-
-Commit the exact reviewed tree to the campaign branch and record its SHA. At the adapter's cadence,
-run a cumulative targeted A/B over the ledger-derived target selector and a
-separate default-suite A/B for the aggregate claim and regression guardrail.
-
-```bash
-TARGETS=$(python3 .agents/skills/optimize-campaign/scripts/campaign.py checkpoint-targets)
-python3 .agents/skills/optimize-campaign/scripts/remote_measure.py \
-  --mode ab --benchmark <adapter-id> --ref <campaign-tip> \
-  --feature <campaign-feature> --stories "$TARGETS" \
-  --blocks <adapter-blocks> --summary-out <targeted-summary.json>
-python3 .agents/skills/optimize-campaign/scripts/campaign.py checkpoint \
-  --kind targeted --summary <targeted-summary.json> \
-  --gate-skeptic <checkpoint-skeptic.json> \
-  --gate-adversary <checkpoint-adversary.json>
-```
-
-Use the adapter's default workload selector for the separate full-suite
-checkpoint. If a CI is too wide, use the measured MDE to preregister one larger
-balanced run; never repeatedly sample fresh 95% tests until one passes.
-
-Reprofile the enabled tip at the adapter's cadence and after repeated candidate
-verification misses or a checkpoint that moves contrary to expectation.
-Downstream sizing must use the residual profile, not a stale baseline.
+Cumulative checkpoints remain separate from isolated candidate validation.
+Keep their raw manifests and fixed plans; do not use a cumulative win to rescue
+an isolated candidate that failed its gates. Follow the calibrated sample
+budget, full workload regression family and no-selective-retest policy.
 
 ### 7. End-of-campaign reporting, ledger tracking, and upstream CL preparation
 
@@ -420,10 +393,10 @@ When the campaign concludes (e.g., candidate quota reached, frontier exhausted,
 or target benchmark gain achieved):
 
 1. **Cumulative Full-Suite Sweep:**
-   Run an authoritative 32-block randomized A/B measurement sweep across all
-   benchmark workloads with all banked optimizations enabled vs. baseline HEAD.
+   Run the preregistered, calibrated block-count A/B measurement sweep across all
+   default benchmark workloads with all banked optimizations enabled vs. baseline HEAD.
    Record the overall geometric score delta, 95% CI, MDE, $t$-statistic, and the
-   per-workload scorecard to verify zero stat-sig regressions.
+   per-workload simultaneous non-inferiority bounds against preregistered margins.
 
 2. **Campaign Ledger Authority & Export:**
    All opportunity state transitions, git hashes, and verified sizing/score metrics
@@ -476,4 +449,3 @@ Stop and report when any condition holds:
 Never claim aggregate improvement when the confidence interval crosses zero.
 Report the point estimate, 95% CI, MDE, blocks, seed, SHAs, payload, workload
 inventory, and build provenance. Run `campaign.py audit` before a final claim.
-

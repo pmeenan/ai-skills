@@ -22,18 +22,29 @@ Investigators must inspect the call tree and source code **from the root of the 
 4. **Layer 4: In-place Leaf Optimizations (Lowest Leverage)**
    - *Only if Layers 1–3 cannot eliminate the work: is the leaf execution tight?*
    - Examples: Inlining, removing indirect virtual dispatch, branch hints.
+   - Rarely clears a story floor; the discarded catalog is mostly Layer 4.
+
+**Layer 1 and 2 claims are measured, not typed.** Before `decompose`, the
+investigator instruments the site with `redundancy_probe.h`, runs the target
+story, and reduces the browser log with `redundancy_evidence.py`. The proposal
+cites the packet as `redundancy_evidence: {path, sha256}`; `decompose`
+verifies the digest and refuses an `estimated_avoidable_fraction` above the
+measured `applicable_fraction` / `repeat_fraction` (plus 0.05 tolerance).
 
 ## Per-Story Silo Decomposition & Target-Story Impact Ranking
 
-Speedometer 3 comprises 32 distinct workloads. Each story is profiled and explored as an independent silo (`analysis/stories/<story>/`), which gives clean local reads and avoids geometric-mean dilution.
+Speedometer 3.1 has 20 default workloads matching Pinpoint and 32 available
+with explicit `--stories=all`. Each selected story is profiled and explored as
+an independent silo (`analysis/stories/<story>/`), which gives clean local
+reads and avoids geometric-mean dilution.
 
-1. **Local Story Floor ($\ge 0.3\%$):**
-   Each story's stacks are decomposed in isolation down to $\ge 0.3\%$ of that story's scored cycles, with the 100-nominal-samples quality gate applied per story. This discovers high-leverage workload-specific opportunities (e.g. Canvas 2D in `Charts-chartjs`, SVG paths in `React-Stockcharts-SVG`, DOM class mutations in `TodoMVC-jQuery`, layout ranges in `Editor-TipTap`).
+1. **Local Story Floor (calibrated):**
+   Each story's renderer main-thread stacks are decomposed in isolation, with the 100-nominal-samples quality gate applied per story. The qualification floor for a story is max(campaign share floor, 2 × that story's calibrated MDE); `campaign.py calibrate` records the MDEs and `campaign.py status` shows the floors. Entries flagged `platform_sensitivity` (canvas flush, raster, paint playback, font shaping, IPC) are Pinpoint-first leads, not local candidates.
 
 2. **Global Ranking by Target-Story Impact:**
    Every frontier entry is story-qualified (`story:<name>/…`) and carries a `target_story`. The ledger ranks all opportunities globally by:
    $$\text{Estimated Target-Story Impact} = \text{Local Story Share} \times \text{Avoidable Fraction}$$
-   measured against the entry's own target story. The same mechanism hot in several stories appears as separate story-qualified areas, each ranked by its own local impact — no cross-story summing, no division by 32. If a mechanism happens to also help other stories, that is a bonus recorded in notes; it never enters the ranking.
+   measured against the entry's own target story. Keep observations story-qualified, then combine the same mechanism across stories using the causal opportunity budget in `measurement-policy.md`; CPU shares alone do not predict score movement.
 
 3. **One Mechanism Key Per Invariant, Across Silos:**
    A source-level mechanism keeps one stable global `component/strategy` key even when it is discovered in several story silos. When the top-ranked entry's mechanism already exists in the ledger (landed, rejected, or in flight from another story), link the discovery to that mechanism (`known` disposition / `covered-by`) instead of creating a duplicate; sizing and verification then run against the highest-impact target story. Do not retry landed, rejected, or reverted mechanisms from a different story without genuinely contradictory new evidence.
@@ -48,7 +59,9 @@ Each investigated opportunity must be recorded as an investigation proposal cont
 - `target_stack_pattern`: exact regex / frames matching the target story's `profile.collapsed`.
 - `story_profile_share_pct`: exact profile share (%) within the target story's silo.
 - `estimated_avoidable_fraction`: fraction of that stack that can be avoided (0.0 to 1.0).
-- `estimated_local_story_impact_pct`: `story_profile_share_pct * estimated_avoidable_fraction` (the global ranking metric; never rescaled to a full-suite share). `campaign.py decompose` derives the profile share from bound `work_refs`, recomputes this product, rejects mismatches/below-floor proposals, and stores it as the mechanism priority.
+- `estimated_local_story_impact_pct`: `story_profile_share_pct * estimated_avoidable_fraction` (the global ranking metric; never rescaled to a full-suite share). `campaign.py decompose` derives the profile share from bound `work_refs`, recomputes this product, rejects mismatches and anything below the story's qualification floor, and stores it as the mechanism priority together with `qualification_floor_pct` and its basis.
+- `redundancy_evidence`: `{path, sha256}` of the `redundancy_evidence.py` packet for the probed site (required for `investigation_layer` 1 or 2).
+- `win_shape`: `skip-subtree`, `reuse-result`, `representation`, or `shorten-wait`.
 - `subtree_pruned`: list of child functions and their combined profile share eliminated.
 - `invariant_description`: exact code condition, bypass logic, and invalidation rules.
 - `safety_and_spec_analysis`: explicit reasoning on HTML/DOM/CSS spec compliance and lifecycle safety.
@@ -62,7 +75,7 @@ Each investigated opportunity must be recorded as an investigation proposal cont
 | `covered-by` | the samples are literally the same samples as another row | owning mechanism key and overlap/sample identity |
 | `mandatory` | specification or unavoidable product behavior proves the work cannot be removed | cited invariant and source/trace evidence |
 | `out-of-scope` | the work is not Chromium-owned or not within the campaign goal | ownership/critical-path evidence |
-| `below-floor` | the estimated net impact is below the configured floor (< 0.30%) | profiler work reference and measured share |
+| `below-floor` | the estimated impact is below the story's qualification floor (max(share floor, 2 × calibrated MDE)) | profiler work reference, measured share and the floor basis |
 
 Do not use `covered-by` for a semantically adjacent caller, wrapper, or later
 stage. Do not combine distinct hotspot keys into one primary path. Reconcile

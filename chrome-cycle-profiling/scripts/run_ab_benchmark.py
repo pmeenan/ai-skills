@@ -16,8 +16,10 @@ Modes (choose exactly one):
 Outputs suite-level block log-difference statistics plus a per-story table
 computed from each iteration's per-story total times (lower is better; the
 reported per-story delta is sign-normalized so positive = B faster). Per-story
-CIs across ~30 stories at 95% imply roughly one false positive per run; treat
-single flagged stories as leads to confirm with a targeted rerun, not verdicts.
+significance flags are Bonferroni-adjusted over the whole story family, so a
+null run should flag nothing; unadjusted intervals are kept as diagnostics.
+Acceptance still comes from the preregistered fixed-plan policy, never from
+selective reruns of flagged stories.
 """
 
 import argparse
@@ -49,6 +51,9 @@ _CAMPAIGN_SCRIPTS = os.path.realpath(
 if _CAMPAIGN_SCRIPTS not in sys.path:
     sys.path.append(_CAMPAIGN_SCRIPTS)
 import benchmark_adapters
+import measurement_host
+import statistics_policy
+import tune_benchmark_host
 
 
 MANIFEST_SCHEMA_VERSION = 4
@@ -341,19 +346,22 @@ def check_feature_registered(cwd, feature):
 def run_single_rep(browser, out_dir, stories, flag_option, state_str, rep_index,
                    block_label, cwd, *, adapter,
                    benchmark_source=None, benchmark_url=None, driver_path=None,
-                   iteration_count=None, worst_case_count=None):
+                   iteration_count=None, worst_case_count=None,
+                   display_environment=None):
     print(f"[Block {block_label} - Rep {rep_index+1}] Running {state_str}...")
     rep_out_dir = os.path.join(out_dir, f"rep_{rep_index}_{block_label}_{state_str.lower()}")
     full_out_dir = os.path.join(cwd, rep_out_dir)
     if os.path.exists(full_out_dir):
         shutil.rmtree(full_out_dir)
+    if display_environment is None:
+        display_environment = measurement_host.display_environment(None)
 
     cmd = [
         "vpython3", "./third_party/crossbench/cb.py",
         *adapter.crossbench_args(benchmark_source, benchmark_url),
         "--env-validation=warn",
         f"--browser={browser}",
-        "--headless",
+        *measurement_host.crossbench_display_args(display_environment),
         "--no-sandbox",
         "--repetitions=1",
         f"--out-dir={rep_out_dir}",
@@ -370,7 +378,10 @@ def run_single_rep(browser, out_dir, stories, flag_option, state_str, rep_index,
     if flag_option:
         cmd.append(flag_option)
 
-    subprocess.run(cmd, cwd=cwd, check=True)
+    subprocess.run(
+        cmd, cwd=cwd, check=True,
+        env=measurement_host.subprocess_env(display_environment),
+    )
     return rep_out_dir
 
 
@@ -457,11 +468,42 @@ def suite_block_diffs(block_data):
     return diffs
 
 
+def family_interval(diffs, family_size):
+    """Bonferroni-adjusted two-sided interval for one member of a family.
+
+    With ~30 stories, unadjusted 95% intervals flag about 1.5 stories per
+    null run. Acceptance decisions use the preregistered fixed-plan policy;
+    this adjusted interval is what the manifest reports as significant so a
+    reader does not chase multiple-testing noise.
+    """
+    n = len(diffs)
+    if n < 2 or family_size < 1:
+        return None
+    mean_d = sum(diffs) / n
+    var_d = sum((x - mean_d) ** 2 for x in diffs) / (n - 1)
+    std_err = math.sqrt(var_d) / math.sqrt(n)
+    alpha = 0.05 / family_size
+    tc = statistics_policy.t_critical(n - 1, alpha)
+
+    def pct(x):
+        return (math.exp(x) - 1.0) * 100.0
+
+    return {
+        "alpha": alpha,
+        "family_size": family_size,
+        "ci_pct": [pct(mean_d - tc * std_err), pct(mean_d + tc * std_err)],
+    }
+
+
 def per_story_stats(block_data, *, adapter):
     """Per-story block log-diffs from per-iteration total times.
 
     Story values are times (lower is better), so the sign is flipped:
     d_b = mean(ln A_time) - mean(ln B_time); positive = B faster.
+
+    `ci_95_pct` is the unadjusted diagnostic interval. `stat_sig_regression`
+    and `stat_sig_improvement` use the Bonferroni family (all stories plus
+    the suite) so one run does not hand the reader ~1.5 false flags.
     """
     stories = set()
     for b in block_data:
@@ -486,12 +528,24 @@ def per_story_stats(block_data, *, adapter):
         stats = summarize_block_diffs(diffs)
         if stats is None:
             continue
-        stats["stat_sig_regression"] = stats["ci_95_pct"][1] < 0.0
+        family = family_interval(diffs, len(stories) + 1)
+        stats["ci_family_pct"] = family["ci_pct"] if family else None
+        stats["family_alpha"] = family["alpha"] if family else None
+        stats["stat_sig_regression_unadjusted"] = stats["ci_95_pct"][1] < 0.0
+        stats["stat_sig_improvement_unadjusted"] = stats["ci_95_pct"][0] > 0.0
+        adjusted = family["ci_pct"] if family else stats["ci_95_pct"]
+        stats["stat_sig_regression"] = adjusted[1] < 0.0
+        stats["stat_sig_improvement"] = adjusted[0] > 0.0
         stats["exceeds_2pct_regression"] = (
             stats["stat_sig_regression"] and stats["delta_pct"] <= -2.0
         )
         results[story] = stats
     return results
+
+
+def expected_false_positive_stories(story_count, alpha=0.05):
+    """How many unadjusted story flags a null run produces on average."""
+    return story_count * alpha
 
 
 def manifest_block_details(block_data):
@@ -567,6 +621,21 @@ def main():
                         "both run baseline behavior and cannot differ.")
     parser.add_argument("--skip-feature-check", action="store_true",
                         help="Skip verifying that --feature is defined in the source tree")
+    parser.add_argument(
+        "--display", default="",
+        help="X display (for example :1) that renders through the GPU; omit "
+        "for Chrome headless mode (software rendering). Discovery profiles, "
+        "mechanism captures and score runs must all use the same surface.",
+    )
+    parser.add_argument(
+        "--display-vt", type=int, default=None,
+        help="Console VT the benchmark X server must own; the run refuses to "
+        "start when another VT is active",
+    )
+    parser.add_argument(
+        "--viewport", default=measurement_host.DEFAULT_VIEWPORT,
+        help="Fixed Crossbench window size WIDTHxHEIGHT for X display runs",
+    )
     args = parser.parse_args()
     adapter = benchmark_adapters.get_adapter(args.benchmark)
     if adapter.benchmark_id != "jetstream3" and (
@@ -604,6 +673,12 @@ def main():
             "content_pinned": True,
             "served_by_runner": True,
         })
+    if adapter.benchmark_id == "speedometer3" and source == "local":
+        payload_path = os.path.join(get_repo_root(), "third_party/speedometer/v3.1")
+        payload_digest = sha256_tree(payload_path)
+        payload_provenance.update({"resolved_payload_path": payload_path,
+                                   "payload_sha256": payload_digest,
+                                   "content_pinned": True})
     if args.required_build_role == "release":
         if payload_provenance["investigation_only"]:
             parser.error(
@@ -635,6 +710,21 @@ def main():
 
     cwd = get_repo_root()
     environment = capture_environment(args.required_build_role)
+    environment["host_settings"] = tune_benchmark_host.get_current_state()
+    try:
+        display_env = measurement_host.display_environment(
+            args.display or None, args.display_vt, args.viewport
+        )
+        display_env = measurement_host.attest_renderer(
+            display_env,
+            os.path.realpath(os.path.join(cwd, args.browser_a or args.browser)),
+        )
+    except (RuntimeError, ValueError, OSError) as exc:
+        print(f"Error: rendering surface check failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+    environment["display"] = display_env
+    print(f" Rendering surface: {display_env['mode']} "
+          f"({display_env.get('display') or 'headless'}; {display_env['gpu_renderer']})")
     harness = harness_identity(cwd)
     skill_digest = skill_tree_digest(cwd)
     expected_skill_digest = os.environ.get("OPTIMIZE_CAMPAIGN_SKILL_DIGEST", skill_digest)
@@ -707,6 +797,7 @@ def main():
             ("ENABLED" if enable else "DISABLED"),
         )
 
+    host_observations = []
     block_data = []
     block_patterns = ["ABBA"] * ((args.blocks + 1) // 2)
     block_patterns += ["BAAB"] * (args.blocks // 2)
@@ -724,6 +815,7 @@ def main():
     observed_workloads = None
 
     for b_idx in range(args.blocks):
+        host_observations.append({"block": b_idx + 1, "before": measurement_host.observe()})
         pattern = block_patterns[b_idx]
         print(f"\n--- Block {b_idx + 1}/{args.blocks} Pattern: {pattern} ---")
         a_scores, b_scores = [], []
@@ -743,6 +835,7 @@ def main():
                 driver_path=args.driver_path,
                 iteration_count=args.iteration_count,
                 worst_case_count=args.worst_case_count,
+                display_environment=display_env,
             )
             rep_finished_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
             runs = parse_run_metric_artifacts(cwd, out_d, adapter=adapter)
@@ -797,6 +890,7 @@ def main():
                 a_results.append(result)
             total_rep += 1
 
+        host_observations[-1]["after"] = measurement_host.observe()
         block_data.append({
             "block": b_idx + 1, "pattern": pattern,
             "a_scores": a_scores, "b_scores": b_scores,
@@ -809,7 +903,9 @@ def main():
     run_finished_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
     minimum_duration_ns = (
         args.blocks * 4 * MIN_FULL_SUITE_REP_SECONDS * 1_000_000_000
-        if adapter.benchmark_id == "speedometer3" and args.stories == "all"
+        if adapter.benchmark_id == "speedometer3" and args.stories in (
+            "all", adapter.default_workload_selector
+        )
         else 0
     )
     if run_finished_ns - run_started_ns < minimum_duration_ns:
@@ -819,6 +915,21 @@ def main():
             file=sys.stderr,
         )
         sys.exit(1)
+    if tune_benchmark_host.get_current_state() != environment["host_settings"]:
+        raise RuntimeError("host settings changed during measurement")
+    try:
+        measurement_host.validate_observations(host_observations, args.blocks)
+    except ValueError as exc:
+        print(f"Error: host observations invalidate this run: {exc}", file=sys.stderr)
+        sys.exit(1)
+    foreign_gpu_apps = measurement_host.foreign_gpu_apps(host_observations)
+    if foreign_gpu_apps:
+        print(
+            "Warning: foreign GPU compute processes were resident during the run: "
+            + ", ".join(foreign_gpu_apps)
+            + ". Stop them before authoritative measurements.",
+            file=sys.stderr,
+        )
     final_harness = harness_identity(cwd)
     final_skill_digest = skill_tree_digest(cwd)
     if final_harness != harness or final_skill_digest != skill_digest:
@@ -833,7 +944,7 @@ def main():
     if final_browser_hashes != initial_browser_hashes:
         print("Error: a measured browser changed during the run.", file=sys.stderr)
         sys.exit(1)
-    if args.benchmark_payload_path and sha256_tree(payload_path) != payload_digest:
+    if payload_provenance.get("payload_sha256") and sha256_tree(payload_path) != payload_digest:
         print("Error: benchmark payload changed during the run.", file=sys.stderr)
         sys.exit(1)
 
@@ -847,6 +958,15 @@ def main():
         (name for name, s in stories.items() if s["stat_sig_regression"]),
         key=lambda name: stories[name]["delta_pct"],
     )
+    stat_sig_improvements = sorted(
+        (name for name, s in stories.items() if s["stat_sig_improvement"]),
+        key=lambda name: -stories[name]["delta_pct"],
+    )
+    unadjusted_flags = sorted(
+        name for name, s in stories.items()
+        if s["stat_sig_regression_unadjusted"] or s["stat_sig_improvement_unadjusted"]
+    )
+    expected_false_flags = expected_false_positive_stories(len(stories))
     hard_story_regressions = [
         name for name in stat_sig_regressions if stories[name]["exceeds_2pct_regression"]
     ]
@@ -877,13 +997,22 @@ def main():
         print(f"-------------------------------------------------------")
         print(f"  Worst stories (positive = B faster):")
         for name, s in worst:
-            flag = " ** STAT-SIG REGRESSION **" if s["stat_sig_regression"] else ""
+            if s["stat_sig_regression"]:
+                flag = " ** REGRESSION (family-adjusted) **"
+            elif s["stat_sig_improvement"]:
+                flag = " ** IMPROVEMENT (family-adjusted) **"
+            elif s["stat_sig_regression_unadjusted"] or s["stat_sig_improvement_unadjusted"]:
+                flag = "  (unadjusted only; expected noise)"
+            else:
+                flag = ""
             print(f"    {name:45s} {s['delta_pct']:+6.2f}% "
                   f"[{s['ci_95_pct'][0]:+.2f}%, {s['ci_95_pct'][1]:+.2f}%]{flag}")
-    if stat_sig_regressions:
-        print(f"  NOTE: ~30 stories at 95% CI yield ~1 false positive per run; "
-              f"confirm flagged stories with a targeted rerun "
-              f"(--stories={stat_sig_regressions[0]}).")
+    print(f"  Unadjusted 95% flags: {len(unadjusted_flags)} of {len(stories)} stories "
+          f"(a null run produces about {expected_false_flags:.1f}); family-adjusted "
+          f"regressions: {len(stat_sig_regressions)}, improvements: {len(stat_sig_improvements)}.")
+    if stat_sig_regressions or unadjusted_flags:
+        print("  Diagnostic intervals do not authorize selective reruns. "
+              "Use the preregistered block-level policy and full regression family.")
     print(f"=======================================================\n")
 
     res_manifest = {
@@ -915,6 +1044,8 @@ def main():
         "finished_monotonic_raw_ns": run_finished_ns,
         "minimum_duration_ns": minimum_duration_ns,
         "capture_environment": environment,
+        "host_observations": host_observations,
+        "foreign_gpu_compute_apps": foreign_gpu_apps,
         "harness": harness,
         "skill_tree_sha256": skill_digest,
         "evidence_dir": evidence_name,
@@ -928,6 +1059,10 @@ def main():
         "achieves_5pct_goal": achieves_5pct_goal,
         "per_story": stories,
         "stat_sig_story_regressions": stat_sig_regressions,
+        "stat_sig_story_improvements": stat_sig_improvements,
+        "unadjusted_story_flags": unadjusted_flags,
+        "expected_false_positive_stories": expected_false_flags,
+        "story_family_size": len(stories) + 1,
         "build_provenance": {
             "a": build_provenance(
                 cwd, args.browser_a or args.browser, args.required_build_role
@@ -954,4 +1089,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with measurement_host.lease():
+        main()

@@ -3,6 +3,13 @@
 Load this reference when choosing or reviewing measurement transport.
 
 Both modes invoke the same on-host runners and share the same machine lock.
+Both wrap the runner in a tuner session that applies the CPU policy, keeps
+ASLR on for score and profile runs, switches the console to the benchmark X
+server's VT when the campaign display is an X display, optionally locks the
+GPU clock, and restores everything on exit. Runners receive
+`--display/--display-vt/--viewport` from the campaign ledger; they refuse to
+start when the display is missing, another VT is active, or the browser
+reports a software renderer on an X display.
 
 Local mode never changes the checkout. The requested ref must be current HEAD.
 Use `--skip-build` only when the selected browser and driver are already built.

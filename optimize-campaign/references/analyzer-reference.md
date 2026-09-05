@@ -7,8 +7,16 @@ consumes only the resulting frontier summaries.
 ## Scope and weighting contract
 
 Campaign frontiers come from the per-story silo analyses under
-`analysis/stories/<story>/`: each story's exact-scored samples analyzed in
-isolation, with every share relative to that story's own scored cycles.
+`analysis/stories/<story>/`: each story's exact-scored **renderer main-thread**
+samples analyzed in isolation (`--stories-scope main-thread`), with every
+share relative to that story's own main-thread scored cycles. Speedometer
+times the renderer main thread, so concurrent compiler threads, the
+compositor, raster workers and other processes are excluded from ranking;
+`quality.samples_all_threads` records how many samples the scoped view left
+out. Each story report also carries `score_time_composition` (sync and async
+wall time, the async main-thread busy fraction estimated from sample density,
+and the share of main-thread cycles inside async) so the reader knows whether
+CPU removal or the latency route applies.
 Campaign output is valid only when `quality.interval_kind` is `exact-scored`
 and each story artifact's `selection.metric_weighting` is
 `speedometer-story-v1` with `selection.story` naming the silo. Exact
@@ -46,8 +54,13 @@ Reject a capture before candidate work if it has unmatched marks, fewer than
 5,000 retained samples, median stack depth below 3, more than 15% unknown
 user-space frames, disabled inline expansion, missing expected roles, or
 obvious harness/startup leakage — and apply the sample-count and
-100-nominal-samples-at-floor gates independently to **every** story silo: a
-story below its local floor rejects the capture (increase repetitions).
+100-nominal-samples-at-floor gates independently to **every** main-thread
+story silo: a story below its local floor rejects the capture. Fix it with
+more repetitions (32 default) or a higher sampling rate (fixed period
+875,000 cycles ≈ 4 kHz per CPU at the locked base clock); the gate itself is
+not adjustable. At 997 Hz and 16 repetitions the light TodoMVC stories had
+under 20 main-thread samples at a 1% floor, which is why earlier frontiers
+ranked noise.
 Kernel symbols are reported separately from user-space symbol quality. The
 collector still writes the diagnostic report sets on rejection, then exits
 with status 3.
@@ -97,6 +110,16 @@ plumbing stay visible.
 Display flags (`--tree-min-share`, `--tree-max-depth`,
 `--tree-max-children`) prune only the orientation report — never the JSON
 inventory (the campaign default floor is 0.3%) or ranking samples.
+
+## Portability flags
+
+Each frontier entry carries `platform_sensitivity` (`null` or
+`{tag, note}`). `rendering-backend` marks canvas flush, paint playback,
+raster, image decode and GPU plumbing; `font-shaping` marks HarfBuzz, shape
+caches and font matching; `process-plumbing` marks network, cache and IPC.
+Their local cost depends on the rendering backend or platform and may not
+exist on the Mac M1 PGO fleet bot, so they are Pinpoint-first leads. The
+markdown table shows the tag in a Portability column.
 
 ## Two measures per entry
 

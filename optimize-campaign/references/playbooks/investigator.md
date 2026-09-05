@@ -1,65 +1,66 @@
 # Campaign investigator playbook
 
-Goal: turn one profiled story-silo area into structured, 4-layer investigated opportunity proposals with exact stack attributions from that story's `profile.collapsed`.
+Read [measurement-policy.md](../measurement-policy.md) for floors, causal
+bounds, ranking and stopping criteria. Investigate one bounded story area
+with its main-thread profile, score-time composition, callers, source
+contracts and rejected hypotheses.
 
-Inputs: target story name, subsystem/area name, exact per-story profile artifacts (`analysis/stories/<story>/profile.collapsed`, `analysis/stories/<story>/candidate_frontier.md`), and output directory.
+## What a qualifying mechanism looks like
 
-Each investigation is scoped to one story silo. Use only the target story's own artifacts; the full-suite view is diagnostic and must not source shares. If the same mechanism plausibly helps other stories, note that as an unquantified bonus in the proposal notes — it never enters the ranking.
+Every suite-level win in `optimization-patterns.md` has one of four shapes.
+Name the shape before anything else; a proposal without one is a leaf tweak.
 
-Procedure:
+| Shape | Question to answer with a count | Evidence before proposing |
+| --- | --- | --- |
+| Skip the subtree | Under which checkable condition does this whole operation produce no observable effect, and how often does it hold per step? | redundancy probe: `applicable_fraction` |
+| Reuse a result | How often does the site run with an input it has already seen in this step or story? | redundancy probe: `repeat_fraction` |
+| Change the representation or algorithm | Which structure makes the hot loop O(1), and what share of the story's main-thread time is that loop? | main-thread inclusive share of the loop |
+| Shorten a wait | Which dependency on the score path is idle time rather than CPU? | score-time composition, trace-backed latency packet |
 
-1. **Subsystem Stack Decomposition:**
-   - Filter the target story's `profile.collapsed` for the target subsystem.
-   - Trace all major call paths from entry point down to leaf functions, quantifying exact sample counts and percentage shares of the story's scored cycles.
+Layer 4 leaf work (inlining, branch hints, empty checks in inlined loops) is
+not a shape. The discarded catalog is full of it, and none of it clears a
+story floor.
 
-2. **Apply the 4-Layer Investigation Framework:**
-   - Primary driver: First-principles top-down decomposition of the profile call tree to discover novel, unharvested inclusive hotspots.
-   - Auxiliary inspiration: Consult `references/optimization-patterns.md` as an "also explore" reference for historical architectural archetypes (Style/Cascade, Layout, DOM Core, Canvas 2D, V8 Bindings) without letting it narrow or restrict the search space.
-   - **Layer 1 (Subtree / Branch Elimination):** Can an entire call tree or lifecycle step be avoided with a pre-condition, dirty flag, or fast-exit check?
-   - **Layer 2 (Higher-Level Caching & Sharing):** Can computed state (styles, shape results, layout spaces) be shared or memoized across sibling nodes, repeated runs, or microtasks?
-   - **Layer 3 (Algorithmic & Structural Hoisting):** Can $O(N)$ linear scans, vector lookups, or stack allocations be replaced with $O(1)$ bitmasks/bloom filters or flat arrays?
-   - **Layer 4 (Leaf-Level Micro-Optimizations):** Only if Layers 1–3 cannot eliminate the work.
-     * **CRITICAL ThinLTO & PGO WARNING:** Do NOT propose speculative micro-branch guards, outer trivial null checks, or empty collection checks in tight loops. In official PGO2/ThinLTO builds, LLVM already inlines and branch-predicts fast-paths; adding redundant outer branches increases BTB pressure and icache footprint, consistently causing net cycle regressions. Focus exclusively on Layers 1–2 where significant work (>100 cycles per avoided call) is pruned.
+## Procedure
 
-3. **Durable Ledger History, Discarded Candidates & Up-to-Date Checkout Pre-Check:**
-   - **Checkout Freshness:** Ensure the working branch is based on an up-to-date checkout of `origin/main` to avoid re-implementing recently landed upstream optimizations.
-   - **Benchmark Discarded Candidates Catalog:** Consult the benchmark adapter's `references/discarded-candidates/INDEX.md` and the matching subsystem file (e.g. `../optimize-speedometer/references/discarded-candidates/INDEX.md`). Check if the conceptual mechanism, call site, or invariant has been previously rejected. Do NOT re-propose discarded mechanisms unless the root cause (e.g. branch overhead, spec hazard) is structurally bypassed.
-   - **Durable Ledger Inspection:** Check the campaign ledger (`OPTIMIZATION_LEDGER.md`) for previous candidate evaluations in the target area.
-   - **Recording New Rejections:** Whenever a candidate is rejected during initial review, adversarial review, in-situ sizing, or macro A/B measurement, record the rejection in the benchmark's matching `references/discarded-candidates/<subsystem>.md` file and update `INDEX.md` using the refactor-durable format (Subsystem, Concept, Mechanism, Empirical Result, Causal Failure Mode, and Durable Invariant).
-   - **No Premature Path Closing:** If a previous attempt in an area failed or was discarded, **do NOT close off or blacklist the entire subsystem or function**. Instead, inspect the *specific failure mechanism* (e.g. branch overhead, spec edge-case, or compiler inlining). If a novel, structurally distinct mechanism can harvest that inclusive hotspot without repeating the specific flaw, it remains a high-priority candidate.
+1. Start from the story's score-time composition and the top **inclusive**
+   parents on the main thread, not from the bottom-up leaves. Walk each
+   parent to the decision that makes its descendants run (invalidation,
+   traversal, conversion, allocation, phase). Preserve exact path sample
+   accounting.
+2. For the best parent, write the invariant as: condition C occurs in X/Y
+   measured calls; it permits removing exactly W (named descendants) while
+   preserving observable behavior B. Then measure X/Y: add a
+   `RedundancyCounter` at the site in the instrumented twin (see
+   `instrumented-twin.md`), run the target story, and reduce the log with
+   `redundancy_evidence.py`. If the counts do not support the fraction you
+   hoped for, say so and move on; that is a cheap, honest stop.
+3. Check the story's qualification floor (`campaign.py status` shows the
+   calibrated MDEs). Estimated impact = story main-thread share × avoidable
+   fraction must clear max(share floor, 2 × story MDE). If it cannot even
+   with the measured fraction, park the area with the numbers.
+4. Check the entry's `platform_sensitivity`. Rendering-backend, font-shaping
+   and process-plumbing work is a Pinpoint-first lead on the Mac M1 bot, not
+   a local candidate; note it and pick the next parent.
+5. Consult the ledger and the discarded-candidates catalog for the same
+   *mechanism*, not the same function. A rejected leaf guard does not
+   preclude skipping the subtree above it. Inspect newer upstream code
+   read-only.
+6. Generate independently motivated alternatives (at least one per shape
+   that applies) before settling. Give the favored hypothesis and its
+   strongest competitor to the strongest available model for the
+   architectural counterfactual and the semantic-risk pass; record its
+   objections verbatim in the proposal.
+7. Save the proposal under the campaign's `proposals/` directory with the
+   redundancy packet reference, and use `decomposition-scaffold` /
+   `decompose` to account paths. A bounded search with no viable invariant
+   uses `no-qualifying-mechanism` with its investigation packet; it does not
+   blacklist an ancestor or claim exhaustion.
 
-4. **Formulate the Opportunity Invariant:**
-   - State one invariant: “When condition C is measured true, work W (including downstream call tree T) can be avoided while preserving behavior B.”
-
-5. **Quantify Profile Headroom & Avoidable Share:**
-   - `story_profile_share_pct`: Exact sum of cycles in the targeted stack within the target story silo, as a percentage of that story's scored cycles.
-   - `estimated_avoidable_fraction`: Realistic fraction of the stack avoided by the condition (0.0 to 1.0).
-   - `estimated_local_story_impact_pct` = `story_profile_share_pct * estimated_avoidable_fraction` (the primary metric for the global ranking; never divide by 32 or rescale to a full-suite share).
-   - Local floor requirement: `estimated_local_story_impact_pct >= 0.30%` of the target story.
-
-5. **Emit the Opportunity Investigation Proposal:**
-   - Save to `.agents/campaigns/current/proposals/<mechanism_key>.json`.
-   - Request Adversarial Review (`references/playbooks/adversary.md` Candidate Qualification Gate).
-
-Proposal JSON format:
-
-```json
-{
-  "opportunity_id": 0,
-  "mechanism_key": "component/strategy",
-  "subsystem": "style|html-parser|events|layout|dom|paint",
-  "target_story": "Charts-chartjs",
-  "possible_bonus_stories": ["TodoMVC-jQuery"],
-  "investigation_layer": 1,
-  "target_stack_pattern": "regex_or_stack_frames",
-  "story_profile_share_pct": 23.0,
-  "estimated_avoidable_fraction": 0.40,
-  "estimated_local_story_impact_pct": 9.20,
-  "subtree_pruned": [
-    "child_func_1",
-    "child_func_2"
-  ],
-  "invariant_description": "When an element has no classes or ID matching any rule in the RuleSet, skip RuleSet iteration entirely via bitmask check.",
-  "safety_and_spec_analysis": "Spec compliance and invalidation safety reasoning..."
-}
-```
+The mechanism packet includes source revision, target story, profile refs,
+shape, redundancy evidence (site, calls per step, applicable and repeat
+fractions), work-removal or latency route, removed work, added work, cold-path
+cost, counterfactual experiment, semantic risks, portability flag,
+engineering/measurement budget, and explicit falsification/stop conditions.
+Have the skeptic inspect raw evidence and competing explanations before
+coding or expensive scoring.

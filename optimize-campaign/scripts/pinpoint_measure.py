@@ -160,8 +160,14 @@ def start_pinpoint_job(
     story=DEFAULT_STORY,
     base_commit="HEAD",
     bug=None,
+    base_extra_args="",
+    experiment_extra_args="",
 ):
-    """Start an A/B Pinpoint tryjob comparing base vs the Gerrit CL patch."""
+    """Start an A/B Pinpoint tryjob comparing an immutable base and patchset."""
+    if not re.fullmatch(r"[0-9a-f]{40}", base_commit):
+        raise ValueError("Pinpoint requires a full immutable baseline commit")
+    if not re.fullmatch(r"https://chromium-review.googlesource.com/c/chromium/src/\+/\d+/\d+", cl_url):
+        raise ValueError("Pinpoint requires a Gerrit URL including the patchset number")
     payload = {
         "comparison_mode": "try",
         "benchmark": benchmark,
@@ -173,8 +179,8 @@ def start_pinpoint_job(
         "end_git_hash": base_commit if base_commit.startswith("-") else f"-{base_commit}",
         "base_patch": "",
         "experiment_patch": cl_url,
-        "base_extra_args": "",
-        "experiment_extra_args": "",
+        "base_extra_args": base_extra_args,
+        "experiment_extra_args": experiment_extra_args,
         "project": "chromium",
         "bug_id": str(bug or ""),
         "batch_id": "",
@@ -348,7 +354,7 @@ def student_t_crit_95(df):
     return (low + high) / 2
 
 
-def parse_and_analyze_results(content, job_id=None, cl_url=None, bot=None):
+def parse_and_analyze_results(content, job_id=None, cl_url=None, bot=None, plan=None):
     """Parse raw Catapult histograms and compute delta, Welch's t-test, 95% CIs."""
     data_text = extract_histogram_text(content)
 
@@ -362,7 +368,7 @@ def parse_and_analyze_results(content, job_id=None, cl_url=None, bot=None):
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if "guid" in obj:
+        if "guid" in obj and "name" not in obj:
             diagnostics_by_guid[obj["guid"]] = obj
         elif obj.get("type") is None:
             histograms.append(obj)
@@ -374,9 +380,20 @@ def parse_and_analyze_results(content, job_id=None, cl_url=None, bot=None):
         unit = h.get("unit", "")
         label_guid = h.get("diagnostics", {}).get("labels")
         label = diagnostics_by_guid.get(label_guid, {}).get("values", ["unknown"])[0]
-        is_exp = "exp" in label
-        arm = "exp" if is_exp else "base"
-        mean_val = h.get("running", [0, 0, 0, 0])[3]
+        arm_match = re.fullmatch(r"(base|exp)(?:: .+)?", str(label))
+        if not arm_match:
+            raise ValueError("unrecognized Pinpoint arm label: " + str(label))
+        arm = arm_match.group(1)
+        running = h.get("running", [])
+        if not name or len(running) < 4 or running[0] <= 0:
+            raise ValueError("missing histogram observations")
+        mean_val = running[3]
+        if isinstance(mean_val, bool) or not isinstance(mean_val, (int, float)) or not math.isfinite(mean_val) or mean_val <= 0:
+            raise ValueError("non-positive/non-finite Pinpoint metric")
+        if "biggerIsBetter" not in unit and "smallerIsBetter" not in unit:
+            raise ValueError("metric lacks a direction")
+        if metric_data[name]["unit"] and metric_data[name]["unit"] != unit:
+            raise ValueError("metric unit changed between attempts")
         metric_data[name][arm].append(mean_val)
         metric_data[name]["unit"] = unit
 
@@ -388,7 +405,7 @@ def parse_and_analyze_results(content, job_id=None, cl_url=None, bot=None):
         "metrics": {},
         "regressions": [],
         "wins": [],
-        "verdict": "PASS",
+        "verdict": "INCONCLUSIVE",
     }
 
     for name in sorted(metric_data.keys()):
@@ -430,7 +447,7 @@ def parse_and_analyze_results(content, job_id=None, cl_url=None, bot=None):
         ci_low_pct = ((diff - t_crit * se_diff) / m1 * 100) if m1 != 0 else 0.0
         ci_high_pct = ((diff + t_crit * se_diff) / m1 * 100) if m1 != 0 else 0.0
 
-        is_score = name.lower() == "score" or "score" in unit.lower()
+        is_score = "biggerIsBetter" in unit
         is_stat_sig = p_val < 0.05
 
         if is_score:
@@ -467,14 +484,52 @@ def parse_and_analyze_results(content, job_id=None, cl_url=None, bot=None):
     if "Score" in results["metrics"]:
         results["score"] = results["metrics"]["Score"]
 
-    if results["regressions"]:
-        results["verdict"] = "FAIL"
-    elif results.get("score") and results["score"]["delta_pct"] < -0.05:
-        results["verdict"] = "FAIL"
-    else:
-        results["verdict"] = "PASS"
+    results["verdict"] = "INVALID" if "Score" not in results["metrics"] else "INCONCLUSIVE"
+    if plan is not None:
+        results.update(fleet_decision(metric_data, plan))
+    results["raw_sha256"] = __import__("hashlib").sha256(content.encode()).hexdigest()
 
     return results
+
+
+def fleet_decision(metrics, plan):
+    """Independent attempt histograms, log Welch bounds; no inner-iteration n."""
+    import statistics
+    import statistics_policy as policy
+    spec = policy.validate_plan(plan["statistics"])
+    expected = set(plan["identity"]["workloads"]) | {"Score"}
+    # Extra submetrics remain diagnostic; every required workload must exist.
+    if not expected <= set(metrics):
+        return {"verdict": "INVALID", "error": "missing planned fleet metrics"}
+    targets = ["Score"] if spec["primary"] == "suite" else spec["primary"]
+    if not set(targets) <= expected:
+        raise ValueError("primary metrics do not belong to the planned inventory")
+    bounds = {}; components = {}
+    family_alpha = spec["alpha"] / (len(expected) + 1)
+    for name in expected:
+        row = metrics[name]
+        if any(len(row[a]) != spec["blocks"] for a in ("base", "exp")):
+            return {"verdict": "INVALID", "error": "fleet attempt count differs from fixed plan"}
+        a, b = ([math.log(x) for x in row[arm]] for arm in ("base", "exp"))
+        v1, v2 = statistics.variance(a)/len(a), statistics.variance(b)/len(b)
+        se = math.sqrt(v1+v2)
+        df = (v1+v2)**2/(v1*v1/(len(a)-1)+v2*v2/(len(b)-1)) if se else len(a)+len(b)-2
+        delta = statistics.fmean(b)-statistics.fmean(a)
+        if "smallerIsBetter" in row["unit"]: delta = -delta
+        half = policy.t_critical(df, family_alpha)*se
+        bounds[name] = [100*math.expm1(delta-half), 100*math.expm1(delta+half)]
+        components[name] = (delta, half)
+    # Sum marginal error bounds, allowing arbitrary inter-metric correlation.
+    mean = statistics.fmean(components[n][0] for n in targets)
+    half = statistics.fmean(components[n][1] for n in targets)
+    primary_ci = [100*math.expm1(mean-half),100*math.expm1(mean+half)]
+    margin = lambda n: spec["suite_regression_margin_pct"] if n == "Score" else spec["regression_margin_pct"]
+    regressions = [n for n, ci in bounds.items() if ci[1] < -margin(n)]
+    unresolved = [n for n, ci in bounds.items() if ci[0] < -margin(n)]
+    verdict = "REGRESSION" if regressions else "IMPROVEMENT" if primary_ci[0] >= spec["minimum_effect_pct"] and not unresolved else "INCONCLUSIVE"
+    return {"verdict": verdict, "primary_ci_pct": primary_ci, "guardrail_bounds": bounds,
+            "regressions": regressions, "unresolved_regression_bounds": unresolved,
+            "plan": plan, "simultaneous_alpha": family_alpha}
 
 
 def print_summary_table(results):
@@ -581,7 +636,7 @@ def main():
     p_run.add_argument(
         "--auto-abandon-on-fail",
         action="store_true",
-        default=True,
+        default=False,
         help="Automatically abandon the Gerrit CL if the job detects stat-sig regressions.",
     )
     p_run.add_argument(
@@ -591,7 +646,21 @@ def main():
         help="Do not automatically abandon the CL on failure.",
     )
 
+    for p in (p_start, p_run):
+        p.add_argument("--base-extra-args", default="")
+        p.add_argument("--experiment-extra-args", default="")
+    for p in (p_run, p_analyze):
+        p.add_argument("--plan", help="Immutable preregistered experiment plan JSON")
     args = parser.parse_args()
+    plan = json.loads(pathlib.Path(args.plan).read_text()) if getattr(args, "plan", None) else None
+    if plan and args.subcommand == "run":
+        identity = plan["identity"]
+        if (args.cl != identity["patchset_url"] or args.base_commit != identity["baseline_sha"]
+                or args.benchmark != identity["benchmark"]
+                or args.attempts != plan["statistics"]["blocks"]
+                or args.base_extra_args
+                or args.experiment_extra_args != "--enable-features=" + identity["feature"]):
+            parser.error("fleet invocation differs from registered plan")
 
     if args.subcommand == "upload-cl":
         info = upload_try_cl(message=args.message)
@@ -607,6 +676,8 @@ def main():
             story=args.story,
             base_commit=args.base_commit,
             bug=args.bug,
+            base_extra_args=args.base_extra_args,
+            experiment_extra_args=args.experiment_extra_args,
         )
         print(json.dumps(info, indent=2))
         return 0
@@ -629,7 +700,7 @@ def main():
             sys.exit("Error: must provide either --input or --job-id")
 
         results = parse_and_analyze_results(
-            content, job_id=args.job_id, cl_url=args.cl, bot=args.bot
+            content, job_id=args.job_id, cl_url=args.cl, bot=args.bot, plan=plan
         )
         print_summary_table(results)
 
@@ -672,7 +743,7 @@ def main():
                     })
             print(f"CSV summary written to {args.csv_out}", file=sys.stderr)
 
-        return 0 if results["verdict"] == "PASS" else 2
+        return 0 if results["verdict"] == "IMPROVEMENT" else 2
 
     if args.subcommand == "abandon":
         success = abandon_cl(args.cl, reason=args.reason)
@@ -692,6 +763,8 @@ def main():
             story=args.story,
             base_commit=args.base_commit,
             bug=args.bug,
+            base_extra_args=args.base_extra_args,
+            experiment_extra_args=args.experiment_extra_args,
         )
         job_id = job_info["job_id"]
 
@@ -699,7 +772,7 @@ def main():
         content = fetch_results2(job_id, out_file=args.raw_out)
 
         results = parse_and_analyze_results(
-            content, job_id=job_id, cl_url=cl_url, bot=args.bot
+            content, job_id=job_id, cl_url=cl_url, bot=args.bot, plan=plan
         )
         print_summary_table(results)
 
@@ -707,14 +780,14 @@ def main():
             pathlib.Path(args.out).write_text(json.dumps(results, indent=2))
             print(f"Summary written to {args.out}", file=sys.stderr)
 
-        if results["verdict"] != "PASS":
-            print(f"\n[!] Gate Evaluation: Candidate FAILED ({len(results['regressions'])} regressions)", file=sys.stderr)
-            if args.auto_abandon_on_fail:
+        if results["verdict"] != "IMPROVEMENT":
+            print(f"\n[!] Gate Evaluation: Candidate {results['verdict']} ({len(results['regressions'])} regressions)", file=sys.stderr)
+            if args.auto_abandon_on_fail and results["verdict"] == "REGRESSION":
                 reason = f"optimize-campaign: candidate failed fleet validation with {len(results['regressions'])} regression(s)"
                 abandon_cl(cl_url, reason=reason)
             return 2
 
-        print(f"\n[+] Gate Evaluation: Candidate PASSED (0 regressions, CL preserved: {cl_url})", file=sys.stderr)
+        print(f"\n[+] Gate Evaluation: Candidate IMPROVEMENT (simultaneous bounds satisfied, CL preserved: {cl_url})", file=sys.stderr)
         return 0
 
 

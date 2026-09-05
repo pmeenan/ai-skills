@@ -11,3 +11,12 @@ Performance optimization uses a shared campaign pipeline:
   and characterization workflow.
 - `chrome-cycle-profiling`: on-host score and profile runners used by the
   campaign pipeline.
+
+### Starting and resuming optimization campaigns
+
+Human-facing prompts and prerequisites are available in the
+[shared campaign README](optimize-campaign/README.md),
+[Speedometer README](optimize-speedometer/README.md),
+[cycle-profiling README](chrome-cycle-profiling/README.md), and
+[JetStream preparation README](optimize-jetstream/README.md).
+Use the explicit existing campaign directory when resuming part-way through.

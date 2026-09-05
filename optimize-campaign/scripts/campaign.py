@@ -39,6 +39,7 @@ Gate requirements are enforced by `advance`:
 """
 
 import argparse
+import collections
 import datetime
 import fcntl
 import hashlib
@@ -74,6 +75,21 @@ MAX_LANDINGS_WITHOUT_FULL_SUITE_CHECKPOINT = 10
 PILOT_MIN_LANDINGS = 3
 PILOT_MAX_LANDINGS = 5
 MIN_SCORE_BLOCKS = 32
+# A story frontier entry at the floor needs ~100 samples before its rank
+# means anything; the profiler must raise repetitions or sampling rate.
+MIN_NOMINAL_SAMPLES_AT_FLOOR = 100
+# A mechanism must plausibly move its target story by at least this multiple
+# of the story's calibrated minimum detectable effect, or the fixed-plan
+# measurement cannot read it and every downstream stage is wasted.
+MDE_FLOOR_MULTIPLIER = 2.0
+# Fixed statistical plan frozen at init for candidate A/B and checkpoints.
+# minimum_effect_pct is raised to the calibrated MDE of the primary stories.
+DEFAULT_STATISTICS = {
+    "blocks": 32, "alpha": 0.05, "regression_margin_pct": 1.0,
+    "suite_regression_margin_pct": 0.2, "minimum_effect_pct": 0.1,
+    "max_abs_lag1": 0.4,
+}
+DEFAULT_FLEET_BOT = "mac-m1_mini_2020-perf-pgo"
 LEDGER_SCHEMA_VERSION = 4
 SCORE_MANIFEST_SCHEMA_VERSION = 4
 SCORE_MANIFEST_RUNNER = "run_ab_benchmark.py/v4"
@@ -97,11 +113,13 @@ MECHANISM_REVIEW_CHECKS = {
         "one_invariant_only",
         "implementation_is_executable",
         "candidate_build_bound",
+        "floor_cleared",
+        "redundancy_supported",
     ),
     "adversary": (
         "spec", "security", "privacy", "lifecycle", "tests",
         "benchmark_overfit_checked", "feature_flag_guarded",
-        "runtime_binary_changed",
+        "runtime_binary_changed", "portability_confirmed",
     ),
 }
 EXHAUSTION_REVIEW_CHECKS = (
@@ -214,6 +232,16 @@ def load_gate_evidence(path, *, opp, phase, benchmark, metric_model):
         "score-critical", "cpu-only"
     ):
         raise CampaignError("Evidence lacks a score-scope classification")
+    if evidence.get("route") == "latency":
+        import latency_evidence
+        try:
+            for label in ("build", "baseline_build"):
+                mechanism_contract.validate_build_artifact(evidence[label], label)
+            if latency_evidence.reduce(evidence["packet"]) != evidence:
+                raise ValueError("latency result differs from raw trace recomputation")
+        except (KeyError, ValueError, OSError, mechanism_contract.EvidenceError) as exc:
+            raise CampaignError("invalid latency evidence: " + str(exc)) from exc
+        return evidence, sha256_file(path)
     sources = evidence.get("sources")
     expected_sources = 1 if phase == "sizing" else 2
     if not isinstance(sources, list) or len(sources) != expected_sources:
@@ -430,6 +458,10 @@ def enforce_freshness_for_landing(ledger):
         )
     targeted_checkpoint = latest_checkpoint(ledger, "targeted")
     full_checkpoint = latest_checkpoint(ledger, "full-suite")
+    if not test_bypass_active():
+        for checkpoint in (targeted_checkpoint,full_checkpoint):
+            if checkpoint and checkpoint['landed_count'] == landed_count and checkpoint.get('verdict') != 'IMPROVEMENT':
+                raise CampaignError("cumulative checkpoint is not a fixed-plan IMPROVEMENT; investigate or stop")
     targeted_count = targeted_checkpoint["landed_count"] if targeted_checkpoint else 0
     full_count = full_checkpoint["landed_count"] if full_checkpoint else 0
     gate_ci = targeted_checkpoint.get("ci") if targeted_checkpoint else None
@@ -707,6 +739,10 @@ class Ledger:
 
     def priority_info(self, opp):
         measured = self.measured_priority(opp)
+        if opp.get("opportunity_budget"):
+            from opportunity_budget import rank
+            value = rank(opp["opportunity_budget"])
+            return value["priority"], "causal-benefit-confidence-acceptability-per-hour", measured
         if (
             opp.get("kind") == "mechanism"
             and opp.get("expected_value") is not None
@@ -927,6 +963,36 @@ class Ledger:
             f"{unchecked_full}/{MAX_LANDINGS_WITHOUT_FULL_SUITE_CHECKPOINT} "
             "since full-suite checkpoint"
         )
+
+        lines.append("")
+        lines.append("## Calibration and qualification floors")
+        calibration = cfg.get("calibration") or {}
+        display = cfg.get("display") or {}
+        surface = (
+            f"{display.get('mode', 'headless')}"
+            + (f" {display.get('display')} vt{display.get('vt')} {display.get('viewport')}"
+               if display.get("mode") == "x11" else "")
+        )
+        lines.append(f"**Rendering surface:** {surface}")
+        if calibration.get("story_mde_pct"):
+            suite_mde = calibration.get("suite_mde_pct")
+            lines.append(
+                f"**A/A calibration:** {calibration.get('recorded')} · suite MDE "
+                f"{suite_mde:.3f}% · floor = max({cfg.get('share_floor_pct')}%, "
+                f"{calibration.get('mde_floor_multiplier', MDE_FLOOR_MULTIPLIER):g} × story MDE)"
+            )
+            lines.append("")
+            lines.append("| Story | MDE (80% power) | Qualification floor |")
+            lines.append("| --- | ---: | ---: |")
+            for story, mde in sorted(calibration["story_mde_pct"].items(), key=lambda kv: -kv[1]):
+                floor, _ = story_floor_pct(cfg, story)
+                lines.append(f"| {story} | {mde:.2f}% | {floor:.2f}% |")
+        else:
+            lines.append(
+                f"**A/A calibration:** none recorded; floor is the campaign share "
+                f"floor {cfg.get('share_floor_pct')}% everywhere. Run "
+                "`campaign.py calibrate` before decomposing."
+            )
 
         discoveries = [o for o in opps if o.get("kind") == "discovery"]
         lines.append("")
@@ -1414,6 +1480,17 @@ def load_capture_summaries(
             raise CampaignError(
                 f"Capture {capture_id} is not scoped to exact score timers"
             )
+        if strict_evidence:
+            require_campaign_display(
+                ledger.data["config"], summary.get("display"), f"Capture {capture_id}"
+            )
+            if summary.get("stories_scope") != "main-thread":
+                raise CampaignError(
+                    f"Capture {capture_id} story silos are scoped to "
+                    f"{summary.get('stories_scope')!r}; campaign frontiers must "
+                    "rank renderer main-thread work only (analyze with "
+                    "--stories-scope main-thread)"
+                )
         if strict_evidence and summary.get("metric_weighting") != metric_model:
             raise CampaignError(
                 f"Capture {capture_id} is not a per-story silo decomposition "
@@ -1425,7 +1502,7 @@ def load_capture_summaries(
                 f"Capture {capture_id} nominal_samples_at_floor",
                 nonnegative=True,
             )
-            min_nominal = 5 if benchmark in ("jetstream3", "speedometer3") else 100
+            min_nominal = MIN_NOMINAL_SAMPLES_AT_FLOOR
             if nominal < min_nominal:
                 raise CampaignError(
                     f"Capture {capture_id} has a story with only {nominal:.1f} "
@@ -1554,7 +1631,7 @@ def load_capture_summaries(
                     f"{label} nominal_samples_at_floor",
                     nonnegative=True,
                 )
-                min_nominal = 5 if benchmark in ("jetstream3", "speedometer3") else 100
+                min_nominal = MIN_NOMINAL_SAMPLES_AT_FLOOR
                 if story_nominal < min_nominal:
                     raise CampaignError(
                         f"{label} has only {story_nominal:.1f} nominal samples "
@@ -2009,10 +2086,14 @@ def capture_review_base(opp, repo_root, feature, allow_unstaged=False):
 
 def verify_landed_commit(opp, repo_root, sha, skip_verification, branch):
     verify_commit(repo_root, sha)
+    if skip_verification and not test_bypass_active():
+        raise CampaignError("review verification cannot be bypassed in a live campaign")
     if skip_verification:
         print("warning: review verification skipped by flag", file=sys.stderr)
         return
     if not repo_root or not opp.get("review_base"):
+        if not test_bypass_active():
+            raise CampaignError("missing reviewed source base")
         print("warning: no review base recorded; landing without verification",
               file=sys.stderr)
         return
@@ -2102,6 +2183,399 @@ def verify_revert_commit(opp, repo_root, sha, branch):
 # ---------------- commands ----------------
 
 
+REDUNDANCY_EVIDENCE_LAYERS = (1, 2)
+REDUNDANCY_FRACTION_TOLERANCE = 0.05
+
+
+def bind_redundancy_evidence(path_item, story, fraction, campaign_dir):
+    """Layer 1/2 claims must cite measured call counts and applicability.
+
+    "Avoidable fraction" is otherwise a typed guess. The redundancy probe
+    measures how often the site runs inside the story's scored window and how
+    often the invariant holds or the input repeats; the claimed fraction may
+    not exceed what those counts support.
+    """
+    if path_item.get("disposition") != "novel":
+        return
+    layer = path_item.get("investigation_layer")
+    try:
+        layer = int(layer) if layer is not None else None
+    except (TypeError, ValueError):
+        raise CampaignError(f"Path {path_item['anchor']!r} investigation_layer must be 1-4")
+    if layer not in REDUNDANCY_EVIDENCE_LAYERS:
+        return
+    if test_bypass_active() and not path_item.get("redundancy_evidence"):
+        return
+    ref = path_item.get("redundancy_evidence")
+    if not isinstance(ref, dict) or not ref.get("path") or not ref.get("sha256"):
+        raise CampaignError(
+            f"Path {path_item['anchor']!r} claims a layer-{layer} mechanism "
+            "(subtree elimination or cross-call sharing) without redundancy "
+            "evidence. Instrument the site with redundancy_probe.h, reduce the "
+            "browser logs with redundancy_evidence.py, and cite the packet as "
+            "redundancy_evidence: {path, sha256}."
+        )
+    import redundancy_evidence
+    packet_path = pathlib.Path(ref["path"])
+    if not packet_path.is_absolute():
+        packet_path = pathlib.Path(campaign_dir) / packet_path
+    if not packet_path.is_file():
+        raise CampaignError(f"Redundancy evidence {packet_path} does not exist")
+    if sha256_file(packet_path) != ref["sha256"]:
+        raise CampaignError(f"Redundancy evidence {packet_path} does not match its sha256")
+    try:
+        packet = redundancy_evidence.load_packet(packet_path)
+    except ValueError as exc:
+        raise CampaignError(str(exc)) from exc
+    if story and packet.get("target_story") != story:
+        raise CampaignError(
+            f"Redundancy evidence measured {packet.get('target_story')!r}, not the "
+            f"path's target story {story!r}"
+        )
+    supported = redundancy_evidence.supported_avoidable_fraction(packet)
+    if fraction > supported + REDUNDANCY_FRACTION_TOLERANCE:
+        raise CampaignError(
+            f"Path {path_item['anchor']!r} claims avoidable fraction {fraction:.2f} "
+            f"but the probe supports at most {supported:.2f} (applicable "
+            f"{packet['applicable_fraction']:.2f}, repeated inputs "
+            f"{packet['repeat_fraction']:.2f} over {packet['calls_total']} calls"
+            + (", distinct-input set overflowed" if packet.get("distinct_overflow") else "")
+            + "); lower the claim or find the missing applicability"
+        )
+    path_item["redundancy_summary"] = {
+        "site": packet["site"],
+        "calls_total": packet["calls_total"],
+        "calls_per_repetition_mean": packet.get("calls_per_repetition_mean"),
+        "applicable_fraction": packet["applicable_fraction"],
+        "repeat_fraction": packet["repeat_fraction"],
+        "distinct_overflow": packet["distinct_overflow"],
+        "supported_avoidable_fraction": supported,
+    }
+
+
+def integration_mapping(repo, isolated_sha, integrated_sha, baseline_sha):
+    """Require identical reviewed patch content while allowing hunk relocation.
+
+    Unlike git patch-id, preserve whitespace (including string-literal content).
+    Keep paths, modes, context and function headers; strip only blob IDs and
+    hunk line numbers. Context conflicts require fresh qualification/review.
+    """
+    for sha in (isolated_sha, integrated_sha, baseline_sha):
+        if not isinstance(sha, str) or not re.fullmatch("[a-f0-9]{40}", sha):
+            raise ValueError("full commit identity required")
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True).stdout
+
+    parent = git("rev-parse", isolated_sha + "^").decode().strip()
+    if parent != baseline_sha:
+        raise ValueError("isolated candidate is not based on frozen baseline")
+
+    def patch(sha):
+        raw = git("diff", "--no-ext-diff", "--no-textconv", "--binary", "--no-renames",
+                  "--src-prefix=a/", "--dst-prefix=b/", sha + "^", sha, "--")
+        if not raw:
+            raise ValueError("candidate patch is empty")
+        lines = []
+        for line in raw.splitlines(keepends=True):
+            if line.startswith(b"index "):
+                continue
+            if line.startswith(b"@@ "):
+                line = re.sub(rb"^@@ -[0-9,]+ \+[0-9,]+ @@", b"@@", line)
+            lines.append(line)
+        return b"".join(lines)
+
+    left, right = patch(isolated_sha), patch(integrated_sha)
+    if left != right:
+        raise ValueError("integrated patch differs from isolated measured patch; requalify changed implementation")
+    return {"isolated_candidate_sha": isolated_sha, "integrated_commit": integrated_sha,
+            "patch_content_sha256": hashlib.sha256(left).hexdigest()}
+
+
+def fixed_plan(config, primary, blocks=None):
+    """The preregistered statistical plan for one measurement.
+
+    `primary` is "suite" or a list of stories. The minimum useful effect is
+    the frozen default raised to the calibrated MDE of the primary, so an
+    IMPROVEMENT means the lower bound cleared what the host can actually read.
+    """
+    base = dict(config.get("statistics") or DEFAULT_STATISTICS)
+    calibration = config.get("calibration") or {}
+    minimum = float(base["minimum_effect_pct"])
+    if primary == "suite":
+        if calibration.get("suite_mde_pct") is not None:
+            minimum = max(minimum, float(calibration["suite_mde_pct"]))
+    else:
+        mdes = [float(v) for k, v in (calibration.get("story_mde_pct") or {}).items() if k in primary]
+        if mdes:
+            minimum = max(minimum, statistics.fmean(mdes))
+    plan = {
+        "blocks": int(blocks or base["blocks"]),
+        "primary": primary,
+        "minimum_effect_pct": minimum,
+        "regression_margin_pct": float(base["regression_margin_pct"]),
+        "suite_regression_margin_pct": float(base["suite_regression_margin_pct"]),
+        "alpha": float(base["alpha"]),
+        "max_abs_lag1": float(base["max_abs_lag1"]),
+    }
+    import statistics_policy
+    return statistics_policy.validate_plan(plan)
+
+
+def verify_local_score_receipt(config, path, opp, repo_root):
+    """Recompute a runner-owned A/B manifest and decide it under the fixed plan."""
+    import statistics_policy
+    path = pathlib.Path(path)
+    try:
+        manifest = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"cannot read score manifest {path}: {exc}") from exc
+    if manifest.get("runner") != SCORE_MANIFEST_RUNNER or manifest.get("schema_version") != SCORE_MANIFEST_SCHEMA_VERSION:
+        raise ValueError(f"{path} is not a v4 score-runner manifest")
+    if manifest.get("mode") != "ab":
+        raise ValueError(f"{path} is not a feature A/B (mode={manifest.get('mode')!r})")
+    if manifest.get("feature") != config["feature"]:
+        raise ValueError(f"{path} toggled {manifest.get('feature')!r}, not the campaign feature")
+    if manifest.get("benchmark") != config["benchmark"]:
+        raise ValueError(f"{path} measured the wrong benchmark")
+    adapter = benchmark_adapters.get_adapter(config["benchmark"])
+    if manifest.get("stories") != adapter.default_workload_selector:
+        raise ValueError(f"{path} must measure the full default workload set for its regression family")
+    if manifest.get("skill_tree_sha256") != config.get("skill_tree_sha256"):
+        raise ValueError(f"{path} was produced by a different skill tree")
+    if not isinstance(manifest.get("blocks"), int) or manifest["blocks"] < MIN_SCORE_BLOCKS:
+        raise ValueError(f"{path} has fewer than {MIN_SCORE_BLOCKS} blocks")
+    provenance = manifest.get("build_provenance") or {}
+    shas = {(provenance.get(arm) or {}).get("git_sha") for arm in ("a", "b")}
+    if len(shas) != 1 or not re.fullmatch(r"[a-f0-9]{40}", next(iter(shas)) or ""):
+        raise ValueError(f"{path} arms are not both built from one full candidate commit")
+    for arm in ("a", "b"):
+        arm_provenance = provenance.get(arm) or {}
+        if arm_provenance.get("build_role") != "release" or arm_provenance.get("symbol_level") != "0":
+            raise ValueError(f"{path} arm {arm} is not the symbol-free release build")
+    validate_and_recompute_checkpoint(manifest, path, config)
+    primary = [opp["target_story"]] if opp.get("target_story") else "suite"
+    plan = fixed_plan(config, primary, manifest["blocks"])
+    decision = statistics_policy.evaluate(manifest, plan)
+    return {
+        "stage": "local",
+        "path": str(path.resolve()),
+        "sha256": sha256_file(path),
+        "candidate_sha": next(iter(shas)),
+        "seed": manifest.get("seed"),
+        "blocks": manifest["blocks"],
+        "plan": plan,
+        "verdict": decision["verdict"],
+        "primary": decision["primary"],
+        "regressions": decision["regressions"],
+        "unresolved_regression_bounds": decision["unresolved_regression_bounds"],
+        "display": measurement_display_identity(manifest),
+    }
+
+
+def measurement_display_identity(manifest):
+    environment = manifest.get("capture_environment") or {}
+    return display_identity(environment.get("display"))
+
+
+def verify_fleet_receipt(config, path):
+    """A Pinpoint analysis summary from pinpoint_measure.py for the campaign bot."""
+    path = pathlib.Path(path)
+    try:
+        summary = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"cannot read fleet summary {path}: {exc}") from exc
+    for field in ("job_id", "cl_url", "bot", "verdict", "metrics"):
+        if not summary.get(field):
+            raise ValueError(f"{path} lacks {field}; use pinpoint_measure.py analyze output")
+    if config.get("fleet_bot") and summary["bot"] != config["fleet_bot"]:
+        raise ValueError(f"{path} ran on {summary['bot']!r}, not the campaign bot {config['fleet_bot']!r}")
+    if summary["verdict"] != "IMPROVEMENT":
+        raise ValueError(f"{path} fleet verdict is {summary['verdict']}, not IMPROVEMENT")
+    return {
+        "stage": "fleet", "path": str(path.resolve()), "sha256": sha256_file(path),
+        "bot": summary["bot"], "job_id": summary["job_id"], "cl_url": summary["cl_url"],
+        "verdict": summary["verdict"], "primary_ci_pct": summary.get("primary_ci_pct"),
+    }
+
+
+def verify_performance_evidence(config, opp, paths, repo_root, unexpected=False):
+    """Landing evidence: local fixed-plan IMPROVEMENT(s) plus the fleet bot.
+
+    Runner-owned manifests are recomputed from their raw block results and
+    digest-bound here; there is no signature layer. An unexpected win needs
+    a second local run with a different seed that confirms it.
+    """
+    receipts = {"local": [], "fleet": []}
+    for path in paths or []:
+        try:
+            probe = json.loads(pathlib.Path(path).read_text())
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"cannot read performance receipt {path}: {exc}") from exc
+        if probe.get("runner") == SCORE_MANIFEST_RUNNER:
+            receipts["local"].append(verify_local_score_receipt(config, path, opp, repo_root))
+        elif "bot" in probe and "metrics" in probe:
+            receipts["fleet"].append(verify_fleet_receipt(config, path))
+        else:
+            raise ValueError(f"{path} is neither a score-runner manifest nor a Pinpoint summary")
+    local = receipts["local"]
+    if not local:
+        raise ValueError("a local fixed-plan A/B manifest is required")
+    candidate_shas = {r["candidate_sha"] for r in local}
+    if len(candidate_shas) != 1:
+        raise ValueError("local receipts measure different candidate commits")
+    surfaces = {json.dumps(r["display"], sort_keys=True) for r in local}
+    if len(surfaces) != 1:
+        raise ValueError("local receipts were captured on different rendering surfaces")
+    if len({r["seed"] for r in local}) != len(local):
+        raise ValueError("local receipts reuse a seed; each run needs its own randomized schedule")
+    improvements = [r for r in local if r["verdict"] == "IMPROVEMENT"]
+    if unexpected:
+        if len(local) < 2 or not improvements or local[-1]["verdict"] != "IMPROVEMENT":
+            raise ValueError("an unexpected win needs a separately seeded confirmation run that is an IMPROVEMENT")
+    elif len(improvements) != len(local):
+        verdicts = ", ".join(f"{pathlib.Path(r['path']).name}: {r['verdict']}" for r in local)
+        raise ValueError("every local receipt must be a fixed-plan IMPROVEMENT (" + verdicts + ")")
+    if config.get("require_fleet", True) and not receipts["fleet"]:
+        raise ValueError(f"a Pinpoint IMPROVEMENT on {config.get('fleet_bot')} is required before landing")
+    return {"candidate_sha": next(iter(candidate_shas)), "local": local, "fleet": receipts["fleet"]}
+
+
+def story_floor_pct(config, story):
+    """Qualification floor for one story: the campaign share floor, raised to
+    twice the story's calibrated MDE once an A/A calibration is recorded."""
+    base = float(config.get("share_floor_pct", 0.0))
+    calibration = config.get("calibration") or {}
+    mde_by_story = calibration.get("story_mde_pct") or {}
+    mde = mde_by_story.get(story) if story else None
+    if mde is None:
+        return base, "campaign share floor (no calibrated MDE for this story)"
+    floor = max(base, MDE_FLOOR_MULTIPLIER * float(mde))
+    return floor, f"max(share floor {base}%, {MDE_FLOOR_MULTIPLIER:g} x calibrated MDE {float(mde):.3f}% of {story})"
+
+
+def cmd_calibrate(args):
+    """Record the host's A/A null calibration and per-story MDEs in the ledger."""
+    import statistics_policy
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    config = ledger.data["config"]
+    manifests = []
+    refs = []
+    for item in args.manifest:
+        path = pathlib.Path(item)
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            raise CampaignError(f"Cannot read A/A manifest {path}: {exc}") from exc
+        if data.get("mode") != "aa":
+            raise CampaignError(f"{path} is not an A/A manifest (mode={data.get('mode')!r})")
+        if data.get("benchmark") != config["benchmark"]:
+            raise CampaignError(f"{path} measured {data.get('benchmark')!r}, not {config['benchmark']!r}")
+        environment = data.get("capture_environment") or {}
+        require_campaign_display(config, environment.get("display"), f"A/A manifest {path}")
+        manifests.append(data)
+        refs.append({"path": str(path.resolve()), "sha256": sha256_file(path)})
+    try:
+        result = statistics_policy.calibrate(
+            manifests, args.tolerance_pct, args.max_mde_pct, args.max_abs_lag1
+        )
+    except ValueError as exc:
+        raise CampaignError(f"A/A calibration rejected: {exc}") from exc
+    story_mde = {}
+    suite_mde = None
+    for session in result["results"]:
+        for name, summary in session.items():
+            mde = float(summary["mde_80_pct"])
+            if name == "@suite":
+                suite_mde = mde if suite_mde is None else max(suite_mde, mde)
+            else:
+                story_mde[name] = max(story_mde.get(name, 0.0), mde)
+    if not result["gate_pass"]:
+        worst = sorted(
+            ((max(abs(v["ci_pct"][0]), abs(v["ci_pct"][1])), n)
+             for session in result["results"] for n, v in session.items()),
+            reverse=True,
+        )[:5]
+        raise CampaignError(
+            "A/A calibration failed the equivalence/precision gate "
+            f"(tolerance {args.tolerance_pct}%, max MDE {args.max_mde_pct}%); "
+            "widest null intervals: " + ", ".join(f"{n} {w:.2f}%" for w, n in worst)
+            + ". Fix the host or choose a documented untuned policy; nothing was recorded."
+        )
+    config["calibration"] = {
+        "recorded": utc_now(),
+        "sessions": result["sessions"],
+        "manifests": refs,
+        "tolerance_pct": args.tolerance_pct,
+        "max_mde_pct": args.max_mde_pct,
+        "max_abs_lag1": args.max_abs_lag1,
+        "suite_mde_pct": suite_mde,
+        "story_mde_pct": story_mde,
+        "mde_floor_multiplier": MDE_FLOOR_MULTIPLIER,
+    }
+    ledger.save()
+    print(f"Recorded A/A calibration from {len(manifests)} sessions")
+    print(f"  suite MDE (80% power): {suite_mde:.3f}%")
+    print("  story qualification floors (max(share floor, 2 x MDE)):")
+    for name in sorted(story_mde, key=lambda n: -story_mde[n]):
+        floor, _ = story_floor_pct(config, name)
+        print(f"    {name:45s} MDE {story_mde[name]:5.2f}%  floor {floor:5.2f}%")
+    return 0
+
+
+def display_policy_from_args(args):
+    """Freeze the rendering surface every campaign run must use."""
+    display = (getattr(args, "display", None) or "headless").strip()
+    gpu_clock = getattr(args, "gpu_clock_mhz", None)
+    if gpu_clock is not None and (isinstance(gpu_clock, bool) or int(gpu_clock) <= 0):
+        raise CampaignError("--gpu-clock-mhz must be a positive integer")
+    pause = [name.strip() for name in (getattr(args, "pause_service", None) or []) if name.strip()]
+    if any(not re.fullmatch(r"[A-Za-z0-9_.@-]+", name) for name in pause):
+        raise CampaignError("--pause-service names must be plain systemd unit names")
+    if display == "headless":
+        return {"mode": "headless", "display": None, "vt": None,
+                "viewport": "headless", "gpu_clock_mhz": gpu_clock, "pause_services": pause}
+    if not re.fullmatch(r":\d+(?:\.\d+)?", display):
+        raise CampaignError("--display must be 'headless' or an X display such as ':1'")
+    vt = getattr(args, "display_vt", None)
+    if vt is None or isinstance(vt, bool) or int(vt) <= 0:
+        raise CampaignError("an X display needs --display-vt (the console VT its X server owns)")
+    viewport = (getattr(args, "viewport", None) or "1500x1000").strip()
+    if not re.fullmatch(r"\d+x\d+", viewport):
+        raise CampaignError("--viewport must look like 1500x1000")
+    return {"mode": "x11", "display": display, "vt": int(vt),
+            "viewport": viewport, "gpu_clock_mhz": gpu_clock, "pause_services": pause}
+
+
+def display_identity(environment):
+    if not isinstance(environment, dict):
+        return None
+    return {k: environment.get(k) for k in ("mode", "display", "viewport")}
+
+
+def require_campaign_display(config, environment, label):
+    """Every imported measurement must have used the campaign's rendering surface."""
+    policy = config.get("display")
+    if policy is None:
+        return
+    expected = {"mode": policy.get("mode"), "display": policy.get("display"),
+                "viewport": policy.get("viewport")}
+    actual = display_identity(environment)
+    if policy.get("mode") == "headless":
+        # Headless has no display or window geometry to compare.
+        expected = {"mode": "headless"}
+        actual = {"mode": (environment or {}).get("mode")} if isinstance(environment, dict) else None
+    if actual != expected:
+        raise CampaignError(
+            f"{label} was captured on rendering surface {actual} but the campaign "
+            f"is frozen to {expected}; rerun on the configured display"
+        )
+    if policy.get("mode") == "x11":
+        renderer = environment.get("gpu_renderer") or ""
+        if not renderer or any(t in renderer.lower() for t in ("swiftshader", "llvmpipe", "subzero")):
+            raise CampaignError(f"{label} did not render through the GPU ({renderer or 'unattested'})")
+
+
 def cmd_init(args):
     adapter = benchmark_adapters.get_adapter(args.benchmark)
     source = args.benchmark_source or "local"
@@ -2119,6 +2593,19 @@ def cmd_init(args):
     )
     if args.share_floor <= 0:
         raise CampaignError("--share-floor must be greater than zero")
+    display_policy = display_policy_from_args(args)
+    trust = {}
+    if not test_bypass_active():
+        try:
+            root = find_repo_root(pathlib.Path.cwd())
+            baseline = git_output(root, "rev-parse", args.baseline + "^{commit}").strip()
+            trust = {"baseline_sha": baseline}
+        except (OSError, TypeError, ValueError, subprocess.SubprocessError) as exc:
+            raise CampaignError("init requires a resolvable --baseline commit: " + str(exc)) from exc
+        if args.force:
+            raise CampaignError("live campaign history cannot be overwritten with --force")
+    if getattr(args, "fleet_bot", None) is not None and not re.fullmatch(r"[A-Za-z0-9._-]+", args.fleet_bot):
+        raise CampaignError("--fleet-bot must be a plain Pinpoint bot name")
     campaign_dir = pathlib.Path(args.dir) if args.dir else None
     if campaign_dir is not None:
         # Deliberately do NOT repoint the shared `current` symlink at a
@@ -2156,6 +2643,7 @@ def cmd_init(args):
         "schema_version": LEDGER_SCHEMA_VERSION,
         "next_sequence": 1,
         "config": {
+            **trust,
             "name": args.name,
             "benchmark": adapter.benchmark_id,
             "metric_model": adapter.metric_model,
@@ -2167,6 +2655,10 @@ def cmd_init(args):
             ),
             "target_landed": args.target,
             "share_floor_pct": args.share_floor,
+            "display": display_policy,
+            "statistics": dict(DEFAULT_STATISTICS),
+            "fleet_bot": getattr(args, "fleet_bot", None) or DEFAULT_FLEET_BOT,
+            "require_fleet": not getattr(args, "no_fleet_gate", False),
             "feature": args.feature or (
                 "Speedometer3Optimizations"
                 if adapter.benchmark_id == "speedometer3"
@@ -2271,6 +2763,7 @@ def record_mechanism_observation(opp, discovery, path, *, update_sizing=True):
         "estimated_avoidable_fraction": path.get(
             "estimated_avoidable_fraction"
         ),
+        "opportunity_budget": path.get("opportunity_budget"),
         "estimated_local_story_impact_pct": path.get(
             "estimated_local_story_impact_pct"
         ),
@@ -2281,6 +2774,10 @@ def record_mechanism_observation(opp, discovery, path, *, update_sizing=True):
             for ref in fingerprint_refs
         }),
     }
+    if path.get("opportunity_budget"):
+        from opportunity_budget import rank
+        rank(path["opportunity_budget"])
+        opp["opportunity_budget"] = path["opportunity_budget"]
     opp.setdefault("observations", []).append(observation)
     if opp["status"] in MECHANISM_TERMINAL or not update_sizing:
         # Terminal mechanisms keep the fields their verdict used; covered-by
@@ -3227,6 +3724,10 @@ def cmd_advance(args):
             f"Allowed from {src}: {sorted(FORWARD_TRANSITIONS.get(src, set()))}"
         )
     if dst == "sized":
+        if not test_legacy:
+            from opportunity_budget import rank
+            if not opp.get("opportunity_budget") or not rank(opp["opportunity_budget"])["viable_with_budget"]:
+                raise CampaignError("sizing requires a causal opportunity_budget that clears the calibrated measurement budget")
         if args.evidence_manifest:
             evidence, evidence_digest = load_gate_evidence(
                 args.evidence_manifest, opp=opp, phase="sizing",
@@ -3234,29 +3735,31 @@ def cmd_advance(args):
                 metric_model=ledger.data["config"]["metric_model"],
             )
             campaign_floor = float(ledger.data["config"]["share_floor_pct"])
-            evidence_floor = require_finite_number(
-                evidence.get("min_avoidable_pct_floor"),
-                "sizing evidence min_avoidable_pct_floor",
-                nonnegative=True,
-            )
-            if not math.isclose(
-                evidence_floor, campaign_floor, rel_tol=0, abs_tol=1e-12
-            ):
-                raise CampaignError(
-                    f"Sizing evidence floor {evidence_floor}% does not match "
-                    f"campaign floor {campaign_floor}%"
+            if test_legacy:
+                evidence_floor = require_finite_number(evidence.get("min_avoidable_pct_floor"), "sizing evidence floor", nonnegative=True)
+                if not math.isclose(evidence_floor,campaign_floor,rel_tol=0,abs_tol=1e-12):
+                    raise CampaignError("Sizing evidence floor does not match campaign floor")
+            else:
+                # The sizing ceiling must clear the target story's own
+                # qualification floor (twice its calibrated MDE once an A/A
+                # calibration exists); a smaller removable share cannot be
+                # read by the fixed-plan measurement.
+                campaign_floor, floor_basis = story_floor_pct(
+                    ledger.data["config"],
+                    evidence.get("target_story") or opp.get("target_story"),
                 )
-            avoidable_ci = evidence.get(
+            avoidable_ci = evidence.get("latency_headroom_ci_pct" if evidence.get("route") == "latency" else
                 "avoidable_scored_cycle_share_ci95_pct"
             )
             if not isinstance(avoidable_ci, list) or len(avoidable_ci) != 2:
                 raise CampaignError("Sizing evidence lacks an avoidable-share CI")
             if require_finite_number(
                 avoidable_ci[0], "sizing avoidable CI lower"
-            ) < campaign_floor:
+            ) <= (campaign_floor if not test_legacy else campaign_floor - 1e-12):
                 raise CampaignError(
                     "Sizing evidence does not clear the campaign's target-story "
                     "avoidable-share floor"
+                    + (f" ({campaign_floor:.3f}%: {floor_basis})" if not test_legacy else "")
                 )
             if (
                 not test_legacy
@@ -3342,7 +3845,7 @@ def cmd_advance(args):
         elif not test_legacy:
             raise CampaignError(
                 "-> review requires --verification-manifest proving a paired "
-                "exclusive-cycle reduction inside exact score intervals"
+                "work removal or latency reduction inside exact score intervals"
             )
         if test_legacy:
             opp["tests"] = args.tests
@@ -3389,6 +3892,21 @@ def cmd_advance(args):
                 )
         if not test_legacy:
             enforce_freshness_for_landing(ledger)
+        if not test_legacy:
+            try:
+                repo_root = find_repo_root(pathlib.Path.cwd())
+                full_sha = git_output(repo_root, "rev-parse", args.commit + "^{commit}").strip()
+                opp["unexpected_win"] = args.unexpected_win
+                evidence = verify_performance_evidence(
+                    ledger.data["config"], opp, args.performance_receipt, repo_root,
+                    unexpected=args.unexpected_win,
+                )
+                opp["performance_receipts"] = evidence
+                opp["integration_mapping"] = integration_mapping(
+                    repo_root, evidence["candidate_sha"], full_sha,
+                    ledger.data["config"]["baseline_sha"])
+            except (OSError, KeyError, ValueError, subprocess.SubprocessError) as exc:
+                raise CampaignError("performance gates blocked landing: " + str(exc)) from exc
         verify_landed_commit(
             opp, find_repo_root(pathlib.Path.cwd()), args.commit,
             args.skip_review_verification,
@@ -3433,11 +3951,17 @@ def load_decomposition(path):
         disposition = path_item.get("disposition")
         if disposition not in (
             "novel", "known", "covered-by", "mandatory", "below-floor",
-            "out-of-scope"
+            "out-of-scope", "no-qualifying-mechanism"
         ):
             raise CampaignError(
                 f"Path {index} has invalid disposition {disposition!r}"
             )
+        if disposition == "no-qualifying-mechanism":
+            packet = path_item.get("investigation")
+            if (not isinstance(packet, dict) or not packet.get("source_revision")
+                    or not packet.get("hypotheses") or not packet.get("falsifications")
+                    or not packet.get("stop_reason") or not packet.get("budget_used")):
+                raise CampaignError("no-qualifying-mechanism requires a bounded investigation packet with revision, hypotheses, falsifications, budget_used and stop_reason")
         missing = []
         if not isinstance(path_item.get("anchor"), str) or not path_item["anchor"].strip():
             missing.append("anchor")
@@ -3610,7 +4134,7 @@ def cmd_decompose(args):
                     "below-floor using an investigator-supplied share"
                 )
             if path_item["disposition"] in ("novel", "known"):
-                story_share = max(measured_work[ref] for ref in path_primary)
+                story_share = min(measured_work[ref] for ref in path_primary)
                 fraction = path_item.get("estimated_avoidable_fraction")
                 if fraction is None and test_bypass_active():
                     # Preserve compact legacy unit fixtures; production
@@ -3648,11 +4172,25 @@ def cmd_decompose(args):
                             f"Path {path_item['anchor']!r} estimated impact "
                             "does not equal profiler story share × avoidable fraction"
                         )
-                if not test_bypass_active() and impact < floor:
+                budget_qualifies = False
+                if path_item.get("opportunity_budget"):
+                    from opportunity_budget import rank
+                    budget_qualifies = rank(path_item["opportunity_budget"])["viable_with_budget"]
+                story_name = path_item.get("target_story") or parent.get("target_story")
+                path_floor, floor_basis = story_floor_pct(ledger.data["config"], story_name)
+                path_floor = max(path_floor, floor)
+                if not test_bypass_active() and impact < path_floor and not budget_qualifies:
                     raise CampaignError(
                         f"Path {path_item['anchor']!r} estimated target-story "
-                        f"impact {impact:.4f}% is below campaign floor {floor}%"
+                        f"impact {impact:.4f}% is below the qualification floor "
+                        f"{path_floor:.3f}% ({floor_basis}). The fixed-plan "
+                        "measurement cannot read a smaller effect on this story, "
+                        "so implementing it would only spend host time; find a "
+                        "mechanism that removes more of the story's work."
                     )
+                path_item["qualification_floor_pct"] = path_floor
+                path_item["qualification_floor_basis"] = floor_basis
+                bind_redundancy_evidence(path_item, story_name, fraction, ledger.dir)
                 path_item["story_profile_share_pct"] = story_share
                 path_item["estimated_avoidable_fraction"] = fraction
                 path_item["estimated_local_story_impact_pct"] = impact
@@ -4031,7 +4569,41 @@ def cmd_review_scaffold(args):
     return 0
 
 
-def load_review_report(path, *, opp, role, verdict):
+EVIDENCE_PATH_RE = re.compile(
+    r"(?:/|\b)[\w.@-]+(?:/[\w.@-]+)*\.(?:json|log|patch|txt|md|cc|h|collapsed|data|diff)\b(?::\d+)?"
+)
+EVIDENCE_DIGEST_RE = re.compile(r"\b[0-9a-f]{12,64}\b")
+EVIDENCE_NUMBER_RE = re.compile(r"\d")
+
+
+def review_evidence_is_specific(text, report_dir, campaign_dir=None):
+    """A PASS check must name something a third party can open and a number.
+
+    Accepts an existing file path (absolute, or relative to the report or the
+    campaign directory, optionally with :line) or a sha256 prefix, and requires
+    at least one digit so the sentence states what was verified rather than
+    "verified from measurements and dossiers".
+    """
+    if not isinstance(text, str) or not EVIDENCE_NUMBER_RE.search(text):
+        return False
+    if EVIDENCE_DIGEST_RE.search(text):
+        return True
+    bases = [pathlib.Path(report_dir)]
+    if campaign_dir:
+        bases.append(pathlib.Path(campaign_dir))
+    bases.append(pathlib.Path.cwd())
+    for match in EVIDENCE_PATH_RE.finditer(text):
+        candidate = pathlib.Path(match.group(0).split(":")[0])
+        if candidate.is_absolute():
+            if candidate.exists():
+                return True
+            continue
+        if any((base / candidate).exists() for base in bases):
+            return True
+    return False
+
+
+def load_review_report(path, *, opp, role, verdict, campaign_dir=None):
     path = pathlib.Path(path)
     try:
         report = json.loads(path.read_text())
@@ -4089,6 +4661,26 @@ def load_review_report(path, *, opp, role, verdict):
         if weak:
             raise CampaignError(
                 "PASS requires concrete per-check evidence for: " + ", ".join(weak)
+            )
+        repeated = {
+            text for text, count in collections.Counter(
+                value.strip().lower() for value in check_evidence.values()
+            ).items() if count > 1
+        }
+        if repeated:
+            raise CampaignError(
+                "PASS requires distinct evidence per check; the same sentence was "
+                "reused for several checks: " + "; ".join(sorted(repeated))[:200]
+            )
+        unspecific = [
+            name for name, value in check_evidence.items()
+            if not review_evidence_is_specific(value, path.parent, campaign_dir)
+        ]
+        if unspecific:
+            raise CampaignError(
+                "PASS requires each check to cite an existing artifact path or a "
+                "bound sha256 prefix plus the number it verified; missing for: "
+                + ", ".join(unspecific)
             )
         notes = report.get("notes")
         if (
@@ -4152,7 +4744,8 @@ def cmd_review(args):
                 "Reviews require a digest-bound report generated by review-scaffold"
             )
         report_data, report_digest = load_review_report(
-            args.report, opp=opp, role=args.role, verdict=args.verdict
+            args.report, opp=opp, role=args.role, verdict=args.verdict,
+            campaign_dir=ledger.dir,
         )
     review = {
         "verdict": args.verdict,
@@ -4511,7 +5104,7 @@ def validate_score_result_artifact(result, *, manifest_dir, evidence_dir,
     return start, finish, result.get("position"), parsed.workloads
 
 
-def validate_and_recompute_checkpoint(manifest, manifest_path):
+def validate_and_recompute_checkpoint(manifest, manifest_path, config=None):
     if (
         manifest.get("schema_version") != SCORE_MANIFEST_SCHEMA_VERSION
         or manifest.get("runner") != SCORE_MANIFEST_RUNNER
@@ -4575,6 +5168,8 @@ def validate_and_recompute_checkpoint(manifest, manifest_path):
     for field in ("host_name", "host_boot_id", "kernel_release", "cpu_model"):
         if not isinstance(environment.get(field), str) or not environment[field]:
             raise CampaignError(f"Checkpoint capture lacks {field}")
+    if config is not None:
+        require_campaign_display(config, environment.get("display"), "Checkpoint")
     harness = manifest.get("harness")
     if not isinstance(harness, dict):
         raise CampaignError("Checkpoint lacks harness identity")
@@ -4593,7 +5188,10 @@ def validate_and_recompute_checkpoint(manifest, manifest_path):
     minimum = manifest.get("minimum_duration_ns")
     expected_minimum = (
         manifest.get("blocks", 0) * 4 * MIN_FULL_SUITE_REP_SECONDS * 1_000_000_000
-        if manifest.get("stories") == "all" else 0
+        if manifest.get("stories") == "all" or (
+            adapter.benchmark_id == "speedometer3"
+            and manifest.get("stories") == adapter.default_workload_selector
+        ) else 0
     )
     if (
         isinstance(run_start, bool) or not isinstance(run_start, int)
@@ -4774,6 +5372,7 @@ def cmd_checkpoint(args):
     adapter = benchmark_adapters.get_adapter(
         ledger.data["config"]["benchmark"]
     )
+    decision = None
     checkpoint_challenges = []
     kind = args.kind
     target_stories = landed_target_stories(ledger)
@@ -4784,7 +5383,7 @@ def cmd_checkpoint(args):
         )
     expected_stories = (
         story_selector(target_stories)
-        if kind == "targeted" else adapter.default_workload_selector
+        if kind == "targeted" and test_bypass_active() else adapter.default_workload_selector
     )
     if args.summary:
         path = pathlib.Path(args.summary)
@@ -4799,7 +5398,7 @@ def cmd_checkpoint(args):
             raise CampaignError("Checkpoint summary is not from the v4 score runner")
         if summary.get("mode") != "ab":
             raise CampaignError("Checkpoint must be a cumulative feature A/B")
-        if kind == "targeted":
+        if kind == "targeted" and test_bypass_active():
             measured_stories = parse_story_selector(summary.get("stories"))
             if measured_stories != target_stories:
                 raise CampaignError(
@@ -4904,7 +5503,17 @@ def cmd_checkpoint(args):
                 "Checkpoint was produced by a different skill tree; sync/commit "
                 "tooling and rerun the measurement"
             )
-        computed = validate_and_recompute_checkpoint(manifest_data, manifest_path)
+        computed = validate_and_recompute_checkpoint(manifest_data, manifest_path, ledger.data["config"])
+        import statistics_policy
+        try:
+            plan = fixed_plan(
+                ledger.data["config"],
+                target_stories if kind == "targeted" else "suite",
+                manifest_data.get("blocks"),
+            )
+            decision = statistics_policy.evaluate(manifest_data, plan)
+        except ValueError as exc:
+            raise CampaignError(f"checkpoint fixed-plan decision failed: {exc}") from exc
         delta = computed["geometric_delta_pct"]
         ci = computed["ci_95_pct"]
         if not isinstance(ci, list) or len(ci) != 2:
@@ -4942,8 +5551,15 @@ def cmd_checkpoint(args):
             landed_count=len(ledger.landed()),
             blocks=blocks,
         )
+    if decision is not None:
+        primary = decision["primary"]
+        delta, (ci_low, ci_high), mde = primary["delta_pct"], primary["ci_pct"], primary["mde_80_pct"]
     ledger.data.setdefault("checkpoints", []).append(
         {
+            "plan": plan if decision else None,
+            "verdict": decision["verdict"] if decision else "test-only",
+            "regressions": decision["regressions"] if decision else [],
+            "unresolved_regression_bounds": decision["unresolved_regression_bounds"] if decision else [],
             "ts": utc_now(),
             "type": kind,
             "landed_count": len(ledger.landed()),
@@ -4978,7 +5594,7 @@ def cmd_checkpoint(args):
     ):
         saved = sum(
             float(opp.get("verification_evidence", {}).get(
-                "net_scored_cycle_share_saved_pct", 0.0
+                "mechanism_scored_cycle_share_saved_pct", 0.0
             ))
             for opp in ledger.landed()
         )
@@ -5020,6 +5636,12 @@ def update_pilot_from_split_checkpoints(ledger, *, saved):
                 f"measurements after {landed_count} landings"
             ),
         })
+        return
+    if not test_bypass_active():
+        verdicts = [targeted.get("verdict"),full.get("verdict")]
+        pilot.update({"status": "passed" if all(v == "IMPROVEMENT" for v in verdicts) else
+                      "failed" if "REGRESSION" in verdicts else "pending",
+                      "reason": "fixed-plan targeted/full-suite outcomes: " + str(verdicts),"ts":utc_now()})
         return
     target_low, target_high = targeted["ci"]
     full_low, full_high = full["ci"]
@@ -5167,6 +5789,28 @@ def cmd_audit(args):
                     )
             except CampaignError as exc:
                 problems.append(str(exc))
+    if not test_bypass_active():
+        for admitted in ledger.landed():
+            try:
+                evidence = admitted.get("performance_receipts") or {}
+                receipts = list(evidence.get("local", [])) + list(evidence.get("fleet", []))
+                if not receipts:
+                    raise ValueError("no performance receipts recorded")
+                for receipt in receipts:
+                    if sha256_file(receipt["path"]) != receipt["sha256"]:
+                        raise ValueError(f"performance receipt changed: {receipt['path']}")
+                mapping = admitted.get("integration_mapping") or {}
+                if integration_mapping(repo_root, mapping.get("isolated_candidate_sha"),
+                                       admitted["commit"], ledger.data["config"]["baseline_sha"]) != mapping:
+                    raise ValueError("integration mapping changed")
+            except (OSError, KeyError, TypeError, ValueError, subprocess.SubprocessError) as exc:
+                problems.append(f"opportunity {admitted['id']} performance evidence: {exc}")
+        for checkpoint in ledger.data.get("checkpoints", []):
+            try:
+                if checkpoint.get("manifest_sha256") and sha256_file(checkpoint["manifest"]) != checkpoint["manifest_sha256"]:
+                    raise ValueError("checkpoint manifest changed")
+            except (OSError, KeyError, TypeError, ValueError) as exc:
+                problems.append(f"checkpoint evidence: {exc}")
     for opp in ledger.data.get("opportunities", []):
         for phase, path_field in (
             ("sizing", "evidence"),
@@ -5211,7 +5855,8 @@ def cmd_audit(args):
                 continue
             try:
                 _, digest_value = load_review_report(
-                    path, opp=opp, role=role, verdict=review.get("verdict")
+                    path, opp=opp, role=role, verdict=review.get("verdict"),
+                    campaign_dir=ledger.dir,
                 )
                 if digest_value != review.get("report_sha256"):
                     problems.append(f"opportunity {opp['id']} {role} report changed")
@@ -5229,7 +5874,7 @@ def cmd_audit(args):
             if sha256_file(manifest_path) != checkpoint.get("manifest_sha256"):
                 raise CampaignError("manifest digest changed")
             manifest = json.loads(manifest_path.read_text())
-            validate_and_recompute_checkpoint(manifest, manifest_path)
+            validate_and_recompute_checkpoint(manifest, manifest_path, ledger.data["config"])
             if checkpoint.get("stories", manifest.get("stories")) != manifest.get(
                 "stories"
             ):
@@ -5393,13 +6038,45 @@ def build_parser():
     p.add_argument(
         "--share-floor",
         type=float,
-        default=0.3,
-        help="Minimum marginal profile share (%%) worth attempting",
+        default=1.0,
+        help="Minimum target-story impact (%%) worth attempting before "
+        "calibration raises it to twice the story's measured MDE",
     )
     p.add_argument("--feature", default=None)
     p.add_argument("--remote-host", default="linux")
     p.add_argument("--remote-src", default=None)
     p.add_argument("--force", action="store_true")
+    p.add_argument("--baseline", default="HEAD")
+    p.add_argument(
+        "--fleet-bot", default=DEFAULT_FLEET_BOT,
+        help="Pinpoint bot whose IMPROVEMENT is required before landing",
+    )
+    p.add_argument(
+        "--no-fleet-gate", action="store_true",
+        help="Land on local evidence alone (not recommended; the Mac bot is the reference)",
+    )
+    p.add_argument(
+        "--display", default="headless",
+        help="Rendering surface for every profile, mechanism and score run: "
+        "'headless' or an X display such as ':1' backed by the GPU",
+    )
+    p.add_argument(
+        "--display-vt", type=int, default=None,
+        help="Console VT owned by the benchmark X server (required with an X display)",
+    )
+    p.add_argument(
+        "--viewport", default="1500x1000",
+        help="Fixed Chrome window size for X display runs",
+    )
+    p.add_argument(
+        "--gpu-clock-mhz", type=int, default=None,
+        help="Lock the NVIDIA graphics clock at this MHz during measurement sessions",
+    )
+    p.add_argument(
+        "--pause-service", action="append", default=[],
+        help="systemd service the tuner stops for every measurement session "
+        "and restarts afterwards (repeatable), e.g. ollama",
+    )
     p.set_defaults(func=cmd_init)
 
     p = sub.add_parser("profile", help="Record one reconciled follow-on profile frontier")
@@ -5543,6 +6220,8 @@ def build_parser():
                    help="Enter review despite unstaged/untracked changes "
                    "(they are excluded from the reviewed tree)")
     add_gate_challenge_arguments(p)
+    p.add_argument("--unexpected-win", action="store_true", help="Require independent confirmation of a newly preregistered endpoint")
+    p.add_argument("--performance-receipt", action="append", help="Local score-runner A/B manifest and Pinpoint analysis summary for the candidate; repeat per file")
     p.set_defaults(func=cmd_advance)
 
     p = sub.add_parser("squeeze", help="Record one squeeze-loop refinement round")
@@ -5630,6 +6309,19 @@ def build_parser():
     p = sub.add_parser("status", help="Regenerate STATUS.md and print its path")
     p.add_argument("--print", action="store_true")
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser(
+        "calibrate",
+        help="Record two separately timed A/A sessions; per-story MDEs set the qualification floors",
+    )
+    p.add_argument("--manifest", action="append", required=True,
+                   help="run_ab_benchmark.py A/A manifest (repeat for each session)")
+    p.add_argument("--tolerance-pct", type=float, default=0.5,
+                   help="Every null interval must lie within +/- this many percent")
+    p.add_argument("--max-mde-pct", type=float, default=3.0,
+                   help="Reject a session whose story MDE exceeds this")
+    p.add_argument("--max-abs-lag1", type=float, default=0.4)
+    p.set_defaults(func=cmd_calibrate)
 
     p = sub.add_parser(
         "audit",

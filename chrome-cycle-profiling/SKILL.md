@@ -10,7 +10,7 @@ This skill provides the authoritative runbook, instrumentation resources, and ve
 For benchmark selection, payload provenance, campaign gates, and local versus
 SSH transport, read `../optimize-campaign/SKILL.md`. The score runner and
 cycle-profile runner support both `speedometer3` and `jetstream3` adapters with
-exact-window score interval profiling.
+adapter-specific score parsing; JetStream exact-window campaign import remains blocked pending end-to-end validation.
 
 ---
 
@@ -18,11 +18,11 @@ exact-window score interval profiling.
 
 1. **Bare-Metal PMU Available:**
    * The test environment is a physical bare-metal machine with hardware PMU counters.
-   * **Mandatory Flag:** All sampling `perf record` invocations SHOULD explicitly specify `-e cycles -F 997 -k mono`. Software-timer sampling (`cpu-clock`) is deprecated in favor of hardware ground truth.
+   * **Mandatory Flag:** All sampling `perf record` invocations use hardware cycles with a fixed period: `-e cycles -c 875000 -k mono -g` (about 4 kHz per CPU at the tuner's 3.5 GHz base clock; `--perf-frequency` is the fallback when the clock is not locked). Software-timer sampling (`cpu-clock`) is deprecated in favor of hardware ground truth. Stay under `kernel.perf_event_max_sample_rate` and check `dmesg` for throttling after a capture.
    * **Microarchitectural Awareness:** Hardware cache misses, branch mispredicts, and instruction stalls can now be measured locally using hardware events.
 2. **Full-Suite Scope & Headless Screening:**
-   * **Full Suite Scope:** Phase 1 profiling and feasibility scope-gate decisions MUST be based on a representative profile across the **full Speedometer 3 suite** (`--stories=all`). Single-story profiles are used strictly for localized candidate discovery.
-   * **Headless vs Desktop:** Local VM profiling and verification runs execute headless (`--headless=new`). Local runs serve as relative A/B screening evidence. Desktop-mode Pinpoint trybots or bare-metal desktop runs are the authoritative ground truth for candidate promotion and final validation.
+   * **Full Suite Scope:** Phase 1 profiling and feasibility scope-gate decisions MUST be based on a representative profile across the **default Speedometer 3.1 suite** (`--stories=default`, 20 workloads matching Pinpoint). Explicit `--stories=all` extends coverage to 32 workloads and has a different aggregate. Single-story profiles are used strictly for localized candidate discovery.
+   * **Rendering surface:** Campaign profiles, mechanism captures and score runs all use the campaign display policy (`--display :1 --display-vt 9` on the Linux box: a GPU-backed X server owned by the tuner session). Headless mode renders through SwiftShader and is diagnostic only; it puts canvas rasterization and CPU raster on the renderer main thread, which the Mac M1 PGO Pinpoint bot never does. Local runs are relative screening evidence; the Mac M1 PGO bot is the validation reference.
 3. **JIT Symbolization (`--perf-basic-prof`) & `-k mono` Requirement:**
    * Chrome MUST run with `--no-sandbox --js-flags=--perf-basic-prof`. `--no-sandbox` MUST be a separate Chrome flag (NOT placed inside `--js-flags`), allowing renderers to write `/tmp/perf-<pid>.map` files cleanly.
    * **Symbol Map Retention:** `/tmp/perf-*.map` files must remain intact in `/tmp` until all `perf report` and `perf script` flame graph generation steps are complete.
@@ -32,8 +32,8 @@ exact-window score interval profiling.
      1. Full Chrome process-tree report partitioned into Browser, Renderer, GPU, and Utility roles.
      2. Renderer-specific deep-dive report for candidate investigation.
    * **Structured PID/Timestamp Manifest:** Poll the launched command's descendants while profiling and record every Chrome PID with its browser, renderer, GPU, or utility role. Preserve the labeled sync/async intervals used by the benchmark score. Outer suite windows are diagnostic only.
-   * **Score Weighting & Per-Story Decomposition:** Preserve exact per-suite score intervals. `run_cycle_benchmark.py` passes `--stories-out-dir` to the analyzer, which emits one independent silo analysis per observed story under `analysis/stories/<story>/` (shares local to that story's scored cycles, entry keys `story:<name>/…`) plus a `stories_index.json` summary. The full-suite and renderer views remain diagnostic. Workload-specific bottlenecks are therefore analyzed as independent silos without geometric-mean dilution.
-   * **Quality Rejection Gate:** Reject profiles with unmatched score marks, poor call stack unwinding, overall `[unknown]` frames >15%, concentrated `[unknown]` frames >10% within any dominant call stack, insufficient total samples (<5,000), or fewer than 100 nominal samples at the requested marginal floor — applying the sample gates independently to every story silo (a failing story rejects the capture; increase repetitions, default 16).
+   * **Score Weighting & Per-Story Decomposition:** Preserve exact per-suite score intervals. `run_cycle_benchmark.py` passes `--stories-out-dir` and `--stories-scope main-thread` to the analyzer, which emits one independent silo analysis per observed story under `analysis/stories/<story>/` scoped to the renderer main thread (shares local to that story's main-thread scored cycles, entry keys `story:<name>/…`, a score-time composition and portability flags per entry) plus a `stories_index.json` summary. The full-suite and renderer views remain diagnostic. Workload-specific bottlenecks are therefore analyzed as independent silos without geometric-mean dilution or off-thread noise.
+   * **Quality Rejection Gate:** Reject profiles with unmatched score marks, poor call stack unwinding, overall `[unknown]` frames >15%, concentrated `[unknown]` frames >10% within any dominant call stack, insufficient total samples (<5,000), or fewer than 100 nominal main-thread samples at the requested marginal floor — applying the sample gates independently to every story silo (a failing story rejects the capture; increase repetitions, default 32).
 5. **Mandatory Remote Transfer Compression (`scp -C` / `rsync -z`):**
    * The physical measurement host is remote with constrained upstream/downstream bandwidth.
    * All artifact, patch, log, manifest, and capture transfers to/from the remote host MUST specify compression flags: `scp -C` or `rsync -avz` / `rsync -z`.
@@ -71,8 +71,11 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --brow
 git apply --check .agents/skills/optimize-campaign/assets/speedometer3/performance-mark-monotonic-probe.patch
 git apply .agents/skills/optimize-campaign/assets/speedometer3/performance-mark-monotonic-probe.patch
 autoninja -C out/perf chrome
-python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --browser=out/perf/chrome --stories=NewsSite-Next
+python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --browser=out/perf/chrome --stories=NewsSite-Next --display=:1 --display-vt=9
 ```
+
+# Step 6: Redundancy probe smoke test (compile the header once against the twin)
+g++ -std=c++20 -fsyntax-only -I.agents/skills .agents/skills/chrome-cycle-profiling/resources/redundancy_probe.h
 
 ### Preflight Pass Criteria & Script Conformance Assertions:
 1. **C++ Frames Symbolized:** `blink::...` and `content::...` symbols visible, not raw hex addresses (`symbol_level = 1`).
@@ -93,7 +96,7 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
 ## 3. Opportunity-Sizing & Correctness Guardrails
 
 1. **Discovery Is Not Sizing:** Hardware-cycle sample share locates broad work. It does not size a mechanism or predict score delta. Use exact-score counters plus paired baseline/oracle/candidate exclusive-cycle evidence through `mechanism_evidence.py`. Classify work as score-critical or CPU-only with a trace artifact.
-2. **Instrumentation:** Targeted mechanism cycle probes MUST use user-space PMU reads (`_rdpmc` via `mmap_page`) at ~15 cycles overhead. Synchronous kernel `read(fd)` syscalls (~1,200 cycles) are banned in microsecond-scale paths. Probes MUST be gated on `IsInScoredWindow()` to strictly ensure zero cycle accumulation and zero overhead outside scored intervals (preventing ratio inflation from unscored page loading or stylesheet parsing). Probes MUST be 100% structurally symmetric between baseline and candidate; never place probes inside conditional feature branches. Require at least three independent blocks, adaptive subsampling for sites called >100k times, and an instrumentation A/A overhead of at most 1%. Baseline exclusive share must not exceed the parent symbol's sample share in the release `perf record` profile.
+2. **Instrumentation:** Targeted mechanism cycle probes MUST use user-space PMU reads (`_rdpmc` via `mmap_page`) with platform-specific measured overhead. Synchronous kernel `read(fd)` syscalls (~1,200 cycles) are banned in microsecond-scale paths. Probes MUST be gated on `IsInScoredWindow()` to avoid counter reads and accumulation outside scored intervals after thread initialization (preventing ratio inflation from unscored page loading or stylesheet parsing). Probes MUST be 100% structurally symmetric between baseline and candidate; never place probes inside conditional feature branches. Require at least three independent blocks, adaptive subsampling for sites called >100k times, and an instrumentation A/A confidence interval entirely within ±1%. Baseline exclusive share must not exceed the parent symbol's sample share in the release `perf record` profile.
 3. **Correctness Guardrails:** Oracles are opportunity-sizing experiments. Candidate implementations must pass comprehensive correctness checks:
    - Layout geometry & element node count smoke tests.
    - Event listeners & lifecycle ordering.
@@ -125,18 +128,20 @@ python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --b
   git checkout -- third_party/blink/renderer/core/timing/performance.cc
   git status --porcelain
   ```
-* **Candidate Integration Transfer:** Save accepted candidate implementations as explicit git commits on the campaign branch named in the campaign ledger (`campaign.py show`), one commit per opportunity. Do not invent per-candidate integration branches.
+* **Candidate Integration Transfer:** Save accepted candidate implementations as explicit git commits on the campaign branch named in the campaign ledger (`campaign.py show`), one commit per opportunity. Use isolated candidate worktrees against the frozen baseline for qualification, then integrate accepted commits into the recorded campaign branch.
 * **Safe Result Directory Cleanup:** Create results under explicit `mktemp -d` directories and delete ONLY those resolved absolute directory paths.
 
 ---
 
 ## 6. Automation Scripts
 
-* **Full-Suite Perf Sampling and Tree Analysis:** `python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --browser=out/perf/chrome --stories=all --repetitions=4` (defaults to enabling the campaign feature; pass `--enable-features=` for a true baseline capture)
+* **Full-Suite Perf Sampling and Tree Analysis:** `python3 .agents/skills/chrome-cycle-profiling/scripts/run_cycle_benchmark.py --browser=out/perf/chrome --stories=default --repetitions=32 --display=:1 --display-vt=9` (defaults to enabling the campaign feature; pass `--enable-features=` for a true baseline capture; `--stories=all` explicitly extends coverage to 32 workloads; `--perf-sample-period`/`--perf-frequency` control sampling)
+* **Redundancy Probe:** `resources/redundancy_probe.h` counts calls, applicable calls and repeated inputs per scored group; reduce its `[SP3_REDUNDANCY_ROW]` lines with `optimize-campaign/scripts/redundancy_evidence.py` before proposing a skip-the-subtree or reuse-a-result mechanism.
 * **Randomized Block A/B Benchmark:** `python3 .agents/skills/chrome-cycle-profiling/scripts/run_ab_benchmark.py --browser=out/release/chrome --required-build-role=release --blocks=32 --feature=FeatureName`
   - `--aa` for A/A calibration; `--browser-a=... --browser-b=...` for binary-vs-binary comparison (bisecting a batch regression). In aa/two-binary modes, `--enable-features=<flags>` applies identically to BOTH arms — required when comparing flag-gated campaign builds, which are otherwise baseline-identical.
   - `--feature` refuses feature names not defined in the source tree (Chrome silently ignores unknown features); `--skip-feature-check` overrides.
-  - The manifest (`scratch/ab_results_manifest.json`) includes per-story block statistics; with ~30 stories at 95% CI, expect ~1 false-positive stat-sig story per run — confirm flagged stories with a targeted `--stories` rerun before acting.
+  - The manifest (`scratch/ab_results_manifest.json`) includes per-story block statistics with Bonferroni-adjusted flags (`stat_sig_story_regressions`, `stat_sig_story_improvements`); `unadjusted_story_flags` and `expected_false_positive_stories` show how much of the unadjusted list is expected noise. Acceptance uses the campaign fixed-plan block statistics; do not selectively rerun flagged stories.
+  - Score runs keep ASLR enabled (per-repetition layout randomization); the runner records the rendering surface, GPU renderer, active VT and foreign GPU compute processes, and refuses a display that is not GPU-backed.
 * **Campaign Execution:** Use `python3 .agents/skills/optimize-campaign/scripts/remote_measure.py`. Its `--execution local` mode uses the current physical host without Git tree mutation; `--execution ssh` transfers committed refs, builds on the measurement host, and runs under a lock.
 * **Workspace Cleanup:** Delete only explicitly created output directories:
   ```bash

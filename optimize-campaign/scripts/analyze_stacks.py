@@ -25,6 +25,9 @@ import sys
 from typing import Iterable
 
 
+MIN_NOMINAL_SAMPLES_AT_FLOOR = 100
+STORY_SCOPES = ("main-thread", "renderer", "all-threads")
+
 HEADER_RE = re.compile(
     r"^\s*(?P<comm>.*?)\s+(?P<pid>\d+)(?:/(?P<tid>\d+))?\s+"
     r"(?P<time>\d+\.\d+):\s+(?P<period>\d+)\s+(?P<event>\S+):\s*$"
@@ -278,6 +281,7 @@ def load_interval_records(path: pathlib.Path | None) -> list[dict]:
                 "start_time_mono": float(start),
                 "end_time_mono": float(end),
                 "group": str(group) if group is not None else None,
+                "phase": item.get("phase") if isinstance(item, dict) else None,
             })
     return sorted(intervals, key=lambda item: item["start_time_mono"])
 
@@ -877,6 +881,48 @@ def top_counter(counter: dict[str, int], limit: int = 5) -> list[dict]:
     ]
 
 
+PLATFORM_SENSITIVITY: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (
+        re.compile(
+            r"^(?:cc::(?:PaintOp|Raster|SoftwareImageDecode|GpuImageDecode|TileManager|"
+            r"PictureLayer|TextureLayer|SkiaPaintCanvas|DisplayItemList|ImageDecodeCache|"
+            r"\(anonymous namespace\)::(?:Raster|SoftwareImageDecode))|"
+            r"blink::(?:Canvas2D|CanvasRenderingContext2D|BaseRenderingContext2D|"
+            r"CanvasResourceProvider|OffscreenCanvas|WebGL|PaintController|"
+            r"CanvasPath|Canvas2DRecorderContext)|viz::|gpu::|gl::|angle::|Sk[A-Z])"
+        ),
+        "rendering-backend",
+        "Raster, paint playback, canvas flush and GPU plumbing take a different "
+        "path on the Mac M1 fleet (GPU raster, accelerated canvas, Metal via "
+        "ANGLE). Confirm on Pinpoint before investing; a local win here can be "
+        "an artifact of the local rendering backend.",
+    ),
+    (
+        re.compile(
+            r"^(?:hb_|blink::(?:HarfBuzz|Shape|CachingWordShaper|FontCache|"
+            r"FontPlatformData|FontFallback|SimpleFontData|Font::|NGShapeCache))"
+        ),
+        "font-shaping",
+        "Font matching and shaping depend on platform fonts (CoreText and AAT "
+        "tables on macOS); the fleet shapes different glyph runs.",
+    ),
+    (
+        re.compile(r"^(?:net::|mojo::|ipcz::|IPC::|url::|disk_cache::)"),
+        "process-plumbing",
+        "Network, cache and IPC plumbing rarely sit on the score-critical "
+        "renderer main-thread path and differ by platform.",
+    ),
+)
+
+
+def platform_sensitivity(symbol: str) -> dict | None:
+    """Tag work whose local cost may not reproduce on the fleet bot."""
+    for pattern, tag, note in PLATFORM_SENSITIVITY:
+        if pattern.search(symbol):
+            return {"tag": tag, "note": note}
+    return None
+
+
 def aggregate_entry_key(agg: Aggregate) -> str:
     """Return a stable machine identity, preserving caller-sensitive contexts."""
     if agg.kind != "context":
@@ -967,6 +1013,7 @@ def make_candidate(
         "path_tail": list(agg.path[-8:]),
         "top_callers": top_counter(agg.callers),
         "top_callees": top_counter(agg.callees),
+        "platform_sensitivity": platform_sensitivity(agg.name),
         "sample_mask": agg.sample_mask,
     }
 
@@ -1224,6 +1271,146 @@ def write_collapsed(samples: list[Sample], path: pathlib.Path) -> None:
             output.write(f"{stack} {sample.weight}\n")
 
 
+def make_interval_record_matcher(records: list[dict]):
+    """Map a timestamp to the exact scored interval record containing it."""
+    if not records:
+        return lambda timestamp: None
+    ordered = sorted(records, key=lambda item: item["start_time_mono"])
+    starts = [item["start_time_mono"] for item in ordered]
+
+    def match(timestamp: float):
+        index = bisect.bisect_right(starts, timestamp) - 1
+        if index < 0 or timestamp > ordered[index]["end_time_mono"]:
+            return None
+        return ordered[index]
+
+    return match
+
+
+def record_story(record: dict) -> str | None:
+    group = record.get("group") or ""
+    return group.rsplit("|", 1)[1] if "|" in group else None
+
+
+def score_time_composition(
+    samples: list[Sample],
+    records: list[dict],
+    renderer_pids: set[int] | None,
+) -> dict[str, dict]:
+    """Split each story's scored wall time into sync/async and busy/idle.
+
+    Speedometer's score is wall time on the renderer main thread: the sync
+    timer covers the test step's script, and the async timer runs until a
+    setTimeout scheduled from a requestAnimationFrame fires, so it contains
+    the frame's style/layout/paint work plus scheduling waits. CPU samples
+    only see the busy part. Cycles per second is self-calibrated from the
+    sync phase, where the main thread is assumed fully busy, so the async
+    busy fraction is an estimate (capped at 1.0), not a measurement.
+    """
+    if not records:
+        return {}
+    match = make_interval_record_matcher(records)
+    per_story: dict[str, dict] = {}
+
+    def story_bucket(story: str) -> dict:
+        return per_story.setdefault(story, {
+            "sync": {"wall_s": 0.0, "intervals": 0, "main_cycles": 0.0,
+                     "other_renderer_cycles": 0.0, "other_process_cycles": 0.0},
+            "async": {"wall_s": 0.0, "intervals": 0, "main_cycles": 0.0,
+                      "other_renderer_cycles": 0.0, "other_process_cycles": 0.0},
+        })
+
+    for record in records:
+        story = record_story(record)
+        phase = record.get("phase")
+        if story is None or phase not in ("sync", "async"):
+            continue
+        bucket = story_bucket(story)[phase]
+        bucket["wall_s"] += float(record["end_time_mono"]) - float(record["start_time_mono"])
+        bucket["intervals"] += 1
+    for sample in samples:
+        record = match(sample.timestamp)
+        if record is None:
+            continue
+        story = record_story(record)
+        phase = record.get("phase")
+        if story is None or phase not in ("sync", "async"):
+            continue
+        bucket = story_bucket(story)[phase]
+        in_renderer = renderer_pids is None or sample.pid in renderer_pids
+        if in_renderer and sample.tid == sample.pid:
+            bucket["main_cycles"] += sample.weight
+        elif in_renderer:
+            bucket["other_renderer_cycles"] += sample.weight
+        else:
+            bucket["other_process_cycles"] += sample.weight
+
+    result = {}
+    for story, phases in per_story.items():
+        sync, asyn = phases["sync"], phases["async"]
+        total_wall = sync["wall_s"] + asyn["wall_s"]
+        hz = sync["main_cycles"] / sync["wall_s"] if sync["wall_s"] > 0 else 0.0
+        async_busy = (
+            min(1.0, (asyn["main_cycles"] / hz) / asyn["wall_s"])
+            if hz > 0 and asyn["wall_s"] > 0 else None
+        )
+        result[story] = {
+            "sync_wall_ms": sync["wall_s"] * 1000,
+            "async_wall_ms": asyn["wall_s"] * 1000,
+            "async_wall_share_pct": (100 * asyn["wall_s"] / total_wall) if total_wall else None,
+            "sync_intervals": sync["intervals"],
+            "async_intervals": asyn["intervals"],
+            "main_thread_cycles": {"sync": sync["main_cycles"], "async": asyn["main_cycles"]},
+            "other_renderer_thread_cycles": {"sync": sync["other_renderer_cycles"], "async": asyn["other_renderer_cycles"]},
+            "other_process_cycles": {"sync": sync["other_process_cycles"], "async": asyn["other_process_cycles"]},
+            "async_main_thread_busy_fraction_est": async_busy,
+            "async_idle_wait_fraction_est": (1 - async_busy) if async_busy is not None else None,
+            "async_main_thread_cycle_share_pct": (
+                100 * asyn["main_cycles"] / (sync["main_cycles"] + asyn["main_cycles"])
+                if sync["main_cycles"] + asyn["main_cycles"] else None
+            ),
+            "estimation_note": (
+                "cycles/second self-calibrated from the sync phase (main thread "
+                "assumed fully busy); async busy fraction is an estimate"
+            ),
+        }
+    return result
+
+
+def score_time_composition_lines(composition: dict) -> list[str]:
+    def pct(value):
+        return "n/a" if value is None else f"{value:.0%}"
+    async_share = composition.get("async_wall_share_pct")
+    lines = [
+        "## Score-time composition",
+        "",
+        "Speedometer scores wall time, so CPU samples miss the waits. This "
+        "story's scored time splits as follows (async busy fraction is an "
+        "estimate calibrated on the sync phase):",
+        "",
+        "| Phase | Wall ms (all reps) | Share of score | Main-thread busy (est.) | Idle/wait (est.) |",
+        "|---|---:|---:|---:|---:|",
+        f"| sync | {composition.get('sync_wall_ms', 0):.0f} | "
+        f"{'n/a' if async_share is None else f'{100 - async_share:.0f}%'} | ~100% (assumed) | ~0% |",
+        f"| async | {composition.get('async_wall_ms', 0):.0f} | "
+        f"{'n/a' if async_share is None else f'{async_share:.0f}%'} | "
+        f"{pct(composition.get('async_main_thread_busy_fraction_est'))} | "
+        f"{pct(composition.get('async_idle_wait_fraction_est'))} |",
+        "",
+    ]
+    idle = composition.get("async_idle_wait_fraction_est")
+    if async_share is not None and idle is not None and async_share * idle / 100 >= 0.25:
+        lines.extend([
+            f"**Latency route candidate:** roughly {async_share * idle / 100:.0%} of this "
+            "story's score is main-thread idle time inside the async phase "
+            "(frame scheduling, task ordering, compositor round trips). CPU "
+            "work removal cannot touch it; use the trace-backed latency route "
+            "(`latency_evidence.py`) and look at what the rAF/setTimeout chain waits on.",
+            "",
+        ])
+    return lines
+
+
 def write_markdown(report: dict, path: pathlib.Path, display_limit: int = 20) -> None:
     lines = [
         "# Stack candidate frontier",
@@ -1242,6 +1429,19 @@ def write_markdown(report: dict, path: pathlib.Path, display_limit: int = 20) ->
                 "",
             ]
         )
+    scope = report["quality"].get("scope")
+    if scope:
+        lines.extend([
+            f"Scope: **{scope}** samples inside exact scored intervals "
+            f"({report['quality'].get('samples_all_threads', report['quality']['samples']):,} "
+            "samples across all threads/processes were captured in these "
+            "windows; only the scoped subset is ranked because Speedometer "
+            "scores renderer main-thread wall time).",
+            "",
+        ])
+    composition = report.get("score_time_composition")
+    if composition:
+        lines.extend(score_time_composition_lines(composition))
     lines.extend(
         [
             "Candidates are merged across caller contexts and selected by marginal "
@@ -1250,18 +1450,25 @@ def write_markdown(report: dict, path: pathlib.Path, display_limit: int = 20) ->
             "Neither predicts benchmark improvement.",
             "See `opportunity_trees.txt` for a pruned text flame tree of the same "
             "profile, including cross-area and exclusive repository-owned views.",
+            "Portability flags mark work whose cost depends on the local rendering "
+            "backend, fonts or process plumbing; confirm those on the fleet bot "
+            "before investing.",
             "",
-            "| Rank | Kind | Candidate | Inclusive | Owned | Tree | Marginal | Callers |",
-            "|---:|---|---|---:|---:|---:|---:|---:|",
+            "| Rank | Kind | Candidate | Inclusive | Owned | Tree | Marginal | Callers | Portability |",
+            "|---:|---|---|---:|---:|---:|---:|---:|---|",
         ]
     )
     displayed_frontier = report["frontier"][:display_limit]
     for candidate in displayed_frontier:
+        sensitivity = candidate.get("platform_sensitivity")
         lines.append(
             "| {rank} | {kind} | `{name}` | {inclusive_share:.2%} | "
             "{owner_exclusive_share:.2%} | {tree_share_of_candidate:.1%} | "
             "{marginal_share:.2%} | "
-            "{caller_contexts} |".format(**candidate)
+            "{caller_contexts} | {portability} |".format(
+                portability=(sensitivity["tag"] if sensitivity else "portable"),
+                **candidate,
+            )
         )
     lines.extend(["", "## Investigation context", ""])
     for candidate in displayed_frontier:
@@ -1274,6 +1481,12 @@ def write_markdown(report: dict, path: pathlib.Path, display_limit: int = 20) ->
             for item in candidate["top_callees"][:5]
         )
         lines.extend([f"### {candidate['rank']}. `{candidate['name']}`", ""])
+        sensitivity = candidate.get("platform_sensitivity")
+        if sensitivity:
+            lines.extend([
+                f"**Portability: {sensitivity['tag']}.** {sensitivity['note']}",
+                "",
+            ])
         if candidate["kind"] == "context":
             path_tail = " → ".join(f"`{item}`" for item in candidate["path_tail"])
             lines.extend([f"Context tail: {path_tail}.", ""])
@@ -1396,6 +1609,9 @@ def analyze_and_report(
     role_pids: set[int] | None,
     out_dir: pathlib.Path,
     story: str | None = None,
+    scope: str | None = None,
+    samples_all_threads: int | None = None,
+    composition: dict | None = None,
 ) -> tuple[dict, list[str]]:
     """Aggregate samples, build the frontier, and write one analysis report.
 
@@ -1442,7 +1658,11 @@ def analyze_and_report(
     if len(samples) < min_samples:
         quality_issues.append(f"fewer than {min_samples} samples")
     nominal_floor_samples = len(samples) * args.min_marginal_share
-    min_nominal = 5 if (story or getattr(args, "story", None) or getattr(args, "metric_weighting", "") == "jetstream-workload-score-v1") else 100
+    # A frontier entry at the floor needs ~100 samples to carry a ranking:
+    # with 25 samples its share has a 20% Poisson error and ordering below
+    # ~1% is noise. Increase repetitions or the sampling rate instead of
+    # lowering this gate.
+    min_nominal = MIN_NOMINAL_SAMPLES_AT_FLOOR
     if nominal_floor_samples < min_nominal:
         quality_issues.append(
             f"fewer than {min_nominal} nominal samples at the marginal-share floor"
@@ -1466,6 +1686,10 @@ def analyze_and_report(
             "build_provenance": interval_manifest.get("build_provenance"),
             "role": args.role or "all",
             "pids": sorted(role_pids) if role_pids is not None else [],
+            "scope": scope or ("role:" + args.role if args.role else "all-threads"),
+            "samples_all_threads": (
+                samples_all_threads if samples_all_threads is not None else len(samples)
+            ),
         },
         "selection": {
             "min_inclusive_share": args.min_share,
@@ -1490,6 +1714,8 @@ def analyze_and_report(
         "overlapping_alternatives": [public_candidate(item) for item in alternatives],
         "area_inventory": [public_candidate(item) for item in areas],
     }
+    if composition is not None:
+        report["score_time_composition"] = composition
     if story is not None:
         manifest_weighting = interval_manifest.get("metric_weighting") or ""
         story_weighting = (
@@ -1590,6 +1816,14 @@ def main() -> int:
         help="Write diagnostic output and exit successfully even if quality gates fail",
     )
     parser.add_argument(
+        "--stories-scope", choices=STORY_SCOPES, default="main-thread",
+        help=(
+            "Which samples form each story silo: main-thread keeps only the "
+            "renderer main thread (what Speedometer times), renderer keeps all "
+            "renderer threads, all-threads keeps every process (diagnostic only)"
+        ),
+    )
+    parser.add_argument(
         "--stories-out-dir",
         type=pathlib.Path,
         default=None,
@@ -1621,6 +1855,13 @@ def main() -> int:
     ] + load_mark_intervals(args.browser_log)
     intervals.sort()
     role_pids: set[int] | None = None
+    renderer_pids: set[int] | None = None
+    if args.intervals:
+        manifest_processes = json.loads(args.intervals.read_text()).get("processes", [])
+        renderer_pids = {
+            int(process["pid"]) for process in manifest_processes
+            if process.get("role") == "renderer"
+        } or None
     if args.role:
         if not args.intervals:
             parser.error("--role requires a manifest passed with --intervals")
@@ -1666,6 +1907,12 @@ def main() -> int:
         json.loads(args.intervals.read_text()) if args.intervals else {}
     )
     exact_scored = interval_manifest.get("interval_kind") == "exact-scored"
+    # Wall-time composition needs raw cycle weights, so compute it before the
+    # per-group normalization rescales them.
+    composition_by_story = (
+        score_time_composition(samples, interval_records, renderer_pids)
+        if exact_scored else {}
+    )
     if exact_scored:
         normalize_score_groups(samples)
 
@@ -1685,10 +1932,29 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
+        if args.stories_scope != "all-threads" and renderer_pids is None:
+            print(
+                "Per-story decomposition scoped to the renderer needs the "
+                "process roles from the capture manifest; none were found.",
+                file=sys.stderr,
+            )
+            return 2
+
+        def in_story_scope(sample: Sample) -> bool:
+            if args.stories_scope == "all-threads":
+                return True
+            if sample.pid not in renderer_pids:
+                return False
+            return args.stories_scope == "renderer" or sample.tid == sample.pid
+
         by_story: dict[str, list[Sample]] = {}
+        all_thread_counts: dict[str, int] = {}
         for sample in samples:
             story = sample_story(sample)
-            if story is not None:
+            if story is None:
+                continue
+            all_thread_counts[story] = all_thread_counts.get(story, 0) + 1
+            if in_story_scope(sample):
                 by_story.setdefault(story, []).append(sample)
         if not by_story:
             print(
@@ -1703,12 +1969,18 @@ def main() -> int:
             report, story_issues = analyze_and_report(
                 by_story[story], args, interval_manifest, intervals,
                 exact_scored, role_pids, story_dir, story=story,
+                scope=args.stories_scope,
+                samples_all_threads=all_thread_counts.get(story),
+                composition=composition_by_story.get(story),
             )
             if story_issues:
                 rejected_stories.append(story)
             index_entries.append({
                 "story": story,
                 "dir": story,
+                "scope": args.stories_scope,
+                "samples_all_threads": all_thread_counts.get(story),
+                "score_time_composition": composition_by_story.get(story),
                 # Keep the index relocatable: remote_measure.py fetches this
                 # tree to a different absolute root before reopening it.
                 "candidate_frontier_json": str(
@@ -1730,6 +2002,8 @@ def main() -> int:
                 else "speedometer-story-v1"
             ),
             "interval_kind": "exact-scored",
+            "scope": args.stories_scope,
+            "min_nominal_samples_at_floor": MIN_NOMINAL_SAMPLES_AT_FLOOR,
             "min_marginal_share": args.min_marginal_share,
             "min_inclusive_share": args.min_share,
             "story_count": len(index_entries),

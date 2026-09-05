@@ -71,6 +71,30 @@ class PerStoryTest(unittest.TestCase):
         self.assertTrue(stats["stat_sig_regression"])
         self.assertTrue(stats["exceeds_2pct_regression"])
 
+    def test_family_adjustment_suppresses_marginal_story_flags(self):
+        # One story with a borderline 1% effect among 30 stories: the
+        # unadjusted 95% interval flags it, the Bonferroni family does not.
+        rng = __import__("random").Random(7)
+        blocks = []
+        for i in range(32):
+            block = {"a_scores": [30.0], "b_scores": [30.0], "a_stories": [{}], "b_stories": [{}]}
+            for k in range(30):
+                name = f"S{k}"
+                a = 100.0 * (1 + rng.gauss(0, 0.01))
+                b = a * (0.985 if k == 0 else 1.0) * (1 + rng.gauss(0, 0.01))
+                block["a_stories"][0][name] = a
+                block["b_stories"][0][name] = b
+            blocks.append(block)
+        stats = ab.per_story_stats(blocks, adapter=ab.benchmark_adapters.SPEEDOMETER_3)
+        flagged = stats["S0"]
+        self.assertEqual(31, flagged["family_alpha"] and int(round(0.05 / flagged["family_alpha"])))
+        self.assertLess(flagged["ci_family_pct"][0], flagged["ci_95_pct"][0])
+        self.assertGreater(flagged["ci_family_pct"][1], flagged["ci_95_pct"][1])
+        unadjusted = sum(1 for s in stats.values() if s["stat_sig_improvement_unadjusted"] or s["stat_sig_regression_unadjusted"])
+        adjusted = sum(1 for s in stats.values() if s["stat_sig_improvement"] or s["stat_sig_regression"])
+        self.assertGreaterEqual(unadjusted, adjusted)
+        self.assertAlmostEqual(1.5, ab.expected_false_positive_stories(30))
+
     def test_jetstream_higher_score_is_gain(self):
         blocks = [self.block(500.0 * (1 + 0.001 * i),
                              525.0 * (1 + 0.001 * i), story="hash-map")
@@ -97,18 +121,28 @@ class PerStoryTest(unittest.TestCase):
 
 
 class ParseTest(unittest.TestCase):
+    def test_previous_version_results_are_not_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = os.path.join(tmp, "res")
+            os.makedirs(run_dir)
+            with open(os.path.join(run_dir, "speedometer_3.0.json"), "w") as f:
+                json.dump({"Score": 35.0, "TodoMVC-React": 20.0}, f)
+            self.assertEqual([], ab.parse_run_metrics(
+                tmp, "res", adapter=ab.benchmark_adapters.SPEEDOMETER_3
+            ))
+
     def test_only_scalar_score_files_counted(self):
         with tempfile.TemporaryDirectory() as tmp:
             # Aggregate-style file (Score is a dict): must be ignored.
             agg_dir = os.path.join(tmp, "res", "stories")
             os.makedirs(agg_dir)
-            with open(os.path.join(agg_dir, "speedometer_3.0.json"), "w") as f:
+            with open(os.path.join(agg_dir, "speedometer_3.1.json"), "w") as f:
                 json.dump({"Score": {"average": 35.0},
                            "TodoMVC-React": {"average": 20.0}}, f)
             # Per-iteration file (Score is scalar): must be used.
             run_dir = os.path.join(agg_dir, "all", "0", "0_default")
             os.makedirs(run_dir)
-            with open(os.path.join(run_dir, "speedometer_3.0.json"), "w") as f:
+            with open(os.path.join(run_dir, "speedometer_3.1.json"), "w") as f:
                 json.dump({"Score": 35.0,
                            "TodoMVC-React": 20.0,
                            "Geomean": 19.0,

@@ -293,13 +293,9 @@ def build_and_run_script(args, sha, sha_b=None, expected_digest=None):
         else ""
     )
 
-    tune_script = ".agents/skills/optimize-campaign/scripts/tune_benchmark_host.py"
-    tune_lines = [
-        f'if [ -f "{tune_script}" ] && sudo -n true 2>/dev/null; then',
-        f'  python3 "{tune_script}" enable || true',
-        f'  trap \'python3 "{tune_script}" disable || true\' EXIT INT TERM',
-        "fi",
-    ] if getattr(args, "tune_host", True) else []
+    session_lines = tune_lines(args, keep_aslr=True)
+    surface = " ".join(display_runner_args(args))
+    surface = f" {surface}" if surface else ""
 
     if args.mode == "ab2":
         for arm, arm_sha in (("a", sha), ("b", sha_b)):
@@ -313,12 +309,12 @@ def build_and_run_script(args, sha, sha_b=None, expected_digest=None):
                 "fi",
                 f"autoninja -C {out_dir} chrome chromedriver",
             ]
-        lines += tune_lines
+        lines += session_lines
         lines.append(
             f"vpython3 {bench} --browser-a=out/release_a/chrome "
             f"--browser-b=out/release_b/chrome --required-build-role=release "
             f"--blocks={blocks} --stories={stories} --seed={seed}{common}"
-            f"{benchmark_options}"
+            f"{benchmark_options}{surface}"
         )
     else:
         out_dir = "out/perf" if args.mode == "profile" else "out/release"
@@ -326,20 +322,20 @@ def build_and_run_script(args, sha, sha_b=None, expected_digest=None):
             f"git checkout --quiet --detach {q(sha)}",
             f"autoninja -C {out_dir} chrome chromedriver",
         ]
-        lines += tune_lines
+        lines += session_lines
         if args.mode == "aa":
             lines.append(
                 f"vpython3 {bench} --browser=out/release/chrome --aa "
                 f"--required-build-role=release "
                 f"--blocks={blocks} --stories={stories} --seed={seed}{common}"
-                f"{benchmark_options}"
+                f"{benchmark_options}{surface}"
             )
         elif args.mode == "ab":
             lines.append(
                 f"vpython3 {bench} --browser=out/release/chrome "
                 f"--required-build-role=release "
                 f"--feature={q(args.feature)} --blocks={blocks} "
-                f"--stories={stories} --seed={seed}{benchmark_options}"
+                f"--stories={stories} --seed={seed}{benchmark_options}{surface}"
             )
         elif args.mode == "profile":
             features = args.enable_features if args.enable_features is not None else ""
@@ -351,7 +347,7 @@ def build_and_run_script(args, sha, sha_b=None, expected_digest=None):
                 f" --enable-features={q(features)}"
                 f" --min-share={args.share_floor_pct / 100.0}"
                 f" --min-marginal-share={args.share_floor_pct / 100.0}"
-                f"{benchmark_options}"
+                f"{benchmark_options}{surface}"
                 f" || rc=$?; rc=${{rc:-0}}; "
                 f"if [ $rc -ne 0 ] && [ $rc -ne {ANALYSIS_REJECTED_EXIT_CODE} ]; then exit $rc; fi; "
                 f'echo "PROFILE_EXIT_CODE: $rc"'
@@ -397,14 +393,8 @@ def build_local_script(args, root, expected_digest):
     if not args.skip_build:
         build_dir = os.path.dirname(browser)
         lines.append(f"autoninja -C {q(build_dir)} chrome chromedriver")
-    if getattr(args, "tune_host", True):
-        tune_script = ".agents/skills/optimize-campaign/scripts/tune_benchmark_host.py"
-        lines += [
-            f'if [ -f "{tune_script}" ] && sudo -n true 2>/dev/null; then',
-            f'  python3 "{tune_script}" enable || true',
-            f'  trap \'python3 "{tune_script}" disable || true\' EXIT INT TERM',
-            "fi",
-        ]
+    lines += tune_lines(args, keep_aslr=True)
+    surface = display_runner_args(args)
     if args.mode == "profile":
         features = args.enable_features or ""
         lines.append(
@@ -416,12 +406,13 @@ def build_local_script(args, root, expected_digest):
             f"--min-marginal-share={args.share_floor_pct / 100.0} "
             f"--benchmark={q(args.benchmark)} "
             f"--benchmark-source={q(args.benchmark_source)}"
+            + "".join(f" {flag}" for flag in surface)
         )
         return "\n".join(lines) + "\n"
     command = [
         "vpython3", bench, f"--required-build-role={role}",
         f"--blocks={int(args.blocks)}", f"--seed={int(args.seed)}",
-        *common,
+        *common, *surface,
     ]
     if args.mode == "aa":
         command.extend((f"--browser={q(browser)}", "--aa"))
@@ -622,6 +613,11 @@ def profile_summary_paths(out_dir):
             paths["analyzer_min_inclusive_share"] = index.get(
                 "min_inclusive_share"
             )
+            paths["stories_scope"] = index.get("scope")
+            paths["score_time_composition"] = {
+                item.get("story"): item.get("score_time_composition")
+                for item in stories if item.get("score_time_composition")
+            }
             complete = bool(stories) and index.get("accepted") is True
             entries = []
             inventory = []
@@ -746,6 +742,70 @@ def ledger_benchmark_defaults():
         config.get("benchmark"),
         config.get("benchmark_source"),
     )
+
+
+def ledger_display_defaults():
+    """Rendering-surface policy frozen at campaign init, when a campaign is active.
+
+    Returns a dict with mode/display/vt/viewport/gpu_clock_mhz or None. A
+    malformed active ledger is a hard error: silently measuring on the wrong
+    surface would produce evidence that cannot be compared with calibration.
+    """
+    import campaign
+    path = campaign.default_campaign_dir() / "ledger.json"
+    if not path.exists():
+        return None
+    try:
+        config = json.loads(path.read_text())["config"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        print(f"error: cannot read campaign display defaults: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+    display = config.get("display")
+    if display is None:
+        return None
+    if not isinstance(display, dict) or display.get("mode") not in ("headless", "x11"):
+        print(f"error: active campaign ledger at {path} has an invalid display policy", file=sys.stderr)
+        raise SystemExit(1)
+    return display
+
+
+def display_runner_args(args):
+    """Runner flags selecting the campaign's rendering surface."""
+    q = shlex.quote
+    if not getattr(args, "display", None):
+        return []
+    flags = [f"--display={q(args.display)}"]
+    if getattr(args, "display_vt", None) is not None:
+        flags.append(f"--display-vt={int(args.display_vt)}")
+    if getattr(args, "viewport", None):
+        flags.append(f"--viewport={q(args.viewport)}")
+    return flags
+
+
+def tune_lines(args, keep_aslr):
+    """Shell lines that open and close the tuner session around a runner.
+
+    Score and profile runs keep ASLR enabled so layout luck averages out per
+    repetition; only cycle-probe captures (mechanism_evidence.py) disable it.
+    """
+    if not getattr(args, "tune_host", True):
+        return []
+    tune_script = ".agents/skills/optimize-campaign/scripts/tune_benchmark_host.py"
+    enable = [f'python3 "{tune_script}" enable']
+    if keep_aslr:
+        enable.append("--keep-aslr")
+    if getattr(args, "display_vt", None) is not None:
+        enable.append(f"--vt {int(args.display_vt)}")
+    if getattr(args, "gpu_clock_mhz", None):
+        enable.append(f"--gpu-clock-mhz {int(args.gpu_clock_mhz)}")
+    for name in getattr(args, "pause_services", None) or []:
+        enable.append(f"--pause-service {shlex.quote(name)}")
+    return [
+        " ".join(enable),
+        'trap "exit 130" INT',
+        f'trap \'python3 "{tune_script}" disable\' EXIT',
+        'trap "exit 143" TERM',
+    ]
 
 
 def ledger_share_floor_pct(default=0.3):
@@ -948,6 +1008,29 @@ def main(argv=None):
         "before measurement and restore on exit (default: true)",
     )
     parser.add_argument(
+        "--display", default=None,
+        help="X display (for example :1) for GPU-backed rendering; 'headless' "
+        "forces Chrome headless mode. Defaults to the active campaign's "
+        "display policy, then headless.",
+    )
+    parser.add_argument(
+        "--display-vt", type=int, default=None,
+        help="Console VT of the benchmark X server (campaign default)",
+    )
+    parser.add_argument(
+        "--viewport", default=None,
+        help="Fixed window size WIDTHxHEIGHT for X display runs (campaign default)",
+    )
+    parser.add_argument(
+        "--gpu-clock-mhz", type=int, default=None,
+        help="Lock the NVIDIA graphics clock during the session (campaign default)",
+    )
+    parser.add_argument(
+        "--pause-service", action="append", default=[],
+        help="systemd service to stop for the session and restart afterwards "
+        "(repeatable; campaign default, e.g. ollama)",
+    )
+    parser.add_argument(
         "--opp",
         type=int,
         default=None,
@@ -979,6 +1062,24 @@ def main(argv=None):
     )
     if args.stories is None:
         args.stories = adapter.default_workload_selector
+    display_policy = None if args.display else ledger_display_defaults()
+    if args.display == "headless":
+        args.display = None
+    elif display_policy is not None:
+        if display_policy.get("mode") == "x11":
+            args.display = display_policy.get("display")
+            if args.display_vt is None:
+                args.display_vt = display_policy.get("vt")
+            if args.viewport is None:
+                args.viewport = display_policy.get("viewport")
+        if args.gpu_clock_mhz is None:
+            args.gpu_clock_mhz = display_policy.get("gpu_clock_mhz")
+        if not args.pause_service:
+            args.pause_service = list(display_policy.get("pause_services") or [])
+    args.pause_services = list(args.pause_service or [])
+    if args.display and args.viewport is None:
+        import measurement_host
+        args.viewport = measurement_host.DEFAULT_VIEWPORT
     if args.browser is None:
         args.browser = (
             "out/Default/chrome" if args.characterization
@@ -1152,6 +1253,17 @@ def main(argv=None):
         summary["stories"] = args.stories
         summary["capture_id"] = out_dir.name
         summary.update(profile_summary_paths(out_dir))
+        run_manifest = out_dir / "perf_run_manifest.json"
+        if run_manifest.exists():
+            try:
+                run_data = json.loads(run_manifest.read_text())
+            except (OSError, ValueError):
+                run_data = {}
+            summary["display"] = run_data.get("display")
+            summary["perf_sampling"] = run_data.get("perf_sampling")
+            summary["foreign_gpu_compute_apps"] = run_data.get(
+                "foreign_gpu_compute_apps"
+            )
 
     summary_json = json.dumps(summary, indent=2)
     if args.summary_out:

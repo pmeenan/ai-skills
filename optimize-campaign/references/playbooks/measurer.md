@@ -1,41 +1,39 @@
 # Campaign measurer playbook
 
-Goal: measure aggregate Speedometer score movement without changing code.
+Read [measurement-policy.md](../measurement-policy.md). Take the campaign's
+frozen fixed plan as input (`statistics` in the ledger, minimum effect raised
+to the calibrated MDE); never choose the sample size, primary endpoint or
+regression margins from partial results.
 
-Inputs: mode, SHAs/feature, host, full-suite or targeted story, minimum blocks,
-and summary output path.
+1. Confirm the active campaign and whether another measurement holds the
+   host lease. Follow an existing run before launching more work. Record the
+   launch in the ledger before it starts, including runs that later fail.
+2. Use official release-role PGO/ThinLTO score binaries, the pinned payload,
+   the exact default workload inventory and the campaign display. The wrapper
+   opens the tuner session (CPU policy, VT handoff, paused services, ASLR on).
+3. Launch through `remote_measure.py --mode ab --opp <id> --feature <flag>`
+   with at least 32 balanced ABBA/BAAB blocks. Every page-load result stays
+   within its block; internal iterations do not increase the sample count.
+   Preserve failed, cancelled and timed-out runs.
+4. Keep the full regression workload family even for a targeted primary. A
+   candidate's primary is its target story; the targeted checkpoint uses the
+   landed target-story list from `campaign.py checkpoint-targets`; the
+   full-suite checkpoint uses `suite`. No selective story reruns.
+5. Inspect the per-block host observations (frequency, throttle counters,
+   active VT, GPU tenants) and the manifest's family-adjusted story flags.
+   Report INVALID, INCONCLUSIVE, REGRESSION or IMPROVEMENT with confidence
+   bounds, MDE, sample count, seed, commits, activation, payload, display and
+   environment. A non-significant regression test does not establish
+   equivalence.
+6. For a candidate, upload the isolated diff as a try CL and run
+   `pinpoint_measure.py run --bot <campaign bot> --attempts 150`; keep the
+   analysis summary as the fleet receipt. Abandon the CL if it fails.
+7. Import checkpoints with `campaign.py checkpoint --kind <kind> --summary
+   <remote_measure summary>` plus the independent gate reviews; land with
+   `campaign.py advance --to landed --commit <sha> --performance-receipt
+   <local manifest> --performance-receipt <pinpoint summary>`. Both pilot
+   checkpoint outcomes must be fixed-plan IMPROVEMENTs before scaling.
 
-Rules:
-
-1. Use the remote bare-metal machine. `out/perf` is the official symbols-on
-   build for sampling profiles only. Every A/A, feature A/B, checkpoint, or
-   score verdict uses symbol-free `out/release` (or `out/release_a` and
-   `out/release_b`) with official PGO2/ThinLTO provenance.
-2. Omit `--seed` to generate a fresh seed, or use an explicitly supplied new
-   seed. The harness records it and creates a balanced ABBA/BAAB schedule.
-3. A/A calibration uses `--stories all`. For a landing checkpoint, obtain the
-   exact selector from `campaign.py checkpoint-targets`, pass that value to
-   `remote_measure.py --stories`, and record it with `checkpoint --kind
-   targeted`. Run a separate `--stories all` / `--kind full-suite` checkpoint
-   at the pilot tip and whenever its ten-landing cadence is due.
-4. Use at least 32 complete blocks (64 paired reps per arm), with exactly half
-   ABBA and half BAAB. If the targeted pilot CI crosses zero, use its MDE to
-   choose one larger preregistered balanced confirmation run; do not rerun
-   repeatedly until a favorable point estimate appears. The ledger rejects a
-   same-size or third same-tip targeted attempt and a duplicate same-tip
-   full-suite attempt. A 32-block full-suite
-   run is 128 full Speedometer repetitions, has a 64-minute enforced floor,
-   and may take several hours.
-   Long silence is expected. Wait for the runner and never replace it with
-   manually authored JSON.
-5. Report point estimate, 95% CI, MDE, blocks, seed, schedule, SHAs, feature
-   state, story set, and regression guardrails. If CI crosses zero, say
-   inconclusive.
-6. Preserve the fetched v3 evidence directory beside the untouched remote
-   manifest and summary. Feed each summary to `campaign.py checkpoint` with
-   its explicit kind; it reopens every raw result and recomputes the statistic.
-   The pilot passes only when the targeted checkpoint CI is positive and a
-   separate same-tip full-suite checkpoint shows no stat-sig regression.
-
-Return only the absolute summary path and a one-line verdict:
-`IMPROVEMENT`, `REGRESSION`, or `INCONCLUSIVE`.
+Long runs take hours. Wait for the run; never replace missing output with
+manually written results or create another manifest to escape a gate. An
+unexpected benefit needs a separately seeded confirmation run.

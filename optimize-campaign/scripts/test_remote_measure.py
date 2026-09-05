@@ -145,7 +145,35 @@ class ScriptGenerationTest(unittest.TestCase):
     def test_tune_host_in_remote_script_enabled_by_default(self):
         script = rm.build_and_run_script(make_args(), SHA_A)
         self.assertIn('tune_benchmark_host.py" enable', script)
-        self.assertIn("trap 'python3 \".agents/skills/optimize-campaign/scripts/tune_benchmark_host.py\" disable || true' EXIT INT TERM", script)
+        self.assertIn("trap 'python3 \".agents/skills/optimize-campaign/scripts/tune_benchmark_host.py\" disable' EXIT", script)
+
+    def test_display_policy_flows_to_runner_and_tuner(self):
+        script = rm.build_and_run_script(
+            make_args(display=":1", display_vt=9, viewport="1500x1000", gpu_clock_mhz=1365),
+            SHA_A,
+        )
+        self.assertIn("--display=:1 --display-vt=9 --viewport=1500x1000", script)
+        self.assertIn('tune_benchmark_host.py" enable --keep-aslr --vt 9 --gpu-clock-mhz 1365', script)
+        paused = rm.build_and_run_script(
+            make_args(display=":1", display_vt=9, viewport="1500x1000", pause_services=["ollama"]), SHA_A)
+        self.assertIn("--pause-service ollama", paused)
+        local = rm.build_local_script(
+            make_args(mode="aa", display=":1", display_vt=9, viewport="1500x1000",
+                      benchmark="speedometer3", benchmark_source="local",
+                      benchmark_url=None, benchmark_payload_path=None,
+                      driver_path=None, iteration_count=None, worst_case_count=None,
+                      skip_build=True, browser="out/release/chrome",
+                      characterization=False),
+            pathlib.Path("/repo"), "0" * 64,
+        )
+        self.assertIn("--display=:1", local)
+        self.assertIn("--display-vt=9", local)
+        self.assertIn("--keep-aslr", local)
+
+    def test_headless_default_keeps_aslr_and_omits_display(self):
+        script = rm.build_and_run_script(make_args(), SHA_A)
+        self.assertNotIn("--display", script)
+        self.assertIn("enable --keep-aslr", script)
 
     def test_tune_host_disabled_via_flag(self):
         script = rm.build_and_run_script(make_args(tune_host=False), SHA_A)
@@ -257,6 +285,8 @@ class ResultDiscoveryTest(unittest.TestCase):
             self.assertEqual("exact-scored", paths.pop("interval_kind"))
             self.assertEqual(0.001, paths.pop("analyzer_min_marginal_share"))
             self.assertEqual(0.001, paths.pop("analyzer_min_inclusive_share"))
+            self.assertIsNone(paths.pop("stories_scope"))
+            self.assertEqual({}, paths.pop("score_time_composition"))
             self.assertEqual(1, paths.pop("frontier_count"))
             self.assertEqual(1, paths.pop("story_count"))
             self.assertEqual(120.0, paths.pop("nominal_samples_at_floor"))

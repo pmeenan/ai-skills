@@ -975,19 +975,41 @@ class CampaignTest(unittest.TestCase):
             report = json.loads(report_path.read_text())
             self.assertEqual("discovery-exhaustion", report["review_kind"])
             report["checks"] = {name: True for name in report["checks"]}
-            report["check_evidence"] = {
+            generic = {
                 name: (
                     "Verified against the digest-bound decomposition and raw "
                     f"profile inventory for check {name}."
                 )
                 for name in report["checks"]
             }
+            report["check_evidence"] = generic
             report["verdict"] = "PASS"
             report["findings"] = []
             report["notes"] = (
                 "The mandatory residual is tied to observable behavior and the "
                 "decomposition accounts for every profiled path."
             )
+            report_path.write_text(json.dumps(report))
+            # Prose without an artifact reference and a number is not evidence.
+            self.assertEqual(1, self.run_cmd(
+                "review", "--opp", str(discovery), "--role", "skeptic",
+                "--verdict", "PASS", "--report", str(report_path)))
+            # The same sentence reused for every check is not evidence either.
+            report["check_evidence"] = {
+                name: f"decomposition {report['decomposition_sha256'][:16]} lists 1 path"
+                for name in report["checks"]
+            }
+            report_path.write_text(json.dumps(report))
+            self.assertEqual(1, self.run_cmd(
+                "review", "--opp", str(discovery), "--role", "skeptic",
+                "--verdict", "PASS", "--report", str(report_path)))
+            report["check_evidence"] = {
+                name: (
+                    f"decomposition {report['decomposition_sha256'][:16]} row "
+                    f"{index} satisfies {name}: {generic[name]}"
+                )
+                for index, name in enumerate(report["checks"], 1)
+            }
             report_path.write_text(json.dumps(report))
             self.assertEqual(0, self.run_cmd(
                 "review", "--opp", str(discovery), "--role", "skeptic",
@@ -1631,13 +1653,10 @@ class EnforcementRegressionTest(unittest.TestCase):
         evidence.mkdir()
         schedule = ["ABBA", "BAAB"] * 16
         blocks = []
+        workload_count = adapter.expected_workload_count(stories)
         selected_workloads = (
-            (
-                [TEST_STORY] + [f"Story-{index:02d}" for index in range(31)]
-                if benchmark == "speedometer3"
-                else [f"JetStream-{index:02d}" for index in range(94)]
-            )
-            if stories == "all"
+            [TEST_STORY] + [f"Story-{index:02d}" for index in range(workload_count - 1)]
+            if workload_count is not None
             else campaign.parse_story_selector(stories)
         )
         clock = 1_000_000_000
@@ -1733,7 +1752,10 @@ class EnforcementRegressionTest(unittest.TestCase):
             "started_monotonic_raw_ns": run_start,
             "finished_monotonic_raw_ns": clock,
             "minimum_duration_ns": (
-                32 * 4 * 30 * 1_000_000_000 if stories == "all" else 0
+                32 * 4 * 30 * 1_000_000_000
+                if stories == "all" or (
+                    benchmark == "speedometer3" and stories == "default"
+                ) else 0
             ),
             "block_details": blocks,
             **computed,
@@ -1848,13 +1870,22 @@ class EnforcementRegressionTest(unittest.TestCase):
             def landed():
                 return [{"id": value} for value in range(5)]
 
-        with self.assertRaisesRegex(campaign.CampaignError, "checkpoint .*CI"):
+        with self.assertRaisesRegex(campaign.CampaignError, "checkpoint .*IMPROVEMENT"):
             campaign.enforce_freshness_for_landing(FakeLedger())
 
     def test_checkpoint_recomputes_from_digest_bound_raw_results(self):
         manifest, path = self.checkpoint_manifest()
         computed = campaign.validate_and_recompute_checkpoint(manifest, path)
         self.assertEqual(manifest["geometric_delta_pct"], computed["geometric_delta_pct"])
+
+    def test_speedometer_default_checkpoint_has_twenty_workloads_and_duration_gate(self):
+        manifest, path = self.checkpoint_manifest(stories="default")
+        self.assertEqual(20, len(manifest["observed_workloads"]))
+        computed = campaign.validate_and_recompute_checkpoint(manifest, path)
+        self.assertEqual(manifest["geometric_delta_pct"], computed["geometric_delta_pct"])
+        manifest["minimum_duration_ns"] = 0
+        with self.assertRaisesRegex(campaign.CampaignError, "duration"):
+            campaign.validate_and_recompute_checkpoint(manifest, path)
 
     def test_jetstream_checkpoint_recomputes_with_bound_adapter(self):
         manifest, path = self.checkpoint_manifest(benchmark="jetstream3")
@@ -1914,7 +1945,7 @@ class EnforcementRegressionTest(unittest.TestCase):
             data = {
                 "pilot": {"status": "pending"},
                 "checkpoints": [{
-                    "type": "targeted", "landed_count": 5,
+                    "type": "targeted", "landed_count": 5, "verdict": "IMPROVEMENT",
                     "ci": [0.1, 0.5], "summary_sha256": "targeted",
                 }],
             }
@@ -1933,6 +1964,9 @@ class EnforcementRegressionTest(unittest.TestCase):
             "ci": [-0.2, 0.3], "summary_sha256": "full",
         })
         campaign.update_pilot_from_split_checkpoints(ledger, saved=0.4)
+        self.assertEqual("pending", ledger.data["pilot"]["status"])
+        ledger.data["checkpoints"][-1]["verdict"] = "IMPROVEMENT"
+        campaign.update_pilot_from_split_checkpoints(ledger, saved=0.0)
         self.assertEqual("passed", ledger.data["pilot"]["status"])
 
     def test_checkpoint_attempt_policy_allows_one_larger_targeted_confirmation(self):
@@ -2395,6 +2429,114 @@ class GitReviewVerificationTest(unittest.TestCase):
             self.assertEqual(1, self.run_cmd("add", "--anchor", "Blink::Style", "--share", "0.5"))
         finally:
             os.environ["OPTIMIZE_CAMPAIGN_TEST_ALLOW_UNVERIFIED"] = "1"
+
+
+class CalibrationFloorTest(unittest.TestCase):
+    """A/A calibration records per-story MDEs that raise qualification floors."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = pathlib.Path(self.tmp.name) / "camp"
+        self.prev_cwd = os.getcwd()
+        self.prev_test_override = os.environ.get("OPTIMIZE_CAMPAIGN_TEST_ALLOW_UNVERIFIED")
+        os.environ["OPTIMIZE_CAMPAIGN_TEST_ALLOW_UNVERIFIED"] = "1"
+        os.chdir(self.tmp.name)
+        self.assertEqual(0, campaign.main([
+            "--dir", str(self.dir), "init", "--name", "cal", "--share-floor", "0.5"]))
+
+    def tearDown(self):
+        os.chdir(self.prev_cwd)
+        if self.prev_test_override is None:
+            os.environ.pop("OPTIMIZE_CAMPAIGN_TEST_ALLOW_UNVERIFIED", None)
+        else:
+            os.environ["OPTIMIZE_CAMPAIGN_TEST_ALLOW_UNVERIFIED"] = self.prev_test_override
+        self.tmp.cleanup()
+
+    def aa_manifest(self, session, noise):
+        import math
+        import random
+        rng = random.Random(hash(session) & 0xffff)
+        orders = ["ABBA", "BAAB"] * 16
+        rng.shuffle(orders)
+        rows = []
+        for i, order in enumerate(orders, 1):
+            d = rng.uniform(-noise, noise)
+            rows.append({
+                "block": i, "pattern": order,
+                "a_scores": [100, 100], "b_scores": [100 * math.exp(d)] * 2,
+                "a_stories": [{"Quiet": 100, "Noisy": 100}] * 2,
+                "b_stories": [{"Quiet": 100 * math.exp(-d / 4), "Noisy": 100 * math.exp(-d * 8)}] * 2,
+            })
+        return {"benchmark": "speedometer3", "mode": "aa", "blocks": 32, "schedule": orders,
+                "block_details": rows, "session_id": session,
+                "capture_environment": {"host_name": "h", "display": {"mode": "headless"}}}
+
+    def test_calibrate_records_story_mde_and_raises_floor(self):
+        paths = []
+        for session in ("one", "two"):
+            path = self.dir / f"aa-{session}.json"
+            path.write_text(json.dumps(self.aa_manifest(session, 0.004)))
+            paths.append(str(path))
+        self.assertEqual(0, campaign.main([
+            "--dir", str(self.dir), "calibrate", "--manifest", paths[0], "--manifest", paths[1],
+            "--tolerance-pct", "5", "--max-mde-pct", "10"]))
+        config = json.loads((self.dir / "ledger.json").read_text())["config"]
+        calibration = config["calibration"]
+        self.assertGreater(calibration["story_mde_pct"]["Noisy"], calibration["story_mde_pct"]["Quiet"])
+        quiet_floor, quiet_basis = campaign.story_floor_pct(config, "Quiet")
+        noisy_floor, noisy_basis = campaign.story_floor_pct(config, "Noisy")
+        self.assertEqual(0.5, quiet_floor)
+        self.assertIn("share floor", quiet_basis)
+        self.assertAlmostEqual(2 * calibration["story_mde_pct"]["Noisy"], noisy_floor)
+        self.assertIn("calibrated MDE", noisy_basis)
+        self.assertEqual((0.5, "campaign share floor (no calibrated MDE for this story)"),
+                         campaign.story_floor_pct(config, "Unknown"))
+
+    def test_calibrate_refuses_failed_gate_and_wrong_surface(self):
+        bad = self.dir / "aa-bad.json"
+        bad.write_text(json.dumps(self.aa_manifest("bad", 0.2)))
+        good = self.dir / "aa-good.json"
+        good.write_text(json.dumps(self.aa_manifest("good", 0.004)))
+        self.assertEqual(1, campaign.main([
+            "--dir", str(self.dir), "calibrate", "--manifest", str(bad), "--manifest", str(good),
+            "--tolerance-pct", "0.5", "--max-mde-pct", "3"]))
+        self.assertNotIn("calibration", json.loads((self.dir / "ledger.json").read_text())["config"])
+        wrong = self.aa_manifest("wrong", 0.004)
+        wrong["capture_environment"]["display"] = {"mode": "x11", "display": ":1", "viewport": "1500x1000"}
+        (self.dir / "aa-wrong.json").write_text(json.dumps(wrong))
+        self.assertEqual(1, campaign.main([
+            "--dir", str(self.dir), "calibrate", "--manifest", str(good),
+            "--manifest", str(self.dir / "aa-wrong.json"), "--tolerance-pct", "5", "--max-mde-pct", "10"]))
+
+
+class DisplayPolicyTest(unittest.TestCase):
+    def test_headless_default(self):
+        policy = campaign.display_policy_from_args(argparse.Namespace())
+        self.assertEqual("headless", policy["mode"])
+
+    def test_x11_requires_vt(self):
+        with self.assertRaises(campaign.CampaignError):
+            campaign.display_policy_from_args(argparse.Namespace(display=":1"))
+        policy = campaign.display_policy_from_args(
+            argparse.Namespace(display=":1", display_vt=9, viewport="1920x1080", gpu_clock_mhz=1365))
+        self.assertEqual({"mode": "x11", "display": ":1", "vt": 9, "viewport": "1920x1080",
+                          "gpu_clock_mhz": 1365, "pause_services": []}, policy)
+        policy = campaign.display_policy_from_args(
+            argparse.Namespace(display=":1", display_vt=9, pause_service=["ollama"]))
+        self.assertEqual(["ollama"], policy["pause_services"])
+
+    def test_measurement_must_match_frozen_surface(self):
+        config = {"display": {"mode": "x11", "display": ":1", "viewport": "1500x1000"}}
+        campaign.require_campaign_display(
+            config, {"mode": "x11", "display": ":1", "viewport": "1500x1000",
+                     "gpu_renderer": "ANGLE (NVIDIA)"}, "run")
+        with self.assertRaisesRegex(campaign.CampaignError, "frozen"):
+            campaign.require_campaign_display(config, {"mode": "headless"}, "run")
+        with self.assertRaisesRegex(campaign.CampaignError, "GPU"):
+            campaign.require_campaign_display(
+                config, {"mode": "x11", "display": ":1", "viewport": "1500x1000",
+                         "gpu_renderer": "SwiftShader"}, "run")
+        campaign.require_campaign_display({}, {"mode": "headless"}, "legacy")
 
 
 if __name__ == "__main__":

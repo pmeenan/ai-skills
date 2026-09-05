@@ -792,3 +792,117 @@ class PerStoryDecompositionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def thread_sample(pid, tid, timestamp, period, frames):
+    lines = [f"chrome {pid}/{tid} {timestamp:.6f}: {period:10d} cycles: \n"]
+    for index, frame in enumerate(frames):
+        lines.append(f"\t{0x1000 + index:x} {frame}+0x1 (/tmp/chrome)\n")
+    lines.append("\n")
+    return lines
+
+
+class ScopeAndCompositionTest(unittest.TestCase):
+    def records(self):
+        return [
+            {"start_time_mono": 10.0, "end_time_mono": 10.1, "phase": "sync",
+             "group": "log|TodoMVC-React"},
+            {"start_time_mono": 10.1, "end_time_mono": 10.5, "phase": "async",
+             "group": "log|TodoMVC-React"},
+        ]
+
+    def parse(self, lines):
+        records = self.records()
+        return MODULE.parse_perf_script(
+            lines, "SP3",
+            intervals=[(r["start_time_mono"], r["end_time_mono"]) for r in records],
+            interval_records=records,
+        )
+
+    def test_platform_sensitivity_tags_rendering_and_font_work(self):
+        self.assertEqual(
+            "rendering-backend",
+            MODULE.platform_sensitivity("cc::PaintOpBuffer::Playback(SkCanvas*)")["tag"],
+        )
+        self.assertEqual(
+            "rendering-backend",
+            MODULE.platform_sensitivity(
+                "blink::BaseRenderingContext2D::FlushCanvasInternal()")["tag"],
+        )
+        self.assertEqual(
+            "font-shaping", MODULE.platform_sensitivity("blink::HarfBuzzShaper::Shape()")["tag"]
+        )
+        self.assertEqual(
+            "process-plumbing", MODULE.platform_sensitivity("net::HttpCache::Transaction::DoLoop(int)")["tag"]
+        )
+        self.assertIsNone(MODULE.platform_sensitivity("blink::Element::setInnerHTML()"))
+
+    def test_composition_separates_main_thread_from_other_threads(self):
+        lines = []
+        # sync: main thread fully busy -> 100 cycles over 0.1 s = 1000 cycles/s
+        for i in range(10):
+            lines += thread_sample(10, 10, 10.005 + i * 0.01, 10, ["blink::A()", "main()"])
+        # async: main thread busy for 0.1 s of the 0.4 s window; worker threads busy too
+        for i in range(10):
+            lines += thread_sample(10, 10, 10.105 + i * 0.01, 10, ["blink::B()", "main()"])
+        for i in range(20):
+            lines += thread_sample(10, 42, 10.105 + i * 0.01, 10, ["v8::Compile()", "worker()"])
+        for i in range(5):
+            lines += thread_sample(99, 99, 10.2 + i * 0.01, 10, ["cc::Draw()", "gpu()"])
+        samples = self.parse(lines)
+        composition = MODULE.score_time_composition(samples, self.records(), {10})
+        story = composition["TodoMVC-React"]
+        self.assertAlmostEqual(100.0, story["sync_wall_ms"])
+        self.assertAlmostEqual(400.0, story["async_wall_ms"])
+        self.assertAlmostEqual(80.0, story["async_wall_share_pct"])
+        self.assertAlmostEqual(0.25, story["async_main_thread_busy_fraction_est"])
+        self.assertAlmostEqual(0.75, story["async_idle_wait_fraction_est"])
+        self.assertEqual(200, story["other_renderer_thread_cycles"]["async"])
+        self.assertEqual(50, story["other_process_cycles"]["async"])
+        text = "\n".join(MODULE.score_time_composition_lines(story))
+        self.assertIn("Latency route candidate", text)
+
+    def test_story_scope_filters_to_renderer_main_thread(self):
+        lines = []
+        lines += thread_sample(10, 10, 10.05, 10, ["blink::Main()", "main()"])
+        lines += thread_sample(10, 42, 10.06, 10, ["blink::Worker()", "worker()"])
+        lines += thread_sample(99, 99, 10.07, 10, ["blink::Gpu()", "gpu()"])
+        samples = self.parse(lines)
+        self.assertEqual(3, len(samples))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            perf = root / "perf.txt"
+            perf.write_text("".join(lines))
+            manifest = root / "manifest.json"
+            manifest.write_text(__import__("json").dumps({
+                "interval_kind": "exact-scored",
+                "metric_weighting": "speedometer-story-v1",
+                "measurement_intervals": self.records(),
+                "processes": [{"pid": 10, "role": "renderer"}, {"pid": 99, "role": "gpu"}],
+            }))
+            argv = ["analyze_stacks", "--input", f"SP3={perf}", "--intervals", str(manifest),
+                    "--out-dir", str(root / "full"), "--stories-out-dir", str(root / "stories"),
+                    "--stories-scope", "main-thread", "--allow-low-quality",
+                    "--min-share", "0.001", "--min-marginal-share", "0.001"]
+            with mock.patch.object(sys, "argv", argv):
+                self.assertEqual(0, MODULE.main())
+            index = __import__("json").loads((root / "stories" / "stories_index.json").read_text())
+            self.assertEqual("main-thread", index["scope"])
+            story = index["stories"][0]
+            self.assertEqual(1, story["samples"])
+            self.assertEqual(3, story["samples_all_threads"])
+            self.assertIn("score_time_composition", story)
+            report = __import__("json").loads(
+                (root / "stories" / "TodoMVC-React" / "candidate_frontier.json").read_text())
+            self.assertEqual("main-thread", report["quality"]["scope"])
+            names = {item["name"] for item in report["frontier"]}
+            self.assertIn("blink::Main()", names)
+            self.assertNotIn("blink::Worker()", names)
+            self.assertNotIn("blink::Gpu()", names)
+            markdown = (root / "stories" / "TodoMVC-React" / "candidate_frontier.md").read_text()
+            self.assertIn("Score-time composition", markdown)
+            self.assertIn("Portability", markdown)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -49,6 +49,11 @@ python3 .agents/skills/optimize-campaign/scripts/remote_measure.py \
 After characterization, calibrate page-load repetitions and block noise before
 setting campaign policy. Do not reuse Speedometer's thresholds.
 
-## Mandatory exact-window profile grounding
+## Campaign capability boundary
 
-JetStream 3 campaigns MUST capture exact-window CPU profiles (`remote_measure.py --mode profile --benchmark jetstream3`) and ingest them into the campaign ledger before any candidate addition or implementation. Free-floating or ungrounded candidate additions are strictly rejected by the campaign ledger. All candidate opportunities are decomposed top-down from the ingested profile tree and must clear the campaign's cycle-share floor.
+Score/component parsing and immutable-payload characterization are available.
+Exact-window profile import and the authenticated fleet contract remain blocked
+until JetStream-specific trace, workload and calibration semantics are verified
+end-to-end. Do not initialize a full admission campaign by substituting
+Speedometer thresholds or treating whole-page CPU samples as exact windows.
+See [README.md](README.md) for start/resume prompts appropriate to this stage.

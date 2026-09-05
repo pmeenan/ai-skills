@@ -141,8 +141,12 @@ def raw(
     )
     aa = artifact(root, f"probe-aa-{variant}", json.dumps(aa_value, sort_keys=True))
     trace = artifact(root, "trace", json.dumps({
-        "traceEvents": [{"name": "mechanism", "ts": 1}],
-        "metadata": {"interval_kind": "exact-scored"},
+        "traceEvents": [{"name":"start","ts":0,"pid":1,"tid":1},
+                        {"name":"mechanism","ts":1,"dur":2,"pid":1,"tid":1},
+                        {"name":"end","ts":10,"pid":1,"tid":1}],
+        "metadata": {"interval_kind": "exact-scored", "dependency_path": {
+            "events":[0,1,2],"start_mark":"start","end_mark":"end",
+            "removable_event_indices":[1],"edges":[{"kind":"thread-order"},{"kind":"thread-order"}]}},
     }))
     log_refs = []
     capture_refs = []
@@ -150,6 +154,7 @@ def raw(
     repetitions = 5
     for block, (value, total) in enumerate(zip(cycles, totals), 1):
         nonce = f"{block:032x}"
+        stamp = block*100000 + (0 if ((variant=="baseline") == bool(block%2)) else 20000)
         log = root / f"counter-{variant}-{block}.log"
         lines = []
         browser_lines = []
@@ -162,7 +167,7 @@ def raw(
                 "pid": 2000 + block,
                 "tid": 3000 + block,
                 "process_type": "renderer",
-                "emitted_monotonic_raw_ns": 2000 + rep,
+                "emitted_monotonic_raw_ns": stamp + 2000 + rep,
                 "calls": 100 if rep == 0 else 0,
                 "applicable_calls": 80 if rep == 0 else 0,
                 "exclusive_cycles": value if rep == 0 else 0,
@@ -209,8 +214,8 @@ def raw(
             "repetitions": repetitions,
             "score_suites": [story],
             "exit_code": 0,
-            "started_monotonic_raw_ns": 1000,
-            "finished_monotonic_raw_ns": 10000,
+            "started_monotonic_raw_ns": stamp + 1000,
+            "finished_monotonic_raw_ns": stamp + 10000,
             "capture_environment": {
                 "host_name": "perfbox",
                 "host_boot_id": "12345678-1234-1234-1234-123456789abc",
@@ -231,7 +236,7 @@ def raw(
             "skill_tree_sha256": "test-only",
             "command": [
                 "vpython3", "./third_party/crossbench/cb.py",
-                "speedometer_3.0", f"--stories={story}",
+                "speedometer_3.1", f"--stories={story}",
                 f"--repetitions={repetitions}",
             ],
             "build": provenance_value,
@@ -379,7 +384,7 @@ class MechanismEvidenceTest(unittest.TestCase):
                 "--variant", str(candidate), "--out", str(out)
             ]))
             result = json.loads(out.read_text())
-            self.assertGreater(result["net_scored_cycle_share_saved_pct"], 0)
+            self.assertGreater(result["mechanism_scored_cycle_share_saved_pct"], 0)
             self.assertGreater(result["total_scored_cycle_change_pct"], 1.0)
             self.assertTrue(result["moved_work_warning"])
 

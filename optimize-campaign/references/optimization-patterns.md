@@ -7,6 +7,14 @@ optimizations.
 
 ______________________________________________________________________
 
+**Read with the win shapes in mind.** Nearly every entry is "reuse a result"
+(RuleSet dedup, MPC, shape and path caches), "skip the subtree" (lazy init,
+fast-path routing), or scheduling (idle-time sweeping, GC pacing). None is a
+leaf micro-branch. Entries marked *(macOS-only)* below depend on Apple fonts,
+Darwin locking or Apple Silicon PGO and will not reproduce on the Linux host;
+they are the reason rendering-backend and font-shaping findings go to the Mac
+M1 Pinpoint bot first.
+
 ## 1. Blink Style & Cascade Engine
 
 ### A. StyleSheet & RuleSet Deduplication in `MatchRequest`
@@ -88,7 +96,7 @@ ______________________________________________________________________
 
 ## 2. Blink Layout, Text & Font Shaping
 
-### A. HarfBuzz Apple Advanced Typography (AAT) Fast Path
+### A. HarfBuzz Apple Advanced Typography (AAT) Fast Path *(macOS-only)*
 
 - **Benchmark Win**: **+1.20%** (CL
   [5538168](https://chromium-review.googlesource.com/c/chromium/src/+/5538168)),
@@ -265,7 +273,7 @@ ______________________________________________________________________
 - **Key Targets**: `v8/src/interpreter/bytecode-generator.cc`,
   `v8/src/baseline/baseline-compiler.cc`.
 
-### D. Shared Mutex Implementation on macOS
+### D. Shared Mutex Implementation on macOS *(macOS-only)*
 
 - **Benchmark Win**: **+0.60%** (CL
   [6088023](https://chromium-review.googlesource.com/c/v8/v8/+/6088023)).
@@ -334,7 +342,7 @@ ______________________________________________________________________
 
 ## 6. Profile Guided Optimization (PGO) & Toolchain
 
-### A. Value Profiling Tuning (`-vp-counters-per-site`)
+### A. Value Profiling Tuning (`-vp-counters-per-site`) *(macOS/AArch64)*
 
 - **Benchmark Win**: **+0.80%** (CL
   [7501095](https://chromium-review.googlesource.com/c/chromium/src/+/7501095)).

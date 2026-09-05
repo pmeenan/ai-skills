@@ -30,6 +30,28 @@ class AdapterLookupTest(unittest.TestCase):
 
 
 class SpeedometerAdapterTest(unittest.TestCase):
+    def test_default_workloads_match_pinpoint_and_all_remains_available(self):
+        adapter = adapters.get_adapter("speedometer3")
+        self.assertEqual("default", adapter.default_workload_selector)
+        self.assertEqual(20, adapter.expected_workload_count("default"))
+        self.assertEqual(32, adapter.expected_workload_count("all"))
+
+    def test_score_command_and_provenance_use_pinpoint_version(self):
+        adapter = adapters.get_adapter("speedometer3")
+        self.assertEqual([
+            "speedometer_3.1", "--network=third_party/speedometer/v3.1",
+        ], adapter.crossbench_args("local"))
+        self.assertEqual("speedometer_3.1.json", adapter.result_filename)
+        provenance = adapter.source_provenance("local")
+        self.assertEqual("speedometer_3.1", provenance["crossbench_name"])
+        self.assertEqual("third_party/speedometer/v3.1", provenance["url_or_path"])
+        self.assertTrue(provenance["content_pinned"])
+        self.assertIs(adapters.get_adapter("speedometer_3.1"), adapter)
+
+    def test_explicit_old_version_is_not_silently_reinterpreted(self):
+        with self.assertRaisesRegex(ValueError, "unknown benchmark"):
+            adapters.get_adapter("speedometer_3.0")
+
     def test_parses_scalar_run_and_ignores_submetrics(self):
         result = adapters.SPEEDOMETER_3.parse_result({
             "Score": 35.0,

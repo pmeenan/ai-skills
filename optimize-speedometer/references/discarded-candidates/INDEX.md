@@ -35,3 +35,25 @@ Before investigating any new candidate, verify it does not fall into these 5 pro
    Never change the emitted `PaintOp` type (e.g. converting SkPath arcs to `drawOval`) without verifying Skia GPU op-merging. Converting homogenous op streams to heterogeneous types breaks Skia's internal batch draw call collapsing.
 5. **Collection / Geometry Memoization Invalidation Overhead:**
    Never add ad-hoc caches for geometry or parsed strings without measuring invalidation frequency. In interactive DOM benchmarks, invalidation tracking cost almost always exceeds the savings of rare cache hits.
+
+## What this catalog has in common
+
+Every entry is a Layer 3/4 leaf change (guards, caches on small objects,
+pre-sizing) sized at well under 1% of a story, measured on headless
+SwiftShader rendering, and qualified from a typed avoidable fraction. Under
+the current policy none of them would reach implementation: the story floor
+is twice the calibrated MDE (roughly 1% to 4% of a story), Layer 1/2 claims
+need a redundancy packet, and rendering-backend entries are Pinpoint-first.
+Read the catalog for the *failure mechanisms*, not as a list of forbidden
+functions.
+
+## Interpreting historical evidence
+
+These entries describe particular revisions, workloads, hosts and attempted
+mechanisms. Missing provenance or a noisy confidence interval lowers confidence
+in a generalized lesson. Treat a rejection as a hypothesis to understand, not
+a permanent prohibition on a function, subsystem, branch or optimization class.
+A changed mechanism or relevant source/compiler/workload change can justify a
+new bounded investigation, with the old evidence retained. Record current
+campaign rejections in that campaign's ledger/artifacts; update this frozen
+skill catalog only between campaigns.

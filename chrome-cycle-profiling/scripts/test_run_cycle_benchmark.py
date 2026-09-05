@@ -19,6 +19,21 @@ SPEC.loader.exec_module(MODULE)
 
 
 class RunCycleBenchmarkTest(unittest.TestCase):
+    def test_speedometer_profile_uses_same_payload_as_score_runner(self):
+        adapter = MODULE.benchmark_adapters.get_adapter("speedometer3")
+        self.assertEqual([
+            "speedometer_3.1", "--network=third_party/speedometer/v3.1",
+        ], MODULE.profile_benchmark_args(adapter))
+        self.assertEqual(
+            adapter.crossbench_args(), MODULE.profile_benchmark_args(adapter)
+        )
+
+    def test_jetstream_profile_keeps_custom_payload_and_marks(self):
+        adapter = MODULE.benchmark_adapters.get_adapter("jetstream3")
+        self.assertEqual([
+            "jetstream_3.0", "--custom", "--probe=performance.entries",
+        ], MODULE.profile_benchmark_args(adapter))
+
     def test_exact_score_intervals_are_labeled_and_outer_is_diagnostic(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

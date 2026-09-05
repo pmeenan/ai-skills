@@ -55,43 +55,52 @@ class ThreadCycleEvent {
   int open_errno() const { return open_errno_; }
 
   bool Read(CounterRead* result) const {
-    if (fd_ < 0)
-      return false;
 #if defined(SP3_HAS_RDPMC)
-    if (mmap_page_ && mmap_page_->cap_user_rdpmc) {
-      uint32_t seq;
-      uint64_t count;
-      uint64_t time_enabled, time_running;
-      do {
-        seq = mmap_page_->lock;
-        std::atomic_thread_fence(std::memory_order_acquire);
-        uint32_t idx = mmap_page_->index;
-        if (idx == 0)
-          break;
-        count = mmap_page_->offset + static_cast<uint64_t>(_rdpmc(idx - 1));
-        time_enabled = mmap_page_->time_enabled;
-        time_running = mmap_page_->time_running;
-        std::atomic_thread_fence(std::memory_order_acquire);
-      } while (mmap_page_->lock != seq);
-      if (mmap_page_->index != 0) {
-        result->value = count;
-        result->time_enabled = time_enabled;
-        result->time_running = time_running;
-        return true;
-      }
+    if (!mmap_page_ || !mmap_page_->cap_user_rdpmc)
+      return false;
+    // The mapping is written by the kernel; every snapshot load must be real.
+    const volatile perf_event_mmap_page* page = mmap_page_;
+    for (unsigned retry = 0; retry != 100; ++retry) {
+      const uint32_t seq = page->lock;
+      if (seq & 1)
+        continue;
+      std::atomic_signal_fence(std::memory_order_seq_cst);
+      const uint32_t index = page->index;
+      const uint16_t width = page->pmc_width;
+      const int64_t offset = page->offset;
+      uint64_t enabled = page->time_enabled;
+      uint64_t running = page->time_running;
+      const bool user_time = page->cap_user_time;
+      const uint16_t shift = page->time_shift;
+      const uint32_t mult = page->time_mult;
+      const uint64_t time_offset = page->time_offset;
+      if (!index || !width || width > 64 || !user_time || shift >= 64)
+        return false;
+      // Bound measured work at both compiler and CPU execution boundaries.
+      _mm_lfence();
+      const uint64_t tsc = __rdtsc();
+      int64_t pmc = static_cast<int64_t>(_rdpmc(index - 1));
+      _mm_lfence();
+      std::atomic_signal_fence(std::memory_order_seq_cst);
+      if (page->lock != seq)
+        continue;
+      pmc = static_cast<int64_t>(static_cast<uint64_t>(pmc) << (64 - width)) >>
+            (64 - width);
+      const uint64_t quotient = tsc >> shift;
+      const uint64_t remainder = tsc & ((uint64_t{1} << shift) - 1);
+      const uint64_t delta = time_offset + quotient * mult +
+                            ((remainder * mult) >> shift);
+      enabled += delta;
+      running += delta;
+      result->value = static_cast<uint64_t>(offset + pmc);
+      result->time_enabled = enabled;
+      result->time_running = running;
+      return true;
     }
 #endif
-    struct ReadFormat {
-      uint64_t value;
-      uint64_t time_enabled;
-      uint64_t time_running;
-    } data = {};
-    if (read(fd_, &data, sizeof(data)) != sizeof(data))
-      return false;
-    result->value = data.value;
-    result->time_enabled = data.time_enabled;
-    result->time_running = data.time_running;
-    return true;
+    // Unsupported/unscheduled PMU access is invalid evidence, never a syscall
+    // fallback in a hot path and never a made-up running ratio.
+    return false;
   }
 
  private:
@@ -132,7 +141,10 @@ class ThreadCycleEvent {
 };
 
 inline uint64_t CurrentTid() {
-  return static_cast<uint64_t>(syscall(__NR_gettid));
+  // Initialize on the measurement thread before entering the scored window.
+  static thread_local const uint64_t tid =
+      static_cast<uint64_t>(syscall(__NR_gettid));
+  return tid;
 }
 
 inline bool CounterDelta(const CounterRead& start,
@@ -147,12 +159,8 @@ inline bool CounterDelta(const CounterRead& start,
   const uint64_t raw = end.value - start.value;
   *enabled = end.time_enabled - start.time_enabled;
   *running = end.time_running - start.time_running;
-  if (*enabled == 0 || *running == 0) {
-    *scaled_cycles = raw;
-    *enabled = 1;
-    *running = 1;
-    return true;
-  }
+  if (*enabled == 0 || *running == 0)
+    return false;
   if (*running > *enabled)
     return false;
   const long double scaled = static_cast<long double>(raw) *
@@ -184,7 +192,7 @@ inline uint64_t CalibrateProbeOverhead() {
   }
   std::sort(samples.begin(), samples.end());
   uint64_t median = samples[kSamples / 2];
-  return median > 0 ? median : 15;
+  return median;
 }
 
 enum class Accounting { kExclusive, kInclusive };
@@ -254,21 +262,41 @@ class ScopedCycleProbe {
   ScopedCycleProbe(CycleBlock& block,
                    bool applicable,
                    Accounting accounting = Accounting::kExclusive,
-                   uint32_t sample_every = 1)
+                   uint32_t sample_every = 1,
+                   bool measure_all_calls = false,
+                   CycleBlock* attributable = nullptr)
       : block_(block),
         accounting_(accounting),
-        sample_every_(sample_every ? sample_every : 1) {
-    if (&block_ != &GetGlobalScoredTotalBlock()) {
-      if (!IsInScoredWindow())
-        return;
-    }
+        sample_every_(sample_every ? sample_every : 1),
+        attributable_(applicable ? attributable : nullptr) {
+    if (!IsInScoredWindow())
+      return;
     if (!block_.CheckOwner())
       return;
     ++block_.calls;
-    if (!applicable)
+    if (applicable)
+      ++block_.applicable_calls;
+    if (!applicable && !measure_all_calls)
       return;
-    ++block_.applicable_calls;
-    if (block_.applicable_calls % sample_every_ != 0)
+    if (attributable_ == &block_) {
+      ++block_.invalid_reads;
+      return;
+    }
+    for (ScopedCycleProbe* scope = active_scope_; scope; scope = scope->parent_) {
+      if (scope->accounting_ == Accounting::kExclusive &&
+          (sample_every_ != 1 || scope->sample_every_ != 1)) {
+        ++block_.invalid_reads;
+        ++scope->block_.invalid_reads;
+        return;
+      }
+    }
+    if (attributable_ && !attributable_->CheckOwner())
+      return;
+    if (attributable_) {
+      ++attributable_->calls;
+      ++attributable_->applicable_calls;
+    }
+    if (block_.calls % sample_every_ != 0)
       return;
     if (block_.probe_overhead_cycles == 0) {
       ++block_.uncalibrated_scopes;
@@ -276,6 +304,7 @@ class ScopedCycleProbe {
     }
     for (ScopedCycleProbe* scope = active_scope_; scope; scope = scope->parent_) {
       if (&scope->block_ == &block_) {
+        ++block_.nested_same_block_violations;
         return;
       }
     }
@@ -307,6 +336,8 @@ class ScopedCycleProbe {
     if (!event_->Read(&end) ||
         !CounterDelta(start_, end, &inclusive, &enabled, &running)) {
       ++block_.invalid_reads;
+      if (parent_)
+        ++parent_->block_.invalid_reads;
       return;
     }
     block_.time_enabled += enabled;
@@ -317,8 +348,17 @@ class ScopedCycleProbe {
                              ? inclusive - block_.probe_overhead_cycles
                              : 0;
     const uint64_t exclusive = net > child_cycles_ ? net - child_cycles_ : 0;
-    block_.cycles +=
+    const uint64_t measured =
         (accounting_ == Accounting::kInclusive ? net : exclusive) * sample_every_;
+    block_.cycles += measured;
+    if (attributable_) {
+      attributable_->time_enabled += enabled;
+      attributable_->time_running += running;
+      if (running < enabled)
+        ++attributable_->multiplexed_samples;
+      attributable_->cycles += measured;
+      ++attributable_->sampled_calls;
+    }
     ++block_.sampled_calls;
     if (parent_)
       parent_->child_cycles_ += net;
@@ -332,6 +372,7 @@ class ScopedCycleProbe {
   CounterRead start_;
   uint64_t child_cycles_ = 0;
   uint32_t sample_every_ = 1;
+  CycleBlock* attributable_ = nullptr;
   bool active_ = false;
 
   static inline thread_local ScopedCycleProbe* active_scope_ = nullptr;

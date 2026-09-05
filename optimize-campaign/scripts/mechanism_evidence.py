@@ -33,6 +33,7 @@ import tempfile
 import time
 
 import benchmark_adapters
+import measurement_host
 try:
     import tune_benchmark_host
 except ImportError:
@@ -159,6 +160,12 @@ def validate_trace_artifact(value: dict, name: str, classification: str) -> None
         not isinstance(events, list) or not events
     ):
         raise EvidenceError(f"{name} cannot classify score-critical work from an empty trace")
+    if classification == "score-critical":
+        import latency_evidence
+        try:
+            latency_evidence.trace_path(trace, metadata["dependency_path"])
+        except (KeyError, ValueError, IndexError, TypeError) as exc:
+            raise EvidenceError(f"{name}: score-critical classification needs a verified dependency path: {exc}") from exc
 
 
 def validate_build_artifact(build: dict, name: str) -> None:
@@ -274,24 +281,9 @@ def reduce_instrumentation_aa(manifest: dict, source_ref: dict) -> dict:
         )
     blocks = manifest.get("block_details")
     if not isinstance(blocks, list) or len(blocks) < MIN_INSTRUMENTATION_AA_BLOCKS:
-        delta = float(manifest.get("geometric_delta_pct", 0.0))
-        ci = manifest.get("ci_95_pct", [-1.0, 1.0])
-        overhead = max(0.0, -delta)
-        provenance = manifest.get("build_provenance", {})
-        return {
-            "schema_version": 1,
-            "kind": "instrumentation-aa",
-            "runner": CALIBRATION_RUNNER,
-            "source_manifest": source_ref,
-            "arm_a": "uninstrumented",
-            "arm_b": "instrumented",
-            "arm_a_browser_sha256": provenance.get("a", {}).get("browser_sha256"),
-            "arm_b_browser_sha256": provenance.get("b", {}).get("browser_sha256"),
-            "blocks": manifest.get("blocks", 32),
-            "overhead_pct": overhead,
-            "overhead_ci95_pct": [float(ci[0]), float(ci[1])],
-            "gate_pass": float(ci[1]) <= 1.0,
-        }
+        raise EvidenceError("instrumentation calibration lacks raw complete blocks")
+    if manifest.get("mode") != "ab2" or manifest.get("stories") not in ("all", "default"):
+        raise EvidenceError("instrumentation calibration requires full-suite ab2")
     if len(blocks) % 2 or manifest.get("blocks") != len(blocks):
         raise EvidenceError("instrumentation A/A requires an even complete block count")
     schedule = manifest.get("schedule")
@@ -345,7 +337,7 @@ def reduce_instrumentation_aa(manifest: dict, source_ref: dict) -> dict:
         "blocks": len(log_overheads),
         "overhead_pct": max(0.0, overhead),
         "overhead_ci95_pct": [ci_low, ci_high],
-        "gate_pass": ci_high <= 1.0,
+        "gate_pass": ci_low >= -1.0 and ci_high <= 1.0,
     }
 
 
@@ -831,7 +823,7 @@ def common_identity(left: dict, right: dict) -> None:
         raise EvidenceError("raw artifacts disagree on score_scope")
     if (
         not left.get("instrumentation", {}).get("revision")
-        or not right.get("instrumentation", {}).get("revision")
+        or left.get("instrumentation", {}).get("revision") != right.get("instrumentation", {}).get("revision")
     ):
         raise EvidenceError("raw artifacts missing instrumentation revision")
     for field in (
@@ -1244,6 +1236,54 @@ def parse_capture_logs(
     return rows, sorted(suites), score_mark_count
 
 
+def add_display_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--display", default="",
+        help="X display (for example :1) rendering through the GPU; omit for "
+        "Chrome headless mode. Must match the campaign's profile and score runs.",
+    )
+    parser.add_argument(
+        "--display-vt", type=int, default=None,
+        help="Console VT owned by the benchmark X server; the tuner switches "
+        "to it for the capture and restores the previous VT afterwards",
+    )
+    parser.add_argument(
+        "--viewport", default=measurement_host.DEFAULT_VIEWPORT,
+        help="Fixed Crossbench window size WIDTHxHEIGHT for X display runs",
+    )
+    parser.add_argument(
+        "--gpu-clock-mhz", type=int, default=None,
+        help="Lock the NVIDIA graphics clock at this MHz during the capture",
+    )
+    parser.add_argument(
+        "--pause-service", action="append", default=[],
+        help="systemd service to stop during the capture session (repeatable)",
+    )
+
+
+def capture_tuning_context(args: argparse.Namespace):
+    """Cycle-probe captures disable ASLR for stable addresses; score runs do not."""
+    tune = getattr(args, "tune_host", True) and tune_benchmark_host is not None
+    if not tune:
+        return contextlib.nullcontext()
+    return tune_benchmark_host.tuned_host_context(
+        disable_aslr=True,
+        vt=getattr(args, "display_vt", None),
+        gpu_clock_mhz=getattr(args, "gpu_clock_mhz", None),
+        pause=getattr(args, "pause_service", None) or [],
+    )
+
+
+def capture_display_environment(args: argparse.Namespace, browser: pathlib.Path) -> dict:
+    """Describe and attest the rendering surface inside the tuned session."""
+    environment = measurement_host.display_environment(
+        getattr(args, "display", "") or None,
+        getattr(args, "display_vt", None),
+        getattr(args, "viewport", None),
+    )
+    return measurement_host.attest_renderer(environment, browser)
+
+
 def cmd_capture(args: argparse.Namespace) -> None:
     metadata = read_json(args.metadata)
     if metadata.get("schema_version") != SCHEMA_VERSION:
@@ -1303,7 +1343,6 @@ def cmd_capture(args: argparse.Namespace) -> None:
         *adapter.crossbench_args(getattr(args, "benchmark_source", None)),
         "--env-validation=warn",
         f"--browser={browser}",
-        "--headless",
         "--no-sandbox",
         f"--repetitions={args.repetitions}",
         f"--out-dir={out_dir / 'cb'}",
@@ -1311,23 +1350,29 @@ def cmd_capture(args: argparse.Namespace) -> None:
     ]
     if args.enable_features:
         command.append(f"--enable-features={args.enable_features}")
-    env = {
-        **os.environ,
-        "SP3_CYCLE_CAPTURE_NONCE": nonce,
-        "SP3_CYCLE_CAPTURE_BLOCK": str(args.block),
-    }
-    tune = getattr(args, "tune_host", True) and tune_benchmark_host is not None
-    tune_ctx = (
-        tune_benchmark_host.tuned_host_context()
-        if tune
-        else contextlib.nullcontext()
-    )
-    with tune_ctx:
+    with measurement_host.lease(), capture_tuning_context(args):
+        # The VT handoff happens inside the tuner, so the surface check and
+        # renderer attestation must run here rather than before the session.
+        display_env = capture_display_environment(args, browser)
+        host["display"] = display_env
+        surface = command.index("--no-sandbox")
+        command = (
+            command[:surface]
+            + measurement_host.crossbench_display_args(display_env)
+            + command[surface:]
+        )
+        env = {
+            **measurement_host.subprocess_env(display_env),
+            "SP3_CYCLE_CAPTURE_NONCE": nonce,
+            "SP3_CYCLE_CAPTURE_BLOCK": str(args.block),
+        }
+        host_before = measurement_host.observe()
         started_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
         started = datetime.datetime.now(datetime.timezone.utc).isoformat()
         completed = subprocess.run(command, cwd=root, env=env, check=False)
         finished = datetime.datetime.now(datetime.timezone.utc).isoformat()
         finished_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
+        host_after = measurement_host.observe()
     if completed.returncode != 0:
         raise EvidenceError(f"instrumented Crossbench failed with {completed.returncode}")
     if ensure_authoritative_index(root) != source_tree:
@@ -1377,6 +1422,7 @@ def cmd_capture(args: argparse.Namespace) -> None:
         "started_monotonic_raw_ns": started_ns,
         "finished_monotonic_raw_ns": finished_ns,
         "capture_environment": host,
+        "host_observations": {"before": host_before, "after": host_after},
         "harness": harness_identity(root),
         "skill_tree_sha256": build["skill_tree_sha256"],
         "command": command,
@@ -1499,6 +1545,65 @@ def cmd_summarize(args: argparse.Namespace) -> None:
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
 
 
+def validate_interleaving(baseline, variant):
+    arms = []
+    for data in (baseline, variant):
+        arms.append({read_json(pathlib.Path(r["path"]))["block"]: read_json(pathlib.Path(r["path"]))
+                     for r in data["capture_manifests"]})
+    if set(arms[0]) != set(arms[1]): raise EvidenceError("paired capture IDs differ")
+    previous = -1; orders = []
+    for block in sorted(arms[0]):
+        a,b = arms[0][block],arms[1][block]
+        key = "started_monotonic_raw_ns"; end = "finished_monotonic_raw_ns"
+        left,right = (a,b) if a[key] < b[key] else (b,a)
+        orders.append("AB" if left is a else "BA")
+        if not previous < left[key] < left[end] <= right[key] < right[end]:
+            raise EvidenceError("mechanism captures must actually interleave; block labels alone do not pair batches")
+        previous = right[end]
+    if abs(orders.count("AB")-orders.count("BA")) > 1:
+        raise EvidenceError("mechanism arm order is not balanced")
+
+
+def cmd_capture_pairs(args):
+    import random
+    if args.blocks < 4 or args.blocks % 2: raise EvidenceError("paired capture blocks must be even and at least four")
+    out = args.out_dir.resolve(); out.mkdir(parents=True,exist_ok=False)
+    seed = args.seed if args.seed is not None else secrets.randbits(64)
+    orders = ["AB","BA"] * (args.blocks//2); random.Random(seed).shuffle(orders)
+    (out/"plan.json").write_text(json.dumps({"seed":seed,"orders":orders,"args":{k:str(v) for k,v in vars(args).items() if k!='func'}},indent=2))
+    refs = {"A":[],"B":[]}
+    with measurement_host.lease(), capture_tuning_context(args):
+        for block, order in enumerate(orders,1):
+            for arm in order:
+                metadata = args.baseline_metadata if arm=="A" else args.candidate_metadata
+                meta = read_json(metadata)
+                manifest = out/f"{block}-{arm}.json"
+                cmd_capture(argparse.Namespace(metadata=metadata,variant=meta["variant"],
+                    benchmark=meta["benchmark"],browser=args.browser,block=block,
+                    repetitions=args.repetitions,enable_features="" if arm=="A" else args.feature,
+                    tune_host=False,out_dir=out/f"{block}-{arm}",out=manifest,
+                    display=getattr(args,"display",""),display_vt=getattr(args,"display_vt",None),
+                    viewport=getattr(args,"viewport",None),gpu_clock_mhz=None))
+                refs[arm].append(manifest)
+    for arm, metadata in (("A",args.baseline_metadata),("B",args.candidate_metadata)):
+        cmd_ingest(argparse.Namespace(metadata=metadata,capture_manifest=refs[arm],
+                                     minimum_running_ratio=.99,out=out/f"raw-{arm}.json"))
+
+
+def capture_display_identity(data: dict) -> dict | None:
+    """Rendering-surface identity shared by every capture manifest of one arm."""
+    identities = []
+    for ref in data.get("capture_manifests", []):
+        manifest = read_json(pathlib.Path(ref["path"]))
+        environment = manifest.get("capture_environment") or {}
+        identities.append(measurement_host.display_identity(environment.get("display")))
+    if not identities:
+        return None
+    if any(identity != identities[0] for identity in identities):
+        raise EvidenceError("capture manifests within one arm disagree on the rendering surface")
+    return identities[0]
+
+
 def cmd_compare(args: argparse.Namespace) -> None:
     baseline = read_json(args.baseline)
     variant = read_json(args.variant)
@@ -1510,10 +1615,20 @@ def cmd_compare(args: argparse.Namespace) -> None:
     if variant["variant"] != expected:
         raise EvidenceError(f"--variant artifact must have variant={expected}")
     common_identity(baseline, variant)
-    flag_toggle = (
-        variant.get("enable_features") != baseline.get("enable_features")
-        or any(c.get("enable_features") for c in variant.get("capture_manifests", []))
-    )
+    validate_interleaving(baseline, variant)
+    if capture_display_identity(baseline) != capture_display_identity(variant):
+        raise EvidenceError(
+            "baseline and variant were captured on different rendering "
+            "surfaces (display/viewport/GPU renderer); recapture both arms on "
+            "the campaign's configured display"
+        )
+    def flags(data):
+        commands = [read_json(pathlib.Path(ref["path"]))["command"] for ref in data.get("capture_manifests", [])]
+        states = {tuple(arg for arg in cmd if arg.startswith(("--enable-features=", "--disable-features="))) for cmd in commands}
+        if len(states) != 1:
+            raise EvidenceError("feature activation must be constant within each arm")
+        return next(iter(states))
+    flag_toggle = flags(variant) != flags(baseline)
     if baseline["build"]["product_tree"] == variant["build"]["product_tree"]:
         if not flag_toggle:
             raise EvidenceError("baseline and variant are bound to the same product tree")
@@ -1572,15 +1687,15 @@ def cmd_compare(args: argparse.Namespace) -> None:
         "story_repetition_groups_per_block": [len(row["groups"]) for row in base_blocks],
         "exclusive_cycle_reduction_pct": reduction,
         "exclusive_cycle_reduction_ci95_pct": [reduction_low, reduction_high],
-        "net_scored_cycle_share_saved_pct": saved,
-        "net_scored_cycle_share_saved_ci95_pct": [saved_low, saved_high],
+        "mechanism_scored_cycle_share_saved_pct": saved,
+        "mechanism_scored_cycle_share_saved_ci95_pct": [saved_low, saved_high],
         "total_scored_cycle_change_pct": total_change,
         "total_scored_cycle_change_ci95_pct": [
             total_change_low, total_change_high
         ],
         "moved_work_warning": total_change_low > 0,
         "ceiling_pct": max(0.0, saved_high) if phase == "oracle" else None,
-        "gate_pass": reduction_low > 0 and saved_low > 0,
+        "gate_pass": reduction_low > 0 and saved_low > 0 and total_change_low <= 0,
     }
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
 
@@ -1638,7 +1753,20 @@ def parser() -> argparse.ArgumentParser:
         help="Enable consistent benchmark host tuning (clocks, ASLR, SMT) "
         "before capture and restore on exit (default: true)",
     )
+    add_display_arguments(capture)
     capture.set_defaults(func=cmd_capture)
+    pairs = commands.add_parser("capture-pairs", help="capture actual randomized interleaved feature-off/on blocks in one binary")
+    pairs.add_argument("--baseline-metadata", type=pathlib.Path, required=True)
+    pairs.add_argument("--candidate-metadata", type=pathlib.Path, required=True)
+    pairs.add_argument("--browser", required=True)
+    pairs.add_argument("--feature", required=True)
+    pairs.add_argument("--blocks", type=int, default=6)
+    pairs.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS_PER_BLOCK)
+    pairs.add_argument("--seed", type=int)
+    pairs.add_argument("--out-dir", type=pathlib.Path, required=True)
+    pairs.add_argument("--tune-host", action=argparse.BooleanOptionalAction, default=True)
+    add_display_arguments(pairs)
+    pairs.set_defaults(func=cmd_capture_pairs)
     ingest = commands.add_parser(
         "ingest", help="reduce runner-owned capture manifests into bound raw JSON"
     )

@@ -51,7 +51,7 @@ class BenchmarkAdapter:
             )
         args = [self.crossbench_name]
         if self.benchmark_id == "speedometer3":
-            args.append("--network=third_party/speedometer/v3.0")
+            args.append("--network=third_party/speedometer/v3.1")
         elif source == "local":
             args.append(f"--local={local_url or 'http://localhost:8000/'}")
         else:
@@ -87,7 +87,7 @@ class BenchmarkAdapter:
     ) -> dict[str, Any]:
         source = source or self.score_sources[0]
         if self.benchmark_id == "speedometer3":
-            url = "third_party/speedometer/v3.0"
+            url = "third_party/speedometer/v3.1"
             content_pinned = True
         else:
             urls = {
@@ -115,13 +115,15 @@ class BenchmarkAdapter:
 
 SPEEDOMETER_3 = BenchmarkAdapter(
     benchmark_id="speedometer3",
-    crossbench_name="speedometer_3.0",
-    result_filename="speedometer_3.0.json",
+    # Chromium's Telemetry/Pinpoint `speedometer3` currently selects 3.1.
+    # Keep the local payload and result parser pinned to that same version.
+    crossbench_name="speedometer_3.1",
+    result_filename="speedometer_3.1.json",
     metric_model="speedometer-story-v1",
     workload_value_direction="lower",
-    default_workload_selector="all",
+    default_workload_selector="default",
     available_workload_count=32,
-    default_workload_count=32,
+    default_workload_count=20,
     profile_source="local",
     score_sources=("local",),
     investigation_sources=(),
@@ -144,7 +146,7 @@ JETSTREAM_3 = BenchmarkAdapter(
 _ADAPTERS = {
     "speedometer3": SPEEDOMETER_3,
     "speedometer": SPEEDOMETER_3,
-    "speedometer_3.0": SPEEDOMETER_3,
+    "speedometer_3.1": SPEEDOMETER_3,
     "sp3": SPEEDOMETER_3,
     "jetstream3": JETSTREAM_3,
     "jetstream": JETSTREAM_3,

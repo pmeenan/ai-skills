@@ -13,20 +13,17 @@ The scaffold selects one of two bounded review kinds.
 For `review_kind: mechanism`, open the staged diff, dossier, digest-bound
 counter logs, raw baseline/candidate files, and derived artifacts. Verify:
 
-- `hot_path_reality`: exact-score profile or counters observed the path;
+- `hot_path_reality`: exact-score renderer main-thread profile or counters observed the path, on the campaign's rendering surface;
+- `floor_cleared`: the sizing lower bound exceeds the target story's qualification floor recorded in the sizing artifact;
+- `redundancy_supported`: for Layer 1/2 mechanisms, the bound redundancy packet's applicable/repeat fraction supports the claimed avoidable fraction;
 - `raw_evidence_opened`: raw files and digests match derived evidence;
 - `applicability_measured`: calls and applicable calls were counted;
-- `sampling_ceiling_checked`: baseline exclusive share does not exceed the
-  parent symbol's sample share in the release `perf record` sampling profile;
-- `subtree_pruning_verified`: the staged diff actually eliminates the claimed child call chains (`subtree_pruned`) via short-circuiting, caching, or algorithmic hoisting, rather than merely modifying a wrapper before still executing the full child tree;
-- `in_situ_cycle_reduction_verified`: a machine-generated `mechanism_evidence.py compare` (or targeted single-story cycle diff) proves statistically significant scored-cycle reduction on the target story before advancing to review or macro A/B runs;
-- `probe_symmetry_verified`: baseline and candidate probe placement and call
-  counts are 100% structurally symmetric (probes are not conditionally bypassed);
-- `net_work_removed`: paired lower confidence bounds are positive;
-  total scored-cycle change and `moved_work_warning` do not show work moved or
-  added elsewhere;
+- `net_work_removed`: for work removal, validate symmetric probes, sampling
+  ceilings, applicability, claimed removed subtrees and the total/cold-path
+  cost; a scoped reduction is not proof of net savings. For latency, validate
+  trace flow/dependency evidence, alternate-path slack and movement of the
+  actual score endpoint. CPU reduction is not required for that route;
 - `cold_path_tax_measured`: added code/branches have a tax assessment;
-- `thinlto_microbranch_checked`: the candidate does not insert redundant micro-branch checks or outer trivial guards into hot multi-million-call loops that PGO2/ThinLTO already optimizes (which causes BTB pressure and net regressions);
 - `benchmark_overfit_checked`: no benchmark strings, selectors, or data-shaped
   special cases unless they express a general product invariant;
 - `one_invariant_only`: the diff does not bundle mechanisms.
@@ -51,8 +48,11 @@ profiler inventory. Verify:
   represented without retrying ruled-out work.
 
 Set a check true only after verification and replace its `check_evidence`
-placeholder with an artifact/path/line-specific explanation of at least one
-sentence. Replace the top-level notes placeholder too. Add every actionable
+placeholder with a sentence that names the artifact you opened (an existing
+path, optionally `:line`, or a bound sha256 prefix) and the number you read
+from it. The importer rejects a PASS whose evidence lacks that reference or
+reuses one sentence across checks; "verified from measurements and dossiers"
+is not evidence. Replace the top-level notes placeholder too. Add every actionable
 problem to `findings`. PASS requires all checks true, substantive evidence for
 every check, and an empty findings array. Set the verdict in the JSON and
 return only its absolute path plus the verdict.

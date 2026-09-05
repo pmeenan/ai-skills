@@ -24,12 +24,50 @@ the raw evidence.
    ```
 
    Put the emitted overhead and artifact digest into every metadata file.
-   The upper 95% confidence bound must be at most 1%.
+   The entire 95% confidence interval must lie within ±1%.
    This A/A artifact may be reused by multiple opportunities only while arm B
    is the exact same instrumented browser SHA and build provenance. Any
    rebuild that changes the browser requires a fresh calibration. A 32-block
    calibration has the same 64-minute hard floor as a checkpoint and normally
    takes hours; start it once per stable build and wait for completion.
+
+## Count before you size: the redundancy probe
+
+Sampling cannot say how often a site runs per benchmark step or how often it
+runs with an input it has already seen, and those are the two numbers a
+Layer 1 or Layer 2 claim rests on. Add
+`chrome-cycle-profiling/resources/redundancy_probe.h` to the same instrumented
+twin (it shares the scored-window gate and the flush point):
+
+```cpp
+#include "chrome-cycle-profiling/resources/redundancy_probe.h"
+
+void StyleResolver::ResolveStyle(Element& element, const StyleRequest& request) {
+  static thread_local perf_instrumentation::RedundancyCounter counter(
+      "style/resolve-style");
+  counter.Record(perf_instrumentation::HashCombine(
+                     reinterpret_cast<uintptr_t>(&element), request.Hash()),
+                 /*applicable=*/!element.NeedsStyleRecalc());
+  ...
+}
+```
+
+Emit rows where the cycle rows are flushed, after the scored interval closes:
+`perf_instrumentation::EmitRedundancyRows(stderr, block, repetition_suite);`.
+Run the target story once through the capture runner, then reduce:
+
+```bash
+python3 .agents/skills/optimize-campaign/scripts/redundancy_evidence.py \
+  --site style/resolve-style --target-story TodoMVC-React \
+  --browser-log <cb browser log> --out <campaign>/proposals/<key>.redundancy.json
+```
+
+The packet reports calls per repetition, `applicable_fraction`,
+`repeat_fraction` and whether the distinct-input set overflowed. Cite it in
+the proposal as `redundancy_evidence: {path, sha256}`; `decompose` verifies
+the digest and caps the avoidable fraction at what the counts support. Hash
+the real input identity (element plus request, string content, computed
+style pointer), not the call site, or the repeat fraction is meaningless.
 
 ## Instrument one measurement thread
 
@@ -48,7 +86,7 @@ repetition of the target story):
 ### Critical Probe Invariants:
 1. **User-Space PMU Reads Only (`_rdpmc`):**
    `ThreadCycleEvent` MUST read PMU counters via user-space `mmap` and `_rdpmc`
-   (~15 cycles). Never use synchronous kernel `read(fd)` syscalls (~1,200 cycles)
+   (with measured platform-specific overhead). Never use synchronous kernel `read(fd)` syscalls (~1,200 cycles)
    in hot microsecond-scale paths.
 2. **Exact Scored-Window Gating (`IsInScoredWindow`):**
    Mechanism probes MUST be gated on `IsInScoredWindow()`. When executed outside
@@ -92,26 +130,30 @@ repetition of the target story):
 #include "chrome-cycle-profiling/resources/cycle_profiler.h"
 
 void TargetFunction(const Parameter& param) {
-  // 1. Mechanism probe: tracks total entries and exclusive cycles in this operation
+  // Initialize all TLS counters and calibrate before the scored window.
+  // The enclosing scored total includes the applicability-check cost;
+  // this inner scope measures the work after that check.
+  const bool is_avoidable = param.IsRedundant();
   perf_instrumentation::ScopedCycleProbe mechanism_probe(
       perf_instrumentation::GetGlobalResolveStyleBlock(),
-      /*applicable=*/true,
-      perf_instrumentation::Accounting::kExclusive);
-
-  // 2. Avoidable probe: active ONLY when the fast-path condition / invariant is met
-  bool is_avoidable = (param.IsRedundant());
-  perf_instrumentation::ScopedCycleProbe avoidable_probe(
-      perf_instrumentation::GetGlobalAvoidableBlock(),
       /*applicable=*/is_avoidable,
-      perf_instrumentation::Accounting::kExclusive);
+      perf_instrumentation::Accounting::kExclusive,
+      /*sample_every=*/1,
+      /*measure_all_calls=*/true,
+      /*attributable=*/&perf_instrumentation::GetGlobalAvoidableBlock());
 
-  // 3. Normal execution (or candidate branch gated by candidate feature flag)
-  if (RuntimeEnabledFeatures::Speedometer3Candidate_418Enabled() && is_avoidable) {
+  if (RuntimeEnabledFeatures::Speedometer3Candidate_418Enabled() && is_avoidable)
     return;
-  }
   ExecuteOriginalWork();
 }
+
 ```
+
+The attributable block mirrors the measured subset without a nested scope.
+The condition check and boundary bookkeeping remain in the scored total and
+need a cold-path/total-work assessment. Initialize counters after process fork
+and before scored work. Cached thread identity avoids hot-path gettid syscalls.
+Reject aliased attribution and sampled exclusive nesting.
 
 Never put an `avoidable` probe inside the `mechanism` probe: exclusive
 parent accounting would subtract it from `mechanism.cycles`, making the row
@@ -161,6 +203,12 @@ python3 .agents/skills/optimize-campaign/scripts/mechanism_evidence.py scaffold 
 Replace only the non-build `REPLACE` fields (trace classification/artifact,
 instrumentation patch digest, and instrumentation A/A artifact/overhead).
 Leave the build object untouched for `attach-provenance`. Do not add `blocks`.
+
+Captures run inside the tuner session with ASLR disabled (stable addresses
+for cycle probes) and the campaign display; pass `--display :1 --display-vt 9`
+(or let `capture-pairs` do it) so the capture manifest records the same
+rendering surface as the profiles and score runs. `compare` refuses arms
+captured on different surfaces.
 
 Run the following on the configured bare-metal measurement host, in its
 campaign checkout. `provenance` does not trust a pre-existing binary: it runs
@@ -243,3 +291,21 @@ stat-sig regression. A positive targeted point estimate whose interval crosses
 zero leaves the pilot pending: use its MDE to preregister one larger balanced
 confirmation run. A statistically negative result fails the pilot. Fix the
 harness rather than explaining away disagreement.
+
+## Interleave mechanism captures
+
+For a single symmetrically instrumented feature-gated binary, use:
+
+```bash
+python3 .agents/skills/optimize-campaign/scripts/mechanism_evidence.py capture-pairs \
+  --baseline-metadata baseline.json --candidate-metadata candidate.json \
+  --browser out/perf_instrumented/chrome --feature CandidateFeature \
+  --blocks 6 --out-dir <new-capture-directory>
+```
+
+The runner records the randomized balanced AB/BA order before launch, holds the
+shared lease for the complete sequence and emits ingested `raw-A.json` and
+`raw-B.json`. Every capture binds its actual monotonic interval. `compare`
+rejects separate baseline/candidate batches even if their block IDs match.
+For distinct binaries, schedule the same actual interleaving with matching
+instrumentation and provenance; never rebuild or retune between arms.

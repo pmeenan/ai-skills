@@ -82,7 +82,7 @@ class PinpointMeasureTest(unittest.TestCase):
         res = pinpoint_measure.parse_and_analyze_results(
             raw_data, job_id="job123", cl_url="https://crrev.com/c/123", bot="mac-m1"
         )
-        self.assertEqual(res["verdict"], "PASS")
+        self.assertEqual(res["verdict"], "INCONCLUSIVE")
         self.assertEqual(len(res["regressions"]), 0)
         self.assertIn("Score", res["metrics"])
         self.assertAlmostEqual(res["score"]["base_mean"], 40.0, places=1)
@@ -114,7 +114,7 @@ class PinpointMeasureTest(unittest.TestCase):
 
         raw_data = "\n".join(lines)
         res = pinpoint_measure.parse_and_analyze_results(raw_data)
-        self.assertEqual(res["verdict"], "FAIL")
+        self.assertEqual(res["verdict"], "INVALID")
         self.assertIn("StoryA", res["regressions"])
         self.assertTrue(res["metrics"]["StoryA"]["is_regression"])
 

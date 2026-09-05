@@ -22,6 +22,8 @@ _CAMPAIGN_SCRIPTS = os.path.realpath(
 if _CAMPAIGN_SCRIPTS not in sys.path:
     sys.path.append(_CAMPAIGN_SCRIPTS)
 import benchmark_adapters
+import measurement_host
+import tune_benchmark_host
 
 
 PROCESS_POLL_INTERVAL_SECONDS = 0.25
@@ -401,6 +403,31 @@ def run_analyzer(command, cwd):
     return completed.returncode
 
 
+DEFAULT_PROFILE_REPETITIONS = 32
+# 875,000 cycles per sample is ~4 kHz per CPU at the tuner's 3.5 GHz base
+# clock: enough for 100+ main-thread samples at a 0.3% story floor with 32
+# repetitions, at roughly 0.5% sampling overhead on a busy core.
+DEFAULT_PERF_SAMPLE_PERIOD = 875_000
+
+
+def perf_sampling_args(period, frequency=None):
+    """perf record sampling flags plus the manifest record describing them."""
+    if frequency is not None:
+        return {"mode": "frequency", "frequency_hz": int(frequency),
+                "period_cycles": None, "args": ["-F", str(int(frequency))]}
+    return {"mode": "period", "frequency_hz": None,
+            "period_cycles": int(period), "args": ["-c", str(int(period))]}
+
+
+def profile_benchmark_args(adapter, source=None):
+    args = adapter.crossbench_args(
+        source or adapter.profile_source, detailed_metrics=False
+    )
+    if adapter.benchmark_id == "jetstream3":
+        args.append("--probe=performance.entries")
+    return args
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run benchmark full Chrome process-tree perf cycle sampling with V8 basic-prof symbolization."
@@ -416,15 +443,42 @@ def main():
         help="Browser build path (default: out/perf/chrome)",
     )
     parser.add_argument(
-        "--stories", default="all", help="Stories to run (default: all)"
+        "--stories", default=None,
+        help="Workload selector (benchmark default if omitted; all includes optional workloads)",
     )
     parser.add_argument(
-        "--repetitions", type=int, default=16,
+        "--repetitions", type=int, default=DEFAULT_PROFILE_REPETITIONS,
         help=(
-            "Number of repetitions (default: 16; per-story decomposition "
-            "needs enough samples in every story to clear its local "
-            "marginal-share floor)"
+            f"Number of repetitions (default: {DEFAULT_PROFILE_REPETITIONS}; "
+            "per-story decomposition needs enough main-thread samples in "
+            "every story to clear its local marginal-share floor)"
         ),
+    )
+    parser.add_argument(
+        "--perf-sample-period", type=int, default=DEFAULT_PERF_SAMPLE_PERIOD,
+        help=(
+            "Fixed cycles per sample for perf record -c (default: "
+            f"{DEFAULT_PERF_SAMPLE_PERIOD}, about 4 kHz per CPU at the locked "
+            "3.5 GHz base clock). A fixed period gives every sample the same "
+            "cycle weight; use --perf-frequency only when the clock is not locked."
+        ),
+    )
+    parser.add_argument(
+        "--perf-frequency", type=int, default=None,
+        help="Adaptive perf record -F frequency instead of a fixed period",
+    )
+    parser.add_argument(
+        "--display", default="",
+        help="X display (for example :1) that renders through the GPU; omit "
+        "for Chrome headless mode. Must match the score and mechanism runs.",
+    )
+    parser.add_argument(
+        "--display-vt", type=int, default=None,
+        help="Console VT the benchmark X server must own during the capture",
+    )
+    parser.add_argument(
+        "--viewport", default=measurement_host.DEFAULT_VIEWPORT,
+        help="Fixed Crossbench window size WIDTHxHEIGHT for X display runs",
     )
     parser.add_argument(
         "--skip-analysis",
@@ -454,6 +508,8 @@ def main():
     )
     args = parser.parse_args()
     adapter = benchmark_adapters.get_adapter(args.benchmark)
+    if args.stories is None:
+        args.stories = adapter.default_workload_selector
     if adapter.benchmark_id not in ("speedometer3", "jetstream3"):
         parser.error(f"unsupported benchmark {args.benchmark}")
 
@@ -464,8 +520,21 @@ def main():
             else "JetStream3Optimizations"
         )
 
+    if args.perf_frequency is not None and args.perf_frequency <= 0:
+        parser.error("--perf-frequency must be positive")
+    if args.perf_sample_period <= 0:
+        parser.error("--perf-sample-period must be positive")
+
     cwd = get_repo_root()
     provenance = build_provenance(cwd, args.browser)
+    display_env = measurement_host.display_environment(
+        args.display or None, args.display_vt, args.viewport
+    )
+    display_env = measurement_host.attest_renderer(
+        display_env, os.path.realpath(os.path.join(cwd, args.browser))
+    )
+    print(f" Rendering surface: {display_env['mode']} "
+          f"({display_env.get('display') or 'headless'}; {display_env['gpu_renderer']})")
     scratch_dir = os.path.join(cwd, "scratch")
     os.makedirs(scratch_dir, exist_ok=True)
     temp_results_dir = tempfile.mkdtemp(
@@ -475,22 +544,13 @@ def main():
 
     perf_data_file = os.path.join(temp_results_dir, "perf_sampling.data")
 
-    if adapter.benchmark_id == "speedometer3":
-        cb_benchmark = "speedometer_3.0"
-        cb_source_flags = ["--network=third_party/speedometer/v3.0"]
-    else:
-        cb_benchmark = "jetstream_3.0"
-        source = args.benchmark_source or "custom"
-        cb_source_flags = [f"--{source}", "--probe=performance.entries"]
-
     cb_cmd = [
         "vpython3",
         "./third_party/crossbench/cb.py",
-        cb_benchmark,
-        *cb_source_flags,
+        *profile_benchmark_args(adapter, args.benchmark_source),
         "--env-validation=warn",
         f"--browser={args.browser}",
-        "--headless",
+        *measurement_host.crossbench_display_args(display_env),
         "--no-sandbox",
         "--js-flags=--perf-basic-prof",
         f"--repetitions={args.repetitions}",
@@ -508,13 +568,13 @@ def main():
     print(f" Stories     : {args.stories}")
     print(f"=======================================================\n")
 
+    sampling = perf_sampling_args(args.perf_sample_period, args.perf_frequency)
     perf_cmd = [
         "perf",
         "record",
         "-e",
         "cycles",
-        "-F",
-        "997",
+        *sampling["args"],
         "-k",
         "mono",
         "-g",
@@ -524,7 +584,10 @@ def main():
     ] + cb_cmd
 
     print(f"Launching perf record wrapper: {' '.join(perf_cmd)}")
-    capture = subprocess.Popen(perf_cmd, cwd=cwd)
+    host_before = measurement_host.observe()
+    capture = subprocess.Popen(
+        perf_cmd, cwd=cwd, env=measurement_host.subprocess_env(display_env)
+    )
     process_manifest = {}
     browser_name = os.path.basename(args.browser)
     while capture.poll() is None:
@@ -543,6 +606,9 @@ def main():
         time.sleep(PROCESS_POLL_INTERVAL_SECONDS)
     if capture.returncode:
         raise subprocess.CalledProcessError(capture.returncode, perf_cmd)
+    host_after = measurement_host.observe()
+    if host_before.get("active_vt") != host_after.get("active_vt"):
+        raise RuntimeError("console VT changed during the profile capture")
 
     if adapter.benchmark_id == "jetstream3":
         intervals, outer_intervals = parse_jetstream_mono_intervals(rel_out_dir, cwd)
@@ -596,7 +662,14 @@ def main():
         "browser": args.browser,
         "build_provenance": provenance,
         "stories": args.stories,
+        "repetitions": args.repetitions,
         "enable_features": args.enable_features,
+        "display": display_env,
+        "perf_sampling": sampling,
+        "host_observations": {"before": host_before, "after": host_after},
+        "foreign_gpu_compute_apps": measurement_host.foreign_gpu_apps(
+            [{"block": 1, "before": host_before, "after": host_after}]
+        ),
         "perf_data_file": perf_data_file,
         "scoped_to_scored_work": bool(intervals),
         "interval_kind": "exact-scored" if intervals else "missing",
@@ -643,6 +716,8 @@ def main():
             analysis_dir,
             "--stories-out-dir",
             stories_dir,
+            "--stories-scope",
+            "main-thread",
             "--min-marginal-share",
             str(args.min_marginal_share),
             "--min-share",
