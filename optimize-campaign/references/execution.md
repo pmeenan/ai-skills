@@ -30,6 +30,31 @@ roles, adequate calibrated repetitions, bare-metal attestation, immutable
 payload identity, and all normal campaign gates. Being local does not weaken
 those requirements.
 
+## The campaign store lives on the test machine
+
+`ledger.json`, dossiers, reviews, measurements and exports live in
+`<remote_src>/.agents/campaigns/<name>` on the measurement host, whether the
+agent works there or elsewhere. From another machine, link once:
+
+```bash
+python3 .agents/skills/optimize-campaign/scripts/campaign.py link-remote \
+  --host linux --remote-src /home/pmeenan/src/chromium/src --name sp3-2026-09
+```
+
+After that every `campaign.py` command forwards itself over SSH: local file
+arguments (proposals, decompositions, reviews, redundancy packets) are
+uploaded to the campaign's `inbox/`, `--out` results come back to the local
+path you gave, and a local `remote_measure.py` summary is replaced by the
+copy the run already left on the host (`host_summary_path`). The remote
+skill tree must match the local digest, so both sides enforce the same
+rules. `remote_measure.py --execution ssh` reads its campaign defaults
+(display, floor, benchmark, readiness of an opportunity) from the host ledger
+through the same pointer, retains each run's manifest next to its evidence
+directory on the host, and writes a host-path summary under
+`<campaign>/measurements/`. Coding, profile reading and analysis stay local;
+nothing about the campaign state does. Running on the test machine itself
+needs no pointer: the local ledger is the store.
+
 ## Pinpoint fleet execution (Stage 2 Validation)
 
 For candidate validation across production hardware fleets, Pinpoint tryjobs

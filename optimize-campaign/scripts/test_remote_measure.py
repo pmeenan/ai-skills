@@ -175,6 +175,29 @@ class ScriptGenerationTest(unittest.TestCase):
         self.assertNotIn("--display", script)
         self.assertIn("enable --keep-aslr", script)
 
+    def test_ssh_score_runs_retain_manifest_on_host(self):
+        script = rm.build_and_run_script(make_args(), SHA_A)
+        self.assertIn("HOST_MANIFEST: scratch/${ev}.manifest.json", script)
+        self.assertNotIn("HOST_MANIFEST", rm.build_and_run_script(make_args(mode="profile"), SHA_A))
+
+    def test_host_summary_uses_host_paths(self):
+        args = argparse.Namespace(mode="ab", remote_src="/srv/src", host="linux")
+        summary = {"manifest": "/local/out/ab_results_manifest.json", "local_results": "/local/out", "sha": "a" * 40}
+        written = {}
+        with mock.patch.object(rm, "campaign_name_for_host", return_value="camp"), \
+                mock.patch("campaign_host.write_host_file", side_effect=lambda h, p, t: written.update({p: json.loads(t)}) or p):
+            path = rm.publish_host_summary(args, summary, pathlib.Path("/local/out"), "x\nHOST_MANIFEST: scratch/ab_evidence_abc.manifest.json\n")
+        self.assertEqual("/srv/src/.agents/campaigns/camp/measurements/out.summary.json", path)
+        self.assertEqual("/srv/src/scratch/ab_evidence_abc.manifest.json", written[path]["manifest"])
+        self.assertEqual(path, written[path]["host_summary_path"])
+        args = argparse.Namespace(mode="profile", remote_src="/srv/src", host="linux")
+        summary = {"local_results": "/local/prof", "story_frontiers": [{"artifact": "/local/prof/analysis/stories/A/candidate_frontier.json"}]}
+        with mock.patch.object(rm, "campaign_name_for_host", return_value="camp"), \
+                mock.patch("campaign_host.write_host_file", side_effect=lambda h, p, t: written.update({p: json.loads(t)}) or p):
+            path = rm.publish_host_summary(args, summary, pathlib.Path("/local/prof"), "", remote_dir="scratch/results_perf_sampling_q")
+        self.assertEqual("/srv/src/scratch/results_perf_sampling_q/analysis/stories/A/candidate_frontier.json",
+                         written[path]["story_frontiers"][0]["artifact"])
+
     def test_tune_host_disabled_via_flag(self):
         script = rm.build_and_run_script(make_args(tune_host=False), SHA_A)
         self.assertNotIn("tune_benchmark_host.py", script)

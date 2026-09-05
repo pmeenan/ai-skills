@@ -31,6 +31,17 @@ reviewed, committed clone of this repository. The measurement host needs:
 Everything else (CPU clocks, SMT, ASLR policy, VT handoff, GPU clock lock)
 is session-scoped and restored by `tune_benchmark_host.py`.
 
+## Where the campaign lives
+
+The campaign directory is on the test machine. Agents on other machines link
+their checkout once (`campaign.py link-remote --host linux --remote-src
+~/src/chromium/src --name <campaign>`) and every `campaign.py` and
+`remote_measure.py --execution ssh` invocation then reads and writes the
+host's ledger and measurement store. Use `--hold-before-sizing` at init to
+pause after the candidate list is built; `campaign.py export-candidates`
+hands that list to other reviewers and `campaign.py hold --release --note`
+resumes the campaign.
+
 ## Start a new campaign
 
 > Use optimize-campaign and optimize-speedometer to start campaign

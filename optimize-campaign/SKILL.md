@@ -6,8 +6,10 @@ description: Run long-horizon, evidence-bound Chromium benchmark optimization ca
 # Optimize benchmark campaigns
 
 One campaign = one frozen baseline, one rendering surface, one calibration
-epoch, one `ledger.json`. `campaign.py` is the only writer of campaign state;
-every gate is a machine check. Read the benchmark adapter
+epoch, one `ledger.json`, stored on the test machine. `campaign.py` is the
+only writer of campaign state and forwards itself to that host when this
+checkout is linked to it (`campaign.py link-remote`); every gate is a machine
+check. Read the benchmark adapter
 (`../optimize-speedometer` or `../optimize-jetstream`) first, then
 [measurement-policy.md](references/measurement-policy.md). Commands are in
 [campaign-runbook.md](references/campaign-runbook.md); transport in
@@ -19,7 +21,7 @@ every gate is a machine check. Read the benchmark adapter
 2. **Calibrate.** Two separately timed A/A runs on the campaign surface, then `campaign.py calibrate`. This records each story's minimum detectable effect (MDE); the qualification floor for a story becomes twice its MDE. Nothing below that floor is worth a build.
 3. **Profile.** Two independent exact-window captures (32 reps, fixed-period sampling, same display). Frontiers rank **renderer main-thread** work per story; every entry carries a portability flag and every story a score-time composition (sync vs async, busy vs idle).
 4. **Investigate one story area.** Read `investigator.md`. Before proposing a Layer 1/2 mechanism, run the redundancy probe on the site and cite its packet; the claimed avoidable fraction may not exceed what the counts support. Route the hypothesis review to the strongest available model.
-5. **Decompose and qualify.** `decompose` refuses impacts below the story floor and Layer 1/2 claims without redundancy evidence. Reviews must cite artifacts and numbers.
+5. **Decompose and qualify.** `decompose` refuses impacts below the story floor and Layer 1/2 claims without redundancy evidence. Reviews must cite artifacts and numbers. If the campaign carries a review hold, stop here: run `export-candidates`, report, and wait for a human `hold --release`; sizing and implementation are refused until then.
 6. **Size.** Instrumented twin, three or more targeted blocks per arm, `mechanism_evidence.py`; the avoidable-share lower bound must clear the story floor.
 7. **Implement, review, measure.** One invariant behind the campaign flag, build/test receipts, local code review, then the fixed-plan A/B on the same surface. Story flags in manifests are family-adjusted; unadjusted flags are noise until confirmed by a preregistered run.
 8. **Land, checkpoint, reprofile.** Landed work is banked only with a local fixed-plan IMPROVEMENT manifest and a Pinpoint IMPROVEMENT on the campaign bot; targeted and full-suite checkpoints follow the adapter cadence.

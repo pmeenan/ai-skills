@@ -6212,7 +6212,26 @@ def build_parser():
         "--dir",
         help="Campaign directory (default: $OPTIMIZE_CAMPAIGN_DIR or .agents/campaigns/current)",
     )
+    parser.add_argument(
+        "--host", default=None,
+        help="Run this command on the test machine that owns the campaign "
+        "(default: the .agents/campaigns/current.remote pointer, if any)",
+    )
+    parser.add_argument(
+        "--remote-src", default=None,
+        help="Chromium checkout on --host (default: from the pointer)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("link-remote", help="Point this checkout at the campaign store on the test machine")
+    p.add_argument("--host", dest="host", required=True)
+    p.add_argument("--remote-src", dest="remote_src", required=True)
+    p.add_argument("--name", required=True)
+    p.set_defaults(func=cmd_link_remote)
+    p = sub.add_parser("unlink-remote", help="Remove the remote campaign pointer")
+    p.set_defaults(func=cmd_unlink_remote)
+    p = sub.add_parser("show-remote", help="Print the remote campaign pointer")
+    p.set_defaults(func=cmd_show_remote)
 
     p = sub.add_parser("init", help="Create a new campaign ledger")
     p.add_argument("--name", required=True)
@@ -6573,8 +6592,107 @@ def build_parser():
     return parser
 
 
+REMOTE_ONLY_LOCAL_COMMANDS = ("link-remote", "unlink-remote", "show-remote")
+
+
+def cmd_link_remote(args):
+    """Point this checkout at the campaign store on the test machine."""
+    import campaign_host
+    root = find_repo_root(pathlib.Path.cwd())
+    if not args.host or not args.remote_src or not args.name:
+        raise CampaignError("link-remote needs --host, --remote-src and --name")
+    path = campaign_host.save_pointer(root, args.host, args.remote_src, args.name)
+    print(f"campaign commands now run on {args.host}:{campaign_host.remote_campaign_dir(args.remote_src, args.name)} ({path})")
+    return 0
+
+
+def cmd_unlink_remote(args):
+    import campaign_host
+    path = campaign_host.pointer_path(find_repo_root(pathlib.Path.cwd()))
+    if path.exists():
+        path.unlink()
+        print(f"removed {path}")
+    else:
+        print("no remote campaign pointer")
+    return 0
+
+
+def cmd_show_remote(args):
+    import campaign_host
+    pointer = campaign_host.load_pointer(find_repo_root(pathlib.Path.cwd()))
+    print(json.dumps(pointer, indent=2) if pointer else "no remote campaign pointer")
+    return 0
+
+
+def forward_if_remote(raw_argv):
+    """Run the command on the campaign host when a pointer or --host says so.
+
+    Returns None to continue locally, or the exit code of the forwarded run.
+    """
+    import campaign_host
+    argv, host, remote_src = campaign_host.strip_host_args(raw_argv)
+    host = host or os.environ.get("OPTIMIZE_CAMPAIGN_HOST")
+    command = next((t for t in argv if not t.startswith("-")), None)
+    if command in REMOTE_ONLY_LOCAL_COMMANDS or command in (None, "-h", "--help"):
+        return None
+    explicit_dir = any(t == "--dir" or t.startswith("--dir=") for t in argv)
+    try:
+        root = find_repo_root(pathlib.Path.cwd())
+    except CampaignError:
+        root = None
+    pointer = None
+    if root is not None and not explicit_dir and not host:
+        pointer = campaign_host.load_pointer(root)
+    if pointer:
+        host = pointer["host"]
+        remote_src = remote_src or pointer["remote_src"]
+    if not host or campaign_host.is_local_host(host):
+        return None
+    name = pointer["name"] if pointer else None
+    if command == "init":
+        for index, token in enumerate(argv):
+            if token == "--name" and index + 1 < len(argv):
+                name = argv[index + 1]
+            elif token.startswith("--name="):
+                name = token.split("=", 1)[1]
+    if not remote_src or not name:
+        raise CampaignError(
+            "forwarding needs the remote checkout and campaign name: run "
+            "`campaign.py link-remote --host <host> --remote-src <path> --name <campaign>` "
+            "or pass --host/--remote-src with an init"
+        )
+    digest = None
+    if root is not None:
+        import remote_measure
+        digest = remote_measure.skills_digest(root)
+    rc = campaign_host.forward(host, remote_src, name, argv, digest)
+    if rc == 0 and command == "init" and root is not None:
+        campaign_host.save_pointer(root, host, remote_src, name)
+        print(f"linked this checkout to {host}:{campaign_host.remote_campaign_dir(remote_src, name)}", file=sys.stderr)
+    return rc
+
+
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        forwarded = forward_if_remote(raw_argv)
+    except CampaignError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:  # ssh/scp failures surface as plain errors
+        print(f"error: remote campaign command failed: {e}", file=sys.stderr)
+        return 1
+    if forwarded is not None:
+        return forwarded
+    import campaign_host
+    argv_local, _, _ = campaign_host.strip_host_args(raw_argv)
+    args = build_parser().parse_args(argv_local)
+    if args.command in REMOTE_ONLY_LOCAL_COMMANDS:
+        try:
+            return args.func(args)
+        except CampaignError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
     try:
         if test_bypass_requested() and not test_bypass_active():
             raise CampaignError(

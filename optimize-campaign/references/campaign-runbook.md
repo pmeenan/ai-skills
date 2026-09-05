@@ -139,7 +139,22 @@ machine result; they can never waive a machine rejection.
 
 ## Initialize or resume
 
-Work from Chromium `src`.
+Work from Chromium `src`. The campaign store is on the test machine; from
+another checkout run `campaign.py link-remote --host <host> --remote-src
+<path> --name <campaign>` once (or pass `--host/--remote-src` to `init`) and
+every command below forwards there (see `execution.md`).
+
+## Review hold before sizing
+
+`init --hold-before-sizing` (or `campaign.py hold --set --note ...`) pauses
+the campaign once the candidate list exists: `advance --to sized` and
+`--to implementing` are refused until a human runs `campaign.py hold
+--release --note "<who reviewed what>"`. While held, produce
+`campaign.py export-candidates --out <dir>` (`candidates.md` plus
+`candidates.json` with floors, opportunities, proposals and artifact
+digests) so other models or people can analyze the same list. If that review
+changes the skill, commit it and record the move with `campaign.py
+rebind-skills --note ...` before releasing; do not edit the ledger.
 
 - If `.agents/campaigns/current/ledger.json` exists, run `campaign.py status
   --print`, then `campaign.py audit`, and resume the recorded gate.

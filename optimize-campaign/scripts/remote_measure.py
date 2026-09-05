@@ -352,7 +352,49 @@ def build_and_run_script(args, sha, sha_b=None, expected_digest=None):
                 f"if [ $rc -ne 0 ] && [ $rc -ne {ANALYSIS_REJECTED_EXIT_CODE} ]; then exit $rc; fi; "
                 f'echo "PROFILE_EXIT_CODE: $rc"'
             )
+    if args.mode in ("aa", "ab", "ab2"):
+        lines += host_retain_lines()
     return "\n".join(lines) + "\n"
+
+
+def host_retain_lines():
+    """Keep this run's manifest on the host next to its evidence directory.
+
+    The runner overwrites scratch/ab_results_manifest.json every run; the
+    campaign store on the host needs a per-run copy whose relative result
+    paths still resolve (they are relative to the manifest's directory).
+    """
+    return [
+        "ev=$(python3 -c 'import json;print(json.load(open(\"scratch/ab_results_manifest.json\"))[\"evidence_dir\"])')",
+        'cp scratch/ab_results_manifest.json "scratch/${ev}.manifest.json"',
+        'echo "HOST_MANIFEST: scratch/${ev}.manifest.json"',
+    ]
+
+
+def publish_host_summary(args, summary, out_dir, remote_stdout, remote_dir=None):
+    """Write a host-path copy of the summary into the campaign store on the host."""
+    import campaign_host
+    name = campaign_name_for_host()
+    if not name:
+        return None
+    remote_src = args.remote_src
+    if args.mode in ("aa", "ab", "ab2"):
+        match = re.search(r"HOST_MANIFEST: (\S+)", remote_stdout)
+        if not match:
+            print("warning: remote run did not report a retained manifest; no host summary written", file=sys.stderr)
+            return None
+        host_copy = dict(summary)
+        host_copy["manifest"] = f"{remote_src}/{match.group(1)}"
+        host_copy["local_results"] = f"{remote_src}/scratch"
+    else:
+        if not remote_dir:
+            return None
+        host_copy = campaign_host.rewrite_paths(summary, str(out_dir), f"{remote_src}/{remote_dir}")
+        host_copy["local_results"] = f"{remote_src}/{remote_dir}"
+    remote_path = f"{campaign_host.remote_campaign_dir(remote_src, name)}/measurements/{out_dir.name}.summary.json"
+    host_copy["host_summary_path"] = remote_path
+    campaign_host.write_host_file(args.host, remote_path, json.dumps(host_copy, indent=2) + "\n")
+    return remote_path
 
 
 def build_local_script(args, root, expected_digest):
@@ -702,41 +744,83 @@ def profile_summary_paths(out_dir):
     return paths
 
 
-def ledger_remote_defaults():
-    """Remote host/src recorded at campaign init, if a campaign is active.
+def campaign_pointer():
+    """The remote campaign pointer for this checkout, if any."""
+    import campaign_host
+    try:
+        return campaign_host.load_pointer(repo_root())
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    except campaign_host.HostError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1)
 
-    Only a genuinely absent ledger falls back to (None, None). A present but
-    unreadable/malformed active ledger is a hard error: silently substituting
-    fallback infrastructure could send an unattended run to the wrong host.
+
+def active_ledger():
+    """The active campaign ledger as a dict, local or on the campaign host.
+
+    Returns (ledger, source) or (None, None) when no campaign is active. A
+    present but unreadable ledger is a hard error: silently substituting
+    fallback defaults could send an unattended run to the wrong host or
+    surface.
     """
     import campaign
+    import campaign_host
     path = campaign.default_campaign_dir() / "ledger.json"
-    if not path.exists():
-        return None, None
-    try:
-        config = json.loads(path.read_text())["config"]
-    except (OSError, ValueError, KeyError, TypeError) as e:
-        print(
-            f"error: active campaign ledger at {path} is unreadable or "
-            f"malformed ({e}); fix it, or pass --host and --remote-src "
-            "explicitly to bypass ledger defaults",
-            file=sys.stderr,
-        )
+    result = (None, None)
+    if path.exists():
+        try:
+            result = (json.loads(path.read_text()), str(path))
+        except (OSError, ValueError) as e:
+            print(f"error: active campaign ledger at {path} is unreadable ({e})", file=sys.stderr)
+            raise SystemExit(1)
+    else:
+        pointer = campaign_pointer()
+        if pointer and not campaign_host.is_local_host(pointer["host"]):
+            remote = campaign_host.remote_campaign_dir(pointer["remote_src"], pointer["name"]) + "/ledger.json"
+            try:
+                result = (campaign_host.read_host_json(pointer["host"], remote), f"{pointer['host']}:{remote}")
+            except (campaign_host.HostError, ValueError) as e:
+                print(f"error: cannot read the campaign ledger on {pointer['host']}: {e}", file=sys.stderr)
+                raise SystemExit(1)
+    return result
+
+
+def active_config():
+    ledger, source = active_ledger()
+    if ledger is None:
+        return None
+    config = ledger.get("config")
+    if not isinstance(config, dict):
+        print(f"error: campaign ledger {source} has no config", file=sys.stderr)
         raise SystemExit(1)
+    return config
+
+
+def campaign_name_for_host():
+    pointer = campaign_pointer()
+    if pointer:
+        return pointer["name"]
+    config = active_config()
+    return config.get("name") if config else None
+
+
+def ledger_remote_defaults():
+    """Remote host/src: the campaign pointer first, then the ledger config."""
+    pointer = campaign_pointer()
+    if pointer:
+        return pointer["host"], pointer["remote_src"]
+    config = active_config()
+    if config is None:
+        return None, None
     return config.get("remote_host"), config.get("remote_src")
 
 
 def ledger_benchmark_defaults():
     """Return execution and benchmark defaults from an active campaign."""
-    import campaign
-    path = campaign.default_campaign_dir() / "ledger.json"
-    if not path.exists():
+    config = active_config()
+    if config is None:
         return None, None, None
-    try:
-        config = json.loads(path.read_text())["config"]
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        print(f"error: cannot read campaign benchmark defaults: {exc}", file=sys.stderr)
-        raise SystemExit(1)
     return (
         config.get("execution"),
         config.get("benchmark"),
@@ -751,20 +835,14 @@ def ledger_display_defaults():
     malformed active ledger is a hard error: silently measuring on the wrong
     surface would produce evidence that cannot be compared with calibration.
     """
-    import campaign
-    path = campaign.default_campaign_dir() / "ledger.json"
-    if not path.exists():
+    config = active_config()
+    if config is None:
         return None
-    try:
-        config = json.loads(path.read_text())["config"]
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        print(f"error: cannot read campaign display defaults: {exc}", file=sys.stderr)
-        raise SystemExit(1)
     display = config.get("display")
     if display is None:
         return None
     if not isinstance(display, dict) or display.get("mode") not in ("headless", "x11"):
-        print(f"error: active campaign ledger at {path} has an invalid display policy", file=sys.stderr)
+        print("error: the active campaign ledger has an invalid display policy", file=sys.stderr)
         raise SystemExit(1)
     return display
 
@@ -810,17 +888,15 @@ def tune_lines(args, keep_aslr):
 
 def ledger_share_floor_pct(default=0.3):
     """Return the active campaign's percentage share floor when available."""
-    import campaign
-    path = campaign.default_campaign_dir() / "ledger.json"
-    if not path.exists():
+    config = active_config()
+    if config is None:
         return default
     try:
-        value = json.loads(path.read_text())["config"]["share_floor_pct"]
-        return float(value)
-    except (OSError, ValueError, KeyError, TypeError) as e:
+        return float(config["share_floor_pct"])
+    except (ValueError, KeyError, TypeError) as e:
         print(
-            f"error: active campaign ledger at {path} has no valid "
-            f"share_floor_pct ({e}); pass --share-floor-pct explicitly",
+            f"error: the active campaign ledger has no valid share_floor_pct "
+            f"({e}); pass --share-floor-pct explicitly",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -828,15 +904,9 @@ def ledger_share_floor_pct(default=0.3):
 
 def verify_opportunity_ready_for_ab(opp_id, feature_name):
     """Verify that an opportunity has passed Gate 3 (sized) before running candidate A/B."""
-    import campaign
-    path = campaign.default_campaign_dir() / "ledger.json"
-    if not path.exists():
-        print(f"error: cannot verify opportunity #{opp_id}: no active campaign ledger at {path}", file=sys.stderr)
-        raise SystemExit(1)
-    try:
-        data = json.loads(path.read_text())
-    except Exception as exc:
-        print(f"error: cannot read campaign ledger at {path}: {exc}", file=sys.stderr)
+    data, path = active_ledger()
+    if data is None:
+        print(f"error: cannot verify opportunity #{opp_id}: no active campaign ledger", file=sys.stderr)
         raise SystemExit(1)
 
     opps = [o for o in data.get("opportunities", []) if o.get("id") == opp_id]
@@ -1265,6 +1335,17 @@ def main(argv=None):
                 "foreign_gpu_compute_apps"
             )
 
+    if args.execution == "ssh":
+        try:
+            host_path = publish_host_summary(
+                args, summary, out_dir, remote_stdout,
+                remote_dir=summary.get("remote_results_dir"),
+            )
+        except Exception as exc:  # the local summary stays valid evidence
+            print(f"warning: could not publish the summary to the campaign host: {exc}", file=sys.stderr)
+            host_path = None
+        if host_path:
+            summary["host_summary_path"] = host_path
     summary_json = json.dumps(summary, indent=2)
     if args.summary_out:
         summary_path = pathlib.Path(args.summary_out)
