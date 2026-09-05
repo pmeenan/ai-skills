@@ -177,21 +177,30 @@ def calibrate(manifests, tolerance_pct, max_mde_pct, max_abs_lag1=0.4):
         elif stable != reference: raise ValueError("A/A configuration changed between sessions")
         suite,workloads=block_differences(m)
         alpha=.05/(len(workloads)+1)
-        summaries={"@suite":log_summary(suite,alpha),**{s:log_summary(v,alpha) for s,v in workloads.items()}}
+        def both(values):
+            family=log_summary(values,alpha); family["ci95_unadjusted_pct"]=log_summary(values,.05)["ci_pct"]; return family
+        summaries={"@suite":both(suite),**{s:both(v) for s,v in workloads.items()}}
         results.append(summaries)
     # Three separate questions per story and for the suite: is the null
-    # biased (point estimate outside the tolerance band), is it too imprecise
-    # to plan with (MDE above the cap), and does the family-adjusted interval
-    # exclude zero (a "significant" A/A difference). Interval width alone is
-    # not a failure: a noisy but unbiased story is handled by its MDE floor.
+    # biased (an offset larger than the tolerance that its own unadjusted
+    # interval can distinguish from zero), is it too imprecise to plan with
+    # (MDE above the cap), and does the family-adjusted interval exclude
+    # zero. Interval width alone is not a failure: a noisy but unbiased story
+    # is handled by its MDE floor. Story lag-1 autocorrelation is judged
+    # against a bound that scales with the block count (3/sqrt(n)), because
+    # with twenty stories per session a fixed cap flags null excursions; the
+    # suite keeps the strict cap since drift shows there first.
     failures=[]
     for session,row in zip(sorted(sessions),results):
         for name,v in row.items():
             problems=[]
-            if abs(v["delta_pct"])>tolerance_pct: problems.append(f"bias {v['delta_pct']:+.2f}%")
+            unadjusted=v["ci95_unadjusted_pct"]
+            if abs(v["delta_pct"])>tolerance_pct and not (unadjusted[0]<=0<=unadjusted[1]):
+                problems.append(f"bias {v['delta_pct']:+.2f}%")
             if v["mde_80_pct"]>max_mde_pct: problems.append(f"MDE {v['mde_80_pct']:.2f}%")
             if not (v["ci_pct"][0]<=0<=v["ci_pct"][1]): problems.append("interval excludes zero")
-            if abs(v["lag1_autocorrelation"])>max_abs_lag1: problems.append(f"lag1 {v['lag1_autocorrelation']:.2f}")
+            lag_cap=max_abs_lag1 if name=="@suite" else max(max_abs_lag1,3/math.sqrt(v["n_blocks"]))
+            if abs(v["lag1_autocorrelation"])>lag_cap: problems.append(f"lag1 {v['lag1_autocorrelation']:.2f} (cap {lag_cap:.2f})")
             if problems: failures.append(f"{session}/{name}: "+", ".join(problems))
     return {"gate_pass":not failures,"failures":failures,"sessions":sorted(sessions),"results":results,
             "tolerance_pct":tolerance_pct,"max_mde_pct":max_mde_pct}

@@ -57,6 +57,16 @@ class StatisticsTest(unittest.TestCase):
         self.assertTrue(stats.calibrate([a,b],.1,.1,.9)['gate_pass'])
         b=manifest(0,noise=.03);b.update(mode='aa',session_id='b')
         self.assertFalse(stats.calibrate([a,b],.1,.1,.9)['gate_pass'])
+    def test_calibration_bias_needs_detectable_offset_and_story_lag_scales(self):
+        a=manifest(0);a.update(mode='aa',session_id='a')
+        # A noisy story whose 0.3% offset its own interval cannot resolve is not bias.
+        b=manifest(0,story_gain=.003,noise=.02);b.update(mode='aa',session_id='b')
+        result=stats.calibrate([a,b],.2,10,.9)
+        self.assertTrue(result['gate_pass'],result['failures'])
+        # A precise story with the same offset is bias.
+        b=manifest(0,story_gain=.003,noise=.0002);b.update(mode='aa',session_id='b')
+        result=stats.calibrate([a,b],.2,10,.9)
+        self.assertFalse(result['gate_pass']); self.assertTrue(any('bias' in f for f in result['failures']))
     def test_calibration_requires_session_ids(self):
         a=dict(manifest(0),mode='aa'); b=dict(manifest(0),mode='aa')
         with self.assertRaisesRegex(ValueError,'session identities'):stats.calibrate([a,b],.1,.1,.9)

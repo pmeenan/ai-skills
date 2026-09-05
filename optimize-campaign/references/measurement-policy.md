@@ -25,11 +25,13 @@ CPU workers, none of which happens on the Mac M1 PGO fleet bot. So:
 ## Calibration sets the floors
 
 Two separately timed A/A sessions on the campaign surface go through
-`campaign.py calibrate`. For the suite and every story, the null point
-estimate must sit inside the tolerance band (bias), the 80%-power MDE must
-stay under the cap (precision), and the family-adjusted interval must contain
-zero; a wide but unbiased story is not a failure, its MDE simply raises its
-floor. The command records each story's MDE, and from then on:
+`campaign.py calibrate`. For the suite and every story: an offset larger than
+the tolerance that the story's own interval can distinguish from zero is
+bias; the 80%-power MDE must stay under the cap (precision); the
+family-adjusted interval must contain zero; and lag-1 autocorrelation must
+stay under the cap (strict for the suite, scaled to 3/sqrt(blocks) per story
+because a fixed cap flags null excursions across twenty stories). A wide but
+unbiased story is not a failure, its MDE simply raises its floor. The command records each story's MDE, and from then on:
 
     qualification floor(story) = max(share floor, 2 × MDE(story))
 
