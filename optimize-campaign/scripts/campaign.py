@@ -2491,15 +2491,11 @@ def cmd_calibrate(args):
             else:
                 story_mde[name] = max(story_mde.get(name, 0.0), mde)
     if not result["gate_pass"]:
-        worst = sorted(
-            ((max(abs(v["ci_pct"][0]), abs(v["ci_pct"][1])), n)
-             for session in result["results"] for n, v in session.items()),
-            reverse=True,
-        )[:5]
         raise CampaignError(
             "A/A calibration failed the equivalence/precision gate "
-            f"(tolerance {args.tolerance_pct}%, max MDE {args.max_mde_pct}%); "
-            "widest null intervals: " + ", ".join(f"{n} {w:.2f}%" for w, n in worst)
+            f"(|bias| <= {args.tolerance_pct}%, MDE <= {args.max_mde_pct}%, "
+            "family-adjusted interval must contain zero): "
+            + "; ".join(result["failures"][:8])
             + ". Fix the host or choose a documented untuned policy; nothing was recorded."
         )
     config["calibration"] = {

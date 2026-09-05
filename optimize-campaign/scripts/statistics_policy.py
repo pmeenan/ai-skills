@@ -179,8 +179,19 @@ def calibrate(manifests, tolerance_pct, max_mde_pct, max_abs_lag1=0.4):
         alpha=.05/(len(workloads)+1)
         summaries={"@suite":log_summary(suite,alpha),**{s:log_summary(v,alpha) for s,v in workloads.items()}}
         results.append(summaries)
-    passed=all(v["ci_pct"][0]>=-tolerance_pct and v["ci_pct"][1]<=tolerance_pct and
-               v["mde_80_pct"]<=max_mde_pct and abs(v["lag1_autocorrelation"])<=max_abs_lag1
-               for row in results for v in row.values())
-    return {"gate_pass":passed,"sessions":sorted(sessions),"results":results,
+    # Three separate questions per story and for the suite: is the null
+    # biased (point estimate outside the tolerance band), is it too imprecise
+    # to plan with (MDE above the cap), and does the family-adjusted interval
+    # exclude zero (a "significant" A/A difference). Interval width alone is
+    # not a failure: a noisy but unbiased story is handled by its MDE floor.
+    failures=[]
+    for session,row in zip(sorted(sessions),results):
+        for name,v in row.items():
+            problems=[]
+            if abs(v["delta_pct"])>tolerance_pct: problems.append(f"bias {v['delta_pct']:+.2f}%")
+            if v["mde_80_pct"]>max_mde_pct: problems.append(f"MDE {v['mde_80_pct']:.2f}%")
+            if not (v["ci_pct"][0]<=0<=v["ci_pct"][1]): problems.append("interval excludes zero")
+            if abs(v["lag1_autocorrelation"])>max_abs_lag1: problems.append(f"lag1 {v['lag1_autocorrelation']:.2f}")
+            if problems: failures.append(f"{session}/{name}: "+", ".join(problems))
+    return {"gate_pass":not failures,"failures":failures,"sessions":sorted(sessions),"results":results,
             "tolerance_pct":tolerance_pct,"max_mde_pct":max_mde_pct}
