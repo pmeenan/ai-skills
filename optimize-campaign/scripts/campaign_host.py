@@ -193,7 +193,7 @@ def forward(host, remote_src, name, argv, expected_digest=None):
         + dir_option + " ".join(q(a) for a in remote_argv)
     )
     script = "\n".join(lines) + "\n"
-    print(f"+ ssh {host} campaign.py --dir {remote_dir} {' '.join(remote_argv)}", file=sys.stderr)
+    print(f"+ ssh {host} campaign.py {dir_option}{' '.join(remote_argv)}", file=sys.stderr)
     proc = subprocess.Popen(["ssh", *SSH_OPTS, host, "bash", "-s"],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     proc.stdin.write(script.encode())
