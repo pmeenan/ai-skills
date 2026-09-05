@@ -2455,7 +2455,7 @@ class CalibrationFloorTest(unittest.TestCase):
     def aa_manifest(self, session, noise):
         import math
         import random
-        rng = random.Random(hash(session) & 0xffff)
+        rng = random.Random(__import__("zlib").crc32(session.encode()))
         orders = ["ABBA", "BAAB"] * 16
         rng.shuffle(orders)
         rows = []
