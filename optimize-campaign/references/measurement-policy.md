@@ -43,6 +43,32 @@ the Linux box story MDEs at 32 blocks run from about 0.2% to 2%, which makes
 the practical floor roughly 1% to 4% of a story; the old 0.3% floor admitted
 work ten times below what any run could confirm.
 
+Calibration is enforced: `campaign.py profile` refuses to import before a
+calibration record exists, and a profile imported with `--allow-uncalibrated`
+is labelled so in STATUS until `calibrate` runs.
+
+## Recurrence across captures
+
+Two captures are reconciled on the samples they share, not on which symbol
+the greedy frontier happened to root them at. `profile-scaffold` pairs an
+entry present in one capture with the entry in the other capture whose
+inventory contains it (and vice versa) at ≥ 0.8 of its share, records the
+pairing as `recurrence: root-substitution`, and the import re-verifies it
+from the inventories. Only entries with no such partner become
+`not-recurrent` exclusions, and STATUS lists them so a reviewer can check each
+one against the lens.
+
+## Shared mechanisms and the suite score
+
+The suite score is a geometric mean over the default stories, so a mechanism
+that saves 1.5% in eight stories outranks one that saves 10% in one. The lens
+and the export show a mechanism's presence in every story as a discovery
+view. That view orders investigations; it never qualifies them. Qualification
+stays per target story against its calibrated floor, and any future
+suite-targeted route needs its own preregistered suite endpoint, the
+calibrated suite MDE, per-story time ratios and the existing regression
+family. CPU shares averaged across stories are not score movement.
+
 ## Discovery: main thread, wall time, and why the work runs
 
 Story silos rank renderer main-thread samples inside exact scored intervals.

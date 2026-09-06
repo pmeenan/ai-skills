@@ -74,12 +74,16 @@ Each investigated opportunity must be recorded as an investigation proposal cont
 | `known` | the exact mechanism already exists in the ledger | existing mechanism key and matching work references |
 | `covered-by` | the samples are literally the same samples as another row | owning mechanism key and overlap/sample identity |
 | `mandatory` | specification or unavoidable product behavior proves the work cannot be removed | cited invariant and source/trace evidence |
-| `out-of-scope` | the work is not Chromium-owned or not within the campaign goal | ownership/critical-path evidence |
+| `out-of-scope` | the work is not Chromium-owned or not within the campaign goal; a V8/JS **hand-off** row names the owner and quotes the lens numbers so exhaustion is scoped honestly | ownership/critical-path evidence, lens numbers |
 | `below-floor` | the estimated impact is below the story's qualification floor (max(share floor, 2 × calibrated MDE)) | profiler work reference, measured share and the floor basis |
 
 Do not use `covered-by` for a semantically adjacent caller, wrapper, or later
 stage. Do not combine distinct hotspot keys into one primary path. Reconcile
-every known/parked mechanism explicitly.
+every known/parked mechanism explicitly. A nested hotspot the lens marks
+`promoted` (a different lifecycle phase than the area's root, above the
+floor: ink-overflow work inside a hit-test lifecycle, layerization inside a
+frame update) is its own path row with its own disposition, never folded into
+the root's row. Every packet states inclusive and self share separately.
 
 After all child mechanisms are terminal, bind the exhaustion review to the
 exact decomposition:

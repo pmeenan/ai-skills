@@ -40,7 +40,12 @@ their checkout once (`campaign.py link-remote --host linux --remote-src
 host's ledger and measurement store. Use `--hold-before-sizing` at init to
 pause after the candidate list is built; `campaign.py export-candidates`
 hands that list to other reviewers and `campaign.py hold --release --note`
-resumes the campaign.
+resumes the campaign. What "the candidate list is built" means is defined in
+[vetted-candidates.md](references/vetted-candidates.md): every story's
+addressable share above floor closed by a measured candidate packet, a
+counted no-qualifying-mechanism, a mandatory invariant or a hand-off row,
+with the per-story lens (`story_lens.py`) showing what sits underneath each
+frontier entry.
 
 ## Start a new campaign
 

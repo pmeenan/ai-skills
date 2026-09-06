@@ -250,8 +250,8 @@ def rewrite_paths(value, local_prefix, remote_prefix):
 
 def write_host_file(host, remote_path, text):
     q = shlex.quote
-    script = f"mkdir -p {q(str(pathlib.PurePosixPath(remote_path).parent))} && cat > {q(remote_path)}\n"
-    proc = subprocess.run(["ssh", *SSH_OPTS, host, "bash", "-c", script],
+    script = f"mkdir -p {q(str(pathlib.PurePosixPath(remote_path).parent))} && cat > {q(remote_path)}"
+    proc = subprocess.run(["ssh", *SSH_OPTS, host, script],
                           input=text.encode(), capture_output=True)
     if proc.returncode:
         raise HostError(f"cannot write {remote_path} on {host}: {proc.stderr.decode(errors='replace').strip()}")

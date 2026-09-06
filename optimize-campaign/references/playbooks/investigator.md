@@ -21,13 +21,32 @@ Layer 4 leaf work (inlining, branch hints, empty checks in inlined loops) is
 not a shape. The discarded catalog is full of it, and none of it clears a
 story floor.
 
+## What the milestone is
+
+Under a review hold the deliverable is a **vetted candidate list**, defined
+in [vetted-candidates.md](../vetted-candidates.md): every packet field
+filled with measured numbers, every story's addressable share above floor
+closed by a candidate, a counted `no-qualifying-mechanism`, a `mandatory`
+invariant or a hand-off row. Counter probes and cycle profiles of the target
+story are in scope; oracle builds, sizing arms, A/B blocks and Pinpoint are
+not until a human releases the hold.
+
 ## Procedure
 
-1. Start from the story's score-time composition and the top **inclusive**
-   parents on the main thread, not from the bottom-up leaves. Walk each
-   parent to the decision that makes its descendants run (invalidation,
-   traversal, conversion, allocation, phase). Preserve exact path sample
-   accounting.
+1. Start from the story's lens (`lens.md` next to the profile, or the
+   "Story lens" and "Underneath the frontier" sections of STATUS): which
+   trigger owns the story (forced layout from which JS API, frame update,
+   hit-test lifecycle), which phases dominate, and which nested hotspots are
+   marked `promoted` (a different phase than their parent, above the floor).
+   Each promoted hotspot gets its own decomposition row. Then read the
+   score-time composition and the top **inclusive** parents on the main
+   thread, not the bottom-up leaves. Walk each parent to the decision that
+   makes its descendants run (invalidation, traversal, conversion,
+   allocation, phase). Preserve exact path sample accounting.
+1a. Split inclusive from self before claiming anything: a dispatcher frame
+   with a large inclusive share and a tiny self share (an IC builtin, an API
+   callback trampoline, a lifecycle wrapper) is a route to the work, not the
+   work. Say what fraction is self, what is Blink descendants, what is JS.
 2. For the best parent, write the invariant as: condition C occurs in X/Y
    measured calls; it permits removing exactly W (named descendants) while
    preserving observable behavior B. Then measure X/Y: add a
@@ -39,9 +58,16 @@ story floor.
    calibrated MDEs). Estimated impact = story main-thread share × avoidable
    fraction must clear max(share floor, 2 × story MDE). If it cannot even
    with the measured fraction, park the area with the numbers.
-4. Check the entry's `platform_sensitivity`. Rendering-backend, font-shaping
-   and process-plumbing work is a Pinpoint-first lead on the Mac M1 bot, not
-   a local candidate; note it and pick the next parent.
+4. Check `platform_sensitivity` on the work you propose to remove, not on
+   the root symbol. Rendering-backend, font-shaping and process-plumbing work
+   is a Pinpoint-first lead on the Mac M1 bot, not a local candidate; note it
+   and pick the next parent.
+4a. Work that the lens attributes to V8, JIT code or unknown leaves is
+   recorded as an `out-of-scope` row whose evidence names the owner and the
+   lens numbers (NoFeedback IC share, IC-miss runtime, compile, Maglev
+   main-thread, JSON, interceptors). A V8 hypothesis may be tested with a
+   single-story cycle profile under `--js-flags`; that is a lead for the V8
+   team or a gin feature-flag route, not a Blink candidate.
 5. Consult the ledger and the discarded-candidates catalog for the same
    *mechanism*, not the same function. A rejected leaf guard does not
    preclude skipping the subtree above it. Inspect newer upstream code

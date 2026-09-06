@@ -111,6 +111,38 @@ Display flags (`--tree-min-share`, `--tree-max-depth`,
 `--tree-max-children`) prune only the orientation report — never the JSON
 inventory (the campaign default floor is 0.3%) or ranking samples.
 
+## Story lens (`story_lens.py`)
+
+The frontier answers "which outermost Blink entry is hot". The lens answers
+"why does that work run and what is underneath it", from the same
+`profile.collapsed` files, and is imported with `campaign.py profile --lens`:
+
+- **triggers**: forced style/layout from script, frame update, hit-test
+  lifecycle, commit, text-input state, timer tasks, other script;
+- **forced_layout_by_entry**: the JS API whose binding callback forced the
+  work (`element.ScrollTopAttributeSet`, `element.GetBoundingClientRectOperation`,
+  `document.ElementFromPointOperation`, `selection.CollapseOperation`, …);
+- **phases** with inner phases winning over their containers (ink overflow,
+  text shaping, line breaking, min/max sizing, layerization, pre-paint,
+  paint, hit test, style recalc, layout, DOM mutation, HTML parsing, event
+  dispatch, custom-element reactions, canvas), plus layout by algorithm;
+- **ownership_self** and **coverage**: Blink-addressable versus V8/JIT/unknown
+  hand-off share, the frontier's union coverage and the unexplained
+  addressable remainder;
+- **v8_lens**: NoFeedback and megamorphic ICs, IC-miss runtime self time,
+  lazy compile, Maglev on the main thread, interceptors, JSON, GC, API
+  callback generic versus optimized;
+- **binding_plumbing_self**: Blink→V8 and V8→Blink wrapper self time that the
+  frontier excludes as shells;
+- **overhead**: profiler logging (with and without a write beneath), the
+  allocator hook, weighted unknown-leaf share;
+- **nested_view**: per frontier entry, its self share, phase mix and top
+  descendants; a descendant of a different phase above the floor is
+  `promoted` and must get its own decomposition row.
+
+Shares are percent of the story's scored main-thread cycles; inclusive
+figures overlap and are never summed. Ownership is by leaf frame.
+
 ## Portability flags
 
 Each frontier entry carries `platform_sensitivity` (`null` or

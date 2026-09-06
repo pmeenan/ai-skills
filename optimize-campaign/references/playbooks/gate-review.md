@@ -12,7 +12,30 @@ The orchestrator must actually invoke two distinct read-only subagent tasks;
 it may not author either response itself. Preserve each real task id and
 transcript reference with the review. Do not invent signatures or tokens: a
 filesystem schema cannot authenticate model identity, so reviewer separation
-is an orchestrator responsibility and the transcript is the audit trail.
+is an orchestrator responsibility and the transcript is the audit trail. The
+transcript must be openable on the ledger host: pass the reviewer's
+transcript or notes file as `--gate-<role>-transcript` at import (it is
+copied to `<campaign>/reviews/transcripts/`), or make `transcript_ref` a path
+that already resolves there. An unreachable transcript is refused.
+
+## Profile and reprofile gates
+
+Generate each report with `campaign.py profile-review-scaffold --role <role>
+--areas <reconciliation> --capture-summaries <captures> --lens <lens.json>
+--out <report>`. It binds the digests and lists the checks; the import
+refuses a PASS unless every check is true with its own evidence sentence
+naming an artifact and a number read from it (no sentence reused, no
+"REPLACE" left). The skeptic checks calibration, per-story sample power,
+capture independence, exact-window scope, build fidelity, quantified
+overhead, ownership and hand-off shares, every recurrence exclusion against
+the other capture's inventory, three stories decomposed one level, and the
+lens coverage's unexplained share. The adversary checks surface identity,
+sha and features, raw artifacts opened, no probe inside scored work,
+exclusions that hide no work, lens consistency with the frontier,
+recomputed digests, and captures not reused. `what_this_frontier_establishes`
+replaces the speedup sentence: a frontier proves coverage, not a speedup.
+Objections the reviewer raised and then resolved go in
+`resolved_challenges`; an open objection is a CHALLENGE verdict.
 
 ## Skeptic perspective
 

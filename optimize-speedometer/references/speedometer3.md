@@ -81,6 +81,25 @@ python3 .agents/skills/optimize-campaign/scripts/remote_measure.py \
   --summary-out <capture.json>
 ```
 
+## Reading the lens for Speedometer
+
+- The async phase is the same frame's rendering update (`RAFTestInvoker`
+  schedules the async callback in a `setTimeout` after the frame's second
+  rAF), so `frame-update` trigger share is CPU work on the score path, not
+  vsync waiting. A story with high `frame-update` share is a style, layout,
+  pre-paint, paint or layerization story; read its phase mix.
+- `forced-style-layout` share with its JS entry API says which workload call
+  forces the work (`scrollTop=`, `scrollTo`, `getBoundingClientRect`,
+  `clientWidth`, `selection.*`, `elementFromPoint`). The first question is
+  what the step dirtied, the second is whether the forced work is proportional
+  to the dirty region.
+- `hit-test-lifecycle` (`elementFromPoint`) runs everything except paint,
+  including ink-overflow recalculation; treat its nested phases as their own
+  rows.
+- Eight of the twenty default stories are mostly V8/JS by ownership; their
+  hand-off share is recorded as `out-of-scope` rows with the lens numbers,
+  and the campaign's exhaustion claim is scoped to the addressable share.
+
 ## Mechanism evidence policy
 
 Speedometer mechanism sizing is operational. JetStream mechanism sizing is

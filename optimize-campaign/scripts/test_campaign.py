@@ -48,6 +48,13 @@ class CampaignTest(unittest.TestCase):
         command = list(argv)
         if command and command[0] == "audit-exhaustion":
             command.append("--allow-unverified-repository")
+        # Most fixtures exercise discovery paths that predate calibration; the
+        # calibration gate itself is covered by explicit tests below.
+        if (
+            command and command[0] == "profile"
+            and "--allow-uncalibrated" not in command
+        ):
+            command.append("--allow-uncalibrated")
         return campaign.main(["--dir", str(self.dir)] + command)
 
     def ledger(self):
@@ -493,7 +500,7 @@ class CampaignTest(unittest.TestCase):
                          data["opportunities"][1]["source_profile_ids"])
         self.assertEqual("style/memoize-selector-key",
                          data["opportunities"][4]["mechanism_key"])
-        self.assertIn("Latest profile `profile-2` eligible frontier: 0.70%",
+        self.assertIn("Latest profile `profile-2`: 1 discoverable area(s)",
                       self.status_text())
 
     def test_landing_requires_follow_on_profile_before_exhaustion(self):
@@ -1766,11 +1773,14 @@ class EnforcementRegressionTest(unittest.TestCase):
 
     def gate_challenge(self, role, task_id, digest="d" * 64):
         path = self.repo / f"{role}-gate.json"
+        transcript = self.repo / "transcript" / f"{task_id}.jsonl"
+        transcript.parent.mkdir(exist_ok=True)
+        transcript.write_text('{"event": "review"}\n')
         path.write_text(json.dumps({
             "schema_version": 1,
             "role": role,
             "reviewer_task_id": task_id,
-            "transcript_ref": f"transcript/{task_id}",
+            "transcript_ref": str(transcript),
             "gate": "checkpoint",
             "artifact_digests_checked": [f"sha256:{digest}"],
             "verdict": "PASS",
@@ -2297,7 +2307,8 @@ class GitReviewVerificationTest(unittest.TestCase):
         self.assertEqual(0, self.run_cmd(
             "profile", "--id", "p1", "--sha", old_head,
             "--areas", str(areas), "--capture-summaries", str(captures),
-            "--enable-features", "Speedometer3Optimizations"))
+            "--enable-features", "Speedometer3Optimizations",
+            "--allow-uncalibrated"))
         self.assertEqual(0, self.run_cmd("audit-exhaustion"))
         self.git("checkout", "-qb", "audit-side")
         self.assertEqual(1, self.run_cmd("audit-exhaustion"))

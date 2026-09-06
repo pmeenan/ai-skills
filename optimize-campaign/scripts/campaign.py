@@ -278,7 +278,141 @@ def load_gate_evidence(path, *, opp, phase, benchmark, metric_model):
     return evidence, sha256_file(path)
 
 
-def validate_gate_challenges(args, *, gate, artifact_digests):
+# Profile-gate reviews must show their work: every check names an artifact
+# and a number read from it. "The files exist" is not a review.
+PROFILE_GATE_CHECKS = {
+    "skeptic": (
+        "calibration_recorded",
+        "sample_power_every_story",
+        "capture_independence",
+        "exact_window_scope",
+        "build_fidelity",
+        "overhead_quantified",
+        "ownership_and_handoff_stated",
+        "recurrence_exclusions_examined",
+        "nested_decompositions_named",
+        "frontier_completeness",
+    ),
+    "adversary": (
+        "surface_identity_matches",
+        "sha_and_features_match",
+        "raw_artifacts_opened",
+        "no_probe_in_scored_work",
+        "exclusions_hide_no_work",
+        "lens_consistent_with_frontier",
+        "digests_recomputed",
+        "captures_not_reused",
+    ),
+}
+PROFILE_GATE_CHECK_GUIDANCE = {
+    "calibration_recorded": "config.calibration exists; cite suite MDE and the widest story floor, or the recorded uncalibrated state",
+    "sample_power_every_story": "weakest story nominal samples at floor in each capture (>= 100)",
+    "capture_independence": "distinct capture ids, local_results, perf.data paths and timestamps",
+    "exact_window_scope": "interval_kind exact-scored and stories_scope main-thread in every story artifact",
+    "build_fidelity": "official PGO2/ThinLTO provenance and matching gn_args digest across captures",
+    "overhead_quantified": "perf-logging and unknown-leaf shares for the worst story from the lens",
+    "ownership_and_handoff_stated": "Blink-addressable vs V8/JS handoff share for at least three stories",
+    "recurrence_exclusions_examined": "each not-recurrent exclusion checked for root substitution in the other capture's inventory",
+    "nested_decompositions_named": "top two frontier entries of three stories decomposed one level with shares",
+    "frontier_completeness": "unexplained addressable share per story from the lens coverage",
+    "surface_identity_matches": "display mode, display, VT, viewport and GPU renderer string in both captures",
+    "sha_and_features_match": "capture sha equals the profiled commit; enable_features equals the campaign feature",
+    "raw_artifacts_opened": "a candidate_frontier.json and a profile.collapsed actually opened, with a number read from each",
+    "no_probe_in_scored_work": "no instrumentation or probe symbols inside scored-window stacks; probe flushes outside intervals",
+    "exclusions_hide_no_work": "every source exclusion's share and where that work is still represented",
+    "lens_consistent_with_frontier": "a lens entry share agrees with the frontier's inclusive share for the same entry",
+    "digests_recomputed": "areas manifest, capture summaries, per-story artifacts and lens digests recomputed",
+    "captures_not_reused": "distinct remote perf.data and local_results per capture",
+}
+
+
+def gate_uses_profile_checks(gate):
+    return gate in ("profile", "reprofile")
+
+
+def bind_reviewer_transcript(args, role, report_transcript, campaign_dir):
+    """Resolve the reviewer transcript on the ledger host.
+
+    Either `transcript_ref` already resolves here, or the caller supplied
+    `--gate-<role>-transcript`, which is copied under reviews/transcripts/.
+    Returns (transcript_ref, copy_record_or_None).
+    """
+    supplied = getattr(args, f"gate_{role}_transcript", None)
+    if supplied:
+        source = pathlib.Path(supplied)
+        if not source.is_file():
+            raise CampaignError(
+                f"--gate-{role}-transcript {supplied} is not a readable file"
+            )
+        digest_value = sha256_file(source)
+        if campaign_dir is None:
+            return report_transcript, {
+                "path": str(source.resolve()), "sha256": digest_value,
+            }
+        target_dir = pathlib.Path(campaign_dir) / "reviews" / "transcripts"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"{role}-{digest_value[:12]}{source.suffix or '.txt'}"
+        if not target.exists():
+            shutil.copyfile(source, target)
+        return report_transcript, {"path": str(target), "sha256": digest_value}
+    candidate = report_transcript.strip()
+    if candidate.startswith("file://"):
+        candidate = candidate[len("file://"):]
+    if pathlib.Path(candidate).is_file():
+        return report_transcript, None
+    raise CampaignError(
+        f"{role} transcript_ref {report_transcript!r} does not resolve on the "
+        "ledger host; pass --gate-" + role + "-transcript <file> so the audit "
+        "trail is copied into <campaign>/reviews/transcripts/"
+    )
+
+
+def validate_profile_gate_report(report, role, gate):
+    """Per-check evidence rules for profile/reprofile gate reviews."""
+    checks = report.get("checks")
+    evidence = report.get("check_evidence")
+    required = PROFILE_GATE_CHECKS[role]
+    if not isinstance(checks, dict) or not isinstance(evidence, dict):
+        raise CampaignError(
+            f"{gate} {role} review needs checks and check_evidence objects; "
+            "generate it with `campaign.py profile-review-scaffold`"
+        )
+    seen = set()
+    for name in required:
+        if checks.get(name) is not True:
+            raise CampaignError(f"{gate} {role} review check {name!r} is not true")
+        text = evidence.get(name)
+        if not isinstance(text, str):
+            raise CampaignError(f"{gate} {role} review lacks evidence for {name!r}")
+        stripped = " ".join(text.split())
+        if (
+            len(stripped) < 20
+            or "REPLACE" in stripped
+            or not re.search(r"\d", stripped)
+        ):
+            raise CampaignError(
+                f"{gate} {role} review evidence for {name!r} must cite an "
+                "artifact and a number read from it"
+            )
+        if stripped.lower() in seen:
+            raise CampaignError(
+                f"{gate} {role} review reuses one evidence sentence across checks"
+            )
+        seen.add(stripped.lower())
+    resolved = report.get("resolved_challenges", [])
+    if not isinstance(resolved, list) or any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("challenge"), str)
+        or not isinstance(item.get("resolution"), str)
+        for item in resolved
+    ):
+        raise CampaignError(
+            f"{gate} {role} review resolved_challenges must be objects with "
+            "challenge and resolution"
+        )
+
+
+def validate_gate_challenges(args, *, gate, artifact_digests, campaign_dir=None):
     if test_bypass_active():
         return []
     expected = {f"sha256:{value}" for value in artifact_digests if value}
@@ -300,6 +434,9 @@ def validate_gate_challenges(args, *, gate, artifact_digests):
         checked = report.get("artifact_digests_checked")
         task_id = report.get("reviewer_task_id")
         transcript = report.get("transcript_ref")
+        statement = report.get("why_this_proves_real_speedup")
+        if gate_uses_profile_checks(gate) and not isinstance(statement, str):
+            statement = report.get("what_this_frontier_establishes")
         if (
             report.get("schema_version") != 1
             or report.get("role") != role
@@ -310,23 +447,31 @@ def validate_gate_challenges(args, *, gate, artifact_digests):
             or not isinstance(task_id, str) or len(task_id.strip()) < 3
             or not isinstance(transcript, str) or len(transcript.strip()) < 3
             or report.get("challenges") != []
-            or not isinstance(report.get("why_this_proves_real_speedup"), str)
-            or len(report["why_this_proves_real_speedup"].strip()) < 20
+            or not isinstance(statement, str)
+            or len(statement.strip()) < 20
         ):
             raise CampaignError(
                 f"{gate} {role} challenge is unbound, incomplete, or not PASS"
             )
+        if gate_uses_profile_checks(gate):
+            validate_profile_gate_report(report, role, gate)
         if task_id in task_ids:
             raise CampaignError("skeptic and adversary challenges use the same task id")
         task_ids.add(task_id)
-        reports.append({
+        transcript, transcript_copy = bind_reviewer_transcript(
+            args, role, transcript, campaign_dir
+        )
+        record = {
             "role": role,
             "path": str(path.resolve()),
             "sha256": sha256_file(path),
             "reviewer_task_id": task_id,
             "transcript_ref": transcript,
             "artifact_digests_checked": sorted(expected),
-        })
+        }
+        if transcript_copy:
+            record["transcript_copy"] = transcript_copy
+        reports.append(record)
     return reports
 
 
@@ -914,8 +1059,11 @@ class Ledger:
         if profiles:
             latest = profiles[-1]
             header += (
-                f" · Latest profile `{latest['id']}` eligible frontier: "
-                f"{latest['total_share_pct']:.2f}% share"
+                f" · Latest profile `{latest['id']}`: "
+                f"{latest.get('area_count', 0)} discoverable area(s), "
+                f"{len(latest.get('excluded_areas') or [])} excluded, "
+                f"{len(latest.get('source_exclusions') or [])} source exclusion(s)"
+                + (" · **UNCALIBRATED**" if latest.get("uncalibrated") else "")
             )
         if checkpoints:
             cp = checkpoints[-1]
@@ -1054,6 +1202,10 @@ class Ledger:
         else:
             lines.append("_(no profile discoveries recorded)_")
 
+        if profiles and profiles[-1].get("lens_summary"):
+            import campaign_lens
+            lines.extend(campaign_lens.status_sections(profiles[-1], self))
+
         lines.append("")
         lines.append("## Latest profile exclusions")
         latest_excluded = profiles[-1].get("excluded_areas", []) if profiles else []
@@ -1067,13 +1219,45 @@ class Ledger:
                     f"{area['exclusion_evidence']} |"
                 )
         else:
-            lines.append("_(none)_")
+            lines.append("_(no excluded areas)_")
+        source_exclusions = (
+            profiles[-1].get("source_exclusions", []) if profiles else []
+        )
+        if source_exclusions:
+            lines.append("")
+            lines.append(
+                "**Source entries excluded at reconciliation** (present in one "
+                "capture's frontier only; the root-substitution check found no "
+                "other-root entry holding the same samples):"
+            )
+            lines.append("| Capture | Entry | Category | Evidence |")
+            lines.append("| --- | --- | --- | --- |")
+            for item in source_exclusions:
+                lines.append(
+                    f"| `{item.get('capture_id')}` | `{entry_display_name(item.get('entry_key', ''))}` | "
+                    f"{item.get('category')} | {item.get('evidence')} |"
+                )
+        retractions = self.data.get("profile_retractions") or []
+        if retractions:
+            lines.append("")
+            lines.append("**Retracted profile imports:** " + " · ".join(
+                f"`{item.get('id')}` ({item.get('ts', '')[:10]}: {item.get('note')})"
+                for item in retractions
+            ))
 
         blockers = self.exhaustion_blockers()
         lines.append("")
+        grouped = collections.Counter(
+            re.sub(r"#\d+", "#n", reason) for reason in blockers
+        )
         lines.append(
             "**Ledger-only exhaustion precheck:** "
-            + ("PASS" if not blockers else f"BLOCKED ({len(blockers)} reason(s))")
+            + ("PASS" if not blockers else (
+                f"BLOCKED ({len(blockers)} reason(s) in {len(grouped)} kind(s): "
+                + "; ".join(
+                    f"{count}× {kind}" for kind, count in grouped.most_common(3)
+                ) + ")"
+            ))
             + " · run `campaign.py audit-exhaustion` for checkout verification"
         )
 
@@ -1417,7 +1601,7 @@ def derive_frontier_inventory(report):
 
 def load_capture_summaries(
     path, *, expected_sha, feature, expected_features, floor_pct,
-    benchmark, metric_model,
+    benchmark, metric_model, config=None,
 ):
     try:
         with open(path) as f:
@@ -1488,9 +1672,9 @@ def load_capture_summaries(
             raise CampaignError(
                 f"Capture {capture_id} is not scoped to exact score timers"
             )
-        if strict_evidence:
+        if strict_evidence and config is not None:
             require_campaign_display(
-                ledger.data["config"], summary.get("display"), f"Capture {capture_id}"
+                config, summary.get("display"), f"Capture {capture_id}"
             )
             if summary.get("stories_scope") != "main-thread":
                 raise CampaignError(
@@ -2571,7 +2755,14 @@ def cmd_export_candidates(args):
         profiles.append({k: run.get(k) for k in (
             "id", "ts", "sha", "enable_features", "artifacts", "captures",
             "area_count", "inventory_count", "total_share_pct", "areas_manifest",
-            "areas_manifest_sha256", "capture_summaries", "notes") if k in run})
+            "areas_manifest_sha256", "capture_summaries", "notes",
+            "calibration_epoch", "uncalibrated", "lens", "source_exclusions",
+        ) if k in run})
+    latest_profile = (
+        ledger.data["profile_runs"][-1] if ledger.data.get("profile_runs") else {}
+    )
+    import campaign_lens
+    lens_lines = campaign_lens.export_sections(latest_profile, opps)
     export = {
         "schema_version": 1,
         "kind": "candidate-export",
@@ -2582,6 +2773,8 @@ def cmd_export_candidates(args):
         "calibration": cfg.get("calibration"),
         "hold": hold_state(ledger),
         "profiles": profiles,
+        "lens_summary": latest_profile.get("lens_summary"),
+        "profile_retractions": ledger.data.get("profile_retractions", []),
         "opportunities": opps,
         "proposals": listing("proposals"),
         "dossiers": listing("dossiers"),
@@ -2607,14 +2800,22 @@ def cmd_export_candidates(args):
             lines.append(f"| {story} | {mde:.2f}% | {story_floor_pct(cfg, story)[0]:.2f}% |")
     else:
         lines.append(f"No calibration recorded; floor {cfg.get('share_floor_pct')}% everywhere.")
+    if lens_lines:
+        lines += [""] + lens_lines
     lines += ["", "## Opportunities (by priority)", "",
               "| # | Kind | Status | Story | Anchor / key | Share | Est. impact | Floor | Layer | Shape |",
               "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |"]
     for r in opps:
         impact = r.get("estimated_local_story_impact_pct")
+        promoted = r.get("promoted_descendants") or []
+        underneath = "; ".join(
+            f"`{item['symbol']}` {item['inclusive_pct']:.1f}%" for item in promoted[:3]
+        )
         lines.append(
             f"| {r['id']} | {r.get('kind')} | {r.get('status')} | {r.get('target_story') or ''} | "
-            f"`{r.get('mechanism_key') or r.get('key') or r.get('anchor') or ''}` | "
+            f"`{r.get('mechanism_key') or r.get('key') or r.get('anchor') or ''}`"
+            + (f"<br>↳ {underneath}" if underneath else "")
+            + " | "
             f"{(r.get('measured_priority_pct') or 0):.2f}% | "
             f"{'' if impact is None else f'{impact:.2f}%'} | "
             f"{'' if r.get('story_floor_pct') is None else f'{r['story_floor_pct']:.2f}%'} | "
@@ -3218,6 +3419,75 @@ def validate_parked_reconciliation(ledger, areas, entries):
     return entries
 
 
+def bare_semantic(entry_key):
+    """`story:X/symbol:Name` -> `symbol:Name` (work-item semantic form)."""
+    semantic = semantic_entry_identity(entry_key)
+    story, bare = split_story_entry_key(semantic)
+    return bare if story is not None else semantic
+
+
+def root_substitution_partner_share(inventory_items, bare_key):
+    """Largest measured share of `bare_key` among an entry's work items."""
+    best = None
+    for work in inventory_items or []:
+        if not isinstance(work, dict) or work.get("semantic_key") != bare_key:
+            continue
+        share = work.get("measured_share_pct")
+        if isinstance(share, (int, float)) and math.isfinite(share):
+            best = share if best is None else max(best, share)
+    return best
+
+
+ROOT_SUBSTITUTION_MIN_RATIO = 0.8
+
+
+def root_substitution_pair_ok(inventory_a, root_share_a, bare_a,
+                              inventory_b, root_share_b, bare_b):
+    """True when entry A's inventory contains B's root and vice versa, each at
+    least ROOT_SUBSTITUTION_MIN_RATIO of the other's root share (same samples)."""
+    b_in_a = root_substitution_partner_share(inventory_a, bare_b)
+    a_in_b = root_substitution_partner_share(inventory_b, bare_a)
+    if b_in_a is None or a_in_b is None:
+        return False
+    return (
+        b_in_a >= ROOT_SUBSTITUTION_MIN_RATIO * root_share_b
+        and a_in_b >= ROOT_SUBSTITUTION_MIN_RATIO * root_share_a
+    )
+
+
+def root_share_of(inventory_items):
+    for work in inventory_items or []:
+        if isinstance(work, dict) and work.get("hotspot_key") == "@root":
+            share = work.get("measured_share_pct")
+            if isinstance(share, (int, float)):
+                return float(share)
+    return 0.0
+
+
+def verify_root_substitution(index, refs, hotspot_inventory):
+    stories = {split_story_entry_key(entry_key)[0] for _, entry_key in refs}
+    if len(stories) != 1:
+        raise CampaignError(
+            f"Profile area {index} root substitution spans stories {sorted(map(str, stories))}"
+        )
+    for i, (capture_a, entry_a) in enumerate(refs):
+        for capture_b, entry_b in refs[i + 1:]:
+            if bare_semantic(entry_a) == bare_semantic(entry_b):
+                continue
+            inventory_a = hotspot_inventory.get((capture_a, entry_a))
+            inventory_b = hotspot_inventory.get((capture_b, entry_b))
+            if not root_substitution_pair_ok(
+                inventory_a, root_share_of(inventory_a), bare_semantic(entry_a),
+                inventory_b, root_share_of(inventory_b), bare_semantic(entry_b),
+            ):
+                raise CampaignError(
+                    f"Profile area {index} claims a root substitution between "
+                    f"{entry_a!r} and {entry_b!r}, but the capture inventories "
+                    "do not show each root inside the other at "
+                    f">= {ROOT_SUBSTITUTION_MIN_RATIO:g} of its share"
+                )
+
+
 def source_ref_tuple(value, label):
     if not isinstance(value, dict):
         raise CampaignError(f"{label} must be an object")
@@ -3269,15 +3539,21 @@ def validate_source_accounting(areas, source_exclusions, summaries):
         # One area maps one semantic entry. Context digests may legitimately
         # differ per capture, and a symbol may move between context/function
         # aggregates, so exact entry keys only have to agree on represented
-        # profiler work identity.
+        # profiler work identity. The one exception is a declared root
+        # substitution: the greedy frontier rooted the same samples at a
+        # parent in one capture and at its child in another; the pairing is
+        # accepted only when each root's inventory contains the other.
         semantic_ids = {
             semantic_entry_identity(entry_key) for _, entry_key in refs
         }
         if len(semantic_ids) != 1:
-            raise CampaignError(
-                f"Profile area {index} coalesces distinct frontier entries; "
-                "each recurrent machine entry requires its own area"
-            )
+            recurrence = area.get("recurrence") or {}
+            if recurrence.get("kind") != "root-substitution":
+                raise CampaignError(
+                    f"Profile area {index} coalesces distinct frontier entries; "
+                    "each recurrent machine entry requires its own area"
+                )
+            verify_root_substitution(index, refs, hotspot_inventory)
         # Story-qualified entries pin the area to its silo; the recorded
         # target story is what sizing and verification must measure against.
         area["target_story"] = split_story_entry_key(refs[0][1])[0]
@@ -3366,6 +3642,31 @@ def cmd_profile(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     if any(p["id"] == args.id for p in ledger.data.get("profile_runs", [])):
         raise CampaignError(f"Profile id {args.id!r} already exists")
+    if any(
+        entry.get("id") == args.id
+        for entry in ledger.data.get("profile_retractions", [])
+    ):
+        raise CampaignError(
+            f"Profile id {args.id!r} was retracted earlier; import the "
+            "corrected reconciliation under a new id"
+        )
+    calibration = ledger.data["config"].get("calibration") or {}
+    if not calibration.get("story_mde_pct"):
+        if not getattr(args, "allow_uncalibrated", False):
+            raise CampaignError(
+                "Profile import requires a recorded A/A calibration: every "
+                "qualification floor is derived from the story MDEs. Run two "
+                "separately timed A/A sessions and `campaign.py calibrate` "
+                "first, or pass --allow-uncalibrated to record a discovery-only "
+                "profile whose floors are placeholders (the ledger records that "
+                "state and refuses sizing until calibration exists)"
+            )
+    lens_record = None
+    if getattr(args, "lens", None):
+        import campaign_lens
+        lens_record = campaign_lens.load_lens_for_import(
+            args.lens, ledger.dir, args.id
+        )
     feature = ledger.data["config"]["feature"]
     if feature not in feature_names(args.enable_features):
         raise CampaignError(
@@ -3385,6 +3686,7 @@ def cmd_profile(args):
         floor_pct=floor,
         benchmark=ledger.data["config"]["benchmark"],
         metric_model=ledger.data["config"]["metric_model"],
+        config=ledger.data["config"],
     )
     if not test_bypass_active():
         expected_skill = ledger.data["config"].get("skill_tree_sha256")
@@ -3400,7 +3702,9 @@ def cmd_profile(args):
             sha256_file(args.areas),
             sha256_file(args.capture_summaries),
             *[summary.get("artifact_sha256") for summary in summaries],
+            *([lens_record["sha256"]] if lens_record else []),
         ],
+        campaign_dir=ledger.dir,
     )
     source_area_map = validate_source_accounting(areas, source_exclusions, summaries)
     excluded_with_children = [
@@ -3452,6 +3756,19 @@ def cmd_profile(args):
         )
     total_share = sum(area["marginal_share_pct"] for area in discoveries)
     observed_share = sum(area["marginal_share_pct"] for area in areas)
+    lens_stories = None
+    if lens_record is not None:
+        import campaign_lens
+        capture_stories = {
+            item.get("story")
+            for summary in summaries
+            for item in summary.get("story_frontiers", [])
+            if isinstance(item, dict)
+        }
+        lens_stories = campaign_lens.check_lens_matches_captures(
+            lens_record, capture_stories,
+            {summary["capture_id"]: summary.get("local_results") for summary in summaries},
+        )
     ledger.data.setdefault("profile_runs", []).append({
         "id": args.id,
         "ts": utc_now(),
@@ -3459,6 +3776,14 @@ def cmd_profile(args):
         **provenance,
         "enable_features": args.enable_features,
         "total_share_pct": total_share,
+        "calibration_epoch": calibration.get("recorded"),
+        "uncalibrated": not bool(calibration.get("story_mde_pct")),
+        "lens": (
+            {k: lens_record[k] for k in ("path", "sha256", "source_path")}
+            if lens_record else None
+        ),
+        "lens_summary": lens_record.get("summary") if lens_record else None,
+        "lens_stories": lens_stories,
         "artifacts": args.artifacts,
         "notes": args.notes,
         "area_count": len(discoveries),
@@ -3529,6 +3854,141 @@ def cmd_profile(args):
     print(
         f"Recorded profile {args.id}: {len(discoveries)} discoverable / "
         f"{len(excluded)} excluded area(s), {total_share:.2f}% eligible share"
+    )
+    return 0
+
+
+def cmd_profile_retract(args):
+    """Withdraw a profile import before any of its discoveries advanced.
+
+    A reconciliation bug (for example the recurrence rule dropping real
+    work) is corrected by retracting the import and re-importing under a new
+    id, never by editing ledger rows. The retraction is recorded with the
+    withdrawn discovery ids so the history stays auditable.
+    """
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    note = (args.note or "").strip()
+    if len(note) < 8:
+        raise CampaignError("--note must say why the import is withdrawn (8+ characters)")
+    profile = ledger.profile(args.id)
+    linked = [
+        opp for opp in ledger.data["opportunities"]
+        if opp.get("profile_id") == args.id
+        or args.id in (opp.get("source_profile_ids") or [])
+    ]
+    blocking = [
+        opp for opp in linked
+        if opp.get("kind") != "discovery"
+        or opp.get("status") != "candidate"
+        or ledger.children(opp["id"])
+        or opp.get("reviews")
+        or opp.get("decomposition_revision")
+    ]
+    if blocking:
+        raise CampaignError(
+            "Profile cannot be retracted: these opportunities advanced beyond "
+            "an untouched discovery candidate: "
+            + ", ".join(f"#{opp['id']:03d}" for opp in blocking[:8])
+        )
+    if profile is not ledger.data["profile_runs"][-1]:
+        raise CampaignError("Only the latest profile import can be retracted")
+    removed_ids = [opp["id"] for opp in linked]
+    ledger.data["opportunities"] = [
+        opp for opp in ledger.data["opportunities"] if opp["id"] not in removed_ids
+    ]
+    ledger.data["profile_runs"] = [
+        run for run in ledger.data["profile_runs"] if run["id"] != args.id
+    ]
+    retired_challenges = [
+        challenge for challenge in ledger.data.get("gate_challenges", [])
+        if challenge.get("subject") == args.id
+        and challenge.get("gate") in ("profile", "reprofile")
+    ]
+    ledger.data["gate_challenges"] = [
+        challenge for challenge in ledger.data.get("gate_challenges", [])
+        if challenge not in retired_challenges
+    ]
+    ledger.data.setdefault("profile_retractions", []).append({
+        "ts": utc_now(),
+        "id": args.id,
+        "note": note,
+        "sequence": profile.get("sequence"),
+        "removed_opportunity_ids": removed_ids,
+        "areas_manifest_sha256": profile.get("areas_manifest_sha256"),
+        "capture_summaries_sha256": profile.get("capture_summaries_sha256"),
+        "capture_ids": profile.get("capture_ids"),
+        "retired_gate_challenges": retired_challenges,
+    })
+    ledger.save()
+    print(
+        f"Retracted profile {args.id}: removed {len(removed_ids)} untouched "
+        f"discovery candidate(s); re-import the corrected reconciliation under a new id"
+    )
+    return 0
+
+
+def profile_gate_for(ledger):
+    return "reprofile" if ledger.data.get("profile_runs") else "profile"
+
+
+def cmd_profile_review_scaffold(args):
+    """Emit the profile-gate reviewer report with digests and checks prefilled."""
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    role = args.role
+    digests = [sha256_file(args.areas), sha256_file(args.capture_summaries)]
+    summaries = load_scaffold_summaries(args.capture_summaries)
+    capture_ids = []
+    for summary in summaries:
+        capture_ids.append(summary["capture_id"])
+        try:
+            _, combined = capture_artifact_digests(summary.get("story_frontiers"))
+        except CampaignError as exc:
+            raise CampaignError(
+                f"Capture {summary['capture_id']} story artifacts unreadable: {exc}"
+            ) from exc
+        digests.append(combined)
+    if args.lens:
+        digests.append(sha256_file(args.lens))
+    gate = profile_gate_for(ledger)
+    calibration = ledger.data["config"].get("calibration") or {}
+    report = {
+        "schema_version": 1,
+        "role": role,
+        "gate": gate,
+        "reviewer_task_id": "REPLACE with the real reviewer task id",
+        "transcript_ref": (
+            "REPLACE with the reviewer transcript path; pass the file as "
+            f"--gate-{role}-transcript at import so it is copied to "
+            "<campaign>/reviews/transcripts/"
+        ),
+        "artifact_digests_checked": [f"sha256:{value}" for value in digests],
+        "bound_inputs": {
+            "areas": str(pathlib.Path(args.areas).resolve()),
+            "capture_summaries": str(pathlib.Path(args.capture_summaries).resolve()),
+            "lens": str(pathlib.Path(args.lens).resolve()) if args.lens else None,
+            "capture_ids": capture_ids,
+            "calibration_recorded": calibration.get("recorded"),
+        },
+        "checks": {name: False for name in PROFILE_GATE_CHECKS[role]},
+        "check_evidence": {
+            name: f"REPLACE: {PROFILE_GATE_CHECK_GUIDANCE[name]}"
+            for name in PROFILE_GATE_CHECKS[role]
+        },
+        "challenges": [],
+        "resolved_challenges": [],
+        "verdict": "CHALLENGE",
+        "what_this_frontier_establishes": "",
+    }
+    out = pathlib.Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2) + "\n")
+    print(
+        f"Scaffolded {gate} {role} review with {len(digests)} bound digest(s) "
+        f"and {len(PROFILE_GATE_CHECKS[role])} checks -> {out}"
+    )
+    print(
+        "Every check needs evidence naming an artifact and a number; a PASS "
+        "with an unfilled check is refused at import."
     )
     return 0
 
@@ -3629,12 +4089,103 @@ def cmd_profile_scaffold(args):
 
     areas = []
     source_exclusions = []
+    consumed = set()
+
+    def find_root_substitution(semantic, per_capture):
+        """Pair a semantic seen in some captures with the entry that owns the
+        same samples under a different root in each missing capture."""
+        present = {
+            capture_id: entries[0]
+            for capture_id, entries in per_capture.items()
+            if entries and (capture_id, entries[0]) not in consumed
+        }
+        if len(present) != len(per_capture) or not present:
+            return None
+        story = split_story_entry_key(next(iter(present.values())))[0]
+        bare = bare_semantic(next(iter(present.values())))
+        partners = {}
+        for missing in sorted(all_captures - set(present)):
+            best = None
+            for entry_key in inventories[missing]:
+                if (missing, entry_key) in consumed:
+                    continue
+                if split_story_entry_key(entry_key)[0] != story:
+                    continue
+                partner_semantic = semantic_entry_identity(entry_key)
+                if set(by_semantic.get(partner_semantic, {})) == all_captures:
+                    continue  # already a recurrent area of its own
+                ok = all(
+                    root_substitution_pair_ok(
+                        inventories[capture_id].get(present_entry),
+                        root_share[(capture_id, present_entry)], bare,
+                        inventories[missing].get(entry_key),
+                        root_share.get((missing, entry_key), 0.0),
+                        bare_semantic(entry_key),
+                    )
+                    for capture_id, present_entry in present.items()
+                )
+                if ok and (
+                    best is None
+                    or root_share.get((missing, entry_key), 0.0)
+                    > root_share.get((missing, best), 0.0)
+                ):
+                    best = entry_key
+            if best is None:
+                return None
+            partners[missing] = best
+        return present, partners
+
     for semantic in entry_order:
         per_capture = by_semantic[semantic]
         for capture_id, entries in per_capture.items():
             entries.sort(
                 key=lambda entry: root_share[(capture_id, entry)], reverse=True
             )
+        if all(
+            (capture_id, entry) in consumed
+            for capture_id, entries in per_capture.items()
+            for entry in entries
+        ):
+            continue
+        if set(per_capture) != all_captures:
+            pairing = find_root_substitution(semantic, per_capture)
+            if pairing:
+                present, partners = pairing
+                refs = [
+                    {"capture_id": capture_id,
+                     "entry_key": present.get(capture_id) or partners[capture_id]}
+                    for capture_id in capture_order
+                ]
+                for ref in refs:
+                    consumed.add((ref["capture_id"], ref["entry_key"]))
+                shares = [
+                    root_share[(ref["capture_id"], ref["entry_key"])]
+                    for ref in refs
+                ]
+                widest = max(refs, key=lambda ref: root_share[(ref["capture_id"], ref["entry_key"])])
+                areas.append({
+                    "area_key": derive_area_key([ref["entry_key"] for ref in refs]),
+                    "anchor": entry_display_name(widest["entry_key"]),
+                    "target_story": split_story_entry_key(widest["entry_key"])[0],
+                    "marginal_share_pct": sum(shares) / len(shares),
+                    "disposition": "discover",
+                    "source_refs": refs,
+                    "recurrence": {
+                        "kind": "root-substitution",
+                        "roots": {
+                            ref["capture_id"]: entry_display_name(ref["entry_key"])
+                            for ref in refs
+                        },
+                        "evidence": (
+                            "the greedy frontier rooted the same samples at "
+                            "different symbols per capture; each root's "
+                            "inventory contains the other at >= "
+                            f"{ROOT_SUBSTITUTION_MIN_RATIO:g} of its share"
+                        ),
+                    },
+                    "notes": "scaffold paired a parent/child root substitution; verify the pairing",
+                })
+                continue
         if set(per_capture) == all_captures:
             paired = min(len(entries) for entries in per_capture.values())
             for rank in range(paired):
@@ -3680,12 +4231,16 @@ def cmd_profile_scaffold(args):
             absent = sorted(all_captures - set(per_capture))
             for capture_id in capture_order:
                 for entry_key in per_capture.get(capture_id, []):
+                    if (capture_id, entry_key) in consumed:
+                        continue
                     source_exclusions.append({
                         "capture_id": capture_id,
                         "entry_key": entry_key,
                         "category": "not-recurrent",
                         "evidence": (
                             "absent from capture(s): " + ", ".join(absent)
+                            + "; no other-root entry there holds the same "
+                            "samples (root-substitution check)"
                         ),
                     })
 
@@ -3973,7 +4528,8 @@ def cmd_advance(args):
             gate_challenge_record = (
                 "sizing",
                 validate_gate_challenges(
-                    args, gate="sizing", artifact_digests=[evidence_digest]
+                    args, gate="sizing", artifact_digests=[evidence_digest],
+                    campaign_dir=ledger.dir,
                 ),
             )
         elif test_legacy and args.ceiling is not None and args.evidence:
@@ -4062,7 +4618,8 @@ def cmd_advance(args):
             gate_challenge_record = (
                 "candidate",
                 validate_gate_challenges(
-                    args, gate="candidate", artifact_digests=candidate_digests
+                    args, gate="candidate", artifact_digests=candidate_digests,
+                    campaign_dir=ledger.dir,
                 ),
             )
     if src == "review" and dst == "implementing":
@@ -4264,6 +4821,7 @@ def cmd_decompose(args):
     decomposition_challenges = validate_gate_challenges(
         args,
         gate="decomposition",
+        campaign_dir=ledger.dir,
         artifact_digests=[
             sha256_file(args.children),
             *[
@@ -4676,6 +5234,7 @@ def cmd_exhaust(args):
     exhaustion_challenges = validate_gate_challenges(
         args,
         gate="exhaustion",
+        campaign_dir=ledger.dir,
         artifact_digests=[
             current_digest,
             skeptic_review.get("report_sha256"),
@@ -5728,6 +6287,7 @@ def cmd_checkpoint(args):
             args,
             gate="checkpoint",
             artifact_digests=[evidence_sha256, manifest_sha256],
+            campaign_dir=ledger.dir,
         )
     elif test_bypass_active():
         delta, ci_low, ci_high = args.delta, args.ci_low, args.ci_high
@@ -5950,6 +6510,54 @@ def cmd_status(args):
     return 0
 
 
+def capture_artifact_digests(story_frontiers):
+    """Recompute per-story artifact digests and the combined capture digest
+    exactly as `load_capture_summaries` records them."""
+    story_digests = []
+    per_story = []
+    for item in story_frontiers or []:
+        if not isinstance(item, dict):
+            raise CampaignError("story_frontiers row is malformed")
+        digest_value = sha256_file(item.get("artifact"))
+        per_story.append((item.get("story"), digest_value))
+        story_digests.append(digest_value)
+    combined = hashlib.sha256("".join(story_digests).encode()).hexdigest()
+    return per_story, combined
+
+
+def verify_capture_provenance(capture):
+    """Return audit problems for one recorded capture provenance row.
+
+    The producer records `story_frontiers[].artifact` (one analyzer artifact
+    per story, each with its digest) plus the combined `artifact_sha256`;
+    older rows carried a single `artifact` path. Both shapes are verified.
+    """
+    problems = []
+    if not isinstance(capture, dict):
+        return ["capture provenance row is malformed"]
+    story_frontiers = capture.get("story_frontiers")
+    if isinstance(story_frontiers, list) and story_frontiers:
+        try:
+            per_story, combined = capture_artifact_digests(story_frontiers)
+        except CampaignError as exc:
+            return [str(exc)]
+        for item, (story, digest_value) in zip(story_frontiers, per_story):
+            expected = item.get("artifact_sha256")
+            if expected and expected != digest_value:
+                problems.append(f"story {story!r} analyzer artifact changed")
+        if combined != capture.get("artifact_sha256"):
+            problems.append("combined analyzer artifact digest changed")
+        return problems
+    if capture.get("artifact"):
+        try:
+            if sha256_file(capture.get("artifact")) != capture.get("artifact_sha256"):
+                problems.append("analyzer artifact changed")
+        except CampaignError as exc:
+            problems.append(str(exc))
+        return problems
+    return ["capture provenance names no analyzer artifacts"]
+
+
 def cmd_audit(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     problems = []
@@ -5977,11 +6585,15 @@ def cmd_audit(args):
             except CampaignError as exc:
                 problems.append(str(exc))
         for capture in profile.get("capture_provenance", []):
+            problems.extend(
+                f"profile {profile['id']} capture {capture.get('capture_id')}: {problem}"
+                for problem in verify_capture_provenance(capture)
+            )
+        lens = profile.get("lens")
+        if isinstance(lens, dict) and lens.get("path"):
             try:
-                if sha256_file(capture.get("artifact")) != capture.get("artifact_sha256"):
-                    problems.append(
-                        f"profile {profile['id']} capture {capture.get('capture_id')} changed"
-                    )
+                if sha256_file(lens["path"]) != lens.get("sha256"):
+                    problems.append(f"profile {profile['id']} lens changed")
             except CampaignError as exc:
                 problems.append(str(exc))
     if not test_bypass_active():
@@ -6110,11 +6722,16 @@ def cmd_audit(args):
                 if isinstance(digest_value, str)
                 and re.fullmatch(r"sha256:[0-9a-f]{64}", digest_value)
             }
+            namespace = {}
+            for role in GATE_CHALLENGE_ROLES:
+                namespace[f"gate_{role}"] = by_role[role]["path"]
+                copy_record = by_role[role].get("transcript_copy")
+                if isinstance(copy_record, dict) and copy_record.get("path"):
+                    if sha256_file(copy_record["path"]) != copy_record.get("sha256"):
+                        raise CampaignError(f"{role} transcript copy changed")
+                    namespace[f"gate_{role}_transcript"] = copy_record["path"]
             verified = validate_gate_challenges(
-                argparse.Namespace(**{
-                    f"gate_{role}": by_role[role]["path"]
-                    for role in GATE_CHALLENGE_ROLES
-                }),
+                argparse.Namespace(**namespace),
                 gate=challenge.get("gate"),
                 artifact_digests=sorted(expected),
             )
@@ -6203,6 +6820,19 @@ def add_gate_challenge_arguments(parser):
     parser.add_argument(
         "--gate-adversary",
         help="PASS gate-challenge JSON from the independent adversary task",
+    )
+    parser.add_argument(
+        "--gate-skeptic-transcript", default=None,
+        help=(
+            "The skeptic task's transcript/notes file; copied into "
+            "<campaign>/reviews/transcripts/ so the audit trail can be opened "
+            "on the ledger host (required unless transcript_ref already "
+            "resolves there)"
+        ),
+    )
+    parser.add_argument(
+        "--gate-adversary-transcript", default=None,
+        help="The adversary task's transcript/notes file (see --gate-skeptic-transcript)",
     )
 
 
@@ -6319,8 +6949,50 @@ def build_parser():
     )
     p.add_argument("--artifacts", default=None, help="Summary/artifact paths")
     p.add_argument("--notes", default=None)
+    p.add_argument(
+        "--lens", default=None,
+        help=(
+            "story_lens.py output for the same captures; recorded with the "
+            "profile and rendered in STATUS/export (phases, triggers, "
+            "ownership, nested hotspots)"
+        ),
+    )
+    p.add_argument(
+        "--allow-uncalibrated", action="store_true",
+        help=(
+            "Record a discovery-only profile before A/A calibration exists; "
+            "floors stay placeholders and sizing is refused until calibrate runs"
+        ),
+    )
     add_gate_challenge_arguments(p)
     p.set_defaults(func=cmd_profile)
+
+    p = sub.add_parser(
+        "profile-retract",
+        help=(
+            "Withdraw a profile import whose reconciliation was wrong before any "
+            "of its discoveries advanced; records the retraction and frees the "
+            "discoveries for a corrected import under a new id"
+        ),
+    )
+    p.add_argument("--id", required=True, help="Profile id to retract")
+    p.add_argument("--note", required=True, help="Why the import is withdrawn")
+    p.set_defaults(func=cmd_profile_retract)
+
+    p = sub.add_parser(
+        "profile-review-scaffold",
+        help=(
+            "Emit the profile-gate review report skeleton (per-check evidence "
+            "bound to the reconciliation, captures and lens digests) for one "
+            "independent reviewer role"
+        ),
+    )
+    p.add_argument("--role", required=True, choices=REVIEW_ROLES)
+    p.add_argument("--areas", required=True, help="Reconciliation JSON to be imported")
+    p.add_argument("--capture-summaries", required=True)
+    p.add_argument("--lens", default=None, help="story_lens.py output (recommended)")
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_profile_review_scaffold)
 
     p = sub.add_parser(
         "profile-scaffold",

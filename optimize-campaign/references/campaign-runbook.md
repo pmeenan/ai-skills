@@ -228,22 +228,47 @@ benchmark and metric model, report `interval_kind: exact-scored` and
 100-nominal-sample gate in every story, and carry unique raw capture and
 artifact provenance.
 
-Generate, review, and import the reconciliation:
+Run the lens over both captures, then generate, review, and import the
+reconciliation:
 
 ```bash
+python3 .agents/skills/optimize-campaign/scripts/story_lens.py \
+  --capture-dir <capture-1-results> --capture-dir <capture-2-results> \
+  --out <lens.json> --markdown <lens.md>
 python3 .agents/skills/optimize-campaign/scripts/campaign.py profile-scaffold \
   --capture-summaries <captures.json> --out <reconciliation.json>
+# two independent reviewers, each from its own scaffold:
+python3 .agents/skills/optimize-campaign/scripts/campaign.py profile-review-scaffold \
+  --role skeptic --areas <reconciliation.json> \
+  --capture-summaries <captures.json> --lens <lens.json> --out <profile-skeptic.json>
+python3 .agents/skills/optimize-campaign/scripts/campaign.py profile-review-scaffold \
+  --role adversary --areas <reconciliation.json> \
+  --capture-summaries <captures.json> --lens <lens.json> --out <profile-adversary.json>
 python3 .agents/skills/optimize-campaign/scripts/campaign.py profile \
   --id <profile-id> --sha <campaign-tip> \
   --areas <reconciliation.json> --capture-summaries <captures.json> \
+  --lens <lens.json> \
   --enable-features <campaign-feature> \
   --gate-skeptic <profile-skeptic.json> \
-  --gate-adversary <profile-adversary.json>
+  --gate-skeptic-transcript <skeptic-transcript> \
+  --gate-adversary <profile-adversary.json> \
+  --gate-adversary-transcript <adversary-transcript>
 ```
+
+`profile` refuses to import before `calibrate` has run (`--allow-uncalibrated`
+records a placeholder-floor discovery profile and STATUS says so). The lens
+is stored with the profile and rendered in STATUS and the export: per-story
+addressable/hand-off/overhead shares, forced layout by JS entry API, and the
+nested hotspots underneath each area (`promoted` ones get their own
+decomposition rows). A wrong import is withdrawn with
+`campaign.py profile-retract --id <profile-id> --note ...` while its
+discoveries are untouched, then re-imported under a new id.
 
 Profile entries are broad discovery areas. Nested stack shares overlap; never
 add them. Exclude idle/wait and payload-only shells. Keep already-landed work
-visible until a follow-on profile proves its residual state.
+visible until a follow-on profile proves its residual state. The scaffold
+pairs parent/child root substitutions across captures; check every remaining
+`not-recurrent` exclusion against the lens before accepting it.
 
 ### 2. Decompose and qualify an opportunity
 
@@ -285,6 +310,15 @@ python3 .agents/skills/optimize-campaign/scripts/campaign.py decompose \
 
 Reuse stable `component/strategy` keys. Do not retry landed, rejected, or
 reverted mechanisms without genuinely contradictory evidence.
+
+Under a review hold this step ends the campaign's discovery milestone: the
+**vetted candidate list** ([vetted-candidates.md](vetted-candidates.md)).
+Work story area by story area until every story's addressable share above
+floor is closed by a candidate packet, a counted `no-qualifying-mechanism`,
+a `mandatory` invariant or an `out-of-scope` hand-off row; export after each
+batch of areas with `export-candidates` so a human can audit progress, and
+stop at the hold. Counter probes and target-story cycle profiles are in
+scope; oracle builds, sizing arms, A/B blocks and Pinpoint are not.
 
 ### 3. Instrument and size one mechanism
 

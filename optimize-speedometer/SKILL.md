@@ -44,7 +44,11 @@ python3 .agents/skills/optimize-campaign/scripts/campaign.py init \
 ```
 
 Then two separately timed A/A sessions and `campaign.py calibrate`; the
-per-story MDEs it records set the qualification floors for the whole campaign.
+per-story MDEs it records set the qualification floors for the whole campaign,
+and `campaign.py profile` refuses to import before they exist. After the two
+profile captures, run `story_lens.py` on both and import it with
+`profile --lens`; the Speedometer-specific reading of the lens is in
+`references/speedometer3.md`.
 
 Use `out/Default` only for functional characterization. Authoritative score
 or mechanism evidence must satisfy the release-role build and calibrated

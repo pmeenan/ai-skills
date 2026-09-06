@@ -31,14 +31,37 @@ Procedure:
    async share, and whether the async phase was CPU-busy or waiting. Record
    stories whose idle fraction is material; those need the latency route, not
    CPU work removal.
-6. Generate the reconciliation with `campaign.py profile-scaffold`. Review
+6. Run the lens on both captures and read it before the frontier:
+   `story_lens.py --capture-dir <capture-1> --capture-dir <capture-2>
+   --out <lens.json> --markdown <lens.md>`. Per story it gives triggers
+   (forced style/layout by JS entry API, frame update, hit-test lifecycle),
+   lifecycle phases, Blink-addressable versus V8/JS hand-off share, profiler
+   overhead, and the hotspots nested inside each frontier entry with
+   `promoted` marking a nested hotspot of a different phase above the floor.
+   Report the stories where hand-off exceeds addressable share and the
+   worst overhead share; they bound what this campaign can find.
+7. Generate the reconciliation with `campaign.py profile-scaffold`. Review
    every disposition. Areas are story-qualified; the same symbol hot in two
-   stories is two areas. Carry each entry's `platform_sensitivity` flag into
-   the reconciliation notes: rendering-backend, font-shaping and
+   stories is two areas. The scaffold pairs an entry rooted at a parent in one
+   capture with its child root in the other (`recurrence: root-substitution`)
+   when each root's inventory contains the other; check each remaining
+   `not-recurrent` exclusion against the lens nested view before accepting
+   it. Carry each entry's `platform_sensitivity` flag into the reconciliation
+   notes, and set portability from the nested work (a portable lifecycle
+   parent can hold font-shaping work): rendering-backend, font-shaping and
    process-plumbing entries are Pinpoint-first leads, not local candidates.
    Preserve every recurrent source entry; do not combine nested shares or
    remove already-landed residual areas.
-7. Import with `campaign.py profile`. Do not hand-edit ledger state.
+8. Hand the two gate reviewers `campaign.py profile-review-scaffold --role
+   <skeptic|adversary> --areas <reconciliation> --capture-summaries
+   <captures> --lens <lens.json> --out <report>`; each check needs an
+   artifact and a number, and the reviewer's transcript file is passed at
+   import as `--gate-<role>-transcript`.
+9. Import with `campaign.py profile ... --lens <lens.json>`. The import
+   refuses to run before `campaign.py calibrate` unless
+   `--allow-uncalibrated` is given, which the ledger records. Do not
+   hand-edit ledger state; a wrong import is withdrawn with
+   `campaign.py profile-retract` and re-imported under a new id.
 
 Return only:
 
@@ -59,6 +82,12 @@ Return only:
   "stories_with_material_idle_async":["..."],
   "platform_sensitive_entries":0,
   "frontier_count":0,
+  "lens":"absolute path",
+  "root_substitutions_paired":0,
+  "source_exclusions":0,
+  "stories_handoff_dominated":["..."],
+  "worst_overhead_pct":0.0,
+  "calibration_recorded":true,
   "failure":""
 }
 ```
