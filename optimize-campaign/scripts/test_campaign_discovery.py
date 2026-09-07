@@ -452,6 +452,57 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             run([row("A", "mandatory", wrapper_of=2), row("B", "mandatory", wrapper_of=1)],
                 {1: 5.0, 2: 5.0})
 
+    def test_packets_close_only_the_work_they_measured(self):
+        story_dir = self.dir / "results" / "analysis" / "stories" / STORY
+        story_dir.mkdir(parents=True)
+        artifact = story_dir / "candidate_frontier.json"
+        artifact.write_text("{}")
+        (story_dir / "profile.collapsed").write_text(
+            "main;Layout;ShapeText;HarfBuzz 60\n"
+            "main;Layout;ShapeText 20\n"
+            "main;Layout;OutOfFlow 30\n"
+            "main;Style;Match 40\n"
+        )
+        profile = {"id": "p", "capture_provenance": [{
+            "capture_id": "c1",
+            "story_frontiers": [{"story": STORY, "artifact": str(artifact)}],
+        }]}
+
+        def packet(name, symbol):
+            path = self.dir / "evidence" / f"{name}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "schema_version": 1, "kind": "redundancy-evidence", "site": name,
+                "target_story": STORY, "repetitions": 2, "calls_total": 10,
+                "calls_per_repetition_mean": 5.0, "applicable_fraction": 0.01,
+                "repeat_fraction": 0.0, "distinct_inputs_mean": 5.0,
+                "distinct_overflow": False, "measured_avoidable_fraction_upper": 0.01,
+                "sources": [{"path": "/nowhere/probe.log", "sha256": "0" * 64}],
+            }
+            if symbol:
+                data["probe_symbol"] = symbol
+            path.write_text(json.dumps(data))
+            return {"path": f"evidence/{name}.json", "sha256": campaign.sha256_file(path)}
+
+        shape = packet("shape", "ShapeText")
+        rows = [
+            {"anchor": "HarfBuzz", "disposition": "mandatory", "redundancy_evidence": shape},
+            {"anchor": "Layout", "disposition": "mandatory", "redundancy_evidence": shape},
+        ]
+        # A descendant of the probe and the probe's own caller both qualify.
+        campaign.enforce_packet_relevance(rows, [(1, rows[0]), (2, rows[1])], profile, STORY, self.dir)
+        self.assertEqual(1.0, rows[0]["packet_relevance"])
+        self.assertEqual(1.0, rows[1]["packet_relevance"])
+        # An unrelated phase does not.
+        unrelated = [{"anchor": "Match", "disposition": "mandatory", "redundancy_evidence": shape}]
+        with self.assertRaisesRegex(campaign.CampaignError, "shares 0% of its samples"):
+            campaign.enforce_packet_relevance(unrelated, [(1, unrelated[0])], profile, STORY, self.dir)
+        # A packet without probe_symbol cannot be bound above the floor.
+        blind = packet("blind", None)
+        rows = [{"anchor": "HarfBuzz", "disposition": "mandatory", "redundancy_evidence": blind}]
+        with self.assertRaisesRegex(campaign.CampaignError, "probe_symbol"):
+            campaign.enforce_packet_relevance(rows, [(1, rows[0])], profile, STORY, self.dir)
+
     def test_novel_rows_name_the_existing_mechanism(self):
         item = {"anchor": "blink::InlineNode::PrepareLayout", "disposition": "novel"}
         with self.assertRaisesRegex(campaign.CampaignError, "existing_mechanism"):

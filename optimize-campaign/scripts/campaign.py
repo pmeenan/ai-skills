@@ -2805,6 +2805,97 @@ def sample_identity(collapsed_files, pairs):
     return totals
 
 
+PACKET_RELEVANCE = 0.8
+
+
+def symbol_identity(collapsed_files, pairs):
+    """For each (row_anchor, probe_symbol_prefix) pair: weight of samples
+    carrying the anchor, weight carrying a frame that starts with the
+    prefix, and the weight carrying both."""
+    anchors = {pair[0] for pair in pairs}
+    prefixes = {pair[1] for pair in pairs}
+    anchor_w = {a: 0.0 for a in anchors}
+    prefix_w = {pf: 0.0 for pf in prefixes}
+    both_w = {pair: 0.0 for pair in pairs}
+    for path in collapsed_files:
+        with open(path, errors="replace") as handle:
+            for line in handle:
+                stack, _, weight = line.rstrip("\n").rpartition(" ")
+                try:
+                    weight = float(weight)
+                except ValueError:
+                    continue
+                frames = stack.split(";")
+                present_anchors = set(frames) & anchors
+                present_prefixes = {
+                    pf for pf in prefixes if any(fr.startswith(pf) for fr in frames)
+                }
+                for a in present_anchors:
+                    anchor_w[a] += weight
+                for pf in present_prefixes:
+                    prefix_w[pf] += weight
+                for pair in pairs:
+                    if pair[0] in present_anchors and pair[1] in present_prefixes:
+                        both_w[pair] += weight
+    return anchor_w, prefix_w, both_w
+
+
+def enforce_packet_relevance(paths, bound_rows, profile, story, campaign_dir):
+    """A packet closes only the work it measured.
+
+    Every row that binds a redundancy packet names, through the packet's
+    `probe_symbol`, the function the counter sits in. In the story's stacks
+    either most of the row's samples carry that function (the row is the
+    probe's work or a descendant of it) or most of the function's samples
+    carry the row's anchor (the probe sits under this row). A packet from an
+    unrelated phase bounds nothing about this row.
+    """
+    import redundancy_evidence
+    pairs = {}
+    for index, item in bound_rows:
+        ref = item.get("redundancy_evidence") or {}
+        packet_path = pathlib.Path(ref.get("path", ""))
+        if not packet_path.is_absolute():
+            packet_path = pathlib.Path(campaign_dir) / packet_path
+        try:
+            packet = redundancy_evidence.load_packet(packet_path)
+        except ValueError as exc:
+            raise CampaignError(str(exc)) from exc
+        symbol = packet.get("probe_symbol")
+        if not isinstance(symbol, str) or len(symbol.strip()) < 8:
+            raise CampaignError(
+                f"Path {index} ({item['anchor'][:80]!r}) binds packet "
+                f"{ref.get('path')!r}, which does not record `probe_symbol` (the "
+                "function the counter sits in). Regenerate it with "
+                "redundancy_evidence.py --symbol <frame prefix> so the gate can "
+                "check the packet measured this row's work."
+            )
+        pairs[(item["anchor"], symbol.strip())] = (index, item, ref.get("path"))
+    if not pairs:
+        return
+    files = collapsed_stack_files(profile, story)
+    if not files:
+        raise CampaignError(
+            f"packet relevance needs the story's profile.collapsed beside the "
+            f"analyzer artifacts of profile {profile.get('id')!r} for {story!r}"
+        )
+    anchor_w, prefix_w, both_w = symbol_identity(files, set(pairs))
+    for pair, (index, item, packet_path) in pairs.items():
+        row_side = both_w[pair] / anchor_w[pair[0]] if anchor_w[pair[0]] else 0.0
+        probe_side = both_w[pair] / prefix_w[pair[1]] if prefix_w[pair[1]] else 0.0
+        relevance = max(row_side, probe_side)
+        if relevance < PACKET_RELEVANCE:
+            raise CampaignError(
+                f"Path {index} ({item['anchor'][:80]!r}) binds packet "
+                f"{packet_path!r} whose probe {pair[1]!r} shares "
+                f"{relevance:.0%} of its samples with this row in the {story!r} "
+                "stacks; a packet closes only the work it measured. Bind a "
+                "packet from a probe on this row's work, or name a counted "
+                "descendant with wrapper_of."
+            )
+        item["packet_relevance"] = round(relevance, 4)
+
+
 def enforce_covered_by_sample_identity(paths, owner_anchors, profile, story):
     """A covered-by row is the owner's samples seen at another frame.
 
@@ -5557,8 +5648,19 @@ def cmd_decompose(args):
             f"accounting reference: {preview}"
         )
     if not test_bypass_active():
-        enforce_measured_dispositions(
+        bound = enforce_measured_dispositions(
             result["paths"], story_shares, ledger.data["config"], floor,
+            parent.get("target_story"), ledger.dir,
+        )
+        relevance_rows = [
+            (index, item) for index, item in enumerate(result["paths"], 1)
+            if index in bound or (
+                item["disposition"] in ("novel", "known")
+                and item.get("redundancy_evidence")
+            )
+        ]
+        enforce_packet_relevance(
+            result["paths"], relevance_rows, source_profile,
             parent.get("target_story"), ledger.dir,
         )
     wrongly_below_floor = [

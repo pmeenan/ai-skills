@@ -103,7 +103,12 @@ def reduce_rows(rows: list[dict], site: str, target_story: str) -> dict:
     }
 
 
-def build_packet(logs: list[pathlib.Path], site: str, target_story: str) -> dict:
+def build_packet(logs: list[pathlib.Path], site: str, target_story: str,
+                 probe_symbol: str | None = None, patch: pathlib.Path | None = None) -> dict:
+    """`probe_symbol` is the demangled function the RedundancyCounter sits in
+    (a frame prefix as it appears in profile.collapsed); the gate uses it to
+    check that the packet measured the row it is bound to. `patch` is the
+    saved instrumentation diff the twin was built from."""
     rows = []
     sources = []
     for path in logs:
@@ -112,13 +117,21 @@ def build_packet(logs: list[pathlib.Path], site: str, target_story: str) -> dict
         rows.extend(parse_rows(path))
         sources.append({"path": str(path.resolve()), "sha256": sha256_file(path)})
     summary = reduce_rows(rows, site, target_story)
-    return {
+    packet = {
         "schema_version": SCHEMA_VERSION,
         "kind": "redundancy-evidence",
         "sources": sources,
         "rows_total": len(rows),
         **summary,
     }
+    if probe_symbol:
+        packet["probe_symbol"] = probe_symbol
+    if patch is not None:
+        if not patch.is_file():
+            raise RedundancyError(f"probe patch not found: {patch}")
+        packet["patch"] = str(patch)
+        packet["patch_sha256"] = sha256_file(patch)
+    return packet
 
 
 def load_packet(path: pathlib.Path) -> dict:
@@ -150,9 +163,17 @@ def main(argv=None) -> int:
     parser.add_argument("--target-story", required=True)
     parser.add_argument("--browser-log", type=pathlib.Path, action="append", required=True)
     parser.add_argument("--out", type=pathlib.Path, required=True)
+    parser.add_argument(
+        "--symbol", required=True,
+        help="demangled function the counter sits in, as a profile.collapsed frame prefix "
+             "(e.g. 'blink::InlineNode::ShapeText('); the gate checks it shares samples with the row it closes",
+    )
+    parser.add_argument("--patch", type=pathlib.Path, default=None,
+                        help="saved instrumentation diff the twin was built from (recorded with its sha256)")
     args = parser.parse_args(argv)
     try:
-        packet = build_packet(args.browser_log, args.site, args.target_story)
+        packet = build_packet(args.browser_log, args.site, args.target_story,
+                              probe_symbol=args.symbol, patch=args.patch)
     except RedundancyError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

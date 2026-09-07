@@ -59,8 +59,18 @@ Run the target story once through the capture runner, then reduce:
 ```bash
 python3 .agents/skills/optimize-campaign/scripts/redundancy_evidence.py \
   --site style/resolve-style --target-story TodoMVC-React \
-  --browser-log <cb browser log> --out <campaign>/proposals/<key>.redundancy.json
+  --symbol 'blink::StyleResolver::ResolveStyle(' \
+  --patch <campaign>/evidence/probes-<sha>.patch \
+  --browser-log <cb browser log> --out <campaign>/evidence/<key>.redundancy.json
 ```
+
+`--symbol` is the demangled function the counter sits in, written as a
+frame prefix from `profile.collapsed`; `decompose` refuses a packet bound
+to a row whose samples do not share that function (a packet closes only
+the work it measured). `--patch` records the instrumentation diff and its
+digest. `applicable` in the probe means "this call could have been skipped
+under the hypothesis"; a packet whose predicate means "this call was
+necessary" bounds nothing and cannot close a row.
 
 The packet reports calls per repetition, `applicable_fraction`,
 `repeat_fraction` and whether the distinct-input set overflowed. Cite it in

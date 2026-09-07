@@ -117,7 +117,11 @@ the hypothesis says are unchanged (text hash, constraint space, font, sheet
 list) and `applicable` states the condition under which the work could be
 skipped. When the arithmetic does not clear the floor the row is a `novel`
 candidate at that fraction, or the probe is re-keyed; it is never closed by
-prose. Pure wrappers of a counted descendant use `wrapper_of` instead of
+prose. A packet closes only the work it measured: it records the probed
+function as `probe_symbol`, and `decompose` refuses it on a row whose
+samples do not share that function in the story's stacks (80%, in either
+direction). One low-fraction packet bound to every row of an area is
+refused row by row. Pure wrappers of a counted descendant use `wrapper_of` instead of
 their own packet; every hop of a `wrapper_of` chain must carry at least 80%
 of the share of the row that started the chain (a run of gradually smaller
 rows is not descent), and chains are at most four hops; wrappers of a

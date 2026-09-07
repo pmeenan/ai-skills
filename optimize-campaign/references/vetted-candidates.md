@@ -38,7 +38,7 @@ condition, not a value.
 | `investigation_layer` | 1–4 (1 and 2 need the redundancy packet) |
 | `site` | file:line of the decision that makes the work run |
 | `invariant_description` | "condition C holds in X of Y calls per step and permits removing exactly W while preserving B" |
-| `redundancy_evidence` | `{path, sha256}` of the `redundancy_evidence.py` packet: calls per step, applicable fraction, repeat fraction; the probe key names the inputs the hypothesis says are unchanged and `applicable` states when the work could be skipped |
+| `redundancy_evidence` | `{path, sha256}` of the `redundancy_evidence.py` packet: calls per step, applicable fraction, repeat fraction, `probe_symbol` (the probed function, which must share samples with the row) and the probe patch digest; the probe key names the inputs the hypothesis says are unchanged and `applicable` states when the work could be skipped |
 | `existing_mechanism` | the Chromium code that already avoids this work (symbol or file) and the count showing it does not here, or "none" with the count |
 | `story_profile_share_pct` | inclusive share of the removed work in the target story, with its self share stated separately |
 | `estimated_avoidable_fraction` | ≤ the measured applicable/repeat fraction |

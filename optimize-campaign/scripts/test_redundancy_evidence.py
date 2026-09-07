@@ -29,7 +29,7 @@ class RedundancyEvidenceTest(unittest.TestCase):
             log = pathlib.Path(tmp) / "browser.chromium.log"
             log.write_text("noise line\n" + "".join(lines))
             out = pathlib.Path(tmp) / "packet.json"
-            rc = re_.main(["--site", site, "--target-story", story,
+            rc = re_.main(["--site", site, "--symbol", "blink::Probe(", "--target-story", story,
                            "--browser-log", str(log), "--out", str(out)])
             return rc, (json.loads(out.read_text()) if out.exists() else None)
 
