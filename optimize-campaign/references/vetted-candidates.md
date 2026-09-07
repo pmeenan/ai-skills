@@ -75,7 +75,11 @@ condition, not a value.
    what it misses; "cache X" without that is a duplicate, not a candidate.
 9. Every reviewed artifact was imported with the digest the reviewers
    attested (`reviews/gate-report-registry.json`); no report or transcript was
-   edited after the review.
+   edited after the review, and the transcripts are reviewer work, not
+   orchestrator summaries.
+10. Every `covered-by` row shares its samples with its owner in the profile
+    stacks (`covered_by_sample_identity` ≥ 0.8 on the row); a mechanism does
+    not cover a phase it never appears in.
 
 ## Coverage ledger
 

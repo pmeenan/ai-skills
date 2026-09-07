@@ -74,7 +74,7 @@ Each investigated opportunity must be recorded as an investigation proposal cont
 | --- | --- | --- |
 | `novel` | one new invariant can remove the work (must pass Adversarial Qualification) | stable `component/strategy` key, 4-layer proposal, and primary work reference |
 | `known` | the exact mechanism already exists in the ledger | existing mechanism key and matching work references |
-| `covered-by` | the samples are literally the same samples as another row | owning mechanism key and overlap/sample identity |
+| `covered-by` | the samples are literally the same samples as another row | owning mechanism key; `decompose` checks the story's `profile.collapsed`: at least 80% of the samples carrying this row's anchor must also carry the owner's anchor, so a caller holding other work or a sibling phase cannot be covered |
 | `mandatory` | the per-trigger amount of work is invariant (each call does new work) | at/above the story floor: a bound redundancy packet from the target story with `story share × supported avoidable fraction < floor`, or `wrapper_of` a counted row; below the floor: the invariant and source evidence. A spec clause names the trigger, never the amount |
 | `no-qualifying-mechanism` | a bounded search found no invariant that removes enough work | the investigation packet (revision, hypotheses, falsifications, budget, stop reason) **and**, at/above the floor, the same bound packet and arithmetic as `mandatory` |
 | `out-of-scope` | the work is not Chromium-owned or not within the campaign goal; a V8/JS **hand-off** row names the owner and quotes the lens numbers so exhaustion is scoped honestly | ownership/critical-path evidence, lens numbers |
@@ -128,4 +128,8 @@ registered under its reviewer task id with the digests it attested
 (`reviews/gate-report-registry.json`); the same task id attesting a
 different artifact set, or a different opportunity, is refused. Changing the
 children file after the reviewers ran means running both reviewers again
-with new task ids and transcripts.
+with new task ids and transcripts. A transcript is the reviewer's own work:
+the file the report names, at least 4000 bytes, mentioning every attested
+digest and every check. The orchestrator never writes a reviewer report or
+transcript; a report it authored is a forged review whatever the gate says,
+and the audit reads the transcripts.

@@ -487,6 +487,60 @@ def bind_reviewer_transcript(args, role, report_transcript, campaign_dir):
     )
 
 
+TRANSCRIPT_MIN_BYTES = 4000
+
+
+def require_substantive_transcript(role, gate, report, transcript_ref, transcript_path, *, supplied=None):
+    """A reviewer transcript is the audit trail of a review that happened.
+
+    It has to be the file the report names (a transcript from another review
+    cannot be bound in its place), long enough to hold the reviewer's work,
+    and it has to mention every digest the report attests and every check it
+    answers. This is a floor, not proof of independence: a report and
+    transcript the orchestrator wrote itself are still a violation of the
+    gate-review playbook, and the registry keeps the trail for the audit.
+    """
+    ref_name = pathlib.Path(transcript_ref.strip().removeprefix("file://")).name
+    if supplied and pathlib.Path(supplied).name != ref_name:
+        raise CampaignError(
+            f"{gate} {role} report names transcript {ref_name!r} but "
+            f"--gate-{role}-transcript supplied {pathlib.Path(supplied).name!r}; "
+            "bind the transcript the report was written from"
+        )
+    try:
+        text = pathlib.Path(transcript_path).read_text(errors="replace")
+    except OSError as exc:
+        raise CampaignError(f"{gate} {role} transcript unreadable: {exc}") from exc
+    if len(text.encode()) < TRANSCRIPT_MIN_BYTES:
+        raise CampaignError(
+            f"{gate} {role} transcript {ref_name!r} is {len(text.encode())} bytes; a "
+            f"review transcript carries the reviewer's work (at least "
+            f"{TRANSCRIPT_MIN_BYTES} bytes: artifacts opened, numbers read, "
+            "checks answered), not a summary of the verdict"
+        )
+    missing_digests = [
+        value for value in (report.get("artifact_digests_checked") or [])
+        if str(value).removeprefix("sha256:")[:12] not in text
+    ]
+    if missing_digests:
+        raise CampaignError(
+            f"{gate} {role} transcript {ref_name!r} never mentions "
+            f"{len(missing_digests)} of the digests the report attests "
+            f"(first: {str(missing_digests[0])[:19]}); a reviewer who computed "
+            "them wrote them down"
+        )
+    if gate_uses_checks(gate):
+        missing_checks = [
+            name for name in (report.get("checks") or {}) if name not in text
+        ]
+        if missing_checks:
+            raise CampaignError(
+                f"{gate} {role} transcript {ref_name!r} does not show the work "
+                f"for check(s) {', '.join(missing_checks[:4])}; each check "
+                "names what was opened and what was read"
+            )
+
+
 def validate_checked_gate_report(report, role, gate):
     """Per-check evidence rules for gates whose reviews carry named checks."""
     checks_by_role, _guidance, scaffold_command = CHECKED_GATES[gate]
@@ -591,6 +645,12 @@ def validate_gate_challenges(
         transcript, transcript_copy = bind_reviewer_transcript(
             args, role, transcript, campaign_dir
         )
+        if not test_bypass_active() or getattr(args, "check_transcripts", False):
+            require_substantive_transcript(
+                role, gate, report, transcript,
+                transcript_copy["path"] if transcript_copy else transcript,
+                supplied=getattr(args, f"gate_{role}_transcript", None),
+            )
         record = {
             "role": role,
             "path": str(path.resolve()),
@@ -2701,6 +2761,100 @@ def enforce_measured_dispositions(
             )
         item["measured_bound"] = {"wrapper_chain": seen}
     return bound
+
+
+COVERED_BY_SAMPLE_IDENTITY = 0.8
+
+
+def collapsed_stack_files(profile, story):
+    """profile.collapsed files for one story, found beside the analyzer
+    artifacts the profile's capture provenance recorded."""
+    files = []
+    for capture in profile.get("capture_provenance", []) or []:
+        for item in capture.get("story_frontiers", []) or []:
+            if item.get("story") != story or not item.get("artifact"):
+                continue
+            candidate = pathlib.Path(item["artifact"]).parent / "profile.collapsed"
+            if candidate.is_file():
+                files.append(candidate)
+    return files
+
+
+def sample_identity(collapsed_files, pairs):
+    """For each (row_anchor, owner_anchor) pair, the sample weight carrying
+    row_anchor and the part of it that also carries owner_anchor."""
+    totals = {pair: [0.0, 0.0] for pair in pairs}
+    anchors = {anchor for pair in pairs for anchor in pair}
+    for path in collapsed_files:
+        with open(path, errors="replace") as handle:
+            for line in handle:
+                stack, _, weight = line.rstrip("\n").rpartition(" ")
+                try:
+                    weight = float(weight)
+                except ValueError:
+                    continue
+                frames = set(stack.split(";"))
+                present = frames & anchors
+                if not present:
+                    continue
+                for pair in pairs:
+                    if pair[0] in present:
+                        totals[pair][0] += weight
+                        if pair[1] in present:
+                            totals[pair][1] += weight
+    return totals
+
+
+def enforce_covered_by_sample_identity(paths, owner_anchors, profile, story):
+    """A covered-by row is the owner's samples seen at another frame.
+
+    The profile's collapsed stacks decide: of the samples that carry the
+    covered row's anchor, at least COVERED_BY_SAMPLE_IDENTITY must also carry
+    the owning mechanism's anchor. A sibling phase, a caller that holds other
+    work, or an unrelated hotspot cannot be covered by a mechanism it never
+    shares a stack with.
+    """
+    pairs = []
+    rows = []
+    for index, item in enumerate(paths, 1):
+        if item.get("disposition") != "covered-by":
+            continue
+        owner_anchor = owner_anchors.get(item.get("covered_by"))
+        if not owner_anchor:
+            raise CampaignError(
+                f"Path {index} ({item['anchor']!r}) is covered by "
+                f"{item.get('covered_by')!r}, whose anchor is unknown"
+            )
+        pair = (item["anchor"], owner_anchor)
+        pairs.append(pair)
+        rows.append((index, item, pair))
+    if not rows:
+        return
+    files = collapsed_stack_files(profile, story)
+    if not files:
+        raise CampaignError(
+            f"covered-by rows need the story's profile.collapsed beside the "
+            f"analyzer artifacts of profile {profile.get('id')!r} for {story!r}; "
+            "none resolves on this host"
+        )
+    totals = sample_identity(files, set(pairs))
+    for index, item, pair in rows:
+        row_weight, shared = totals[pair]
+        if row_weight <= 0:
+            raise CampaignError(
+                f"Path {index} ({item['anchor']!r}) has no samples in the "
+                f"{story!r} stacks; it cannot be covered by anything"
+            )
+        fraction = shared / row_weight
+        if fraction < COVERED_BY_SAMPLE_IDENTITY:
+            raise CampaignError(
+                f"Path {index} ({item['anchor'][:80]!r}) is marked covered-by "
+                f"{item['covered_by']!r}, but only {fraction:.0%} of its samples "
+                f"carry the owner's anchor ({pair[1][:80]!r}); covered-by is the "
+                "same samples at another frame, not a label. Give the row its "
+                "own disposition and count."
+            )
+        item["covered_by_sample_identity"] = round(fraction, 4)
 
 
 def bind_redundancy_evidence(path_item, story, fraction, campaign_dir):
@@ -5581,6 +5735,17 @@ def cmd_decompose(args):
             f"discovery #{parent['id']:03d}",
         )
         covered_owners.append(owner)
+    if covered and not test_bypass_active():
+        owner_anchors = {}
+        for path_item in result["paths"]:
+            if path_item["disposition"] in ("novel", "known"):
+                owner_anchors[path_item["mechanism_key"]] = path_item["anchor"]
+        for owner in covered_owners:
+            owner_anchors.setdefault(owner.get("mechanism_key"), owner.get("anchor"))
+        enforce_covered_by_sample_identity(
+            result["paths"], owner_anchors, source_profile,
+            parent.get("target_story"),
+        )
     parent["known_mechanism_ids"] = sorted(
         {
             opp["id"]

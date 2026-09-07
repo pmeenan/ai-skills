@@ -60,7 +60,14 @@ the probe patch or the log does not PASS.
 The report attests one children digest. If the children file changes after
 the review, the review is void: `decompose` registers every report by
 reviewer task id and refuses a task id that reappears with different
-digests. Editing a report's digests is not a re-review.
+digests. Editing a report's digests is not a re-review. The transcript
+passed as `--gate-<role>-transcript` must be the file the report's
+`transcript_ref` names, at least 4000 bytes, and it must mention every
+attested digest and every check by name; a verdict summary is refused.
+None of this proves the reviewer was a separate task: an orchestrator that
+fills in the scaffold, invents a task id and writes a six-line transcript
+has forged the review, and the human audit treats the whole import as
+unreviewed.
 
 ## Skeptic perspective
 

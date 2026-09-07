@@ -1775,7 +1775,11 @@ class EnforcementRegressionTest(unittest.TestCase):
         path = self.repo / f"{role}-gate.json"
         transcript = self.repo / "transcript" / f"{task_id}.jsonl"
         transcript.parent.mkdir(exist_ok=True)
-        transcript.write_text('{"event": "review"}\n')
+        transcript.write_text(
+            '{"event": "review"}\n'
+            f'{{"opened": "sha256:{digest}", "rows_read": 3}}\n'
+            + ('{"note": "artifact opened and 2 numbers read"}\n' * 120)
+        )
         path.write_text(json.dumps({
             "schema_version": 1,
             "role": role,

@@ -314,6 +314,7 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             report["verdict"] = "PASS"
             report["reviewer_task_id"] = f"task-{role}"
             report["transcript_ref"] = f"/nowhere/{role}.jsonl"
+            self.substantive_transcript(transcripts[role], report)
             report["what_this_frontier_establishes"] = (
                 "Two independent exact-window captures with complete inventories."
             )
@@ -324,8 +325,8 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
 
         transcripts = {}
         for role in ("skeptic", "adversary"):
-            transcript = self.dir / f"{role}-transcript.jsonl"
-            transcript.write_text('{"event": "reviewed"}\n')
+            transcript = self.dir / f"{role}.jsonl"
+            self.substantive_transcript(transcript, json.loads(reports[role].read_text()))
             transcripts[role] = transcript
 
         def namespace(with_transcripts):
@@ -537,8 +538,8 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             report["verdict"] = "PASS"
             report["reviewer_task_id"] = f"task-{role}"
             transcript = self.dir / f"{role}-transcript.md"
-            transcript.write_text("reviewed\n")
             report["transcript_ref"] = str(transcript)
+            self.substantive_transcript(transcript, report)
             report["why_this_proves_real_speedup"] = (
                 "Every row above the floor closes by a count from the target story.")
             for name in report["checks"]:
@@ -569,6 +570,84 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         registry = json.loads((self.dir / "reviews" / "gate-report-registry.json").read_text())
         self.assertEqual({"task-skeptic", "task-adversary"},
                          {entry["reviewer_task_id"] for entry in registry})
+
+    # ---------------- reviewer transcripts and covered-by ----------------
+
+    @staticmethod
+    def substantive_transcript(path, report, extra=""):
+        """A transcript that shows the work: every attested digest, every
+        check name, and enough text to be a review rather than a verdict."""
+        lines = [f"# {report.get('role')} review transcript", extra]
+        for digest in report.get("artifact_digests_checked", []):
+            lines.append(f"opened artifact {digest}: 3 rows read")
+        for name in report.get("checks", {}):
+            lines.append(f"check {name}: opened the bound artifact and read 12 numbers")
+        lines.append("notes " * 700)
+        path.write_text("\n".join(lines) + "\n")
+        return path
+
+    def test_reviewer_transcript_must_show_the_work(self):
+        report = {"role": "skeptic", "artifact_digests_checked": ["sha256:" + "a" * 64],
+                  "checks": {"accounting_bijective": True, "rows_above_floor_bound": True}}
+        stub = self.dir / "decomp-1-skeptic.md"
+        stub.write_text("Verdict: PASS\n")
+        with self.assertRaisesRegex(campaign.CampaignError, "bytes"):
+            campaign.require_substantive_transcript(
+                "skeptic", "decomposition", report, str(stub), stub)
+        padded = self.dir / "decomp-1-skeptic.md"
+        padded.write_text("x" * 5000)
+        with self.assertRaisesRegex(campaign.CampaignError, "never mentions"):
+            campaign.require_substantive_transcript(
+                "skeptic", "decomposition", report, str(padded), padded)
+        padded.write_text("x" * 5000 + "aaaaaaaaaaaa")
+        with self.assertRaisesRegex(campaign.CampaignError, "does not show the work"):
+            campaign.require_substantive_transcript(
+                "skeptic", "decomposition", report, str(padded), padded)
+        good = self.substantive_transcript(padded, report)
+        campaign.require_substantive_transcript(
+            "skeptic", "decomposition", report, str(good), good)
+        # The supplied file has to be the one the report names.
+        other = self.dir / "decomp-2-skeptic.md"
+        other.write_text(good.read_text())
+        with self.assertRaisesRegex(campaign.CampaignError, "bind the transcript the report"):
+            campaign.require_substantive_transcript(
+                "skeptic", "decomposition", report, str(good), other, supplied=str(other))
+
+    def test_covered_by_rows_share_samples_with_their_owner(self):
+        story_dir = self.dir / "results" / "analysis" / "stories" / STORY
+        story_dir.mkdir(parents=True)
+        artifact = story_dir / "candidate_frontier.json"
+        artifact.write_text("{}")
+        (story_dir / "profile.collapsed").write_text(
+            "main;Layout;ShapeText;HarfBuzz 60\n"
+            "main;Layout;ShapeText 20\n"
+            "main;Layout;OutOfFlow 30\n"
+            "main;Style;Match 40\n"
+        )
+        profile = {"id": "p", "capture_provenance": [{
+            "capture_id": "c1",
+            "story_frontiers": [{"story": STORY, "artifact": str(artifact)}],
+        }]}
+        owners = {"fonts/reuse": "ShapeText"}
+        good = [
+            {"anchor": "ShapeText", "disposition": "novel", "mechanism_key": "fonts/reuse"},
+            {"anchor": "HarfBuzz", "disposition": "covered-by", "covered_by": "fonts/reuse"},
+        ]
+        campaign.enforce_covered_by_sample_identity(good, owners, profile, STORY)
+        self.assertEqual(1.0, good[1]["covered_by_sample_identity"])
+        # A caller that holds other work is not the same samples.
+        wrapper = [{"anchor": "Layout", "disposition": "covered-by", "covered_by": "fonts/reuse"}]
+        with self.assertRaisesRegex(campaign.CampaignError, "only 73% of its samples"):
+            campaign.enforce_covered_by_sample_identity(wrapper, owners, profile, STORY)
+        # An unrelated hotspot never shares a stack.
+        unrelated = [{"anchor": "Match", "disposition": "covered-by", "covered_by": "fonts/reuse"}]
+        with self.assertRaisesRegex(campaign.CampaignError, "only 0% of its samples"):
+            campaign.enforce_covered_by_sample_identity(unrelated, owners, profile, STORY)
+        absent = [{"anchor": "Nowhere", "disposition": "covered-by", "covered_by": "fonts/reuse"}]
+        with self.assertRaisesRegex(campaign.CampaignError, "no samples"):
+            campaign.enforce_covered_by_sample_identity(absent, owners, profile, STORY)
+        with self.assertRaisesRegex(campaign.CampaignError, "none resolves"):
+            campaign.enforce_covered_by_sample_identity(good, owners, {"id": "p"}, STORY)
 
     # ---------------- capture provenance audit ----------------
 
