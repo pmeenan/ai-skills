@@ -60,7 +60,9 @@ Each investigated opportunity must be recorded as an investigation proposal cont
 - `story_profile_share_pct`: exact profile share (%) within the target story's silo.
 - `estimated_avoidable_fraction`: fraction of that stack that can be avoided (0.0 to 1.0).
 - `estimated_local_story_impact_pct`: `story_profile_share_pct * estimated_avoidable_fraction` (the global ranking metric; never rescaled to a full-suite share). `campaign.py decompose` derives the profile share from bound `work_refs`, recomputes this product, rejects mismatches and anything below the story's qualification floor, and stores it as the mechanism priority together with `qualification_floor_pct` and its basis.
-- `redundancy_evidence`: `{path, sha256}` of the `redundancy_evidence.py` packet for the probed site (required for `investigation_layer` 1 or 2).
+- `redundancy_evidence`: `{path, sha256}` of the `redundancy_evidence.py` packet for the probed site (required for `investigation_layer` 1 or 2, and for every `mandatory` / `no-qualifying-mechanism` row at or above its story floor).
+- `existing_mechanism` (novel rows): the Chromium code that already avoids this work (a symbol or file) and the count showing it does not here, or "none" with the count that proves the repetition. Most redundancy has a partial existing answer (`InlineNode::ShapeText` reuse, `LayoutResult` cache, `PendingLayer::Matches`); a candidate that does not name it is not vetted.
+- `wrapper_of` (mandatory/no-qualifying rows): the 1-based index of the dominant descendant row (≥ 80% of this row's share) whose count closes this row. A wrapper of a `novel`/`known` row is `covered-by` instead.
 - `win_shape`: `skip-subtree`, `reuse-result`, `representation`, or `shorten-wait`.
 - `subtree_pruned`: list of child functions and their combined profile share eliminated.
 - `invariant_description`: exact code condition, bypass logic, and invalidation rules.
@@ -73,7 +75,8 @@ Each investigated opportunity must be recorded as an investigation proposal cont
 | `novel` | one new invariant can remove the work (must pass Adversarial Qualification) | stable `component/strategy` key, 4-layer proposal, and primary work reference |
 | `known` | the exact mechanism already exists in the ledger | existing mechanism key and matching work references |
 | `covered-by` | the samples are literally the same samples as another row | owning mechanism key and overlap/sample identity |
-| `mandatory` | specification or unavoidable product behavior proves the work cannot be removed | cited invariant and source/trace evidence |
+| `mandatory` | the per-trigger amount of work is invariant (each call does new work) | at/above the story floor: a bound redundancy packet from the target story with `story share × supported avoidable fraction < floor`, or `wrapper_of` a counted row; below the floor: the invariant and source evidence. A spec clause names the trigger, never the amount |
+| `no-qualifying-mechanism` | a bounded search found no invariant that removes enough work | the investigation packet (revision, hypotheses, falsifications, budget, stop reason) **and**, at/above the floor, the same bound packet and arithmetic as `mandatory` |
 | `out-of-scope` | the work is not Chromium-owned or not within the campaign goal; a V8/JS **hand-off** row names the owner and quotes the lens numbers so exhaustion is scoped honestly | ownership/critical-path evidence, lens numbers |
 | `below-floor` | the estimated impact is below the story's qualification floor (max(share floor, 2 × calibrated MDE)) | profiler work reference, measured share and the floor basis |
 
@@ -100,3 +103,26 @@ python3 .agents/skills/optimize-campaign/scripts/campaign.py exhaust \
 
 Any decomposition edit invalidates the prior review and requires a fresh
 scaffold. `audit-exhaustion` is the final machine check.
+
+## Closing by count
+
+`decompose` refuses a `mandatory` or `no-qualifying-mechanism` row whose
+profiler story share reaches the story floor unless it binds a
+`redundancy_evidence` packet measured on the target story and
+`share × supported_avoidable_fraction(packet) < floor`, where the supported
+fraction is `max(applicable_fraction, repeat_fraction)`. A probe whose
+`applicable` flag is always true, or whose key is a pointer that is new on
+every call, bounds nothing and cannot close a row; the key names the inputs
+the hypothesis says are unchanged (text hash, constraint space, font, sheet
+list) and `applicable` states the condition under which the work could be
+skipped. When the arithmetic does not clear the floor the row is a `novel`
+candidate at that fraction, or the probe is re-keyed; it is never closed by
+prose. Pure wrappers of a counted descendant use `wrapper_of` instead of
+their own packet; wrappers of a mechanism's samples are `covered-by`.
+
+Reviewer reports are immutable. Every report the ledger host sees is
+registered under its reviewer task id with the digests it attested
+(`reviews/gate-report-registry.json`); the same task id attesting a
+different artifact set, or a different opportunity, is refused. Changing the
+children file after the reviewers ran means running both reviewers again
+with new task ids and transcripts.

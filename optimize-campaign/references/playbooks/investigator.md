@@ -54,6 +54,19 @@ not until a human releases the hold.
    `instrumented-twin.md`), run the target story, and reduce the log with
    `redundancy_evidence.py`. If the counts do not support the fraction you
    hoped for, say so and move on; that is a cheap, honest stop.
+2a. Key the probe on C, not on the call. The `Record(key, applicable)` key
+   is a hash of the inputs the hypothesis says are unchanged (text content,
+   constraint space, font, sheet list, chunk properties), and `applicable`
+   is C itself (text equal to the previous data, cache lookup hit, layer
+   identical to last update). A pointer that is new on every call gives
+   0% repeats and proves nothing; `applicable=true` on every call bounds
+   nothing and cannot close a row. Before writing a candidate, read what
+   Chromium already does at the site (a reuse path, a result cache, a dirty
+   bit) and count what it misses; that is the row's `existing_mechanism`.
+2b. Few calls are not small work. Five requests per repetition that each
+   re-shape a document are the finding; the count that matters is the work
+   under the call (characters shaped, boxes laid out, chunks processed)
+   keyed on whether that work's inputs changed.
 3. Check the story's qualification floor (`campaign.py status` shows the
    calibrated MDEs). Estimated impact = story main-thread share × avoidable
    fraction must clear max(share floor, 2 × story MDE). If it cannot even

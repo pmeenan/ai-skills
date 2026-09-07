@@ -302,11 +302,27 @@ python3 .agents/skills/optimize-campaign/scripts/campaign.py advance \
   --opp <discovery> --to investigating
 python3 .agents/skills/optimize-campaign/scripts/campaign.py decompose-scaffold \
   --opp <discovery> --out <paths.json>
+# two independent reviewers, each from its own scaffold, after paths.json is final:
+python3 .agents/skills/optimize-campaign/scripts/campaign.py decompose-review-scaffold \
+  --opp <discovery> --role skeptic --children <paths.json> --out <decomposition-skeptic.json>
+python3 .agents/skills/optimize-campaign/scripts/campaign.py decompose-review-scaffold \
+  --opp <discovery> --role adversary --children <paths.json> --out <decomposition-adversary.json>
 python3 .agents/skills/optimize-campaign/scripts/campaign.py decompose \
   --opp <discovery> --children <paths.json> \
   --gate-skeptic <decomposition-skeptic.json> \
-  --gate-adversary <decomposition-adversary.json>
+  --gate-skeptic-transcript <skeptic-notes.md> \
+  --gate-adversary <decomposition-adversary.json> \
+  --gate-adversary-transcript <adversary-notes.md>
 ```
+
+`decompose` closes rows by count: a `mandatory` or `no-qualifying-mechanism`
+row at or above its story floor binds a redundancy packet from the target
+story and satisfies `share × supported fraction < floor`, or names the
+counted descendant it wraps (`wrapper_of`); a `novel` row names the
+`existing_mechanism` it improves on. Reviewer reports attest one children
+digest; if `decompose` refuses and the children file is edited, both
+reviewers run again with new task ids (the report registry refuses a reused
+task id with different digests).
 
 Reuse stable `component/strategy` keys. Do not retry landed, rejected, or
 reverted mechanisms without genuinely contradictory evidence.

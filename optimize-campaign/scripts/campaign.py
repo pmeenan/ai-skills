@@ -326,8 +326,128 @@ PROFILE_GATE_CHECK_GUIDANCE = {
 }
 
 
+DECOMPOSITION_GATE_CHECKS = {
+    "skeptic": (
+        "accounting_bijective",
+        "rows_above_floor_bound",
+        "probe_key_states_hypothesis",
+        "floor_arithmetic_recomputed",
+        "existing_reuse_examined",
+    ),
+    "adversary": (
+        "probe_patch_bound",
+        "packets_reduced_from_logs",
+        "counts_reproduced",
+        "reviewed_digest_is_imported_digest",
+        "no_prose_only_row_above_floor",
+    ),
+}
+DECOMPOSITION_GATE_CHECK_GUIDANCE = {
+    "accounting_bijective": "expected work refs vs primary refs: both counts, zero unassigned and zero duplicated",
+    "rows_above_floor_bound": "count of rows at/above the story floor and how many close through a packet, a wrapper_of chain, covered-by, or a mechanism row; none by prose",
+    "probe_key_states_hypothesis": "for every bound packet: the RedundancyCounter key fields and the applicable predicate quoted from the probe patch, and why they answer that row's hypothesis (a pointer-only key or applicable=true answers nothing)",
+    "floor_arithmetic_recomputed": "for every bound mandatory/no-qualifying row: story share x supported fraction vs the floor recomputed from the packet; for every novel row: share x fraction vs floor",
+    "existing_reuse_examined": "for every novel row: the Chromium code that already avoids this work (symbol or file:line) and the count showing it does not here",
+    "probe_patch_bound": "the packet's patch digest equals the saved evidence patch, the instrumented twin was built from it, and the site names in the patch match the packet sites",
+    "packets_reduced_from_logs": "source log paths and digests in each packet resolve on the host and rows_total matches the log",
+    "counts_reproduced": "one packet's calls per repetition and its fractions re-derived from the log rows",
+    "reviewed_digest_is_imported_digest": "the children file digest recomputed by you now; any later edit to that file voids this review",
+    "no_prose_only_row_above_floor": "every mandatory/no-qualifying row at/above floor cites a packet or wrapper_of; a spec clause names a trigger, never an amount",
+}
+CHECKED_GATES = {
+    "profile": (PROFILE_GATE_CHECKS, PROFILE_GATE_CHECK_GUIDANCE, "profile-review-scaffold"),
+    "reprofile": (PROFILE_GATE_CHECKS, PROFILE_GATE_CHECK_GUIDANCE, "profile-review-scaffold"),
+    "decomposition": (
+        DECOMPOSITION_GATE_CHECKS, DECOMPOSITION_GATE_CHECK_GUIDANCE,
+        "decompose-review-scaffold",
+    ),
+}
+GATE_REPORT_REGISTRY = pathlib.Path("reviews") / "gate-report-registry.json"
+
+
 def gate_uses_profile_checks(gate):
     return gate in ("profile", "reprofile")
+
+
+def gate_uses_checks(gate):
+    return gate in CHECKED_GATES
+
+
+def register_gate_report(campaign_dir, *, gate, role, report, report_path, subject=None):
+    """Keep every reviewer report sighting; refuse an edited one.
+
+    A reviewer task attests one artifact set. If the same task id shows up
+    attesting a different set (or a different subject), the report was edited
+    after the review rather than re-reviewed. The registry is appended before
+    any other gate check runs, so a refused import still leaves its trace.
+    """
+    if campaign_dir is None or not isinstance(report, dict):
+        return
+    task_id = report.get("reviewer_task_id")
+    if not isinstance(task_id, str) or len(task_id.strip()) < 3 or "REPLACE" in task_id:
+        return
+    digests = sorted(
+        str(value) for value in (report.get("artifact_digests_checked") or [])
+    )
+    registry_path = pathlib.Path(campaign_dir) / GATE_REPORT_REGISTRY
+    entries = []
+    if registry_path.is_file():
+        try:
+            loaded = json.loads(registry_path.read_text())
+        except (OSError, ValueError):
+            loaded = []
+        if isinstance(loaded, list):
+            entries = [entry for entry in loaded if isinstance(entry, dict)]
+    for prior in entries:
+        if prior.get("gate") != gate or prior.get("reviewer_task_id") != task_id:
+            continue
+        prior_digests = prior.get("artifact_digests_checked") or []
+        if prior_digests != digests or (
+            subject and prior.get("subject") and prior["subject"] != subject
+        ):
+            raise CampaignError(
+                f"{gate} {role} report {pathlib.Path(report_path).name} reuses "
+                f"reviewer task {task_id!r}, which already attested "
+                f"{prior.get('subject') or gate} with a different artifact set "
+                f"(registry {registry_path}). Editing a reviewed artifact, or the "
+                "digests in its review, voids the review: rerun both reviewers on "
+                "the new artifact with new task ids and transcripts."
+            )
+    record = {
+        "gate": gate,
+        "role": role,
+        "subject": subject,
+        "reviewer_task_id": task_id,
+        "artifact_digests_checked": digests,
+        "report_sha256": sha256_file(report_path),
+    }
+    if not any(
+        all(prior.get(key) == value for key, value in record.items())
+        for prior in entries
+    ):
+        entries.append({"ts": utc_now(), **record})
+        registry_path.parent.mkdir(parents=True, exist_ok=True)
+        registry_path.write_text(json.dumps(entries, indent=2) + "\n")
+
+
+def register_gate_reports_from_args(args, *, gate, subject, campaign_dir):
+    """Register whatever reviewer reports the command names, before any
+    other validation can refuse the import."""
+    if test_bypass_active() or campaign_dir is None:
+        return
+    for role in GATE_CHALLENGE_ROLES:
+        path_value = getattr(args, f"gate_{role}", None)
+        if not path_value:
+            continue
+        path = pathlib.Path(path_value)
+        try:
+            report = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        register_gate_report(
+            campaign_dir, gate=gate, role=role, report=report,
+            report_path=path, subject=subject,
+        )
 
 
 def bind_reviewer_transcript(args, role, report_transcript, campaign_dir):
@@ -367,15 +487,16 @@ def bind_reviewer_transcript(args, role, report_transcript, campaign_dir):
     )
 
 
-def validate_profile_gate_report(report, role, gate):
-    """Per-check evidence rules for profile/reprofile gate reviews."""
+def validate_checked_gate_report(report, role, gate):
+    """Per-check evidence rules for gates whose reviews carry named checks."""
+    checks_by_role, _guidance, scaffold_command = CHECKED_GATES[gate]
     checks = report.get("checks")
     evidence = report.get("check_evidence")
-    required = PROFILE_GATE_CHECKS[role]
+    required = checks_by_role[role]
     if not isinstance(checks, dict) or not isinstance(evidence, dict):
         raise CampaignError(
             f"{gate} {role} review needs checks and check_evidence objects; "
-            "generate it with `campaign.py profile-review-scaffold`"
+            f"generate it with `campaign.py {scaffold_command}`"
         )
     seen = set()
     for name in required:
@@ -412,7 +533,12 @@ def validate_profile_gate_report(report, role, gate):
         )
 
 
-def validate_gate_challenges(args, *, gate, artifact_digests, campaign_dir=None):
+validate_profile_gate_report = validate_checked_gate_report
+
+
+def validate_gate_challenges(
+    args, *, gate, artifact_digests, campaign_dir=None, subject=None
+):
     if test_bypass_active():
         return []
     expected = {f"sha256:{value}" for value in artifact_digests if value}
@@ -431,6 +557,10 @@ def validate_gate_challenges(args, *, gate, artifact_digests, campaign_dir=None)
             raise CampaignError(f"Cannot read {gate} {role} challenge: {exc}") from exc
         if not isinstance(report, dict):
             raise CampaignError(f"{gate} {role} challenge must be one JSON object")
+        register_gate_report(
+            campaign_dir, gate=gate, role=role, report=report,
+            report_path=path, subject=subject,
+        )
         checked = report.get("artifact_digests_checked")
         task_id = report.get("reviewer_task_id")
         transcript = report.get("transcript_ref")
@@ -453,8 +583,8 @@ def validate_gate_challenges(args, *, gate, artifact_digests, campaign_dir=None)
             raise CampaignError(
                 f"{gate} {role} challenge is unbound, incomplete, or not PASS"
             )
-        if gate_uses_profile_checks(gate):
-            validate_profile_gate_report(report, role, gate)
+        if gate_uses_checks(gate):
+            validate_checked_gate_report(report, role, gate)
         if task_id in task_ids:
             raise CampaignError("skeptic and adversary challenges use the same task id")
         task_ids.add(task_id)
@@ -2379,6 +2509,189 @@ REDUNDANCY_EVIDENCE_LAYERS = (1, 2)
 REDUNDANCY_FRACTION_TOLERANCE = 0.05
 
 
+def load_bound_redundancy_packet(path_item, story, campaign_dir, *, missing_message):
+    """Resolve and verify a row's `redundancy_evidence: {path, sha256}`."""
+    import redundancy_evidence
+    ref = path_item.get("redundancy_evidence")
+    if not isinstance(ref, dict) or not ref.get("path") or not ref.get("sha256"):
+        raise CampaignError(missing_message)
+    packet_path = pathlib.Path(ref["path"])
+    if not packet_path.is_absolute():
+        packet_path = pathlib.Path(campaign_dir) / packet_path
+    if not packet_path.is_file():
+        raise CampaignError(f"Redundancy evidence {packet_path} does not exist")
+    if sha256_file(packet_path) != ref["sha256"]:
+        raise CampaignError(f"Redundancy evidence {packet_path} does not match its sha256")
+    try:
+        packet = redundancy_evidence.load_packet(packet_path)
+    except ValueError as exc:
+        raise CampaignError(str(exc)) from exc
+    if story and packet.get("target_story") != story:
+        raise CampaignError(
+            f"Redundancy evidence measured {packet.get('target_story')!r}, not the "
+            f"path's target story {story!r}"
+        )
+    return packet
+
+
+MEASURED_DISPOSITIONS = ("mandatory", "no-qualifying-mechanism")
+WRAPPER_DOMINANT_FRACTION = 0.8
+EXISTING_MECHANISM_MIN_CHARS = 40
+EXISTING_MECHANISM_SYMBOL_RE = re.compile(r"::|\b[\w./-]+\.(?:cc|h|mm)\b")
+
+
+def require_existing_mechanism(path_item, index):
+    """A novel row states what Chromium already does about this work.
+
+    Most redundant work has an existing partial answer (a result cache, a
+    reuse path, a dirty bit). The row names it (symbol or file) and the count
+    showing it does not cover this case, or says there is none and why.
+    """
+    text = path_item.get("existing_mechanism")
+    stripped = " ".join(text.split()) if isinstance(text, str) else ""
+    if (
+        len(stripped) < EXISTING_MECHANISM_MIN_CHARS
+        or not EXISTING_MECHANISM_SYMBOL_RE.search(stripped)
+        or not EVIDENCE_NUMBER_RE.search(stripped)
+    ):
+        raise CampaignError(
+            f"Path {index} ({path_item['anchor']!r}) is novel without "
+            "`existing_mechanism`: name the Chromium code that already avoids "
+            "this work (a symbol like InlineNode::ShapeText or a file) and the "
+            "count showing it does not here, or state that none exists and the "
+            "count that proves the work repeats"
+        )
+
+
+def enforce_measured_dispositions(
+    paths, story_shares, config, base_floor, default_story, campaign_dir
+):
+    """Above the story floor, mandatory and no-qualifying rows close by count.
+
+    A spec clause names a trigger; it never decides how much work a trigger
+    does. Every such row at or above its story's floor binds a redundancy
+    packet from the target story and satisfies
+    `story share x supported avoidable fraction < floor`, or declares
+    `wrapper_of: <path index>` naming the dominant descendant row that carries
+    the count (a wrapper of a mechanism row is `covered-by` instead). Rows
+    below the floor, out-of-scope, below-floor and covered-by rows are
+    untouched. Returns the set of packet-bound path indexes.
+    """
+    import redundancy_evidence
+    bound = set()
+    wrappers = {}
+    for index, item in enumerate(paths, 1):
+        share = story_shares.get(index)
+        if share is None or item.get("disposition") not in MEASURED_DISPOSITIONS:
+            continue
+        story = item.get("target_story") or default_story
+        floor, basis = story_floor_pct(config, story)
+        floor = max(floor, base_floor)
+        if item.get("wrapper_of") is not None:
+            wrappers[index] = (item, share, floor)
+            continue
+        if share < floor:
+            continue
+        label = (
+            f"Path {index} ({item['anchor']!r}) is {item['disposition']} at "
+            f"{share:.3f}% of {story}, at/above the {floor:.3f}% floor"
+        )
+        packet = load_bound_redundancy_packet(
+            item, story, campaign_dir,
+            missing_message=(
+                f"{label}, without a bound count. Instrument the site with "
+                "redundancy_probe.h keyed on the inputs the hypothesis names, "
+                "with `applicable` stating when the work could be skipped; "
+                "reduce with redundancy_evidence.py and cite the packet as "
+                "redundancy_evidence: {path, sha256}. A pure wrapper of a "
+                "counted descendant row declares wrapper_of: <path index>."
+            ),
+        )
+        supported = redundancy_evidence.supported_avoidable_fraction(packet)
+        upper = share * supported
+        if upper >= floor:
+            raise CampaignError(
+                f"{label}. Its packet {packet['site']!r} bounds the avoidable "
+                f"work at {supported:.3f} of {share:.3f}% = {upper:.3f}%, which "
+                f"is not below the floor. This row cannot close as "
+                f"{item['disposition']}: promote it to novel with "
+                f"estimated_avoidable_fraction <= {supported:.3f}, or re-key "
+                "the probe so its `applicable` predicate states what would "
+                "make the work skippable (a pointer-only key or applicable="
+                "true bounds nothing)."
+            )
+        item["measured_bound"] = {
+            "site": packet["site"],
+            "story_profile_share_pct": share,
+            "supported_avoidable_fraction": supported,
+            "avoidable_share_upper_pct": upper,
+            "qualification_floor_pct": floor,
+            "qualification_floor_basis": basis,
+            "calls_per_repetition_mean": packet.get("calls_per_repetition_mean"),
+        }
+        bound.add(index)
+    for index, (item, share, floor) in wrappers.items():
+        seen = [index]
+        current = index
+        while True:
+            current_item = paths[current - 1]
+            target = current_item.get("wrapper_of")
+            try:
+                target = int(target)
+            except (TypeError, ValueError):
+                raise CampaignError(
+                    f"Path {current} wrapper_of must be the 1-based index of "
+                    "the dominant descendant row"
+                )
+            if target < 1 or target > len(paths) or target == current:
+                raise CampaignError(
+                    f"Path {current} wrapper_of {target} does not name another "
+                    "row in this decomposition"
+                )
+            if target in seen:
+                raise CampaignError(
+                    f"Path {index} wrapper_of chain loops: {seen + [target]}"
+                )
+            seen.append(target)
+            target_item = paths[target - 1]
+            current_share = story_shares.get(current)
+            target_share = story_shares.get(target)
+            if target_share is None or current_share is None:
+                raise CampaignError(
+                    f"Path {current} and its wrapper_of {target} must both "
+                    "carry primary work refs"
+                )
+            if target_share < WRAPPER_DOMINANT_FRACTION * current_share:
+                raise CampaignError(
+                    f"Path {current} ({current_item['anchor']!r}, "
+                    f"{current_share:.3f}%) names path {target} "
+                    f"({target_share:.3f}%) as its wrapper_of, but that row "
+                    f"carries less than {WRAPPER_DOMINANT_FRACTION:.0%} of its "
+                    "share; a wrapper's count lives in its dominant descendant. "
+                    "Bind a packet to this row instead."
+                )
+            disposition = target_item.get("disposition")
+            if disposition in ("novel", "known", "covered-by"):
+                raise CampaignError(
+                    f"Path {current} ({current_item['anchor']!r}) wraps path "
+                    f"{target}, a {disposition} row; a wrapper of a mechanism's "
+                    "samples is covered-by that mechanism, not mandatory"
+                )
+            if target in bound:
+                break
+            if target_item.get("wrapper_of") is not None:
+                current = target
+                continue
+            raise CampaignError(
+                f"Path {index} ({item['anchor']!r}) wrapper_of chain ends at "
+                f"path {target} ({target_item['anchor']!r}), which binds no "
+                "packet; the count that closes a wrapper must sit on the row "
+                "it points at"
+            )
+        item["measured_bound"] = {"wrapper_chain": seen}
+    return bound
+
+
 def bind_redundancy_evidence(path_item, story, fraction, campaign_dir):
     """Layer 1/2 claims must cite measured call counts and applicability.
 
@@ -2398,32 +2711,17 @@ def bind_redundancy_evidence(path_item, story, fraction, campaign_dir):
         return
     if test_bypass_active() and not path_item.get("redundancy_evidence"):
         return
-    ref = path_item.get("redundancy_evidence")
-    if not isinstance(ref, dict) or not ref.get("path") or not ref.get("sha256"):
-        raise CampaignError(
+    import redundancy_evidence
+    packet = load_bound_redundancy_packet(
+        path_item, story, campaign_dir,
+        missing_message=(
             f"Path {path_item['anchor']!r} claims a layer-{layer} mechanism "
             "(subtree elimination or cross-call sharing) without redundancy "
             "evidence. Instrument the site with redundancy_probe.h, reduce the "
             "browser logs with redundancy_evidence.py, and cite the packet as "
             "redundancy_evidence: {path, sha256}."
-        )
-    import redundancy_evidence
-    packet_path = pathlib.Path(ref["path"])
-    if not packet_path.is_absolute():
-        packet_path = pathlib.Path(campaign_dir) / packet_path
-    if not packet_path.is_file():
-        raise CampaignError(f"Redundancy evidence {packet_path} does not exist")
-    if sha256_file(packet_path) != ref["sha256"]:
-        raise CampaignError(f"Redundancy evidence {packet_path} does not match its sha256")
-    try:
-        packet = redundancy_evidence.load_packet(packet_path)
-    except ValueError as exc:
-        raise CampaignError(str(exc)) from exc
-    if story and packet.get("target_story") != story:
-        raise CampaignError(
-            f"Redundancy evidence measured {packet.get('target_story')!r}, not the "
-            f"path's target story {story!r}"
-        )
+        ),
+    )
     supported = redundancy_evidence.supported_avoidable_fraction(packet)
     if fraction > supported + REDUNDANCY_FRACTION_TOLERANCE:
         raise CampaignError(
@@ -4789,6 +5087,124 @@ def load_decomposition(path):
     return result
 
 
+def decomposition_rows_at_or_above_floor(parent, result, config):
+    """Rows a decomposition reviewer must open: primary-accounted rows whose
+    profiler story share reaches the story floor, with what closes each."""
+    measured = {
+        tuple(ref[field] for field in ("capture_id", "entry_key", "hotspot_key")):
+        ref.get("measured_share_pct", 0.0)
+        for ref in parent.get("expected_work_refs", [])
+    }
+    base_floor = float(config.get("share_floor_pct", 0.0))
+    rows = []
+    for index, item in enumerate(result.get("paths", []), 1):
+        primary = [
+            tuple(ref.get(field) for field in ("capture_id", "entry_key", "hotspot_key"))
+            for ref in item.get("work_refs", [])
+            if ref.get("accounting") == "primary"
+        ]
+        shares = [measured[key] for key in primary if key in measured]
+        if not shares:
+            continue
+        share = min(shares)
+        story = item.get("target_story") or parent.get("target_story")
+        floor, _basis = story_floor_pct(config, story)
+        floor = max(floor, base_floor)
+        if share < floor:
+            continue
+        packet = item.get("redundancy_evidence")
+        rows.append({
+            "path": index,
+            "anchor": item.get("anchor"),
+            "disposition": item.get("disposition"),
+            "story": story,
+            "story_profile_share_pct": round(share, 4),
+            "qualification_floor_pct": round(floor, 4),
+            "mechanism_key": item.get("mechanism_key"),
+            "covered_by": item.get("covered_by"),
+            "wrapper_of": item.get("wrapper_of"),
+            "redundancy_evidence": packet.get("path") if isinstance(packet, dict) else None,
+            "estimated_avoidable_fraction": item.get("estimated_avoidable_fraction"),
+        })
+    return rows
+
+
+def cmd_decompose_review_scaffold(args):
+    """Emit the decomposition-gate reviewer report with digests, checks and
+    the rows the reviewer has to open prefilled."""
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    parent = ledger.opp(args.opp)
+    if parent.get("kind") != "discovery":
+        raise CampaignError(
+            f"#{parent['id']:03d} is a mechanism; decomposition reviews bind "
+            "to a discovery"
+        )
+    role = args.role
+    result = load_decomposition(args.children)
+    if result.get("area_key") != parent["area_key"]:
+        raise CampaignError("Decomposition area_key does not match its discovery")
+    source_profile = ledger.profile(parent.get("profile_id"))
+    digests = [
+        sha256_file(args.children),
+        *[
+            item.get("artifact_sha256")
+            for item in source_profile.get("capture_provenance", [])
+            if item.get("artifact_sha256")
+        ],
+    ]
+    rows = decomposition_rows_at_or_above_floor(
+        parent, result, ledger.data["config"]
+    )
+    checks_by_role, guidance, _command = CHECKED_GATES["decomposition"]
+    report = {
+        "schema_version": 1,
+        "role": role,
+        "gate": "decomposition",
+        "opportunity_id": parent["id"],
+        "reviewer_task_id": "REPLACE with the real reviewer task id",
+        "transcript_ref": (
+            "REPLACE with the reviewer transcript path; pass the file as "
+            f"--gate-{role}-transcript at import so it is copied to "
+            "<campaign>/reviews/transcripts/"
+        ),
+        "artifact_digests_checked": [f"sha256:{value}" for value in digests],
+        "bound_inputs": {
+            "children": str(pathlib.Path(args.children).resolve()),
+            "children_sha256": digests[0],
+            "area_key": parent["area_key"],
+            "target_story": parent.get("target_story"),
+            "profile_id": parent.get("profile_id"),
+            "capture_ids": [
+                item.get("capture_id")
+                for item in source_profile.get("capture_provenance", [])
+            ],
+            "rows_at_or_above_floor": rows,
+        },
+        "checks": {name: False for name in checks_by_role[role]},
+        "check_evidence": {
+            name: f"REPLACE: {guidance[name]}" for name in checks_by_role[role]
+        },
+        "challenges": [],
+        "resolved_challenges": [],
+        "verdict": "CHALLENGE",
+        "why_this_proves_real_speedup": "",
+    }
+    out = pathlib.Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2) + "\n")
+    print(
+        f"Scaffolded decomposition {role} review for #{parent['id']:03d} with "
+        f"{len(digests)} bound digest(s), {len(rows)} row(s) at/above floor "
+        f"and {len(checks_by_role[role])} checks -> {out}"
+    )
+    print(
+        "Every check needs evidence naming an artifact and a number; a PASS "
+        "with an unfilled check is refused at import, and the review is void "
+        "if the children file changes afterwards."
+    )
+    return 0
+
+
 def cmd_decompose(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     parent = ledger.opp(args.opp)
@@ -4816,12 +5232,18 @@ def cmd_decompose(args):
             "advance it to investigating before its first decomposition, or "
             "record a skeptic FAIL before replacing a reviewed decomposition"
         )
+    decomposition_subject = f"decomposition:#{parent['id']:03d}"
+    register_gate_reports_from_args(
+        args, gate="decomposition", subject=decomposition_subject,
+        campaign_dir=ledger.dir,
+    )
     result = load_decomposition(args.children)
     source_profile = ledger.profile(parent.get("profile_id"))
     decomposition_challenges = validate_gate_challenges(
         args,
         gate="decomposition",
         campaign_dir=ledger.dir,
+        subject=decomposition_subject,
         artifact_digests=[
             sha256_file(args.children),
             *[
@@ -4849,7 +5271,8 @@ def cmd_decompose(args):
     }
     floor = ledger.data["config"]["share_floor_pct"]
     primary_counts = {ref: 0 for ref in expected_work}
-    for path_item in result["paths"]:
+    story_shares = {}
+    for path_index, path_item in enumerate(result["paths"], 1):
         path_primary = set()
         for ref in path_item["work_refs"]:
             key = tuple(ref[field] for field in (
@@ -4886,6 +5309,11 @@ def cmd_decompose(args):
                     f"the campaign floor {floor}%; it cannot be dispositioned "
                     "below-floor using an investigator-supplied share"
                 )
+            story_shares[path_index] = min(
+                measured_work[ref] for ref in path_primary
+            )
+            if path_item["disposition"] == "novel" and not test_bypass_active():
+                require_existing_mechanism(path_item, path_index)
             if path_item["disposition"] in ("novel", "known"):
                 story_share = min(measured_work[ref] for ref in path_primary)
                 fraction = path_item.get("estimated_avoidable_fraction")
@@ -4962,6 +5390,11 @@ def cmd_decompose(args):
         raise CampaignError(
             "Every profiler root/hotspot requires exactly one primary path "
             f"accounting reference: {preview}"
+        )
+    if not test_bypass_active():
+        enforce_measured_dispositions(
+            result["paths"], story_shares, ledger.data["config"], floor,
+            parent.get("target_story"), ledger.dir,
         )
     wrongly_below_floor = [
         item for item in result["paths"]
@@ -7048,6 +7481,19 @@ def build_parser():
     )
     p.add_argument("--notes", default=None)
     p.set_defaults(func=cmd_add)
+
+    p = sub.add_parser(
+        "decompose-review-scaffold",
+        help=(
+            "Emit the decomposition-gate review report skeleton (digests, "
+            "checks, rows at/above floor) for one independent reviewer role"
+        ),
+    )
+    p.add_argument("--opp", type=int, required=True, help="Discovery opportunity id")
+    p.add_argument("--role", required=True, choices=REVIEW_ROLES)
+    p.add_argument("--children", required=True, help="Decomposition JSON to be imported")
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_decompose_review_scaffold)
 
     p = sub.add_parser(
         "decompose", help="Atomically fan a discovery out into mechanism candidates"

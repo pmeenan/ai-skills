@@ -37,6 +37,31 @@ replaces the speedup sentence: a frontier proves coverage, not a speedup.
 Objections the reviewer raised and then resolved go in
 `resolved_challenges`; an open objection is a CHALLENGE verdict.
 
+## Decomposition gate
+
+Generate each report with `campaign.py decompose-review-scaffold --opp <id>
+--role <role> --children <paths.json> --out <report>`. It binds the children
+digest and the capture provenance digests, lists the rows at or above the
+story floor with their dispositions and bound packets, and lists the checks.
+The import refuses a PASS unless every check is true with its own evidence
+sentence naming an artifact and a number. The skeptic checks bijective
+accounting, that every row above the floor closes by a packet, a
+`wrapper_of` chain, `covered-by` or a mechanism row, that every bound
+packet's probe key and `applicable` predicate (quoted from the probe patch)
+answer the row's hypothesis, the recomputed floor arithmetic for every bound
+and novel row, and for every novel row the existing Chromium code that
+already avoids the work and the count showing it does not here. The
+adversary checks the probe patch digest against the packets and the twin
+build, packet sources against the logs on the host, one packet's counts
+re-derived from its log, the children digest recomputed at review time, and
+that no row above the floor is closed by prose. A reviewer who cannot open
+the probe patch or the log does not PASS.
+
+The report attests one children digest. If the children file changes after
+the review, the review is void: `decompose` registers every report by
+reviewer task id and refuses a task id that reappears with different
+digests. Editing a report's digests is not a re-review.
+
 ## Skeptic perspective
 
 Try to disprove the claimed performance conclusion:

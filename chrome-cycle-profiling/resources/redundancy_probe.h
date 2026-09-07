@@ -44,18 +44,79 @@
 #ifndef TOOLS_PERF_MECHANISM_REDUNDANCY_PROBE_H_
 #define TOOLS_PERF_MECHANISM_REDUNDANCY_PROBE_H_
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
+#pragma clang diagnostic ignored "-Wexit-time-destructors"
+#pragma clang diagnostic ignored "-Wshorten-64-to-32"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
+#include <time.h>
+#include <unistd.h>
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include <atomic>
 #include <mutex>
 #include <vector>
 
-#include "chrome-cycle-profiling/resources/cycle_profiler.h"
-
 namespace perf_instrumentation {
+
+inline uint64_t CurrentTid() {
+  static thread_local const uint64_t tid =
+      static_cast<uint64_t>(syscall(__NR_gettid));
+  return tid;
+}
+
+inline void WriteJsonString(FILE* output, const char* value) {
+  for (const unsigned char* p =
+           reinterpret_cast<const unsigned char*>(value ? value : "");
+       *p; ++p) {
+    if (*p == '"' || *p == '\\') {
+      std::fputc('\\', output);
+      std::fputc(*p, output);
+    } else if (*p >= 0x20) {
+      std::fputc(*p, output);
+    }
+  }
+}
+
+inline uint32_t CaptureBlockFromEnvironment(uint32_t fallback) {
+  const char* value = std::getenv("SP3_CYCLE_CAPTURE_BLOCK");
+  if (!value || !*value)
+    return fallback;
+  char* end = nullptr;
+  const unsigned long parsed = std::strtoul(value, &end, 10);
+  if (!end || *end || parsed == 0 || parsed > UINT32_MAX)
+    return fallback;
+  return static_cast<uint32_t>(parsed);
+}
+
+inline uint64_t MonotonicRawNanoseconds() {
+  struct timespec timestamp = {};
+  if (clock_gettime(CLOCK_MONOTONIC_RAW, &timestamp) != 0)
+    return 0;
+  return static_cast<uint64_t>(timestamp.tv_sec) * 1000000000ULL +
+         static_cast<uint64_t>(timestamp.tv_nsec);
+}
+
+inline std::atomic<bool>& ScoredWindowActive() {
+  static std::atomic<bool> active{false};
+  return active;
+}
+
+inline bool IsInScoredWindow() {
+  return ScoredWindowActive().load(std::memory_order_relaxed);
+}
+
+inline void SetScoredWindowActive(bool active) {
+  ScoredWindowActive().store(active, std::memory_order_relaxed);
+}
 
 // FNV-1a over arbitrary bytes; adequate for distinct-input counting.
 inline uint64_t HashBytes(const void* data, size_t length) {
@@ -76,12 +137,12 @@ inline uint64_t HashCombine(uint64_t a, uint64_t b) {
 class RedundancyCounter;
 
 inline std::mutex& RedundancyRegistryMutex() {
-  static std::mutex mutex;
+  static auto& mutex = *new std::mutex();
   return mutex;
 }
 
 inline std::vector<RedundancyCounter*>& RedundancyRegistry() {
-  static std::vector<RedundancyCounter*> registry;
+  static auto& registry = *new std::vector<RedundancyCounter*>();
   return registry;
 }
 
@@ -92,7 +153,8 @@ class RedundancyCounter {
   static constexpr size_t kCapacity = size_t{1} << kCapacityLog2;
 
   explicit RedundancyCounter(const char* site)
-      : site_(site), owner_tid_(CurrentTid()), slots_(kCapacity, 0) {
+      : site_(site), owner_tid_(CurrentTid()) {
+    slots_ = static_cast<uint64_t*>(calloc(kCapacity, sizeof(uint64_t)));
     std::lock_guard<std::mutex> lock(RedundancyRegistryMutex());
     RedundancyRegistry().push_back(this);
   }
@@ -114,7 +176,7 @@ class RedundancyCounter {
       applicable_calls_++;
     if (input_hash == 0)
       input_hash = 1;
-    if (overflow_)
+    if (overflow_ || !slots_)
       return;
     size_t index = static_cast<size_t>(input_hash * 0x9E3779B97F4A7C15ULL >>
                                        (64 - kCapacityLog2));
@@ -141,7 +203,9 @@ class RedundancyCounter {
     calls_ = applicable_calls_ = distinct_inputs_ = repeated_inputs_ = 0;
     thread_affinity_violations_ = 0;
     overflow_ = false;
-    memset(slots_.data(), 0, slots_.size() * sizeof(uint64_t));
+    if (slots_) {
+      memset(slots_, 0, kCapacity * sizeof(uint64_t));
+    }
   }
 
   void Emit(FILE* output, uint32_t block, const char* repetition_suite) const {
@@ -186,23 +250,36 @@ class RedundancyCounter {
   uint64_t repeated_inputs_ = 0;
   uint64_t thread_affinity_violations_ = 0;
   bool overflow_ = false;
-  std::vector<uint64_t> slots_;
+  uint64_t* slots_ = nullptr;
 };
 
 // Emit and reset every registered counter for the group that just closed.
-// Call only after the scored interval ends (alongside EmitCycleRow).
 inline void EmitRedundancyRows(FILE* output,
                                uint32_t block,
                                const char* repetition_suite) {
   block = CaptureBlockFromEnvironment(block);
+  const char* env_log = std::getenv("SP3_REDUNDANCY_LOG");
+  FILE* file_log = nullptr;
+  if (env_log && *env_log) {
+    file_log = std::fopen(env_log, "a");
+  }
   std::lock_guard<std::mutex> lock(RedundancyRegistryMutex());
   for (RedundancyCounter* counter : RedundancyRegistry()) {
     counter->Emit(output, block, repetition_suite);
+    if (file_log) {
+      counter->Emit(file_log, block, repetition_suite);
+    }
     counter->Reset();
   }
   std::fflush(output);
+  if (file_log) {
+    std::fflush(file_log);
+    std::fclose(file_log);
+  }
 }
 
 }  // namespace perf_instrumentation
+
+#pragma clang diagnostic pop
 
 #endif  // TOOLS_PERF_MECHANISM_REDUNDANCY_PROBE_H_

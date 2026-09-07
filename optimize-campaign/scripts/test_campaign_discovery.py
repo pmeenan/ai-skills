@@ -379,6 +379,191 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             self.assertTrue(copy.is_file())
             self.assertEqual(self.dir / "reviews" / "transcripts", copy.parent)
 
+    # ---------------- decomposition closes by count ----------------
+
+    def write_packet(self, name, *, story=STORY, applicable, repeat, site="probe/site"):
+        path = self.dir / "evidence" / f"{name}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "schema_version": 1, "kind": "redundancy-evidence",
+            "site": site, "target_story": story, "repetitions": 4,
+            "calls_total": 400, "calls_per_repetition_mean": 100.0,
+            "applicable_fraction": applicable, "repeat_fraction": repeat,
+            "distinct_inputs_mean": 50.0, "distinct_overflow": False,
+            "measured_avoidable_fraction_upper": max(applicable, repeat),
+            "sources": [{"path": "/nowhere/probe.log", "sha256": "0" * 64}],
+        }))
+        return {"path": f"evidence/{name}.json", "sha256": campaign.sha256_file(path)}
+
+    def test_rows_above_floor_close_by_count_not_prose(self):
+        config = {"share_floor_pct": 0.1,
+                  "calibration": {"story_mde_pct": {STORY: 0.5}}}  # floor 1.0%
+        unbounded = self.write_packet("always-applicable", applicable=1.0, repeat=0.0)
+        tight = self.write_packet("tight", applicable=0.02, repeat=0.01)
+        other_story = self.write_packet("other", story="Other", applicable=0.0, repeat=0.0)
+
+        def row(anchor, disposition, **extra):
+            return {"anchor": anchor, "disposition": disposition, **extra}
+
+        def run(paths, shares):
+            return campaign.enforce_measured_dispositions(
+                paths, shares, config, 0.1, STORY, self.dir)
+
+        # Prose only: refused with instructions.
+        with self.assertRaisesRegex(campaign.CampaignError, "without a bound count"):
+            run([row("Shape", "mandatory")], {1: 5.0})
+        # A packet whose applicable predicate is always true bounds nothing.
+        with self.assertRaisesRegex(campaign.CampaignError, "cannot close as mandatory"):
+            run([row("Shape", "mandatory", redundancy_evidence=unbounded)], {1: 5.0})
+        # A packet from another story is refused.
+        with self.assertRaisesRegex(campaign.CampaignError, "not the path's target story"):
+            run([row("Shape", "no-qualifying-mechanism", redundancy_evidence=other_story)], {1: 5.0})
+        # share x supported below floor closes, and records the arithmetic.
+        paths = [row("Shape", "mandatory", redundancy_evidence=tight)]
+        self.assertEqual({1}, run(paths, {1: 5.0}))
+        bound = paths[0]["measured_bound"]
+        self.assertAlmostEqual(0.1, bound["avoidable_share_upper_pct"])
+        self.assertEqual(1.0, bound["qualification_floor_pct"])
+        # Below the floor nothing is required.
+        self.assertEqual(set(), run([row("Small", "mandatory")], {1: 0.4}))
+        # A wrapper delegates to its dominant counted descendant.
+        paths = [row("Layout", "mandatory", wrapper_of=2),
+                 row("Shape", "mandatory", redundancy_evidence=tight)]
+        self.assertEqual({2}, run(paths, {1: 5.5, 2: 5.0}))
+        self.assertEqual([1, 2], paths[0]["measured_bound"]["wrapper_chain"])
+        # ... but not to a minor descendant, a mechanism row, or an unbound row.
+        with self.assertRaisesRegex(campaign.CampaignError, "less than 80%"):
+            run([row("Layout", "mandatory", wrapper_of=2),
+                 row("Shape", "mandatory", redundancy_evidence=tight)], {1: 5.0, 2: 2.0})
+        with self.assertRaisesRegex(campaign.CampaignError, "covered-by that mechanism"):
+            run([row("Layout", "mandatory", wrapper_of=2),
+                 row("Shape", "novel", mechanism_key="fonts/reuse")], {1: 5.0, 2: 4.5})
+        with self.assertRaisesRegex(campaign.CampaignError, "binds no packet"):
+            run([row("Layout", "mandatory", wrapper_of=2),
+                 row("Shape", "mandatory")], {1: 1.1, 2: 0.9})
+        with self.assertRaisesRegex(campaign.CampaignError, "loops"):
+            run([row("A", "mandatory", wrapper_of=2), row("B", "mandatory", wrapper_of=1)],
+                {1: 5.0, 2: 5.0})
+
+    def test_novel_rows_name_the_existing_mechanism(self):
+        item = {"anchor": "blink::InlineNode::PrepareLayout", "disposition": "novel"}
+        with self.assertRaisesRegex(campaign.CampaignError, "existing_mechanism"):
+            campaign.require_existing_mechanism(item, 1)
+        item["existing_mechanism"] = "Blink already reuses shape results by string match in some cases"
+        with self.assertRaisesRegex(campaign.CampaignError, "existing_mechanism"):
+            campaign.require_existing_mechanism(item, 1)
+        item["existing_mechanism"] = (
+            "InlineNode::ShapeText reuses ShapeResults by string and font match; "
+            "the probe shows 257 of 519 calls per rep still reshape unchanged text"
+        )
+        campaign.require_existing_mechanism(item, 1)
+
+    def test_gate_report_registry_refuses_edited_reviews(self):
+        def report(digests, task="task-skeptic"):
+            path = self.dir / "skeptic.json"
+            data = {"reviewer_task_id": task,
+                    "artifact_digests_checked": [f"sha256:{d}" for d in digests]}
+            path.write_text(json.dumps(data))
+            return data, path
+
+        data, path = report(["a" * 64])
+        campaign.register_gate_report(
+            self.dir, gate="decomposition", role="skeptic", report=data,
+            report_path=path, subject="decomposition:#001")
+        # Same report again: idempotent.
+        campaign.register_gate_report(
+            self.dir, gate="decomposition", role="skeptic", report=data,
+            report_path=path, subject="decomposition:#001")
+        registry = json.loads((self.dir / "reviews" / "gate-report-registry.json").read_text())
+        self.assertEqual(1, len(registry))
+        # Same task id attesting a different artifact: an edited review.
+        data, path = report(["b" * 64])
+        with self.assertRaisesRegex(campaign.CampaignError, "voids the review"):
+            campaign.register_gate_report(
+                self.dir, gate="decomposition", role="skeptic", report=data,
+                report_path=path, subject="decomposition:#001")
+        # Same task id and digests on another subject: also refused.
+        data, path = report(["a" * 64])
+        with self.assertRaisesRegex(campaign.CampaignError, "different artifact set"):
+            campaign.register_gate_report(
+                self.dir, gate="decomposition", role="skeptic", report=data,
+                report_path=path, subject="decomposition:#002")
+        # A fresh task id is a fresh review.
+        data, path = report(["b" * 64], task="task-skeptic-2")
+        campaign.register_gate_report(
+            self.dir, gate="decomposition", role="skeptic", report=data,
+            report_path=path, subject="decomposition:#001")
+
+    def test_decompose_review_scaffold_binds_rows_and_import_requires_numbers(self):
+        discovery = self.record_profile("profile-1")[0]
+        ledger = campaign.Ledger(self.dir).load()
+        parent = ledger.opp(discovery)
+        children = self.dir / "children.json"
+        children.write_text(json.dumps({
+            "area_key": parent["area_key"], "profile_id": parent["profile_id"],
+            "accounting_evidence": "all hotspots accounted for",
+            "paths": [{
+                "anchor": "Style recalc", "disposition": "mandatory",
+                "share_pct": 1.2, "evidence": "prose",
+                "work_refs": [{**ref, "accounting": "primary"}
+                              for ref in parent["expected_work_refs"]],
+            }],
+        }))
+        reports = {}
+        for role in ("skeptic", "adversary"):
+            out = self.dir / f"decomp-{role}.json"
+            self.assertEqual(0, self.run_cmd(
+                "decompose-review-scaffold", "--opp", str(discovery),
+                "--role", role, "--children", str(children), "--out", str(out)))
+            reports[role] = out
+        scaffold = json.loads(reports["skeptic"].read_text())
+        self.assertEqual("decomposition", scaffold["gate"])
+        self.assertEqual(
+            set(campaign.DECOMPOSITION_GATE_CHECKS["skeptic"]), set(scaffold["checks"]))
+        rows = scaffold["bound_inputs"]["rows_at_or_above_floor"]
+        self.assertEqual([1], [row["path"] for row in rows])
+        self.assertEqual("mandatory", rows[0]["disposition"])
+        digests = [d.removeprefix("sha256:") for d in scaffold["artifact_digests_checked"]]
+        self.assertEqual(campaign.sha256_file(children), digests[0])
+
+        def fill(role, evidence_maker):
+            report = json.loads(reports[role].read_text())
+            report["verdict"] = "PASS"
+            report["reviewer_task_id"] = f"task-{role}"
+            transcript = self.dir / f"{role}-transcript.md"
+            transcript.write_text("reviewed\n")
+            report["transcript_ref"] = str(transcript)
+            report["why_this_proves_real_speedup"] = (
+                "Every row above the floor closes by a count from the target story.")
+            for name in report["checks"]:
+                report["checks"][name] = True
+                report["check_evidence"][name] = evidence_maker(name)
+            reports[role].write_text(json.dumps(report))
+
+        namespace = argparse.Namespace(
+            gate_skeptic=str(reports["skeptic"]), gate_adversary=str(reports["adversary"]),
+            gate_skeptic_transcript=None, gate_adversary_transcript=None)
+        with mock.patch.object(campaign, "test_bypass_active", return_value=False):
+            with self.assertRaisesRegex(campaign.CampaignError, "not PASS"):
+                campaign.validate_gate_challenges(
+                    namespace, gate="decomposition", artifact_digests=digests,
+                    campaign_dir=self.dir, subject="decomposition:#001")
+            for role in ("skeptic", "adversary"):
+                fill(role, lambda name: f"opened the rows for {name}; they looked mandatory")
+            with self.assertRaisesRegex(campaign.CampaignError, "cite an artifact and a number"):
+                campaign.validate_gate_challenges(
+                    namespace, gate="decomposition", artifact_digests=digests,
+                    campaign_dir=self.dir, subject="decomposition:#001")
+            for role in ("skeptic", "adversary"):
+                fill(role, lambda name: f"children.json row 1 for {name}: 1.2% share vs 0.1% floor, packet 400 calls")
+            verified = campaign.validate_gate_challenges(
+                namespace, gate="decomposition", artifact_digests=digests,
+                campaign_dir=self.dir, subject="decomposition:#001")
+        self.assertEqual({"skeptic", "adversary"}, {r["role"] for r in verified})
+        registry = json.loads((self.dir / "reviews" / "gate-report-registry.json").read_text())
+        self.assertEqual({"task-skeptic", "task-adversary"},
+                         {entry["reviewer_task_id"] for entry in registry})
+
     # ---------------- capture provenance audit ----------------
 
     def test_capture_provenance_verifies_every_story_artifact(self):
