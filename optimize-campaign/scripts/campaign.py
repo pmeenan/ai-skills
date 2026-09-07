@@ -2536,6 +2536,7 @@ def load_bound_redundancy_packet(path_item, story, campaign_dir, *, missing_mess
 
 MEASURED_DISPOSITIONS = ("mandatory", "no-qualifying-mechanism")
 WRAPPER_DOMINANT_FRACTION = 0.8
+WRAPPER_CHAIN_MAX_DEPTH = 4
 EXISTING_MECHANISM_MIN_CHARS = 40
 EXISTING_MECHANISM_SYMBOL_RE = re.compile(r"::|\b[\w./-]+\.(?:cc|h|mm)\b")
 
@@ -2661,14 +2662,24 @@ def enforce_measured_dispositions(
                     f"Path {current} and its wrapper_of {target} must both "
                     "carry primary work refs"
                 )
-            if target_share < WRAPPER_DOMINANT_FRACTION * current_share:
+            if (
+                target_share < WRAPPER_DOMINANT_FRACTION * current_share
+                or target_share < WRAPPER_DOMINANT_FRACTION * share
+            ):
                 raise CampaignError(
                     f"Path {current} ({current_item['anchor']!r}, "
                     f"{current_share:.3f}%) names path {target} "
                     f"({target_share:.3f}%) as its wrapper_of, but that row "
-                    f"carries less than {WRAPPER_DOMINANT_FRACTION:.0%} of its "
-                    "share; a wrapper's count lives in its dominant descendant. "
-                    "Bind a packet to this row instead."
+                    f"carries less than {WRAPPER_DOMINANT_FRACTION:.0%} of the "
+                    f"share of path {index} ({share:.3f}%) that started this "
+                    "chain; a wrapper's count lives in its dominant descendant, "
+                    "and a chain of gradually smaller rows is not descent. Bind "
+                    "a packet to this row instead."
+                )
+            if len(seen) > WRAPPER_CHAIN_MAX_DEPTH:
+                raise CampaignError(
+                    f"Path {index} wrapper_of chain {seen} is deeper than "
+                    f"{WRAPPER_CHAIN_MAX_DEPTH}; bind the packet closer to the row"
                 )
             disposition = target_item.get("disposition")
             if disposition in ("novel", "known", "covered-by"):

@@ -441,6 +441,12 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         with self.assertRaisesRegex(campaign.CampaignError, "binds no packet"):
             run([row("Layout", "mandatory", wrapper_of=2),
                  row("Shape", "mandatory")], {1: 1.1, 2: 0.9})
+        # A chain of gradually smaller rows is not descent: every hop is
+        # measured against the row that started the chain.
+        with self.assertRaisesRegex(campaign.CampaignError, "started this chain"):
+            run([row("A", "mandatory", wrapper_of=2), row("B", "mandatory", wrapper_of=3),
+                 row("C", "mandatory", wrapper_of=4), row("D", "mandatory", redundancy_evidence=tight)],
+                {1: 5.0, 2: 4.2, 3: 3.5, 4: 2.9})
         with self.assertRaisesRegex(campaign.CampaignError, "loops"):
             run([row("A", "mandatory", wrapper_of=2), row("B", "mandatory", wrapper_of=1)],
                 {1: 5.0, 2: 5.0})

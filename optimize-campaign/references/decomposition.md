@@ -118,7 +118,10 @@ list) and `applicable` states the condition under which the work could be
 skipped. When the arithmetic does not clear the floor the row is a `novel`
 candidate at that fraction, or the probe is re-keyed; it is never closed by
 prose. Pure wrappers of a counted descendant use `wrapper_of` instead of
-their own packet; wrappers of a mechanism's samples are `covered-by`.
+their own packet; every hop of a `wrapper_of` chain must carry at least 80%
+of the share of the row that started the chain (a run of gradually smaller
+rows is not descent), and chains are at most four hops; wrappers of a
+mechanism's samples are `covered-by`.
 
 Reviewer reports are immutable. Every report the ledger host sees is
 registered under its reviewer task id with the digests it attested
