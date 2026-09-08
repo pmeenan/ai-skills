@@ -136,6 +136,19 @@ hypothesis). Marking the area root `novel` and covering every other row by
 it is refused twice: the root has no packet, and a `covered-by` row must sit
 under the owner's probed function, not merely share an ancestor with it.
 
+A packet's unit of count is the unit of work it bounds. A probe at the
+update root (`Document::UpdateStyleAndLayout`, `RequestMainFrameUpdate`)
+counts updates: its `applicable` (nothing dirty) can close the root row as
+`mandatory`, but it says nothing about how many elements, boxes or fragments
+each update touched, so it does not close the rows beneath it even though
+they sit under the probed function. Those rows close by a probe at the
+phase whose unit is theirs: `Element::RecalcStyle` per element (`applicable`
+= computed style unchanged), `BlockNode::Layout` per box (`LayoutResult`
+cache miss with identical inputs), `UpdateCcPictureLayer` per fragment
+(display items unchanged). The reviewer compares the packet's
+`calls_per_repetition_mean` with the phase's unit count before accepting a
+bound descendant row.
+
 Reviewer reports are immutable. Every report the ledger host sees is
 registered under its reviewer task id with the digests it attested
 (`reviews/gate-report-registry.json`); the same task id attesting a

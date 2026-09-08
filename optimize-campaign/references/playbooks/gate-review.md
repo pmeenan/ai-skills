@@ -56,7 +56,10 @@ and not a typed one, the recomputed floor arithmetic for every bound and
 novel row, and for every novel row the existing Chromium code that already
 avoids the work and the count showing it does not here. A row whose anchor
 is the area root or the frame update, marked novel with every other row
-covered by it, is a mechanically generated file, not a decomposition. The
+covered by it, is a mechanically generated file, not a decomposition. A
+packet from a probe at the update root bound to the rows beneath it is
+refused by the skeptic: its unit of count is the update, not the element,
+box or fragment those rows are made of (`calls_per_repetition_mean` tells). The
 adversary checks the probe patch digest against the packets and the twin
 build, packet sources against the logs on the host, one packet's counts
 re-derived from its log, the children digest recomputed at review time, and
