@@ -247,6 +247,20 @@ class RedundancyCounter {
   static constexpr size_t kCapacityLog2 = 17;  // 131072 slots
   static constexpr size_t kCapacity = size_t{1} << kCapacityLog2;
 
+  struct Stats {
+    uint64_t calls = 0;
+    uint64_t applicable_calls = 0;
+    uint64_t distinct_inputs = 0;
+    uint64_t repeated_inputs = 0;
+    uint64_t thread_affinity_violations = 0;
+    uint64_t timed_calls = 0;
+    uint64_t total_ns = 0;
+    uint64_t applicable_ns = 0;
+    uint64_t repeated_ns = 0;
+    uint64_t nested_calls = 0;
+    bool overflow = false;
+  };
+
   explicit RedundancyCounter(const char* site)
       : site_(site), owner_tid_(CurrentTid()) {
     slots_ = static_cast<uint64_t*>(calloc(kCapacity, sizeof(uint64_t)));
@@ -280,55 +294,51 @@ class RedundancyCounter {
     if (!IsInScoredWindow())
       return;
     if (owner_tid_ != CurrentTid()) {
-      thread_affinity_violations_++;
+      stats_.thread_affinity_violations++;
       return;
     }
-    calls_++;
+    stats_.calls++;
     if (applicable)
-      applicable_calls_++;
+      stats_.applicable_calls++;
     if (nested)
-      nested_calls_++;
+      stats_.nested_calls++;
     if (timed) {
-      timed_calls_++;
-      total_ns_ += elapsed_ns;
+      stats_.timed_calls++;
+      stats_.total_ns += elapsed_ns;
       if (applicable)
-        applicable_ns_ += elapsed_ns;
+        stats_.applicable_ns += elapsed_ns;
     }
     if (input_hash == 0)
       input_hash = 1;
-    if (overflow_ || !slots_)
+    if (stats_.overflow || !slots_)
       return;
     size_t index = static_cast<size_t>(input_hash * 0x9E3779B97F4A7C15ULL >>
                                        (64 - kCapacityLog2));
     for (size_t probe = 0; probe < kCapacity; ++probe) {
       uint64_t& slot = slots_[(index + probe) & (kCapacity - 1)];
       if (slot == input_hash) {
-        repeated_inputs_++;
+        stats_.repeated_inputs++;
         if (timed)
-          repeated_ns_ += elapsed_ns;
+          stats_.repeated_ns += elapsed_ns;
         return;
       }
       if (slot == 0) {
-        if (distinct_inputs_ + 1 >= kCapacity / 2) {
-          overflow_ = true;  // load factor guard; counts stay valid
+        if (stats_.distinct_inputs + 1 >= kCapacity / 2) {
+          stats_.overflow = true;  // load factor guard; counts stay valid
           return;
         }
         slot = input_hash;
-        distinct_inputs_++;
+        stats_.distinct_inputs++;
         return;
       }
     }
-    overflow_ = true;
+    stats_.overflow = true;
   }
 
  public:
 
   void Reset() {
-    calls_ = applicable_calls_ = distinct_inputs_ = repeated_inputs_ = 0;
-    timed_calls_ = total_ns_ = applicable_ns_ = repeated_ns_ = 0;
-    nested_calls_ = 0;
-    thread_affinity_violations_ = 0;
-    overflow_ = false;
+    stats_ = Stats{};
     if (slots_) {
       memset(slots_, 0, kCapacity * sizeof(uint64_t));
     }
@@ -355,44 +365,34 @@ class RedundancyCounter {
         static_cast<unsigned long long>(getpid()),
         static_cast<unsigned long long>(owner_tid_),
         static_cast<unsigned long long>(MonotonicRawNanoseconds()),
-        static_cast<unsigned long long>(calls_),
-        static_cast<unsigned long long>(applicable_calls_),
-        static_cast<unsigned long long>(distinct_inputs_),
-        static_cast<unsigned long long>(repeated_inputs_),
-        overflow_ ? 1 : 0,
-        static_cast<unsigned long long>(timed_calls_),
-        static_cast<unsigned long long>(total_ns_),
-        static_cast<unsigned long long>(applicable_ns_),
-        static_cast<unsigned long long>(repeated_ns_),
-        static_cast<unsigned long long>(nested_calls_),
+        static_cast<unsigned long long>(stats_.calls),
+        static_cast<unsigned long long>(stats_.applicable_calls),
+        static_cast<unsigned long long>(stats_.distinct_inputs),
+        static_cast<unsigned long long>(stats_.repeated_inputs),
+        stats_.overflow ? 1 : 0,
+        static_cast<unsigned long long>(stats_.timed_calls),
+        static_cast<unsigned long long>(stats_.total_ns),
+        static_cast<unsigned long long>(stats_.applicable_ns),
+        static_cast<unsigned long long>(stats_.repeated_ns),
+        static_cast<unsigned long long>(stats_.nested_calls),
         BuildId(),
-        static_cast<unsigned long long>(thread_affinity_violations_));
+        static_cast<unsigned long long>(stats_.thread_affinity_violations));
   }
 
   const char* site() const { return site_; }
-  uint64_t calls() const { return calls_; }
-  uint64_t applicable_calls() const { return applicable_calls_; }
-  uint64_t distinct_inputs() const { return distinct_inputs_; }
-  uint64_t repeated_inputs() const { return repeated_inputs_; }
-  bool overflow() const { return overflow_; }
-  uint64_t timed_calls() const { return timed_calls_; }
-  uint64_t total_ns() const { return total_ns_; }
-  uint64_t nested_calls() const { return nested_calls_; }
+  uint64_t calls() const { return stats_.calls; }
+  uint64_t applicable_calls() const { return stats_.applicable_calls; }
+  uint64_t distinct_inputs() const { return stats_.distinct_inputs; }
+  uint64_t repeated_inputs() const { return stats_.repeated_inputs; }
+  bool overflow() const { return stats_.overflow; }
+  uint64_t timed_calls() const { return stats_.timed_calls; }
+  uint64_t total_ns() const { return stats_.total_ns; }
+  uint64_t nested_calls() const { return stats_.nested_calls; }
 
  private:
   const char* site_;
   const uint64_t owner_tid_;
-  uint64_t calls_ = 0;
-  uint64_t applicable_calls_ = 0;
-  uint64_t distinct_inputs_ = 0;
-  uint64_t repeated_inputs_ = 0;
-  uint64_t thread_affinity_violations_ = 0;
-  uint64_t timed_calls_ = 0;
-  uint64_t total_ns_ = 0;
-  uint64_t applicable_ns_ = 0;
-  uint64_t repeated_ns_ = 0;
-  uint64_t nested_calls_ = 0;
-  bool overflow_ = false;
+  Stats stats_{};
   uint64_t* slots_ = nullptr;
   // Innermost open scope of this counter on its thread; nested scopes hand
   // their elapsed time to it so every call is timed exclusively.
