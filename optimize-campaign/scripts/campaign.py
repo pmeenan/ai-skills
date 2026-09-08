@@ -2751,12 +2751,38 @@ EXISTING_MECHANISM_MIN_CHARS = 40
 EXISTING_MECHANISM_SYMBOL_RE = re.compile(r"::|\b[\w./-]+\.(?:cc|h|mm)\b")
 
 
+ROW_TEXT_SYMBOL_RE = re.compile(r"[A-Za-z_][\w]*(?:::[\w~]+)+")
+
+
+def anchor_function(anchor):
+    """The function name of a profile anchor: everything before its
+    parameter list."""
+    return str(anchor or "").split("(")[0].strip()
+
+
+def names_other_code(text, own_function):
+    """Does the text name a symbol or file other than the row's own
+    function? A sentence about the probed function itself ("X checks dirty
+    bits") names no existing mechanism."""
+    own = anchor_function(own_function)
+    own_short = own.split("::")[-1]
+    for symbol in ROW_TEXT_SYMBOL_RE.findall(text):
+        if symbol == own or (own and own.endswith("::" + symbol)):
+            continue
+        if symbol.split("::")[-1] == own_short and own.endswith(symbol.split("::")[-1]):
+            continue
+        return True
+    return bool(re.search(r"\b[\w./-]+\.(?:cc|h|mm)\b", text))
+
+
 def require_existing_mechanism(path_item, index):
     """A novel row states what Chromium already does about this work.
 
     Most redundant work has an existing partial answer (a result cache, a
     reuse path, a dirty bit). The row names it (symbol or file) and the count
-    showing it does not cover this case, or says there is none and why.
+    showing it does not cover this case, or says there is none and why. The
+    code named is other code: the row's own function "checking dirty bits"
+    is the work under study, not the mechanism that already avoids it.
     """
     text = path_item.get("existing_mechanism")
     stripped = " ".join(text.split()) if isinstance(text, str) else ""
@@ -2771,6 +2797,15 @@ def require_existing_mechanism(path_item, index):
             "this work (a symbol like InlineNode::ShapeText or a file) and the "
             "count showing it does not here, or state that none exists and the "
             "count that proves the work repeats"
+        )
+    if not names_other_code(stripped, path_item.get("anchor")):
+        raise CampaignError(
+            f"Path {index} ({path_item['anchor'][:80]!r}) `existing_mechanism` "
+            "names only the row's own function. The existing mechanism is the "
+            "other Chromium code that already avoids part of this work (the "
+            "invalidation path, the result cache, the reuse path) and the "
+            "count showing what it misses; a sentence that the probed function "
+            "\"checks dirty bits\" names none."
         )
 
 
@@ -2867,6 +2902,14 @@ def enforce_measured_dispositions(
                 )
             seen.append(target)
             target_item = paths[target - 1]
+            if anchor_function(target_item.get("anchor")) == anchor_function(current_item.get("anchor")):
+                raise CampaignError(
+                    f"Path {current} ({current_item['anchor'][:80]!r}) names path "
+                    f"{target} as its wrapper_of, but that row is the same function "
+                    "under another entry. A wrapper's count lives in a counted "
+                    "descendant, not in another instance of itself; bind this "
+                    "row's packet and close it by its own bound."
+                )
             current_share = story_shares.get(current)
             target_share = story_shares.get(target)
             if target_share is None or current_share is None:
@@ -3599,6 +3642,80 @@ def enforce_row_text_numbers(paths, bound_rows, story_shares, config, base_floor
                 "the bound packet's numbers (its fractions, calls per repetition, "
                 "share x fraction) and names that packet; text carried over from "
                 "another packet or another revision is not this row's count."
+            )
+
+
+ROW_TEXT_TEMPLATE_RE = re.compile(
+    r"probe_[\w.-]+\.json|[A-Za-z_][\w]*(?:::[\w~]+)+|\b[\w-]+/[\w/-]+\b|\d+(?:\.\d+)?")
+ROW_INVARIANT_MIN_CHARS = 40
+
+
+def row_text_shape(text):
+    """A row's sentence with its numbers, symbols, sites and packet names
+    blanked: what is left is the template it was written from."""
+    return " ".join(ROW_TEXT_TEMPLATE_RE.sub("#", text).split()).lower()
+
+
+def enforce_row_text_distinct(paths):
+    """Each row's text is its own.
+
+    Two rows whose `existing_mechanism` (or `invariant`, across rows bound
+    to different packets) read the same once their numbers, symbols, probe
+    sites and packet names are blanked were written by one template with
+    the values swapped in, not from the stacks and the packet. The template
+    is refused wherever it appears. Rows closed by one packet may share
+    that packet's invariant sentence.
+    """
+    for field in ("existing_mechanism", "invariant"):
+        shapes = {}
+        for index, item in enumerate(paths, 1):
+            text = item.get(field)
+            if not isinstance(text, str) or len(text.strip()) < ROW_INVARIANT_MIN_CHARS:
+                continue
+            packet = (item.get("redundancy_evidence") or {}).get("path")
+            shapes.setdefault(row_text_shape(text), []).append((index, packet))
+        for shape, entries in shapes.items():
+            rows = [index for index, _ in entries]
+            packets = {packet for _, packet in entries}
+            # Rows closed by one packet share one invariant: the counted
+            # function's. Candidates each name their own mechanism.
+            if field == "invariant" and len(packets) == 1 and None not in packets:
+                continue
+            if len(rows) > 1:
+                raise CampaignError(
+                    f"Rows {rows[:12]} carry the same `{field}` sentence with the "
+                    f"numbers, symbols and packet names swapped ({shape[:120]!r}). "
+                    "A row's text is written from its own stacks and packet: "
+                    "what the trigger dirties, what the counted function does "
+                    "with it, and what the count shows. A template is refused."
+                )
+
+
+def enforce_mandatory_invariants(paths, bound):
+    """A mandatory row at or above the floor states its invariant.
+
+    The packet bounds the row's avoidable time; the row says why the rest is
+    the trigger's work: what the step dirties, what the counted function
+    does with it, and the code that does it. `invariant` (or `rationale`)
+    names a symbol or file and is at least ROW_INVARIANT_MIN_CHARS long; a
+    row whose text was blanked to pass the number check is refused.
+    """
+    for index in sorted(bound):
+        item = paths[index - 1]
+        if item.get("disposition") not in MEASURED_DISPOSITIONS:
+            continue
+        text = item.get("invariant") or item.get("rationale")
+        stripped = " ".join(text.split()) if isinstance(text, str) else ""
+        if (len(stripped) < ROW_INVARIANT_MIN_CHARS
+                or not EXISTING_MECHANISM_SYMBOL_RE.search(stripped)):
+            raise CampaignError(
+                f"Path {index} ({item['anchor'][:80]!r}) is {item['disposition']} "
+                "at/above the floor with a bound packet but no `invariant` text. "
+                "State the per-trigger invariant in `invariant`: what the step "
+                "dirties, what this function does with it and the code that "
+                "does it (a symbol or file), so a reader knows why the time the "
+                "packet leaves is the trigger's work. A row with no text closes "
+                "nothing."
             )
 
 
@@ -6382,6 +6499,8 @@ def cmd_decompose(args):
             result["paths"], relevance_rows, story_shares, ledger.data["config"],
             floor, parent.get("target_story"), ledger.dir,
         )
+        enforce_mandatory_invariants(result["paths"], bound)
+        enforce_row_text_distinct(result["paths"])
     wrongly_below_floor = [
         item for item in result["paths"]
         if item["disposition"] == "below-floor" and item["share_pct"] >= floor

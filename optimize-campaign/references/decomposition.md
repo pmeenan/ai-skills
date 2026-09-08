@@ -243,6 +243,30 @@ its share or its floor, or whose packet name is not the bound one. Text
 carried over from an earlier revision's packet, or from a script that set
 dispositions without writing rows, fails here.
 
+A row's text is its own. `decompose` refuses a `wrapper_of` that names
+another instance of the same function under another entry (a wrapper's
+count lives in a counted descendant); refuses a `novel` row whose
+`existing_mechanism` names only the row's own function ("X checks dirty
+bits" names no mechanism: the invalidation path, the result cache or the
+reuse path that already avoids part of the work is other code); refuses a
+`mandatory` or `no-qualifying-mechanism` row at or above the floor that
+binds a packet without an `invariant` sentence naming what the step
+dirties, what the function does with it and the code that does it; and
+refuses two rows whose `existing_mechanism`, or whose `invariant` under
+different packets, read the same once numbers, symbols, probe sites and
+packet names are blanked (rows closed by one packet share that packet's
+invariant). Rows written by a script with the values swapped in fail the
+last rule wherever the template appears.
+
+A predicate on a lifecycle update reads the whole frame tree. The
+workload runs in an iframe; a child view's `UpdateLifecycleToLayoutClean`
+delegates to the local root's `UpdateLifecyclePhases`, whose document is
+the harness page. A "nothing dirty" predicate that reads that document's
+bits reads clean while the phases it then runs (`ForAllNonThrottledLocalFrameViews`)
+do the iframe's work; the applicable call that carries half of the
+function's own time is that call. The dirtiness the predicate must OR
+together is every non-throttled local frame's.
+
 A packet is a reduction, never a file. `decompose` reduces every bound
 packet's `sources` again with `redundancy_evidence.py` on the ledger host
 and refuses the packet if any derived field (repetitions, calls, fractions,

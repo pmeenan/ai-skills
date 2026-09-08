@@ -510,6 +510,10 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
                  row("Shape", "mandatory", redundancy_evidence=tight)]
         self.assertEqual({2}, run(paths, {1: 5.5, 2: 5.0}))
         self.assertEqual([1, 2], paths[0]["measured_bound"]["wrapper_chain"])
+        # ... never to another instance of itself under another entry.
+        with self.assertRaisesRegex(campaign.CampaignError, "same function under another entry"):
+            run([row("Shape(int)", "mandatory", wrapper_of=2),
+                 row("Shape(int)", "mandatory", redundancy_evidence=tight)], {1: 5.5, 2: 5.0})
         # ... but not to a minor descendant, a mechanism row, or an unbound row.
         with self.assertRaisesRegex(campaign.CampaignError, "less than 80%"):
             run([row("Layout", "mandatory", wrapper_of=2),
@@ -850,6 +854,14 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         item = {"anchor": "blink::InlineNode::PrepareLayout", "disposition": "novel"}
         with self.assertRaisesRegex(campaign.CampaignError, "existing_mechanism"):
             campaign.require_existing_mechanism(item, 1)
+        # The row's own function is the work under study, not the mechanism.
+        item["existing_mechanism"] = ("blink::InlineNode::PrepareLayout checks dirty bits; "
+                                      "probe layout/prepare in probe_x.json measures 40% over 12 calls/rep.")
+        with self.assertRaisesRegex(campaign.CampaignError, "names only the row's own function"):
+            campaign.require_existing_mechanism(item, 1)
+        item["existing_mechanism"] = ("InlineItemsBuilder::AppendText reuses shape results only from the "
+                                      "same LayoutText; 40% of 12 calls/rep reshape identical text.")
+        campaign.require_existing_mechanism(item, 1)
         item["existing_mechanism"] = "Blink already reuses shape results by string match in some cases"
         with self.assertRaisesRegex(campaign.CampaignError, "existing_mechanism"):
             campaign.require_existing_mechanism(item, 1)
@@ -858,6 +870,37 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             "the probe shows 257 of 519 calls per rep still reshape unchanged text"
         )
         campaign.require_existing_mechanism(item, 1)
+
+    def test_row_text_is_not_a_template_and_mandatory_rows_state_an_invariant(self):
+        paths = [
+            {"anchor": "A(int)", "disposition": "novel",
+             "existing_mechanism": "blink::X::Y checks dirty bits; probe a/b in probe_r12_a.json measures 12.5% applicable fraction over 15.0 calls/rep."},
+            {"anchor": "B(int)", "disposition": "novel",
+             "existing_mechanism": "blink::Z::W checks dirty bits; probe c/d in probe_r12_b.json measures 7.2% applicable fraction over 3.0 calls/rep."},
+        ]
+        with self.assertRaisesRegex(campaign.CampaignError, r"Rows \[1, 2\] carry the same `existing_mechanism` sentence"):
+            campaign.enforce_row_text_distinct(paths)
+        paths[1]["existing_mechanism"] = ("StyleInvalidator marks the subtree; 7.2% of 3.0 calls/rep resolve "
+                                          "to the same ComputedStyle (probe_r12_b.json).")
+        campaign.enforce_row_text_distinct(paths)
+        rows = [{"anchor": "Layout(int)", "disposition": "mandatory"},
+                {"anchor": "Paint(int)", "disposition": "mandatory",
+                 "invariant": "Every frame the step dirties repaints through PaintLayerPainter::Paint; the packet leaves 0.3% repeated."}]
+        with self.assertRaisesRegex(campaign.CampaignError, "Path 1 .*no `invariant` text"):
+            campaign.enforce_mandatory_invariants(rows, {1, 2})
+        campaign.enforce_mandatory_invariants(rows, {2})
+        campaign.enforce_mandatory_invariants(rows, set())
+        # Rows closed by one packet share its invariant; rows under different
+        # packets do not share a sentence.
+        shared = "Every frame the step dirties repaints through PaintLayerPainter::Paint; the packet leaves 0.3% repeated."
+        same = [{"anchor": "A(int)", "disposition": "mandatory", "invariant": shared,
+                 "redundancy_evidence": {"path": "evidence/p.json"}},
+                {"anchor": "B(int)", "disposition": "mandatory", "invariant": shared,
+                 "redundancy_evidence": {"path": "evidence/p.json"}}]
+        campaign.enforce_row_text_distinct(same)
+        same[1]["redundancy_evidence"] = {"path": "evidence/q.json"}
+        with self.assertRaisesRegex(campaign.CampaignError, "same `invariant` sentence"):
+            campaign.enforce_row_text_distinct(same)
 
     def test_gate_report_registry_refuses_edited_reviews(self):
         def report(digests, task="task-skeptic"):

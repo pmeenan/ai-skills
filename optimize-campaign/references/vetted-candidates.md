@@ -113,6 +113,10 @@ condition, not a value.
     (`decompose` checks percentages, calls/rep figures and `probe_*.json`
     names); dispositions were assigned row by row with their text, not by
     a script that left another packet's numbers behind.
+18. Every row's text is its own: no `wrapper_of` to the same function, no
+    `existing_mechanism` that names only the row's function, an
+    `invariant` on every bound mandatory row, and no two rows sharing one
+    sentence with the values swapped (`decompose` checks all four).
 
 ## Coverage ledger
 

@@ -55,7 +55,8 @@ the work the hypothesis would skip understates the time and is refused;
 a predicate that reads a flag another function left behind is refused; a
 predicate that is a literal `true` or `false` is refused; a `repeat` key
 that is the object alone, or the inputs alone without the object, is
-refused), that every bound packet's `packet_time_coverage` is near 1 and
+refused; a "nothing dirty" predicate that reads one frame's document
+while the phases run for the frame tree is refused), that every bound packet's `packet_time_coverage` is near 1 and
 the pre-check's coverage table has no packet timing a fraction or a
 multiple of its function, that every count quoted in an `existing_mechanism`
 sentence is the packet's count (calls per repetition, applicable, repeat)
