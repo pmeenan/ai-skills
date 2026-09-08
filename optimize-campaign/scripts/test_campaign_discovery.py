@@ -382,19 +382,70 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
 
     # ---------------- decomposition closes by count ----------------
 
-    def write_packet(self, name, *, story=STORY, applicable, repeat, site="probe/site"):
+    def write_packet(self, name, *, story=STORY, applicable, repeat, site="probe/site",
+                     symbol=None, repetitions=4, calls=100):
+        """A packet the way the host makes one: rows in a browser log, a probe
+        patch that defines the site, and redundancy_evidence.py reducing them."""
+        import redundancy_evidence
+        log = self.dir / "logs" / f"{name}.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        repeated = round(repeat * calls)
+        rows = []
+        for _ in range(repetitions):
+            rows.append(json.dumps({
+                "schema_version": 1, "site": site, "group": f"run|{story}",
+                "calls": calls, "applicable_calls": round(applicable * calls),
+                "distinct_inputs": calls - repeated, "repeated_inputs": repeated,
+                "overflow": 0,
+            }))
+        log.write_text("".join(f"[SP3_REDUNDANCY_ROW] {row}\n" for row in rows))
+        patch = self.dir / "evidence" / "probes.patch"
+        patch.parent.mkdir(parents=True, exist_ok=True)
+        existing = patch.read_text() if patch.is_file() else ""
+        if f'RedundancyCounter("{site}")' not in existing:
+            patch.write_text(existing + f'+  new RedundancyCounter("{site}");\n')
+        packet = redundancy_evidence.build_packet(
+            [log], site, story, probe_symbol=symbol, patch=patch)
         path = self.dir / "evidence" / f"{name}.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({
-            "schema_version": 1, "kind": "redundancy-evidence",
-            "site": site, "target_story": story, "repetitions": 4,
-            "calls_total": 400, "calls_per_repetition_mean": 100.0,
-            "applicable_fraction": applicable, "repeat_fraction": repeat,
-            "distinct_inputs_mean": 50.0, "distinct_overflow": False,
-            "measured_avoidable_fraction_upper": max(applicable, repeat),
-            "sources": [{"path": "/nowhere/probe.log", "sha256": "0" * 64}],
-        }))
+        path.write_text(json.dumps(packet))
         return {"path": f"evidence/{name}.json", "sha256": campaign.sha256_file(path)}
+
+    def test_packets_must_re_derive_from_their_logs(self):
+        real = self.write_packet("real", applicable=0.3, repeat=0.5)
+        packet_path = self.dir / "evidence" / "real.json"
+        packet = json.loads(packet_path.read_text())
+        campaign.verify_packet_provenance(packet, packet_path, self.dir)
+
+        def refused(mutate, message):
+            data = json.loads(packet_path.read_text())
+            mutate(data)
+            typed = self.dir / "evidence" / "typed.json"
+            typed.write_text(json.dumps(data))
+            with self.assertRaisesRegex(campaign.CampaignError, message):
+                campaign.verify_packet_provenance(data, typed, self.dir)
+
+        # Typed fractions on a real log.
+        refused(lambda d: d.update(applicable_fraction=0.0, repeat_fraction=0.0),
+                "not produced by redundancy_evidence.py")
+        # A site the twin never counted, pointed at a real log.
+        refused(lambda d: d.update(site="root/update"), "does not re-derive")
+        # A log that is not on the host, or was replaced.
+        refused(lambda d: d["sources"][0].update(path="/nowhere/probe.log"), "does not resolve")
+        refused(lambda d: d["sources"][0].update(sha256="0" * 64), "digest that does not match")
+        # No patch, or a patch without the site.
+        refused(lambda d: d.pop("patch"), "records no probe patch")
+        (self.dir / "evidence" / "other.patch").write_text('+  new RedundancyCounter("x/y");\n')
+        refused(lambda d: d.update(patch="evidence/other.patch",
+                                   patch_sha256=campaign.sha256_file(self.dir / "evidence" / "other.patch")),
+                "defines no RedundancyCounter")
+        # The row binding path runs the same check.
+        item = {"anchor": "Row", "disposition": "mandatory", "redundancy_evidence": real}
+        campaign.load_bound_redundancy_packet(item, STORY, self.dir, missing_message="m")
+        data = json.loads(packet_path.read_text()); data["repeat_fraction"] = 0.0
+        typed = self.dir / "evidence" / "typed2.json"; typed.write_text(json.dumps(data))
+        item["redundancy_evidence"] = {"path": "evidence/typed2.json", "sha256": campaign.sha256_file(typed)}
+        with self.assertRaisesRegex(campaign.CampaignError, "not produced by"):
+            campaign.load_bound_redundancy_packet(item, STORY, self.dir, missing_message="m")
 
     def test_rows_above_floor_close_by_count_not_prose(self):
         config = {"share_floor_pct": 0.1,
@@ -469,20 +520,7 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         }]}
 
         def packet(name, symbol):
-            path = self.dir / "evidence" / f"{name}.json"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            data = {
-                "schema_version": 1, "kind": "redundancy-evidence", "site": name,
-                "target_story": STORY, "repetitions": 2, "calls_total": 10,
-                "calls_per_repetition_mean": 5.0, "applicable_fraction": 0.01,
-                "repeat_fraction": 0.0, "distinct_inputs_mean": 5.0,
-                "distinct_overflow": False, "measured_avoidable_fraction_upper": 0.01,
-                "sources": [{"path": "/nowhere/probe.log", "sha256": "0" * 64}],
-            }
-            if symbol:
-                data["probe_symbol"] = symbol
-            path.write_text(json.dumps(data))
-            return {"path": f"evidence/{name}.json", "sha256": campaign.sha256_file(path)}
+            return self.write_packet(name, applicable=0.01, repeat=0.0, site=name, symbol=symbol)
 
         shape = packet("shape", "ShapeText")
         rows = [
@@ -550,11 +588,7 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             "capture_id": "c1",
             "story_frontiers": [{"story": STORY, "artifact": str(artifact)}],
         }]}
-        shape = self.write_packet("shape", applicable=0.3, repeat=0.3)
-        shape_packet = json.loads((self.dir / "evidence" / "shape.json").read_text())
-        shape_packet["probe_symbol"] = "ShapeText"
-        (self.dir / "evidence" / "shape.json").write_text(json.dumps(shape_packet))
-        shape["sha256"] = campaign.sha256_file(self.dir / "evidence" / "shape.json")
+        shape = self.write_packet("shape", applicable=0.3, repeat=0.3, symbol="ShapeText")
         rows = [
             {"anchor": "ShapeText", "disposition": "novel", "mechanism_key": "fonts/reuse",
              "redundancy_evidence": shape},

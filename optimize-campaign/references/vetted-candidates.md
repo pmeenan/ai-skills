@@ -88,6 +88,10 @@ condition, not a value.
     `existing_mechanism` sentence are that packet's numbers. A candidate
     whose fraction, call count or applicable share cannot be found in a
     digest-bound packet was typed.
+12. Every packet re-derives from its cited logs on the ledger host and its
+    site is defined in its recorded probe patch (`decompose` checks both).
+    A packet whose numbers differ from its own log is fabricated evidence;
+    the human decides whether the campaign continues with that operator.
 
 ## Coverage ledger
 

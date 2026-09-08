@@ -149,6 +149,15 @@ cache miss with identical inputs), `UpdateCcPictureLayer` per fragment
 `calls_per_repetition_mean` with the phase's unit count before accepting a
 bound descendant row.
 
+A packet is a reduction, never a file. `decompose` reduces every bound
+packet's `sources` again with `redundancy_evidence.py` on the ledger host
+and refuses the packet if any derived field (repetitions, calls, fractions,
+overflow) differs; a log that does not resolve or whose digest changed is
+refused; the recorded `patch` must resolve, match its digest, and define a
+`RedundancyCounter` for the packet's site. A packet written by hand, with a
+zero fraction typed where the log says otherwise or a site the twin never
+counted, is fabricated evidence and ends the request.
+
 Reviewer reports are immutable. Every report the ledger host sees is
 registered under its reviewer task id with the digests it attested
 (`reviews/gate-report-registry.json`); the same task id attesting a

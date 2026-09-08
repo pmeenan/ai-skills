@@ -2590,7 +2590,103 @@ def load_bound_redundancy_packet(path_item, story, campaign_dir, *, missing_mess
             f"Redundancy evidence measured {packet.get('target_story')!r}, not the "
             f"path's target story {story!r}"
         )
+    verify_packet_provenance(packet, packet_path, campaign_dir)
     return packet
+
+
+PACKET_DERIVED_FIELDS = (
+    "repetitions", "calls_total", "calls_per_repetition_mean",
+    "distinct_inputs_mean", "applicable_fraction", "repeat_fraction",
+    "distinct_overflow",
+)
+PACKET_DERIVATION_TOLERANCE = 1e-6
+_PACKET_PROVENANCE_CACHE = set()
+
+
+def verify_packet_provenance(packet, packet_path, campaign_dir):
+    """A packet is a reduction of logs this host holds, from a probe the
+    recorded patch contains.
+
+    The gate reduces the packet's `sources` again with redundancy_evidence.py
+    and refuses the packet if any derived field differs: a packet typed by
+    hand, or edited after reduction, is not evidence. The `patch` the packet
+    records must resolve, match its digest, and contain a RedundancyCounter
+    for the packet's site; a site the twin was never built with has no
+    counts.
+    """
+    import redundancy_evidence
+    key = sha256_file(packet_path)
+    if key in _PACKET_PROVENANCE_CACHE:
+        return
+    logs = []
+    for source in packet.get("sources") or []:
+        log_path = pathlib.Path(str(source.get("path", "")))
+        if not log_path.is_absolute():
+            log_path = pathlib.Path(campaign_dir) / log_path
+        if not log_path.is_file():
+            raise CampaignError(
+                f"Packet {packet_path} cites browser log {source.get('path')!r}, "
+                "which does not resolve on this host; a packet is evidence only "
+                "with its log beside it"
+            )
+        if sha256_file(log_path) != source.get("sha256"):
+            raise CampaignError(
+                f"Packet {packet_path} cites browser log {source.get('path')!r} "
+                "with a digest that does not match the file on this host"
+            )
+        logs.append(log_path)
+    if not logs:
+        raise CampaignError(f"Packet {packet_path} records no browser log sources")
+    try:
+        rebuilt = redundancy_evidence.build_packet(
+            logs, packet["site"], packet["target_story"])
+    except ValueError as exc:
+        raise CampaignError(
+            f"Packet {packet_path} does not re-derive from its sources: {exc}"
+        ) from exc
+    for field in PACKET_DERIVED_FIELDS:
+        have, want = packet.get(field), rebuilt.get(field)
+        if isinstance(want, bool) or not isinstance(want, (int, float)):
+            same = have == want
+        else:
+            same = isinstance(have, (int, float)) and not isinstance(have, bool) and (
+                abs(float(have) - float(want))
+                <= PACKET_DERIVATION_TOLERANCE * max(1.0, abs(float(want))))
+        if not same:
+            raise CampaignError(
+                f"Packet {packet_path} was not produced by redundancy_evidence.py "
+                f"from the logs it cites: {field} is {have!r} in the packet and "
+                f"{want!r} when {packet['site']!r} is reduced again from "
+                f"{[str(l) for l in logs]}. A packet typed or edited by hand is "
+                "not evidence; regenerate it with redundancy_evidence.py."
+            )
+    patch = packet.get("patch")
+    if not patch:
+        raise CampaignError(
+            f"Packet {packet_path} records no probe patch; regenerate it with "
+            "redundancy_evidence.py --patch <probe patch>"
+        )
+    patch_path = pathlib.Path(str(patch))
+    if not patch_path.is_absolute():
+        patch_path = pathlib.Path(campaign_dir) / patch_path
+    if not patch_path.is_file():
+        raise CampaignError(
+            f"Packet {packet_path} records probe patch {patch!r}, which does not "
+            "resolve on this host"
+        )
+    if sha256_file(patch_path) != packet.get("patch_sha256"):
+        raise CampaignError(
+            f"Packet {packet_path} records probe patch {patch!r} with a digest "
+            "that does not match the file on this host"
+        )
+    site_re = re.compile(r'RedundancyCounter\(\s*"' + re.escape(packet["site"]) + '"')
+    if not site_re.search(patch_path.read_text(errors="replace")):
+        raise CampaignError(
+            f"Packet {packet_path} names site {packet['site']!r}, but the probe "
+            f"patch {patch!r} defines no RedundancyCounter for it; the twin this "
+            "packet claims to come from never counted that site"
+        )
+    _PACKET_PROVENANCE_CACHE.add(key)
 
 
 MEASURED_DISPOSITIONS = ("mandatory", "no-qualifying-mechanism")

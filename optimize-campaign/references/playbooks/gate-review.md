@@ -61,8 +61,9 @@ packet from a probe at the update root bound to the rows beneath it is
 refused by the skeptic: its unit of count is the update, not the element,
 box or fragment those rows are made of (`calls_per_repetition_mean` tells). The
 adversary checks the probe patch digest against the packets and the twin
-build, packet sources against the logs on the host, one packet's counts
-re-derived from its log, the children digest recomputed at review time, and
+build, packet sources against the logs on the host, every packet's counts
+re-derived from its log (`decompose` does this mechanically; the adversary
+confirms the log is the twin run it claims to be), the children digest recomputed at review time, and
 that no row above the floor is closed by prose. A reviewer who cannot open
 the probe patch or the log does not PASS.
 
