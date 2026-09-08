@@ -77,6 +77,10 @@ def reduce_rows(rows: list[dict], site: str, target_story: str) -> dict:
     if violations:
         raise RedundancyError("redundancy counter was touched from another thread")
     calls = [int(row["calls"]) for row in selected]
+    timed = [int(row.get("timed_calls", 0)) for row in selected]
+    total_ns = [int(row.get("total_ns", 0)) for row in selected]
+    applicable_ns = [int(row.get("applicable_ns", 0)) for row in selected]
+    repeated_ns = [int(row.get("repeated_ns", 0)) for row in selected]
     applicable = [int(row["applicable_calls"]) for row in selected]
     distinct = [int(row["distinct_inputs"]) for row in selected]
     repeated = [int(row["repeated_inputs"]) for row in selected]
@@ -84,10 +88,18 @@ def reduce_rows(rows: list[dict], site: str, target_story: str) -> dict:
     total_calls = sum(calls)
     if total_calls == 0:
         raise RedundancyError(f"site {site!r} never ran inside {target_story!r}'s scored window")
+    # Time-weighted only when every call in every repetition was recorded
+    # through a scope; a mixed row would weight some calls and not others.
+    time_weighted = sum(timed) == total_calls and sum(total_ns) > 0
+    ns_total = sum(total_ns)
     return {
         "site": site,
         "target_story": target_story,
         "repetitions": len(selected),
+        "time_weighted": time_weighted,
+        "total_ns_per_repetition_mean": statistics.fmean(total_ns) if time_weighted else None,
+        "applicable_time_fraction": sum(applicable_ns) / ns_total if time_weighted else None,
+        "repeat_time_fraction": sum(repeated_ns) / ns_total if time_weighted else None,
         "calls_total": total_calls,
         "calls_per_repetition_mean": statistics.fmean(calls),
         "calls_per_repetition_min": min(calls),
@@ -151,10 +163,30 @@ def load_packet(path: pathlib.Path) -> dict:
 
 
 def supported_avoidable_fraction(packet: dict) -> float | None:
-    """Largest avoidable fraction the counts can support, or None on overflow."""
+    """Largest avoidable fraction the packet can support: the greater of the
+    call-count and time-weighted bounds, so a row closes as mandatory only
+    when both say the avoidable share is small."""
     if packet.get("distinct_overflow"):
-        return float(packet["applicable_fraction"])
-    return max(float(packet["applicable_fraction"]), float(packet["repeat_fraction"]))
+        bound = float(packet["applicable_fraction"])
+        if packet.get("time_weighted"):
+            bound = max(bound, float(packet["applicable_time_fraction"]))
+        return bound
+    bound = max(float(packet["applicable_fraction"]), float(packet["repeat_fraction"]))
+    if packet.get("time_weighted"):
+        bound = max(bound, float(packet["applicable_time_fraction"]),
+                    float(packet["repeat_time_fraction"]))
+    return bound
+
+
+def hypothesis_bound(packet: dict, hypothesis: str) -> float | None:
+    """What a candidate may claim under one hypothesis: the smaller of the
+    call-count and time-weighted fractions for it, or None when the packet
+    carries no time."""
+    if not packet.get("time_weighted"):
+        return None
+    if hypothesis == "repeat":
+        return min(float(packet["repeat_fraction"]), float(packet["repeat_time_fraction"]))
+    return min(float(packet["applicable_fraction"]), float(packet["applicable_time_fraction"]))
 
 
 def main(argv=None) -> int:

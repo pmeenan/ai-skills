@@ -149,6 +149,18 @@ cache miss with identical inputs), `UpdateCcPictureLayer` per fragment
 `calls_per_repetition_mean` with the phase's unit count before accepting a
 bound descendant row.
 
+A packet measures time, not calls. Every call at a probed site is recorded
+through `RedundancyScope` (redundancy_probe.h) around the work the
+hypothesis would skip, so the packet carries `applicable_time_fraction` and
+`repeat_time_fraction` beside the call fractions. `decompose` refuses a
+count-only packet at or above the floor; a candidate's fraction is bounded
+by the smaller of the call and time fractions for its hypothesis, and a
+`mandatory` row closes only when the larger of them keeps `share x bound`
+below the floor. A root update that finds nothing dirty on 92% of its calls
+and 5% of its time is a 5% claim. A `repeat` hypothesis on a key that takes
+fewer than two distinct values per repetition (an object pointer) is refused:
+it names no input.
+
 A packet is a reduction, never a file. `decompose` reduces every bound
 packet's `sources` again with `redundancy_evidence.py` on the ledger host
 and refuses the packet if any derived field (repetitions, calls, fractions,

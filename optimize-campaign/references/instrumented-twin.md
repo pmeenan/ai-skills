@@ -45,6 +45,8 @@ twin (it shares the scored-window gate and the flush point):
 void StyleResolver::ResolveStyle(Element& element, const StyleRequest& request) {
   static thread_local perf_instrumentation::RedundancyCounter counter(
       "style/resolve-style");
+  // Prefer RedundancyScope: the gate binds only time-weighted packets.
+  // perf_instrumentation::RedundancyScope scope(counter, key, applicable);
   counter.Record(perf_instrumentation::HashCombine(
                      reinterpret_cast<uintptr_t>(&element), request.Hash()),
                  /*applicable=*/!element.NeedsStyleRecalc());

@@ -9,18 +9,22 @@ import redundancy_evidence as re_
 
 
 def row(site="style/resolve", group="1|TodoMVC-React", calls=100, applicable=40,
-        distinct=25, repeated=75, overflow=0):
-    return (
-        "[SP3_REDUNDANCY_ROW] "
-        + json.dumps({
-            "schema_version": 1, "block": 1, "capture_nonce": "n", "site": site,
-            "group": group, "pid": 1, "tid": 1, "emitted_monotonic_raw_ns": 5,
-            "calls": calls, "applicable_calls": applicable, "distinct_inputs": distinct,
-            "repeated_inputs": repeated, "overflow": overflow,
-            "thread_affinity_violations": 0,
+        distinct=25, repeated=75, overflow=0, timed=True, ns_per_call=10,
+        applicable_ns=None, repeated_ns=None):
+    data = {
+        "schema_version": 1, "block": 1, "capture_nonce": "n", "site": site,
+        "group": group, "pid": 1, "tid": 1, "emitted_monotonic_raw_ns": 5,
+        "calls": calls, "applicable_calls": applicable, "distinct_inputs": distinct,
+        "repeated_inputs": repeated, "overflow": overflow,
+        "thread_affinity_violations": 0,
+    }
+    if timed:
+        data.update({
+            "timed_calls": calls, "total_ns": calls * ns_per_call,
+            "applicable_ns": applicable * ns_per_call if applicable_ns is None else applicable_ns,
+            "repeated_ns": repeated * ns_per_call if repeated_ns is None else repeated_ns,
         })
-        + "\n"
-    )
+    return "[SP3_REDUNDANCY_ROW] " + json.dumps(data) + "\n"
 
 
 class RedundancyEvidenceTest(unittest.TestCase):
@@ -49,6 +53,25 @@ class RedundancyEvidenceTest(unittest.TestCase):
         self.assertAlmostEqual(0.75, re_.supported_avoidable_fraction(packet))
         self.assertEqual("redundancy-evidence", packet["kind"])
         self.assertTrue(packet["sources"][0]["sha256"])
+
+    def test_time_weighting_needs_every_call_timed(self):
+        # Calls carry time: the packet reports time fractions and the closing
+        # bound is the larger of the count and time bounds.
+        rc, packet = self.packet([row(applicable=90, repeated=10, applicable_ns=50, repeated_ns=900)])
+        self.assertEqual(0, rc)
+        self.assertTrue(packet["time_weighted"])
+        self.assertAlmostEqual(0.05, packet["applicable_time_fraction"])
+        self.assertAlmostEqual(0.90, packet["repeat_time_fraction"])
+        self.assertAlmostEqual(0.90, re_.supported_avoidable_fraction(packet))
+        self.assertAlmostEqual(0.05, re_.hypothesis_bound(packet, "applicable"))
+        self.assertAlmostEqual(0.10, re_.hypothesis_bound(packet, "repeat"))
+        # Rows without time, or with some calls untimed, are count-only.
+        rc, packet = self.packet([row(timed=False)])
+        self.assertFalse(packet["time_weighted"])
+        self.assertIsNone(packet["applicable_time_fraction"])
+        self.assertIsNone(re_.hypothesis_bound(packet, "applicable"))
+        rc, packet = self.packet([row(), row(group="2|TodoMVC-React", timed=False)])
+        self.assertFalse(packet["time_weighted"])
 
     def test_missing_story_or_site_fails(self):
         rc, packet = self.packet([row(group="1|TodoMVC-Vue")])

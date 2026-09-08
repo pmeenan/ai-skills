@@ -2597,8 +2597,23 @@ def load_bound_redundancy_packet(path_item, story, campaign_dir, *, missing_mess
 PACKET_DERIVED_FIELDS = (
     "repetitions", "calls_total", "calls_per_repetition_mean",
     "distinct_inputs_mean", "applicable_fraction", "repeat_fraction",
-    "distinct_overflow",
+    "distinct_overflow", "time_weighted", "applicable_time_fraction",
+    "repeat_time_fraction",
 )
+REPEAT_KEY_MIN_DISTINCT = 2.0
+
+
+def require_time_weighted(packet, path_item):
+    """A call count says how often a site ran, not how much of its time
+    those calls carried; only a time-weighted packet bounds avoidable time."""
+    if not packet.get("time_weighted"):
+        raise CampaignError(
+            f"Path {path_item['anchor'][:80]!r} binds packet {packet['site']!r} "
+            "that counts calls but carries no time (not every call was recorded "
+            "through a RedundancyScope). A fraction of calls is not a fraction "
+            "of the row's time; re-run the probe with RedundancyScope around the "
+            "work the hypothesis would skip."
+        )
 PACKET_DERIVATION_TOLERANCE = 1e-6
 _PACKET_PROVENANCE_CACHE = set()
 
@@ -2766,6 +2781,7 @@ def enforce_measured_dispositions(
                 "counted descendant row declares wrapper_of: <path index>."
             ),
         )
+        require_time_weighted(packet, item)
         supported = redundancy_evidence.supported_avoidable_fraction(packet)
         upper = share * supported
         if upper >= floor:
@@ -3171,8 +3187,11 @@ def bind_redundancy_evidence(path_item, story, fraction, campaign_dir):
             f"Path {path_item['anchor']!r} packet_hypothesis must be one of "
             f"{PACKET_HYPOTHESES}"
         )
+    require_time_weighted(packet, path_item)
     applicable = float(packet["applicable_fraction"])
     repeat = float(packet["repeat_fraction"])
+    applicable_time = float(packet["applicable_time_fraction"])
+    repeat_time = float(packet["repeat_time_fraction"])
     if hypothesis == "applicable":
         if applicable >= APPLICABLE_SATURATED:
             raise CampaignError(
@@ -3183,7 +3202,7 @@ def bind_redundancy_evidence(path_item, story, fraction, campaign_dir):
                 "was logged as applicable). Fix the predicate, or state the "
                 "repeat hypothesis with packet_hypothesis: repeat"
             )
-        supported = applicable
+        supported = min(applicable, applicable_time)
     else:
         if packet.get("distinct_overflow"):
             raise CampaignError(
@@ -3191,13 +3210,23 @@ def bind_redundancy_evidence(path_item, story, fraction, campaign_dir):
                 f"packet {packet['site']!r} whose distinct-input set overflowed; "
                 "its repeat fraction is not a measurement"
             )
-        supported = repeat
+        if float(packet.get("distinct_inputs_mean") or 0.0) < REPEAT_KEY_MIN_DISTINCT:
+            raise CampaignError(
+                f"Path {path_item['anchor']!r} claims a repeat hypothesis on "
+                f"packet {packet['site']!r} whose key took "
+                f"{float(packet.get('distinct_inputs_mean') or 0.0):.1f} distinct "
+                "values per repetition; a key that never varies (an object pointer) "
+                "names no input, so its repeats are not repeated work. Key the "
+                "probe on the inputs the hypothesis says are unchanged."
+            )
+        supported = min(repeat, repeat_time)
     if fraction > supported + REDUNDANCY_FRACTION_TOLERANCE:
         raise CampaignError(
             f"Path {path_item['anchor']!r} claims avoidable fraction {fraction:.2f} "
             f"under the {hypothesis!r} hypothesis but the probe supports at most "
-            f"{supported:.2f} (applicable {applicable:.2f}, repeated inputs "
-            f"{repeat:.2f} over {packet['calls_total']} calls"
+            f"{supported:.2f} (applicable {applicable:.2f} of calls, "
+            f"{applicable_time:.2f} of time; repeated inputs {repeat:.2f} of calls, "
+            f"{repeat_time:.2f} of time, over {packet['calls_total']} calls"
             + (", distinct-input set overflowed" if packet.get("distinct_overflow") else "")
             + "); lower the claim, name the other hypothesis in the row text with "
             "packet_hypothesis, or find the missing applicability"
@@ -3212,6 +3241,9 @@ def bind_redundancy_evidence(path_item, story, fraction, campaign_dir):
         "distinct_overflow": packet["distinct_overflow"],
         "packet_hypothesis": hypothesis,
         "supported_avoidable_fraction": supported,
+        "applicable_time_fraction": applicable_time,
+        "repeat_time_fraction": repeat_time,
+        "total_ns_per_repetition_mean": packet.get("total_ns_per_repetition_mean"),
         "probe_symbol": packet.get("probe_symbol"),
     }
 

@@ -383,7 +383,8 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
     # ---------------- decomposition closes by count ----------------
 
     def write_packet(self, name, *, story=STORY, applicable, repeat, site="probe/site",
-                     symbol=None, repetitions=4, calls=100):
+                     symbol=None, repetitions=4, calls=100, timed=True,
+                     applicable_time=None, repeat_time=None, distinct=None):
         """A packet the way the host makes one: rows in a browser log, a probe
         patch that defines the site, and redundancy_evidence.py reducing them."""
         import redundancy_evidence
@@ -392,12 +393,20 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         repeated = round(repeat * calls)
         rows = []
         for _ in range(repetitions):
-            rows.append(json.dumps({
+            data = {
                 "schema_version": 1, "site": site, "group": f"run|{story}",
                 "calls": calls, "applicable_calls": round(applicable * calls),
-                "distinct_inputs": calls - repeated, "repeated_inputs": repeated,
-                "overflow": 0,
-            }))
+                "distinct_inputs": calls - repeated if distinct is None else distinct,
+                "repeated_inputs": repeated, "overflow": 0,
+            }
+            if timed:
+                total_ns = calls * 1000
+                data.update({
+                    "timed_calls": calls, "total_ns": total_ns,
+                    "applicable_ns": round((applicable if applicable_time is None else applicable_time) * total_ns),
+                    "repeated_ns": round((repeat if repeat_time is None else repeat_time) * total_ns),
+                })
+            rows.append(json.dumps(data))
         log.write_text("".join(f"[SP3_REDUNDANCY_ROW] {row}\n" for row in rows))
         patch = self.dir / "evidence" / "probes.patch"
         patch.parent.mkdir(parents=True, exist_ok=True)
@@ -573,6 +582,38 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
                 campaign.bind_redundancy_evidence(item, STORY, 0.2, self.dir)
             item["packet_hypothesis"] = "repeat"
             campaign.bind_redundancy_evidence(item, STORY, 0.2, self.dir)
+
+    def test_candidates_are_bounded_by_time_not_calls(self):
+        with mock.patch.object(campaign, "test_bypass_active", return_value=False):
+            # A count-only packet binds nothing above the floor.
+            untimed = self.write_packet("untimed", applicable=0.3, repeat=0.3, timed=False)
+            item = {"anchor": "Root", "disposition": "novel", "mechanism_key": "x/y",
+                    "redundancy_evidence": untimed}
+            with self.assertRaisesRegex(campaign.CampaignError, "carries no time"):
+                campaign.bind_redundancy_evidence(item, STORY, 0.1, self.dir)
+            config = {"share_floor_pct": 0.1, "calibration": {"story_mde_pct": {STORY: 0.5}}}
+            rows = [{"anchor": "Root", "disposition": "mandatory", "redundancy_evidence": untimed}]
+            with self.assertRaisesRegex(campaign.CampaignError, "carries no time"):
+                campaign.enforce_measured_dispositions(rows, {1: 5.0}, config, 0.1, STORY, self.dir)
+            # 92% of calls skippable but 5% of the time: the claim is 5%.
+            cheap = self.write_packet("cheap", applicable=0.92, repeat=0.1, applicable_time=0.05)
+            item = {"anchor": "Root", "disposition": "novel", "mechanism_key": "x/y",
+                    "redundancy_evidence": cheap}
+            with self.assertRaisesRegex(campaign.CampaignError, "0.05 of time"):
+                campaign.bind_redundancy_evidence(item, STORY, 0.5, self.dir)
+            campaign.bind_redundancy_evidence(item, STORY, 0.05, self.dir)
+            self.assertAlmostEqual(0.05, item["redundancy_summary"]["supported_avoidable_fraction"])
+            # ... and such a row does not close as mandatory either: the
+            # closing bound is the larger of the count and time bounds.
+            rows = [{"anchor": "Root", "disposition": "mandatory", "redundancy_evidence": cheap}]
+            with self.assertRaisesRegex(campaign.CampaignError, "cannot close as mandatory"):
+                campaign.enforce_measured_dispositions(rows, {1: 5.0}, config, 0.1, STORY, self.dir)
+            # A repeat hypothesis on a key that never varies names no input.
+            pointer = self.write_packet("pointer", applicable=0.0, repeat=0.67, distinct=1)
+            item = {"anchor": "Root", "disposition": "novel", "mechanism_key": "x/z",
+                    "redundancy_evidence": pointer, "packet_hypothesis": "repeat"}
+            with self.assertRaisesRegex(campaign.CampaignError, "key that never varies"):
+                campaign.bind_redundancy_evidence(item, STORY, 0.6, self.dir)
 
     def test_covered_by_rows_sit_under_the_owners_probe(self):
         story_dir = self.dir / "results" / "analysis" / "stories" / STORY

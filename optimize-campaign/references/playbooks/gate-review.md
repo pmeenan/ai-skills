@@ -48,9 +48,10 @@ sentence naming an artifact and a number. The skeptic checks bijective
 accounting, that every row above the floor closes by a packet, a
 `wrapper_of` chain, `covered-by` or a mechanism row, that every bound
 packet's probe key and `applicable` predicate (quoted from the probe patch)
-answer the row's hypothesis, that every novel/known row binds a packet from
-a probe on its own work and claims no more than the number its
-`packet_hypothesis` names, that every count quoted in an `existing_mechanism`
+answer the row's hypothesis, that every novel/known row binds a time-weighted packet from
+a probe on its own work and claims no more than the smaller of the call and
+time fractions its `packet_hypothesis` names (a scope that covers less than
+the work the hypothesis would skip understates the time and is refused), that every count quoted in an `existing_mechanism`
 sentence is the packet's count (calls per repetition, applicable, repeat)
 and not a typed one, the recomputed floor arithmetic for every bound and
 novel row, and for every novel row the existing Chromium code that already

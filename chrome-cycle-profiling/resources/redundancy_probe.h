@@ -15,18 +15,34 @@
 //   applicable_calls  entries where the proposed invariant held (caller-supplied)
 //   distinct_inputs   distinct input hashes seen in the scored group
 //   repeated_inputs   calls whose input hash was already seen in the group
+//   total_ns          wall time inside the probed scope (timed calls only)
+//   applicable_ns     that time on calls where the invariant held
+//   repeated_ns       that time on calls whose input hash was already seen
+//
+// A call count says how often a site ran; it does not say how much of the
+// site's time those calls carried. A root update that finds nothing dirty on
+// 92% of its calls spends its time in the other 8%, so `applicable_calls`
+// alone overstates what skipping those calls would save. The campaign gate
+// therefore binds only packets whose rows are time-weighted: every call was
+// recorded through a RedundancyScope covering the work the hypothesis would
+// skip, so `applicable_ns / total_ns` bounds the avoidable time.
 //
 // Usage (instrumented twin only; never lands):
 //
 //   #include "chrome-cycle-profiling/resources/redundancy_probe.h"
 //
-//   void StyleResolver::ResolveStyle(Element& element) {
+//   const LayoutResult* BlockNode::Layout(const ConstraintSpace& space, ...) {
 //     static thread_local perf_instrumentation::RedundancyCounter counter(
-//         "style/resolve-style");
-//     counter.Record(perf_instrumentation::HashBytes(&key, sizeof key),
-//                    /*applicable=*/element.NeedsStyleRecalc());
-//     ...
+//         "layout/box-layout");
+//     perf_instrumentation::RedundancyScope scope(counter);
+//     scope.SetKey(perf_instrumentation::HashCombine(box_key, space_hash));
+//     ...   // the work the hypothesis would skip
+//     scope.SetApplicable(cache_status == LayoutCacheStatus::kHit);
+//     return result;   // the scope records key, applicable and elapsed time
 //   }
+//
+// `Record(key, applicable)` still exists for counting alone; rows it produces
+// carry no time and the gate refuses them above the story floor.
 //
 // Emit rows from the same place the cycle rows are flushed (after the scored
 // interval closes, never inside a score timer):
@@ -36,7 +52,9 @@
 // Rows look like:
 //   [SP3_REDUNDANCY_ROW] {"schema_version":1,"site":"style/resolve-style",
 //     "group":"3|TodoMVC-React","calls":8123,"applicable_calls":8123,
-//     "distinct_inputs":412,"repeated_inputs":7711,"overflow":0,...}
+//     "distinct_inputs":412,"repeated_inputs":7711,"overflow":0,
+//     "timed_calls":8123,"total_ns":41230000,"applicable_ns":40100000,
+//     "repeated_ns":39000000,...}
 //
 // `redundancy_evidence.py` reduces the rows into the packet that
 // `campaign.py decompose` binds to the proposal.
@@ -163,8 +181,20 @@ class RedundancyCounter {
   RedundancyCounter& operator=(const RedundancyCounter&) = delete;
 
   // Cheap enough for hot paths: one branch outside the scored window, a
-  // few loads inside it. No allocation, no syscalls.
+  // few loads inside it. No allocation, no syscalls. Counts only; prefer
+  // RedundancyScope so the row is time-weighted.
   void Record(uint64_t input_hash, bool applicable) {
+    RecordImpl(input_hash, applicable, /*timed=*/false, /*elapsed_ns=*/0);
+  }
+
+  // A call recorded with the wall time its scope covered.
+  void RecordTimed(uint64_t input_hash, bool applicable, uint64_t elapsed_ns) {
+    RecordImpl(input_hash, applicable, /*timed=*/true, elapsed_ns);
+  }
+
+ private:
+  void RecordImpl(uint64_t input_hash, bool applicable, bool timed,
+                  uint64_t elapsed_ns) {
     if (!IsInScoredWindow())
       return;
     if (owner_tid_ != CurrentTid()) {
@@ -174,6 +204,12 @@ class RedundancyCounter {
     calls_++;
     if (applicable)
       applicable_calls_++;
+    if (timed) {
+      timed_calls_++;
+      total_ns_ += elapsed_ns;
+      if (applicable)
+        applicable_ns_ += elapsed_ns;
+    }
     if (input_hash == 0)
       input_hash = 1;
     if (overflow_ || !slots_)
@@ -184,6 +220,8 @@ class RedundancyCounter {
       uint64_t& slot = slots_[(index + probe) & (kCapacity - 1)];
       if (slot == input_hash) {
         repeated_inputs_++;
+        if (timed)
+          repeated_ns_ += elapsed_ns;
         return;
       }
       if (slot == 0) {
@@ -199,8 +237,11 @@ class RedundancyCounter {
     overflow_ = true;
   }
 
+ public:
+
   void Reset() {
     calls_ = applicable_calls_ = distinct_inputs_ = repeated_inputs_ = 0;
+    timed_calls_ = total_ns_ = applicable_ns_ = repeated_ns_ = 0;
     thread_affinity_violations_ = 0;
     overflow_ = false;
     if (slots_) {
@@ -222,6 +263,8 @@ class RedundancyCounter {
         "\",\"pid\":%llu,\"tid\":%llu,\"emitted_monotonic_raw_ns\":%llu,"
         "\"calls\":%llu,\"applicable_calls\":%llu,\"distinct_inputs\":%llu,"
         "\"repeated_inputs\":%llu,\"overflow\":%d,"
+        "\"timed_calls\":%llu,\"total_ns\":%llu,\"applicable_ns\":%llu,"
+        "\"repeated_ns\":%llu,"
         "\"thread_affinity_violations\":%llu}\n",
         static_cast<unsigned long long>(getpid()),
         static_cast<unsigned long long>(owner_tid_),
@@ -231,6 +274,10 @@ class RedundancyCounter {
         static_cast<unsigned long long>(distinct_inputs_),
         static_cast<unsigned long long>(repeated_inputs_),
         overflow_ ? 1 : 0,
+        static_cast<unsigned long long>(timed_calls_),
+        static_cast<unsigned long long>(total_ns_),
+        static_cast<unsigned long long>(applicable_ns_),
+        static_cast<unsigned long long>(repeated_ns_),
         static_cast<unsigned long long>(thread_affinity_violations_));
   }
 
@@ -240,6 +287,8 @@ class RedundancyCounter {
   uint64_t distinct_inputs() const { return distinct_inputs_; }
   uint64_t repeated_inputs() const { return repeated_inputs_; }
   bool overflow() const { return overflow_; }
+  uint64_t timed_calls() const { return timed_calls_; }
+  uint64_t total_ns() const { return total_ns_; }
 
  private:
   const char* site_;
@@ -249,8 +298,48 @@ class RedundancyCounter {
   uint64_t distinct_inputs_ = 0;
   uint64_t repeated_inputs_ = 0;
   uint64_t thread_affinity_violations_ = 0;
+  uint64_t timed_calls_ = 0;
+  uint64_t total_ns_ = 0;
+  uint64_t applicable_ns_ = 0;
+  uint64_t repeated_ns_ = 0;
   bool overflow_ = false;
   uint64_t* slots_ = nullptr;
+};
+
+// Records one call, with its wall time, when the scope closes. Declare it at
+// the top of the work the hypothesis would skip; set the key and the
+// applicable flag whenever they become known before the scope ends.
+class RedundancyScope {
+ public:
+  explicit RedundancyScope(RedundancyCounter& counter,
+                           uint64_t input_hash = 0,
+                           bool applicable = false)
+      : counter_(counter),
+        input_hash_(input_hash),
+        applicable_(applicable),
+        active_(IsInScoredWindow()),
+        start_ns_(active_ ? MonotonicRawNanoseconds() : 0) {}
+
+  RedundancyScope(const RedundancyScope&) = delete;
+  RedundancyScope& operator=(const RedundancyScope&) = delete;
+
+  void SetKey(uint64_t input_hash) { input_hash_ = input_hash; }
+  void SetApplicable(bool applicable) { applicable_ = applicable; }
+
+  ~RedundancyScope() {
+    if (!active_)
+      return;
+    uint64_t end_ns = MonotonicRawNanoseconds();
+    counter_.RecordTimed(input_hash_, applicable_,
+                         end_ns > start_ns_ ? end_ns - start_ns_ : 0);
+  }
+
+ private:
+  RedundancyCounter& counter_;
+  uint64_t input_hash_;
+  bool applicable_;
+  const bool active_;
+  const uint64_t start_ns_;
 };
 
 // Emit and reset every registered counter for the group that just closed.
