@@ -2679,7 +2679,10 @@ def verify_packet_provenance(packet, packet_path, campaign_dir):
             f"Packet {packet_path} records probe patch {patch!r} with a digest "
             "that does not match the file on this host"
         )
-    site_re = re.compile(r'RedundancyCounter\(\s*"' + re.escape(packet["site"]) + '"')
+    # The site string may sit on the next line of a unified diff, behind
+    # the line's "+" marker.
+    site_re = re.compile(
+        r'RedundancyCounter\(\s*(?:[+ ]\s*)?"' + re.escape(packet["site"]) + '"')
     if not site_re.search(patch_path.read_text(errors="replace")):
         raise CampaignError(
             f"Packet {packet_path} names site {packet['site']!r}, but the probe "

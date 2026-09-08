@@ -402,8 +402,9 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         patch = self.dir / "evidence" / "probes.patch"
         patch.parent.mkdir(parents=True, exist_ok=True)
         existing = patch.read_text() if patch.is_file() else ""
-        if f'RedundancyCounter("{site}")' not in existing:
-            patch.write_text(existing + f'+  new RedundancyCounter("{site}");\n')
+        if f'"{site}"' not in existing:
+            # Written the way a unified diff wraps a long constructor call.
+            patch.write_text(existing + f'+  new RedundancyCounter(\n+      "{site}");\n')
         packet = redundancy_evidence.build_packet(
             [log], site, story, probe_symbol=symbol, patch=patch)
         path = self.dir / "evidence" / f"{name}.json"
