@@ -890,6 +890,27 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             campaign.enforce_mandatory_invariants(rows, {1, 2})
         campaign.enforce_mandatory_invariants(rows, {2})
         campaign.enforce_mandatory_invariants(rows, set())
+        # An invariant with no number says nothing the gate can read.
+        rows[1]["invariant"] = "Every frame the step dirties repaints through PaintLayerPainter::Paint for changed items."
+        with self.assertRaisesRegex(campaign.CampaignError, "quotes no number"):
+            campaign.enforce_mandatory_invariants(rows, {2})
+
+    def test_row_text_names_code_that_exists(self):
+        import subprocess
+        repo = self.dir / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "a.cc").write_text("void blink::StyleInvalidator::Invalidate(Element& e) {}\n")
+        (repo / "b.h").write_text("class CORE_EXPORT LayoutBox {\n  const LayoutResult* CachedLayoutResult();\n};\n")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        rows = [{"anchor": "A(int)", "existing_mechanism":
+                 "StyleInvalidator::Invalidate marks the subtree and LayoutBox::CachedLayoutResult keeps the result; 12% repeat."}]
+        campaign.enforce_row_text_symbols(rows, [(1, rows[0])], str(repo))
+        rows[0]["invariant"] = "RuleSet::FindBestRuleSetAndFilter reuses matched rules; 0.3% of time repeats."
+        with self.assertRaisesRegex(campaign.CampaignError, "not in the tree .*RuleSet::FindBestRuleSetAndFilter"):
+            campaign.enforce_row_text_symbols(rows, [(1, rows[0])], str(repo))
+        with self.assertRaisesRegex(campaign.CampaignError, "not a git checkout"):
+            campaign.enforce_row_text_symbols(rows, [(1, rows[0])], str(self.dir / "nowhere"))
         # Rows closed by one packet share its invariant; rows under different
         # packets do not share a sentence.
         shared = "Every frame the step dirties repaints through PaintLayerPainter::Paint; the packet leaves 0.3% repeated."

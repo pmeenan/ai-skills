@@ -258,7 +258,19 @@ packet names are blanked (rows closed by one packet share that packet's
 invariant). Rows written by a script with the values swapped in fail the
 last rule wherever the template appears.
 
-A predicate on a lifecycle update reads the whole frame tree. The
+The code a row names exists. `decompose` looks every `Class::Method` in
+an `existing_mechanism` or `invariant` up in the repository the profile
+was captured from (`git grep` for the qualified name, or the method
+declared in the class's header) and refuses a row naming code that is not
+there; a mechanism invented to satisfy the rule that a row names one is
+the same fabrication as a typed count. An `invariant` quotes the packet's
+bound as a percentage (the number check confirms it is the packet's); a
+sentence with no number was written to say nothing the gate can read.
+
+A predicate on a lifecycle update reads the whole frame tree, and so does
+its key: the delegated call's document is the harness page, whose
+versions do not change when the iframe's do, so a key of that document's
+versions makes the iframe's second update a "repeat" of the first. The
 workload runs in an iframe; a child view's `UpdateLifecycleToLayoutClean`
 delegates to the local root's `UpdateLifecyclePhases`, whose document is
 the harness page. A "nothing dirty" predicate that reads that document's

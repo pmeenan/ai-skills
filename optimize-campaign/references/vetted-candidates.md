@@ -116,7 +116,9 @@ condition, not a value.
 18. Every row's text is its own: no `wrapper_of` to the same function, no
     `existing_mechanism` that names only the row's function, an
     `invariant` on every bound mandatory row, and no two rows sharing one
-    sentence with the values swapped (`decompose` checks all four).
+    sentence with the values swapped, every `Class::Method` a row names
+    exists in the tree, and every invariant quotes the packet's bound
+    (`decompose` checks all six).
 
 ## Coverage ledger
 

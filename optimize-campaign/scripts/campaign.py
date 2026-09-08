@@ -3717,6 +3717,93 @@ def enforce_mandatory_invariants(paths, bound):
                 "packet leaves is the trigger's work. A row with no text closes "
                 "nothing."
             )
+        if not ROW_TEXT_PERCENT_RE.search(stripped):
+            raise CampaignError(
+                f"Path {index} ({item['anchor'][:80]!r}) `invariant` quotes no "
+                "number. The invariant says what the packet leaves to the trigger: "
+                "quote the packet's bound (its applicable or repeat time fraction, "
+                "or share x bound) as a percentage; the gate checks it is the "
+                "bound packet's. A sentence with no number was written to say "
+                "nothing the gate can read."
+            )
+
+
+_SYMBOL_EXISTS_CACHE = {}
+
+
+def symbols_in_tree(symbols, repository_root):
+    """Which of the `Class::Method` symbols are defined in the repository:
+    the qualified name appears in the tree, or the method is declared in a
+    file that declares the class. One batched `git grep` for the qualified
+    names, then one per remaining symbol."""
+    root = str(repository_root or "")
+    wanted = {sym for sym in symbols if (root, sym) not in _SYMBOL_EXISTS_CACHE}
+    if wanted:
+        if not root or not pathlib.Path(root, ".git").exists():
+            raise CampaignError(
+                f"row text names {sorted(wanted)[:4]} but the profile's "
+                f"repository_root {root!r} is not a git checkout on this host; "
+                "the gate cannot check the code the rows name"
+            )
+        args = ["git", "-C", root, "grep", "-h", "-o", "-F"]
+        for sym in sorted(wanted):
+            args += ["-e", sym]
+        found = set()
+        result = subprocess.run(args, capture_output=True, text=True)
+        if result.returncode in (0, 1):
+            found = set(result.stdout.split())
+        for sym in wanted:
+            present = sym in found
+            if not present:
+                cls, method = sym.rsplit("::", 1)
+                short = cls.split("::")[-1]
+                files = subprocess.run(
+                    ["git", "-C", root, "grep", "-l", "-E", rf"\b{re.escape(method)}\("],
+                    capture_output=True, text=True).stdout.split()
+                if files:
+                    hit = subprocess.run(
+                        ["git", "-C", root, "grep", "-l", "-E",
+                         rf"\b(class|struct)\s+(CORE_EXPORT\s+|PLATFORM_EXPORT\s+|CC_EXPORT\s+)?{re.escape(short)}\b",
+                         "--"] + files[:400],
+                        capture_output=True, text=True).stdout.strip()
+                    present = bool(hit)
+            _SYMBOL_EXISTS_CACHE[(root, sym)] = present
+    return {sym: _SYMBOL_EXISTS_CACHE[(root, sym)] for sym in symbols}
+
+
+def enforce_row_text_symbols(paths, rows, repository_root):
+    """The code a row names exists.
+
+    Every `Class::Method` in a row's `existing_mechanism` or `invariant` is
+    looked up in the repository the profile was captured from. A mechanism
+    that does not exist in the tree was invented to satisfy the rule that
+    a row names one; the row is refused with the names that are not there.
+    """
+    per_row = {}
+    for index, item in rows:
+        symbols = set()
+        for field in ("existing_mechanism", "invariant"):
+            text = item.get(field)
+            if isinstance(text, str):
+                symbols.update(sym for sym in ROW_TEXT_SYMBOL_RE.findall(text)
+                               if not sym.startswith("probe_"))
+        if symbols:
+            per_row[index] = (item, symbols)
+    if not per_row:
+        return
+    every = set().union(*(symbols for _, symbols in per_row.values()))
+    present = symbols_in_tree(every, repository_root)
+    for index, (item, symbols) in sorted(per_row.items()):
+        missing = sorted(sym for sym in symbols if not present.get(sym))
+        if missing:
+            raise CampaignError(
+                f"Path {index} ({item['anchor'][:80]!r}) names code that is not "
+                f"in the tree at {repository_root}: {', '.join(missing)}. The "
+                "existing mechanism and the invariant name Chromium code that "
+                "exists (its qualified name in a .cc, or the method declared in "
+                "the class's header); a name invented to satisfy the rule is "
+                "refused."
+            )
 
 
 PACKET_HYPOTHESES = ("applicable", "repeat")
@@ -6501,6 +6588,8 @@ def cmd_decompose(args):
         )
         enforce_mandatory_invariants(result["paths"], bound)
         enforce_row_text_distinct(result["paths"])
+        enforce_row_text_symbols(
+            result["paths"], relevance_rows, source_profile.get("repository_root"))
     wrongly_below_floor = [
         item for item in result["paths"]
         if item["disposition"] == "below-floor" and item["share_pct"] >= floor
