@@ -60,7 +60,8 @@ Each investigated opportunity must be recorded as an investigation proposal cont
 - `story_profile_share_pct`: exact profile share (%) within the target story's silo.
 - `estimated_avoidable_fraction`: fraction of that stack that can be avoided (0.0 to 1.0).
 - `estimated_local_story_impact_pct`: `story_profile_share_pct * estimated_avoidable_fraction` (the global ranking metric; never rescaled to a full-suite share). `campaign.py decompose` derives the profile share from bound `work_refs`, recomputes this product, rejects mismatches and anything below the story's qualification floor, and stores it as the mechanism priority together with `qualification_floor_pct` and its basis.
-- `redundancy_evidence`: `{path, sha256}` of the `redundancy_evidence.py` packet for the probed site (required for `investigation_layer` 1 or 2, and for every `mandatory` / `no-qualifying-mechanism` row at or above its story floor).
+- `redundancy_evidence`: `{path, sha256}` of the `redundancy_evidence.py` packet for the probed site (required for every `novel` / `known` row whatever its `investigation_layer`, and for every `mandatory` / `no-qualifying-mechanism` row at or above its story floor). A layer label is not a count.
+- `packet_hypothesis` (novel/known rows): `applicable` (default; the fraction is bounded by the packet's `applicable_fraction`: calls that could have been skipped) or `repeat` (bounded by `repeat_fraction`: the keyed inputs recurred, and the row text says which key and why recurrence is avoidable). A packet whose `applicable` predicate held on every call supports no `applicable` claim.
 - `existing_mechanism` (novel rows): the Chromium code that already avoids this work (a symbol or file) and the count showing it does not here, or "none" with the count that proves the repetition. Most redundancy has a partial existing answer (`InlineNode::ShapeText` reuse, `LayoutResult` cache, `PendingLayer::Matches`); a candidate that does not name it is not vetted.
 - `wrapper_of` (mandatory/no-qualifying rows): the 1-based index of the dominant descendant row (≥ 80% of this row's share) whose count closes this row. A wrapper of a `novel`/`known` row is `covered-by` instead.
 - `win_shape`: `skip-subtree`, `reuse-result`, `representation`, or `shorten-wait`.
@@ -72,9 +73,9 @@ Each investigated opportunity must be recorded as an investigation proposal cont
 
 | Disposition | Use only when | Required evidence |
 | --- | --- | --- |
-| `novel` | one new invariant can remove the work (must pass Adversarial Qualification) | stable `component/strategy` key, 4-layer proposal, and primary work reference |
-| `known` | the exact mechanism already exists in the ledger | existing mechanism key and matching work references |
-| `covered-by` | the samples are literally the same samples as another row | owning mechanism key; `decompose` checks the story's `profile.collapsed`: at least 80% of the samples carrying this row's anchor must also carry the owner's anchor, so a caller holding other work or a sibling phase cannot be covered |
+| `novel` | one new invariant can remove the work (must pass Adversarial Qualification) | stable `component/strategy` key, 4-layer proposal, primary work reference, `existing_mechanism`, and a bound packet from a probe on this row's work whose named number supports the fraction |
+| `known` | the exact mechanism already exists in the ledger | existing mechanism key, matching work references, and the same bound packet as `novel` |
+| `covered-by` | the samples are literally the same samples as another row | owning mechanism key; `decompose` checks the story's `profile.collapsed`: at least 80% of the samples carrying this row's anchor must also carry the owner's anchor **and** a frame of the owner's probed function (`probe_symbol` of the owner's packet), so a caller holding other work, a sibling phase, or everything under a shared ancestor cannot be covered; an owner without a counted probe covers nothing |
 | `mandatory` | the per-trigger amount of work is invariant (each call does new work) | at/above the story floor: a bound redundancy packet from the target story with `story share × supported avoidable fraction < floor`, or `wrapper_of` a counted row; below the floor: the invariant and source evidence. A spec clause names the trigger, never the amount |
 | `no-qualifying-mechanism` | a bounded search found no invariant that removes enough work | the investigation packet (revision, hypotheses, falsifications, budget, stop reason) **and**, at/above the floor, the same bound packet and arithmetic as `mandatory` |
 | `out-of-scope` | the work is not Chromium-owned or not within the campaign goal; a V8/JS **hand-off** row names the owner and quotes the lens numbers so exhaustion is scoped honestly | ownership/critical-path evidence, lens numbers |
@@ -126,6 +127,14 @@ their own packet; every hop of a `wrapper_of` chain must carry at least 80%
 of the share of the row that started the chain (a run of gradually smaller
 rows is not descent), and chains are at most four hops; wrappers of a
 mechanism's samples are `covered-by`.
+
+A candidate is a count too. Every `novel` and `known` row binds the packet
+from a probe on its own work, whatever its `investigation_layer`; the claimed
+fraction is bounded by the packet number the row's `packet_hypothesis` names
+(`applicable_fraction`, or `repeat_fraction` when the row states the repeat
+hypothesis). Marking the area root `novel` and covering every other row by
+it is refused twice: the root has no packet, and a `covered-by` row must sit
+under the owner's probed function, not merely share an ancestor with it.
 
 Reviewer reports are immutable. Every report the ledger host sees is
 registered under its reviewer task id with the digests it attested

@@ -78,8 +78,16 @@ condition, not a value.
    edited after the review, and the transcripts are reviewer work, not
    orchestrator summaries.
 10. Every `covered-by` row shares its samples with its owner in the profile
-    stacks (`covered_by_sample_identity` ≥ 0.8 on the row); a mechanism does
-    not cover a phase it never appears in.
+    stacks (`covered_by_sample_identity` ≥ 0.8 on the row) and sits under
+    the owner's probed function (`covered_by_probe_identity` ≥ 0.8); a
+    mechanism does not cover a phase it never appears in, and a shared
+    ancestor frame is not coverage.
+11. Every candidate row (`novel`/`known`) binds a packet from a probe on its
+    own work whatever its layer, its `packet_hypothesis` names the packet
+    number that bounds the fraction, and the numbers quoted in its
+    `existing_mechanism` sentence are that packet's numbers. A candidate
+    whose fraction, call count or applicable share cannot be found in a
+    digest-bound packet was typed.
 
 ## Coverage ledger
 

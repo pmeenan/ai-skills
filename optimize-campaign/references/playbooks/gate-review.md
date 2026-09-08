@@ -48,9 +48,15 @@ sentence naming an artifact and a number. The skeptic checks bijective
 accounting, that every row above the floor closes by a packet, a
 `wrapper_of` chain, `covered-by` or a mechanism row, that every bound
 packet's probe key and `applicable` predicate (quoted from the probe patch)
-answer the row's hypothesis, the recomputed floor arithmetic for every bound
-and novel row, and for every novel row the existing Chromium code that
-already avoids the work and the count showing it does not here. The
+answer the row's hypothesis, that every novel/known row binds a packet from
+a probe on its own work and claims no more than the number its
+`packet_hypothesis` names, that every count quoted in an `existing_mechanism`
+sentence is the packet's count (calls per repetition, applicable, repeat)
+and not a typed one, the recomputed floor arithmetic for every bound and
+novel row, and for every novel row the existing Chromium code that already
+avoids the work and the count showing it does not here. A row whose anchor
+is the area root or the frame update, marked novel with every other row
+covered by it, is a mechanically generated file, not a decomposition. The
 adversary checks the probe patch digest against the packets and the twin
 build, packet sources against the logs on the host, one packet's counts
 re-derived from its log, the children digest recomputed at review time, and

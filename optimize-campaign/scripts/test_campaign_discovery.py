@@ -503,6 +503,87 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         with self.assertRaisesRegex(campaign.CampaignError, "probe_symbol"):
             campaign.enforce_packet_relevance(rows, [(1, rows[0])], profile, STORY, self.dir)
 
+    def test_candidates_bind_a_packet_whatever_their_layer(self):
+        packet = self.write_packet("site", applicable=0.3, repeat=0.7)
+        with mock.patch.object(campaign, "test_bypass_active", return_value=False):
+            # A layer-3 label does not exempt a candidate from the count.
+            for disposition in ("novel", "known"):
+                item = {"anchor": "Root", "disposition": disposition,
+                        "investigation_layer": 3, "mechanism_key": "x/y"}
+                with self.assertRaisesRegex(campaign.CampaignError, "whatever its layer"):
+                    campaign.bind_redundancy_evidence(item, STORY, 0.2, self.dir)
+            # The claim is bounded by the number the row's hypothesis names.
+            item = {"anchor": "Root", "disposition": "known", "investigation_layer": 3,
+                    "mechanism_key": "x/y", "redundancy_evidence": packet}
+            with self.assertRaisesRegex(campaign.CampaignError, "'applicable' hypothesis"):
+                campaign.bind_redundancy_evidence(item, STORY, 0.7, self.dir)
+            campaign.bind_redundancy_evidence(item, STORY, 0.3, self.dir)
+            self.assertEqual("applicable", item["packet_hypothesis"])
+            self.assertEqual(0.3, item["redundancy_summary"]["supported_avoidable_fraction"])
+            item["packet_hypothesis"] = "repeat"
+            campaign.bind_redundancy_evidence(item, STORY, 0.7, self.dir)
+            self.assertEqual(0.7, item["redundancy_summary"]["supported_avoidable_fraction"])
+            item["packet_hypothesis"] = "maybe"
+            with self.assertRaisesRegex(campaign.CampaignError, "packet_hypothesis"):
+                campaign.bind_redundancy_evidence(item, STORY, 0.1, self.dir)
+            # A predicate that held on every call measured nothing.
+            saturated = self.write_packet("saturated", applicable=1.0, repeat=0.2)
+            item = {"anchor": "Root", "disposition": "novel", "investigation_layer": 1,
+                    "mechanism_key": "x/z", "redundancy_evidence": saturated}
+            with self.assertRaisesRegex(campaign.CampaignError, "always true"):
+                campaign.bind_redundancy_evidence(item, STORY, 0.2, self.dir)
+            item["packet_hypothesis"] = "repeat"
+            campaign.bind_redundancy_evidence(item, STORY, 0.2, self.dir)
+
+    def test_covered_by_rows_sit_under_the_owners_probe(self):
+        story_dir = self.dir / "results" / "analysis" / "stories" / STORY
+        story_dir.mkdir(parents=True)
+        artifact = story_dir / "candidate_frontier.json"
+        artifact.write_text("{}")
+        (story_dir / "profile.collapsed").write_text(
+            "main;Root;Layout;ShapeText;HarfBuzz 60\n"
+            "main;Root;Layout;ShapeText 20\n"
+            "main;Root;Layout;OutOfFlow 30\n"
+            "main;Root;Style;Match 40\n"
+        )
+        profile = {"id": "p", "capture_provenance": [{
+            "capture_id": "c1",
+            "story_frontiers": [{"story": STORY, "artifact": str(artifact)}],
+        }]}
+        shape = self.write_packet("shape", applicable=0.3, repeat=0.3)
+        shape_packet = json.loads((self.dir / "evidence" / "shape.json").read_text())
+        shape_packet["probe_symbol"] = "ShapeText"
+        (self.dir / "evidence" / "shape.json").write_text(json.dumps(shape_packet))
+        shape["sha256"] = campaign.sha256_file(self.dir / "evidence" / "shape.json")
+        rows = [
+            {"anchor": "ShapeText", "disposition": "novel", "mechanism_key": "fonts/reuse",
+             "redundancy_evidence": shape},
+            {"anchor": "HarfBuzz", "disposition": "covered-by", "covered_by": "fonts/reuse"},
+            {"anchor": "Match", "disposition": "covered-by", "covered_by": "fonts/reuse"},
+        ]
+        symbols = campaign.owner_probe_symbols(rows, lambda key: None, self.dir)
+        self.assertEqual({"fonts/reuse": "ShapeText"}, symbols)
+        with self.assertRaisesRegex(campaign.CampaignError, "Path 3 .*only 0% of its samples sit under"):
+            campaign.enforce_covered_by_probe_identity(rows, symbols, profile, STORY)
+        del rows[2]
+        campaign.enforce_covered_by_probe_identity(rows, symbols, profile, STORY)
+        self.assertEqual(1.0, rows[1]["covered_by_probe_identity"])
+        # The area root as owner: every row shares its anchor, but without a
+        # probe the root covers nothing.
+        root = [
+            {"anchor": "Root", "disposition": "novel", "mechanism_key": "root/cache"},
+            {"anchor": "Match", "disposition": "covered-by", "covered_by": "root/cache"},
+        ]
+        self.assertEqual({}, campaign.owner_probe_symbols(root, lambda key: None, self.dir))
+        with self.assertRaisesRegex(campaign.CampaignError, "binds no packet with a probe_symbol"):
+            campaign.enforce_covered_by_probe_identity(root, {}, profile, STORY)
+        # A ledger-held owner contributes the probe recorded on its summary.
+        ledger_owner = {"redundancy_summary": {"probe_symbol": "OutOfFlow"}}
+        rows = [{"anchor": "OutOfFlow", "disposition": "covered-by", "covered_by": "layout/oof"}]
+        symbols = campaign.owner_probe_symbols(rows, lambda key: ledger_owner, self.dir)
+        self.assertEqual({"layout/oof": "OutOfFlow"}, symbols)
+        campaign.enforce_covered_by_probe_identity(rows, symbols, profile, STORY)
+
     def test_novel_rows_name_the_existing_mechanism(self):
         item = {"anchor": "blink::InlineNode::PrepareLayout", "disposition": "novel"}
         with self.assertRaisesRegex(campaign.CampaignError, "existing_mechanism"):

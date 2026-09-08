@@ -2565,7 +2565,6 @@ def verify_revert_commit(opp, repo_root, sha, branch):
 # ---------------- commands ----------------
 
 
-REDUNDANCY_EVIDENCE_LAYERS = (1, 2)
 REDUNDANCY_FRACTION_TOLERANCE = 0.05
 
 
@@ -2948,46 +2947,163 @@ def enforce_covered_by_sample_identity(paths, owner_anchors, profile, story):
         item["covered_by_sample_identity"] = round(fraction, 4)
 
 
-def bind_redundancy_evidence(path_item, story, fraction, campaign_dir):
-    """Layer 1/2 claims must cite measured call counts and applicability.
+def owner_probe_symbols(paths, ledger_owner_lookup, campaign_dir):
+    """mechanism_key -> probe_symbol of the packet bound by the owning row (in
+    this decomposition) or recorded on the ledger mechanism."""
+    import redundancy_evidence
+    symbols = {}
+    for item in paths:
+        if item.get("disposition") not in ("novel", "known"):
+            continue
+        ref = item.get("redundancy_evidence") or {}
+        if not ref.get("path"):
+            continue
+        packet_path = pathlib.Path(ref["path"])
+        if not packet_path.is_absolute():
+            packet_path = pathlib.Path(campaign_dir) / packet_path
+        try:
+            packet = redundancy_evidence.load_packet(packet_path)
+        except ValueError:
+            continue
+        symbol = packet.get("probe_symbol")
+        if isinstance(symbol, str) and symbol.strip():
+            symbols[item["mechanism_key"]] = symbol.strip()
+    for item in paths:
+        key = item.get("covered_by")
+        if item.get("disposition") != "covered-by" or key in symbols:
+            continue
+        owner = ledger_owner_lookup(key)
+        summary = (owner or {}).get("redundancy_summary") or {}
+        symbol = summary.get("probe_symbol")
+        if isinstance(symbol, str) and symbol.strip():
+            symbols[key] = symbol.strip()
+    return symbols
 
-    "Avoidable fraction" is otherwise a typed guess. The redundancy probe
-    measures how often the site runs inside the story's scored window and how
-    often the invariant holds or the input repeats; the claimed fraction may
-    not exceed what those counts support.
+
+def enforce_covered_by_probe_identity(paths, owner_symbols, profile, story):
+    """A covered-by row is work the owner's probe counted.
+
+    The owner's packet measured the calls of one function. A row is covered
+    by that mechanism only if at least COVERED_BY_SAMPLE_IDENTITY of the
+    samples carrying the row's anchor also carry a frame that starts with the
+    owner's `probe_symbol`; an owner without a counted probe covers nothing.
+    Sharing an ancestor frame with the owner (the area root, the frame
+    update) is not coverage.
     """
-    if path_item.get("disposition") != "novel":
+    pairs = {}
+    for index, item in enumerate(paths, 1):
+        if item.get("disposition") != "covered-by":
+            continue
+        symbol = owner_symbols.get(item.get("covered_by"))
+        if not symbol:
+            raise CampaignError(
+                f"Path {index} ({item['anchor'][:80]!r}) is covered by "
+                f"{item.get('covered_by')!r}, which binds no packet with a "
+                "probe_symbol; a mechanism covers only the work its probe "
+                "counted. Give the owner its packet or give this row its own "
+                "disposition and count."
+            )
+        pairs[(item["anchor"], symbol)] = (index, item)
+    if not pairs:
+        return
+    files = collapsed_stack_files(profile, story)
+    if not files:
+        raise CampaignError(
+            f"covered-by rows need the story's profile.collapsed beside the "
+            f"analyzer artifacts of profile {profile.get('id')!r} for {story!r}; "
+            "none resolves on this host"
+        )
+    anchor_w, _, both_w = symbol_identity(files, set(pairs))
+    for pair, (index, item) in pairs.items():
+        row_weight = anchor_w[pair[0]]
+        fraction = both_w[pair] / row_weight if row_weight else 0.0
+        if fraction < COVERED_BY_SAMPLE_IDENTITY:
+            raise CampaignError(
+                f"Path {index} ({item['anchor'][:80]!r}) is marked covered-by "
+                f"{item['covered_by']!r}, but only {fraction:.0%} of its samples "
+                f"sit under that mechanism's probed function ({pair[1]!r}); the "
+                "owner's count says nothing about this row. Give the row its own "
+                "disposition and count."
+            )
+        item["covered_by_probe_identity"] = round(fraction, 4)
+
+
+PACKET_HYPOTHESES = ("applicable", "repeat")
+APPLICABLE_SATURATED = 0.999
+
+
+def bind_redundancy_evidence(path_item, story, fraction, campaign_dir):
+    """A candidate's avoidable fraction is a count, whatever its layer.
+
+    "Avoidable fraction" is otherwise a typed guess. Every `novel` / `known`
+    row binds the packet from the probe on its own work; `investigation_layer`
+    does not exempt a row (a layer-3 label is not a count). The row names
+    which packet number carries its hypothesis with `packet_hypothesis`:
+    `applicable` (default: this call could have been skipped) bounds the
+    fraction by `applicable_fraction`; `repeat` (the keyed inputs recurred)
+    bounds it by `repeat_fraction`. An applicable predicate that held on
+    every call measured nothing and supports no claim.
+    """
+    if path_item.get("disposition") not in ("novel", "known"):
         return
     layer = path_item.get("investigation_layer")
     try:
         layer = int(layer) if layer is not None else None
     except (TypeError, ValueError):
         raise CampaignError(f"Path {path_item['anchor']!r} investigation_layer must be 1-4")
-    if layer not in REDUNDANCY_EVIDENCE_LAYERS:
-        return
     if test_bypass_active() and not path_item.get("redundancy_evidence"):
         return
     import redundancy_evidence
     packet = load_bound_redundancy_packet(
         path_item, story, campaign_dir,
         missing_message=(
-            f"Path {path_item['anchor']!r} claims a layer-{layer} mechanism "
-            "(subtree elimination or cross-call sharing) without redundancy "
-            "evidence. Instrument the site with redundancy_probe.h, reduce the "
-            "browser logs with redundancy_evidence.py, and cite the packet as "
+            f"Path {path_item['anchor']!r} is {path_item.get('disposition')} "
+            f"(layer {layer}) without redundancy evidence. A candidate's "
+            "avoidable fraction is a count from a probe on this row's work in "
+            "the target story, whatever its layer: instrument the site with "
+            "redundancy_probe.h, reduce the browser logs with "
+            "redundancy_evidence.py --symbol/--patch, and cite the packet as "
             "redundancy_evidence: {path, sha256}."
         ),
     )
-    supported = redundancy_evidence.supported_avoidable_fraction(packet)
+    hypothesis = path_item.get("packet_hypothesis") or "applicable"
+    if hypothesis not in PACKET_HYPOTHESES:
+        raise CampaignError(
+            f"Path {path_item['anchor']!r} packet_hypothesis must be one of "
+            f"{PACKET_HYPOTHESES}"
+        )
+    applicable = float(packet["applicable_fraction"])
+    repeat = float(packet["repeat_fraction"])
+    if hypothesis == "applicable":
+        if applicable >= APPLICABLE_SATURATED:
+            raise CampaignError(
+                f"Path {path_item['anchor']!r} binds packet {packet['site']!r} "
+                f"whose applicable predicate held on {applicable:.0%} of "
+                f"{packet['calls_total']} calls; a predicate that is always true "
+                "measured nothing (it usually means 'this call was necessary' "
+                "was logged as applicable). Fix the predicate, or state the "
+                "repeat hypothesis with packet_hypothesis: repeat"
+            )
+        supported = applicable
+    else:
+        if packet.get("distinct_overflow"):
+            raise CampaignError(
+                f"Path {path_item['anchor']!r} claims a repeat hypothesis on "
+                f"packet {packet['site']!r} whose distinct-input set overflowed; "
+                "its repeat fraction is not a measurement"
+            )
+        supported = repeat
     if fraction > supported + REDUNDANCY_FRACTION_TOLERANCE:
         raise CampaignError(
             f"Path {path_item['anchor']!r} claims avoidable fraction {fraction:.2f} "
-            f"but the probe supports at most {supported:.2f} (applicable "
-            f"{packet['applicable_fraction']:.2f}, repeated inputs "
-            f"{packet['repeat_fraction']:.2f} over {packet['calls_total']} calls"
+            f"under the {hypothesis!r} hypothesis but the probe supports at most "
+            f"{supported:.2f} (applicable {applicable:.2f}, repeated inputs "
+            f"{repeat:.2f} over {packet['calls_total']} calls"
             + (", distinct-input set overflowed" if packet.get("distinct_overflow") else "")
-            + "); lower the claim or find the missing applicability"
+            + "); lower the claim, name the other hypothesis in the row text with "
+            "packet_hypothesis, or find the missing applicability"
         )
+    path_item["packet_hypothesis"] = hypothesis
     path_item["redundancy_summary"] = {
         "site": packet["site"],
         "calls_total": packet["calls_total"],
@@ -2995,7 +3111,9 @@ def bind_redundancy_evidence(path_item, story, fraction, campaign_dir):
         "applicable_fraction": packet["applicable_fraction"],
         "repeat_fraction": packet["repeat_fraction"],
         "distinct_overflow": packet["distinct_overflow"],
+        "packet_hypothesis": hypothesis,
         "supported_avoidable_fraction": supported,
+        "probe_symbol": packet.get("probe_symbol"),
     }
 
 
@@ -5846,6 +5964,15 @@ def cmd_decompose(args):
             owner_anchors.setdefault(owner.get("mechanism_key"), owner.get("anchor"))
         enforce_covered_by_sample_identity(
             result["paths"], owner_anchors, source_profile,
+            parent.get("target_story"),
+        )
+        owner_symbols = owner_probe_symbols(
+            result["paths"],
+            lambda key: ledger.mechanism(parent["area_key"], key),
+            ledger.dir,
+        )
+        enforce_covered_by_probe_identity(
+            result["paths"], owner_symbols, source_profile,
             parent.get("target_story"),
         )
     parent["known_mechanism_ids"] = sorted(
