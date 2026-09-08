@@ -52,7 +52,12 @@ answer the row's hypothesis, that every novel/known row binds a time-weighted pa
 a probe on its own work and claims no more than the smaller of the call and
 time fractions its `packet_hypothesis` names (a scope that covers less than
 the work the hypothesis would skip understates the time and is refused;
-a predicate that reads a flag another function left behind is refused), that every count quoted in an `existing_mechanism`
+a predicate that reads a flag another function left behind is refused; a
+predicate that is a literal `true` or `false` is refused; a `repeat` key
+that is the object alone, or the inputs alone without the object, is
+refused), that every bound packet's `packet_time_coverage` is near 1 and
+the pre-check's coverage table has no packet timing a fraction or a
+multiple of its function, that every count quoted in an `existing_mechanism`
 sentence is the packet's count (calls per repetition, applicable, repeat)
 and not a typed one, the recomputed floor arithmetic for every bound and
 novel row, and for every novel row the existing Chromium code that already
@@ -63,7 +68,9 @@ packet from a probe at the update root bound to the rows beneath it is
 refused by the skeptic: its unit of count is the update, not the element,
 box or fragment those rows are made of (`calls_per_repetition_mean` tells). The
 adversary checks the probe patch digest against the packets and the twin
-build, packet sources against the logs on the host, every packet's counts
+build (every packet's `build_id` is the build id of the `chrome` binary
+that ran, `readelf -n`, and one patch maps to one build across the
+request), packet sources against the logs on the host, every packet's counts
 re-derived from its log (`decompose` does this mechanically; the adversary
 confirms the log is the twin run it claims to be), the children digest recomputed at review time, and
 that no row above the floor is closed by prose. A reviewer who cannot open

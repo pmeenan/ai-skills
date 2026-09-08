@@ -74,6 +74,20 @@ digest. `applicable` in the probe means "this call could have been skipped
 under the hypothesis"; a packet whose predicate means "this call was
 necessary" bounds nothing and cannot close a row.
 
+The scope is the function's first statement and `--symbol` names that
+function (the whole name; the gate matches it as `name(`), so the packet
+times all of the function's work and only it: `decompose` compares each
+packet's time per repetition with the function's share of the story
+profile and refuses a scope that opened after part of the work or a
+symbol that is the function's neighbour. Scopes of one counter nest and
+are timed exclusively (a recursive layout or tree walk counts each call's
+own time once), and every row carries the executable's GNU build id: the
+twin must be rebuilt whenever the header or the probe patch changes, every
+story re-run on that build, and every packet reduced from that run. A log
+from an earlier binary is not evidence for the current patch, and a packet
+whose `patch_sha256` is edited to say otherwise is refused with the
+request.
+
 The packet reports calls per repetition, `applicable_fraction`,
 `repeat_fraction` and whether the distinct-input set overflowed. Cite it in
 the proposal as `redundancy_evidence: {path, sha256}`; `decompose` verifies

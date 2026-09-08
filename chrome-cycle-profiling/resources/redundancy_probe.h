@@ -15,9 +15,12 @@
 //   applicable_calls  entries where the proposed invariant held (caller-supplied)
 //   distinct_inputs   distinct input hashes seen in the scored group
 //   repeated_inputs   calls whose input hash was already seen in the group
-//   total_ns          wall time inside the probed scope (timed calls only)
+//   total_ns          wall time inside the probed scope (timed calls only),
+//                     exclusive of nested scopes of the same counter
 //   applicable_ns     that time on calls where the invariant held
 //   repeated_ns       that time on calls whose input hash was already seen
+//   nested_calls      calls that ran inside another scope of the same counter
+//   build_id          GNU build id of the executable that emitted the row
 //
 // A call count says how often a site ran; it does not say how much of the
 // site's time those calls carried. A root update that finds nothing dirty on
@@ -26,6 +29,18 @@
 // therefore binds only packets whose rows are time-weighted: every call was
 // recorded through a RedundancyScope covering the work the hypothesis would
 // skip, so `applicable_ns / total_ns` bounds the avoidable time.
+//
+// Recursive sites (layout of a box lays out its children through the same
+// function; a pre-paint walk visits its subtree) are timed exclusively: a
+// scope's elapsed time excludes the time of scopes of the same counter that
+// ran inside it, so `total_ns` is the time under the outermost calls rather
+// than that time counted once per nesting level. Rows say so with
+// "timing":"exclusive"; the gate refuses rows that do not.
+//
+// Every row names the executable that produced it (`build_id`, the ELF
+// NT_GNU_BUILD_ID of the running program). A packet records it, and
+// packets bound together must come from one build per probe patch: a log
+// from a binary built before the patch changed is not evidence for it.
 //
 // Usage (instrumented twin only; never lands):
 //
@@ -44,6 +59,13 @@
 // `Record(key, applicable)` still exists for counting alone; rows it produces
 // carry no time and the gate refuses them above the story floor.
 //
+// The scope opens before the work the probed function does, as the first
+// statement of the function the packet names as its `probe_symbol`. A scope
+// opened after part of the work (after a lifecycle update inside a hit test,
+// after the paint tree walk) times only the rest; the gate compares each
+// packet's time per repetition with the probed function's share of the
+// story's cycle profile and refuses a packet that times a fraction of it.
+//
 // Emit rows from the same place the cycle rows are flushed (after the scored
 // interval closes, never inside a score timer):
 //
@@ -54,7 +76,8 @@
 //     "group":"3|TodoMVC-React","calls":8123,"applicable_calls":8123,
 //     "distinct_inputs":412,"repeated_inputs":7711,"overflow":0,
 //     "timed_calls":8123,"total_ns":41230000,"applicable_ns":40100000,
-//     "repeated_ns":39000000,...}
+//     "repeated_ns":39000000,"nested_calls":0,"timing":"exclusive",
+//     "build_id":"5f0c...",...}
 //
 // `redundancy_evidence.py` reduces the rows into the packet that
 // `campaign.py decompose` binds to the proposal.
@@ -67,6 +90,8 @@
 #pragma clang diagnostic ignored "-Wexit-time-destructors"
 #pragma clang diagnostic ignored "-Wshorten-64-to-32"
 
+#include <elf.h>
+#include <link.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -123,6 +148,57 @@ inline uint64_t MonotonicRawNanoseconds() {
          static_cast<uint64_t>(timestamp.tv_nsec);
 }
 
+// The GNU build id of the running executable (the first object
+// dl_iterate_phdr reports), as lowercase hex; "unknown" when the program
+// carries no NT_GNU_BUILD_ID note. Computed once per process.
+inline int BuildIdCallback(struct dl_phdr_info* info, size_t, void* out) {
+  char* buffer = static_cast<char*>(out);
+  for (int i = 0; i < info->dlpi_phnum; ++i) {
+    const ElfW(Phdr)& phdr = info->dlpi_phdr[i];
+    if (phdr.p_type != PT_NOTE)
+      continue;
+    const char* note = reinterpret_cast<const char*>(info->dlpi_addr + phdr.p_vaddr);
+    const char* end = note + phdr.p_memsz;
+    while (note + sizeof(ElfW(Nhdr)) <= end) {
+      const ElfW(Nhdr)* header = reinterpret_cast<const ElfW(Nhdr)*>(note);
+      const size_t name_size = (header->n_namesz + 3) & ~size_t{3};
+      const size_t desc_size = (header->n_descsz + 3) & ~size_t{3};
+      const char* name = note + sizeof(ElfW(Nhdr));
+      const char* desc = name + name_size;
+      if (desc + header->n_descsz > end)
+        break;
+      if (header->n_type == NT_GNU_BUILD_ID && header->n_namesz == 4 &&
+          memcmp(name, "GNU", 4) == 0 && header->n_descsz > 0) {
+        size_t length = header->n_descsz;
+        if (length > 32)
+          length = 32;
+        for (size_t j = 0; j < length; ++j) {
+          static const char kHex[] = "0123456789abcdef";
+          const unsigned char byte = static_cast<unsigned char>(desc[j]);
+          buffer[2 * j] = kHex[byte >> 4];
+          buffer[2 * j + 1] = kHex[byte & 15];
+        }
+        buffer[2 * length] = '\0';
+        return 1;
+      }
+      note = desc + desc_size;
+    }
+  }
+  return 1;  // only the first object (the executable) is consulted
+}
+
+inline const char* BuildId() {
+  static const char* const id = [] {
+    static char buffer[65] = "unknown";
+    char scratch[65] = {0};
+    dl_iterate_phdr(&BuildIdCallback, scratch);
+    if (scratch[0])
+      memcpy(buffer, scratch, sizeof(scratch));
+    return buffer;
+  }();
+  return id;
+}
+
 inline std::atomic<bool>& ScoredWindowActive() {
   static std::atomic<bool> active{false};
   return active;
@@ -153,6 +229,7 @@ inline uint64_t HashCombine(uint64_t a, uint64_t b) {
 }
 
 class RedundancyCounter;
+class RedundancyScope;
 
 inline std::mutex& RedundancyRegistryMutex() {
   static auto& mutex = *new std::mutex();
@@ -184,17 +261,22 @@ class RedundancyCounter {
   // few loads inside it. No allocation, no syscalls. Counts only; prefer
   // RedundancyScope so the row is time-weighted.
   void Record(uint64_t input_hash, bool applicable) {
-    RecordImpl(input_hash, applicable, /*timed=*/false, /*elapsed_ns=*/0);
+    RecordImpl(input_hash, applicable, /*timed=*/false, /*elapsed_ns=*/0,
+               /*nested=*/false);
   }
 
-  // A call recorded with the wall time its scope covered.
-  void RecordTimed(uint64_t input_hash, bool applicable, uint64_t elapsed_ns) {
-    RecordImpl(input_hash, applicable, /*timed=*/true, elapsed_ns);
+  // A call recorded with the wall time its scope covered, exclusive of
+  // nested scopes of this counter; `nested` says it ran inside one.
+  void RecordTimed(uint64_t input_hash, bool applicable, uint64_t elapsed_ns,
+                   bool nested = false) {
+    RecordImpl(input_hash, applicable, /*timed=*/true, elapsed_ns, nested);
   }
 
  private:
+  friend class RedundancyScope;
+
   void RecordImpl(uint64_t input_hash, bool applicable, bool timed,
-                  uint64_t elapsed_ns) {
+                  uint64_t elapsed_ns, bool nested) {
     if (!IsInScoredWindow())
       return;
     if (owner_tid_ != CurrentTid()) {
@@ -204,6 +286,8 @@ class RedundancyCounter {
     calls_++;
     if (applicable)
       applicable_calls_++;
+    if (nested)
+      nested_calls_++;
     if (timed) {
       timed_calls_++;
       total_ns_ += elapsed_ns;
@@ -242,6 +326,7 @@ class RedundancyCounter {
   void Reset() {
     calls_ = applicable_calls_ = distinct_inputs_ = repeated_inputs_ = 0;
     timed_calls_ = total_ns_ = applicable_ns_ = repeated_ns_ = 0;
+    nested_calls_ = 0;
     thread_affinity_violations_ = 0;
     overflow_ = false;
     if (slots_) {
@@ -264,7 +349,8 @@ class RedundancyCounter {
         "\"calls\":%llu,\"applicable_calls\":%llu,\"distinct_inputs\":%llu,"
         "\"repeated_inputs\":%llu,\"overflow\":%d,"
         "\"timed_calls\":%llu,\"total_ns\":%llu,\"applicable_ns\":%llu,"
-        "\"repeated_ns\":%llu,"
+        "\"repeated_ns\":%llu,\"nested_calls\":%llu,\"timing\":\"exclusive\","
+        "\"build_id\":\"%s\","
         "\"thread_affinity_violations\":%llu}\n",
         static_cast<unsigned long long>(getpid()),
         static_cast<unsigned long long>(owner_tid_),
@@ -278,6 +364,8 @@ class RedundancyCounter {
         static_cast<unsigned long long>(total_ns_),
         static_cast<unsigned long long>(applicable_ns_),
         static_cast<unsigned long long>(repeated_ns_),
+        static_cast<unsigned long long>(nested_calls_),
+        BuildId(),
         static_cast<unsigned long long>(thread_affinity_violations_));
   }
 
@@ -289,6 +377,7 @@ class RedundancyCounter {
   bool overflow() const { return overflow_; }
   uint64_t timed_calls() const { return timed_calls_; }
   uint64_t total_ns() const { return total_ns_; }
+  uint64_t nested_calls() const { return nested_calls_; }
 
  private:
   const char* site_;
@@ -302,13 +391,19 @@ class RedundancyCounter {
   uint64_t total_ns_ = 0;
   uint64_t applicable_ns_ = 0;
   uint64_t repeated_ns_ = 0;
+  uint64_t nested_calls_ = 0;
   bool overflow_ = false;
   uint64_t* slots_ = nullptr;
+  // Innermost open scope of this counter on its thread; nested scopes hand
+  // their elapsed time to it so every call is timed exclusively.
+  RedundancyScope* active_scope_ = nullptr;
 };
 
 // Records one call, with its wall time, when the scope closes. Declare it at
 // the top of the work the hypothesis would skip; set the key and the
-// applicable flag whenever they become known before the scope ends.
+// applicable flag whenever they become known before the scope ends. Scopes
+// of one counter nest (a recursive site): each records its own time less
+// the time of the scopes that ran inside it.
 class RedundancyScope {
  public:
   explicit RedundancyScope(RedundancyCounter& counter,
@@ -318,7 +413,10 @@ class RedundancyScope {
         input_hash_(input_hash),
         applicable_(applicable),
         active_(IsInScoredWindow()),
-        start_ns_(active_ ? MonotonicRawNanoseconds() : 0) {}
+        start_ns_(active_ ? MonotonicRawNanoseconds() : 0),
+        parent_(counter.active_scope_) {
+    counter_.active_scope_ = this;
+  }
 
   RedundancyScope(const RedundancyScope&) = delete;
   RedundancyScope& operator=(const RedundancyScope&) = delete;
@@ -327,11 +425,16 @@ class RedundancyScope {
   void SetApplicable(bool applicable) { applicable_ = applicable; }
 
   ~RedundancyScope() {
+    counter_.active_scope_ = parent_;
     if (!active_)
       return;
     uint64_t end_ns = MonotonicRawNanoseconds();
-    counter_.RecordTimed(input_hash_, applicable_,
-                         end_ns > start_ns_ ? end_ns - start_ns_ : 0);
+    uint64_t elapsed_ns = end_ns > start_ns_ ? end_ns - start_ns_ : 0;
+    if (parent_)
+      parent_->child_ns_ += elapsed_ns;
+    uint64_t exclusive_ns = elapsed_ns > child_ns_ ? elapsed_ns - child_ns_ : 0;
+    counter_.RecordTimed(input_hash_, applicable_, exclusive_ns,
+                         /*nested=*/parent_ != nullptr);
   }
 
  private:
@@ -340,6 +443,8 @@ class RedundancyScope {
   bool applicable_;
   const bool active_;
   const uint64_t start_ns_;
+  RedundancyScope* const parent_;
+  uint64_t child_ns_ = 0;
 };
 
 // Emit and reset every registered counter for the group that just closed.

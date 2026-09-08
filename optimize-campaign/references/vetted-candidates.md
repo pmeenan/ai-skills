@@ -99,6 +99,20 @@ condition, not a value.
     recorded through `RedundancyScope`), the candidate's fraction is within
     both the call and the time fraction of its hypothesis, and a `repeat`
     key takes at least two distinct values per repetition.
+15. Every bound packet timed the whole of the function it names
+    (`packet_time_coverage` on the row between 0.5 and 2 against the
+    story's reference packet; scopes open as the function's first
+    statement; recursive sites timed exclusively, `timing: exclusive`), and
+    carries the build id of the binary that logged it, one build per probe
+    patch across the request.
+16. Every `repeat` key determines the result: the unit of work plus the
+    inputs it reads, never the object alone or the inputs alone. Every
+    `applicable` predicate is an expression of the call's own state, never
+    a literal; a "nothing dirty" predicate covers every phase the call runs.
+17. Every number and packet name in a row's text is the bound packet's
+    (`decompose` checks percentages, calls/rep figures and `probe_*.json`
+    names); dispositions were assigned row by row with their text, not by
+    a script that left another packet's numbers behind.
 
 ## Coverage ledger
 

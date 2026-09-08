@@ -179,6 +179,70 @@ row's work, so the row binds it (`mandatory` by its bound, or a candidate
 at its fraction) or is covered by that packet's row. Once the style, layout
 and paint phases have probes, an update root covers nothing beneath them.
 
+A packet times the whole of the function it names. The `RedundancyScope`
+opens as the first statement of the function the packet records as
+`probe_symbol`, before any of the work that function does (a hit test that
+first runs a lifecycle update, a paint phase whose scope is opened after the
+tree walk, time only the rest). `decompose` divides each bound packet's
+time per repetition by the probed function's inclusive share of the story's
+cycle profile; that ratio is the same for every packet of one story, and a
+packet whose ratio is below half or above twice the reference packet's (the
+one whose function carries the largest share) is refused, with the table of
+every packet's coverage (`packet_time_coverage` on the row). Below half:
+the scope opened late, or the symbol names a neighbour of the probed
+function. Above twice: a recursive site was counted once per nesting level,
+or the scope is wider than the function named. A `probe_symbol` matches a
+frame only as the whole function name followed by its parameter list;
+`LayoutView::HitTest` no longer matches `LayoutView::HitTestNoLifecycleUpdate`.
+
+Scopes of one counter are timed exclusively. A box's layout lays out its
+children through the same function and a pre-paint walk visits its subtree;
+each scope records its own time net of the scopes that ran inside it, so a
+packet's `total_ns` is the time under the outermost calls and its
+`nested_calls_fraction` says how many calls ran inside another. Rows say
+`"timing":"exclusive"`; a packet whose rows do not is refused.
+
+A packet is tied to the binary that logged it. Every row carries the
+executable's GNU build id, the packet records it, and `decompose` refuses a
+packet without one. Packets bound in one decomposition that cite the same
+probe patch must come from one build, and packets from one build must cite
+one patch: a log from a binary built before the patch changed, or a packet
+whose `patch_sha256` was rewritten to the current patch, is not evidence
+for that patch.
+
+A `repeat` key determines the call's result. It names the unit of work
+(the box, the fragment, the element) together with the inputs the work reads,
+or a set of inputs the result is a pure function of; two calls with the same
+key must produce the same result. A key of the object alone ("this box was
+laid out again", "this fragment was painted again") says nothing about the
+inputs and is refused, whatever the call count; a key of the inputs alone
+without the object (a constraint space and a style version shared by every
+sibling) counts different objects as repeats of one another and is refused
+too. For box layout the key is the box, its constraint space and the
+versions of what it reads; for a paint the fragment, the paint phase and the
+invalidation state; for a hit test the location and the layout version.
+
+An `applicable` predicate is an expression of the call's own state that the
+hypothesis would test before doing the work. A literal (`SetApplicable(true)`,
+`SetApplicable(false)`, a scope constructed with `/*applicable=*/false`) is
+no predicate: `true` supports nothing (the gate refuses it as saturated) and
+`false` measures nothing, so a row it closes is closed by fiat; the reviewer
+refuses both on reading the patch. A "nothing dirty" predicate on a
+lifecycle update is the conjunction of every phase's dirtiness up to the
+target state (style and layout tree, layout, pre-paint property and
+invalidation flags, paint, compositing); a predicate that checks two of
+them reads as clean on calls whose paint phase then does a full update, and
+the paint packet from the same run refutes it.
+
+The numbers in a row's text are the bound packet's numbers. `decompose`
+reads every percentage, every "calls/rep" figure and every `probe_*.json`
+name in the row's `existing_mechanism`, `rationale`, `invariant`,
+`falsification`, `notes` and `investigation` fields and refuses a row whose
+figure is none of the packet's fractions (call or time), `share x fraction`,
+its share or its floor, or whose packet name is not the bound one. Text
+carried over from an earlier revision's packet, or from a script that set
+dispositions without writing rows, fails here.
+
 A packet is a reduction, never a file. `decompose` reduces every bound
 packet's `sources` again with `redundancy_evidence.py` on the ledger host
 and refuses the packet if any derived field (repetitions, calls, fractions,

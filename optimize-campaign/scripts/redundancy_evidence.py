@@ -92,10 +92,26 @@ def reduce_rows(rows: list[dict], site: str, target_story: str) -> dict:
     # through a scope; a mixed row would weight some calls and not others.
     time_weighted = sum(timed) == total_calls and sum(total_ns) > 0
     ns_total = sum(total_ns)
+    # One packet, one binary: rows from two builds of the twin are two
+    # measurements, not one.
+    build_ids = {row.get("build_id") for row in selected if row.get("build_id")}
+    if len(build_ids) > 1:
+        raise RedundancyError(
+            f"site {site!r} in {target_story!r} was logged by more than one build "
+            f"({sorted(build_ids)}); reduce one build's log at a time"
+        )
+    build_id = next(iter(build_ids)) if build_ids else None
+    if build_id == "unknown":
+        build_id = None
+    timing = "exclusive" if all(row.get("timing") == "exclusive" for row in selected) else None
+    nested = [int(row["nested_calls"]) for row in selected if "nested_calls" in row]
     return {
         "site": site,
         "target_story": target_story,
         "repetitions": len(selected),
+        "build_id": build_id,
+        "timing": timing,
+        "nested_calls_fraction": (sum(nested) / total_calls) if len(nested) == len(selected) else None,
         "time_weighted": time_weighted,
         "total_ns_per_repetition_mean": statistics.fmean(total_ns) if time_weighted else None,
         "applicable_time_fraction": sum(applicable_ns) / ns_total if time_weighted else None,
@@ -215,7 +231,11 @@ def main(argv=None) -> int:
         "calls_per_repetition_mean": packet["calls_per_repetition_mean"],
         "applicable_fraction": packet["applicable_fraction"],
         "repeat_fraction": packet["repeat_fraction"],
+        "applicable_time_fraction": packet.get("applicable_time_fraction"),
+        "repeat_time_fraction": packet.get("repeat_time_fraction"),
         "distinct_overflow": packet["distinct_overflow"],
+        "build_id": packet.get("build_id"),
+        "timing": packet.get("timing"),
         "out": str(args.out),
     }, indent=2))
     return 0

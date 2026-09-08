@@ -2598,9 +2598,39 @@ PACKET_DERIVED_FIELDS = (
     "repetitions", "calls_total", "calls_per_repetition_mean",
     "distinct_inputs_mean", "applicable_fraction", "repeat_fraction",
     "distinct_overflow", "time_weighted", "applicable_time_fraction",
-    "repeat_time_fraction",
+    "repeat_time_fraction", "build_id", "timing", "nested_calls_fraction",
 )
 PACKET_TIME_FIELDS = ("time_weighted", "applicable_time_fraction", "repeat_time_fraction")
+PACKET_BUILD_FIELDS = ("build_id", "timing", "nested_calls_fraction")
+
+
+def require_build_id(packet, path_item):
+    """A packet is tied to the binary that logged it, and its calls are timed
+    exclusively.
+
+    The probe header stamps every row with the executable's GNU build id and
+    times a scope net of the scopes of the same counter that ran inside it. A
+    packet without a build id came from a twin built before that; a packet
+    whose rows are not timed exclusively counts a recursive site's subtree
+    once per nesting level, so its time fractions are not fractions of the
+    function's time. Neither binds.
+    """
+    if not packet.get("build_id"):
+        raise CampaignError(
+            f"Path {path_item['anchor'][:80]!r} binds packet {packet['site']!r} "
+            "whose rows name no build (no build_id): its log came from a twin "
+            "built before the current redundancy_probe.h. Rebuild the twin with "
+            "the current header and re-run the story; a packet is evidence for "
+            "the binary that produced its log."
+        )
+    if packet.get("timing") != "exclusive":
+        raise CampaignError(
+            f"Path {path_item['anchor'][:80]!r} binds packet {packet['site']!r} "
+            "whose rows are not timed exclusively (timing is not 'exclusive'): "
+            "a recursive site counts its subtree once per nesting level, so the "
+            "packet's time fractions are not fractions of the function's time. "
+            "Rebuild the twin with the current redundancy_probe.h and re-run."
+        )
 REPEAT_KEY_MIN_DISTINCT = 2.0
 REPEAT_KEY_POINTER_MAX_CALLS = 10.0
 
@@ -2662,9 +2692,10 @@ def verify_packet_provenance(packet, packet_path, campaign_dir):
             f"Packet {packet_path} does not re-derive from its sources: {exc}"
         ) from exc
     for field in PACKET_DERIVED_FIELDS:
-        if field in PACKET_TIME_FIELDS and field not in packet:
-            # A packet reduced before time weighting existed carries no time
-            # fields; require_time_weighted refuses it with the right message.
+        if field in PACKET_TIME_FIELDS + PACKET_BUILD_FIELDS and field not in packet:
+            # A packet reduced before time weighting or build ids existed
+            # carries no such fields; require_time_weighted and
+            # require_build_id refuse it with the right message.
             continue
         have, want = packet.get(field), rebuilt.get(field)
         if isinstance(want, bool) or not isinstance(want, (int, float)):
@@ -2788,6 +2819,7 @@ def enforce_measured_dispositions(
             ),
         )
         require_time_weighted(packet, item)
+        require_build_id(packet, item)
         supported = redundancy_evidence.supported_avoidable_fraction(packet)
         upper = share * supported
         if upper >= floor:
@@ -2928,6 +2960,37 @@ def sample_identity(collapsed_files, pairs):
 PACKET_RELEVANCE = 0.8
 
 
+def symbol_matches(frame, symbol):
+    """A profile frame is the probed function when it is that function's
+    demangled name followed by its parameter list. A bare prefix would also
+    match the function's neighbours (`LayoutView::HitTest` would match
+    `LayoutView::HitTestNoLifecycleUpdate`, which has no probe)."""
+    symbol = symbol.rstrip("(").rstrip()
+    return frame == symbol or frame.startswith(symbol + "(")
+
+
+def symbol_inclusive_shares(collapsed_files, symbols):
+    """Total sample weight of the stacks and, per symbol, the weight of the
+    samples carrying a frame that is that function."""
+    symbols = set(symbols)
+    total = 0.0
+    inclusive = {symbol: 0.0 for symbol in symbols}
+    for path in collapsed_files:
+        with open(path, errors="replace") as handle:
+            for line in handle:
+                stack, _, weight = line.rstrip("\n").rpartition(" ")
+                try:
+                    weight = float(weight)
+                except ValueError:
+                    continue
+                total += weight
+                frames = stack.split(";")
+                for symbol in symbols:
+                    if any(symbol_matches(frame, symbol) for frame in frames):
+                        inclusive[symbol] += weight
+    return total, inclusive
+
+
 def symbol_identity(collapsed_files, pairs):
     """For each (row_anchor, probe_symbol_prefix) pair: weight of samples
     carrying the anchor, weight carrying a frame that starts with the
@@ -2948,7 +3011,7 @@ def symbol_identity(collapsed_files, pairs):
                 frames = stack.split(";")
                 present_anchors = set(frames) & anchors
                 present_prefixes = {
-                    pf for pf in prefixes if any(fr.startswith(pf) for fr in frames)
+                    pf for pf in prefixes if any(symbol_matches(fr, pf) for fr in frames)
                 }
                 for a in present_anchors:
                     anchor_w[a] += weight
@@ -3172,7 +3235,7 @@ def enforce_covered_by_nearest_probe(paths, owner_symbols, probe_symbols, profil
                 positions = {}
                 for i, frame in enumerate(frames):
                     for symbol in all_symbols:
-                        if frame.startswith(symbol):
+                        if symbol_matches(frame, symbol):
                             positions.setdefault(symbol, []).append(i)
                 for anchor in present:
                     row_weight[anchor] += weight
@@ -3251,6 +3314,293 @@ def enforce_covered_by_probe_identity(paths, owner_symbols, profile, story):
             )
         item["covered_by_probe_identity"] = round(fraction, 4)
 
+def bound_packets(paths, bound_rows, campaign_dir):
+    """packet path -> (packet, [row indexes]) for the rows that bind one."""
+    import redundancy_evidence
+    packets = {}
+    for index, item in bound_rows:
+        ref = item.get("redundancy_evidence") or {}
+        if not ref.get("path"):
+            continue
+        packet_path = pathlib.Path(ref["path"])
+        if not packet_path.is_absolute():
+            packet_path = pathlib.Path(campaign_dir) / packet_path
+        if ref["path"] not in packets:
+            try:
+                packet = redundancy_evidence.load_packet(packet_path)
+            except ValueError as exc:
+                raise CampaignError(str(exc)) from exc
+            packets[ref["path"]] = (packet, [])
+        packets[ref["path"]][1].append(index)
+    return packets
+
+
+def enforce_build_consistency(paths, campaign_dir):
+    """One probe patch is one build.
+
+    Every packet records the patch its twin was built from and the build id
+    of the binary that logged it. Packets bound in one decomposition that
+    cite the same patch must come from the same build, and packets from one
+    build must cite the same patch: a log from a binary built before the
+    patch changed, or a packet whose `patch_sha256` was rewritten to the
+    current patch, is not evidence for that patch.
+    """
+    rows = [(index, item) for index, item in enumerate(paths, 1)
+            if item.get("redundancy_evidence")]
+    packets = bound_packets(paths, rows, campaign_dir)
+    by_patch = {}
+    by_build = {}
+    for path, (packet, indexes) in packets.items():
+        build = packet.get("build_id")
+        patch = packet.get("patch_sha256")
+        if not build or not patch:
+            continue
+        by_patch.setdefault(patch, {}).setdefault(build, []).append(path)
+        by_build.setdefault(build, {}).setdefault(patch, []).append(path)
+    for patch, builds in by_patch.items():
+        if len(builds) > 1:
+            detail = "; ".join(
+                f"build {build[:12]}: {', '.join(sorted(paths_))}"
+                for build, paths_ in sorted(builds.items())
+            )
+            raise CampaignError(
+                f"The bound packets cite probe patch {patch[:12]} from "
+                f"{len(builds)} different builds ({detail}). One patch is one "
+                "build: a log from a binary built before the patch changed, or "
+                "a packet whose patch_sha256 was edited to the current patch, "
+                "is not evidence for that patch. Re-run every story on the "
+                "build of this patch and reduce again."
+            )
+    for build, patches in by_build.items():
+        if len(patches) > 1:
+            detail = "; ".join(
+                f"patch {patch[:12]}: {', '.join(sorted(paths_))}"
+                for patch, paths_ in sorted(patches.items())
+            )
+            raise CampaignError(
+                f"The bound packets cite build {build[:12]} with "
+                f"{len(patches)} different probe patches ({detail}); a binary "
+                "was built from one patch. The packets' patch digests were "
+                "edited; regenerate them from the logs with the patch the "
+                "twin was built from."
+            )
+
+
+PACKET_TIME_COVERAGE_FACTOR = 2.0
+PACKET_TIME_COVERAGE_MIN_SHARE_PCT = 0.5
+
+
+def packet_time_coverage(paths, bound_rows, profile, story, campaign_dir):
+    """How much of its probed function each bound packet timed.
+
+    A packet's time per repetition divided by its probed function's inclusive
+    share of the story's cycle profile is the same number for every packet
+    of the story (both measure the same functions' time on the same story).
+    The packet whose function carries the largest share is the reference;
+    every other packet's ratio to it says whether its scope covered the
+    function (about 1), part of it (well below 1: a scope opened after some
+    of the work, or a symbol that is a neighbour of the probed function) or
+    more than it (well above 1: nested scopes counted once per level, or a
+    scope wider than the function the packet names). Returns the per-packet
+    rows and the reference packet path.
+    """
+    packets = bound_packets(paths, bound_rows, campaign_dir)
+    timed = {
+        path: (packet, indexes) for path, (packet, indexes) in packets.items()
+        if packet.get("time_weighted") and packet.get("total_ns_per_repetition_mean")
+        and isinstance(packet.get("probe_symbol"), str) and packet["probe_symbol"].strip()
+    }
+    if not timed:
+        return [], None
+    files = collapsed_stack_files(profile, story)
+    if not files:
+        raise CampaignError(
+            f"packet time coverage needs the story's profile.collapsed beside the "
+            f"analyzer artifacts of profile {profile.get('id')!r} for {story!r}"
+        )
+    symbols = {packet["probe_symbol"].strip() for packet, _ in timed.values()}
+    total, inclusive = symbol_inclusive_shares(files, symbols)
+    rows = []
+    for path, (packet, indexes) in timed.items():
+        symbol = packet["probe_symbol"].strip()
+        share = 100.0 * inclusive[symbol] / total if total else 0.0
+        ms = float(packet["total_ns_per_repetition_mean"]) / 1e6
+        rows.append({
+            "packet": path, "probe_symbol": symbol, "rows": indexes,
+            "symbol_share_pct": share, "ms_per_repetition": ms,
+            "ms_per_share_pt": (ms / share) if share > 0 else None,
+        })
+    reference = max(
+        (row for row in rows if row["ms_per_share_pt"]),
+        key=lambda row: row["symbol_share_pct"], default=None,
+    )
+    for row in rows:
+        row["coverage"] = (
+            row["ms_per_share_pt"] / reference["ms_per_share_pt"]
+            if reference and row["ms_per_share_pt"] else None
+        )
+    rows.sort(key=lambda row: -row["symbol_share_pct"])
+    return rows, (reference["packet"] if reference else None)
+
+
+def format_time_coverage(rows, reference):
+    lines = [f"{'packet':44} {'probe share':>11} {'ms/rep':>9} {'coverage':>9}"]
+    for row in rows:
+        cov = f"{row['coverage']:.2f}" if row["coverage"] is not None else "n/a"
+        mark = "  <- reference" if row["packet"] == reference else ""
+        lines.append(
+            f"{row['packet'][-44:]:44} {row['symbol_share_pct']:10.2f}% "
+            f"{row['ms_per_repetition']:9.3f} {cov:>9}{mark}"
+        )
+    return "\n".join(lines)
+
+
+def enforce_packet_time_coverage(paths, bound_rows, profile, story, campaign_dir):
+    """A packet times the function it names, all of it and only it."""
+    rows, reference = packet_time_coverage(paths, bound_rows, profile, story, campaign_dir)
+    bad = [
+        row for row in rows
+        if row["coverage"] is not None
+        and row["symbol_share_pct"] >= PACKET_TIME_COVERAGE_MIN_SHARE_PCT
+        and not (1.0 / PACKET_TIME_COVERAGE_FACTOR <= row["coverage"] <= PACKET_TIME_COVERAGE_FACTOR)
+    ]
+    for row in rows:
+        for index in row["rows"]:
+            paths[index - 1]["packet_time_coverage"] = (
+                round(row["coverage"], 3) if row["coverage"] is not None else None
+            )
+    if not bad:
+        return
+    worst = max(bad, key=lambda row: abs(math.log(row["coverage"])))
+    if worst["coverage"] < 1:
+        why = (
+            "the scope opened after part of the function's work (a lifecycle "
+            "update inside a hit test, the paint tree walk before the scope), "
+            "or the packet names a neighbour of the probed function as its symbol"
+        )
+    else:
+        why = (
+            "nested scopes of a recursive site were counted once per nesting "
+            "level, or the scope covers more than the function the packet names"
+        )
+    raise CampaignError(
+        f"Packet {worst['packet']!r} (rows {worst['rows'][:8]}) times "
+        f"{worst['ms_per_repetition']:.3f} ms per repetition for "
+        f"{worst['probe_symbol']!r}, which carries {worst['symbol_share_pct']:.2f}% "
+        f"of {story!r}; against the reference packet {reference!r} that is "
+        f"{worst['coverage']:.2f} of the function's time (allowed "
+        f"{1/PACKET_TIME_COVERAGE_FACTOR:.1f} to {PACKET_TIME_COVERAGE_FACTOR:.0f}). "
+        f"Either {why}. A packet bounds a row only when it timed the whole of the "
+        "function it names: open the scope as the function's first statement and "
+        "name that function as --symbol. Coverage of every bound packet:\n"
+        + format_time_coverage(rows, reference)
+    )
+
+
+ROW_TEXT_FIELDS = ("existing_mechanism", "rationale", "invariant", "falsification",
+                   "falsifications", "notes", "summary", "evidence")
+ROW_TEXT_PERCENT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+ROW_TEXT_CALLS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*calls?\s*(?:/|per)\s*rep")
+ROW_TEXT_PACKET_RE = re.compile(r"\b(probe_[\w.-]+?\.json)\b")
+ROW_TEXT_PERCENT_TOLERANCE = 0.06
+
+
+def row_text_strings(item):
+    out = []
+    for field in ROW_TEXT_FIELDS:
+        value = item.get(field)
+        if isinstance(value, str):
+            out.append(value)
+        elif isinstance(value, list):
+            out.extend(v for v in value if isinstance(v, str))
+    investigation = item.get("investigation")
+    if isinstance(investigation, dict):
+        for value in investigation.values():
+            if isinstance(value, str):
+                out.append(value)
+            elif isinstance(value, list):
+                out.extend(v for v in value if isinstance(v, str))
+    return out
+
+
+def row_text_number_problems(item, packet, share, floor):
+    """Percentages, calls-per-repetition figures and packet names a row's
+    text quotes must be the bound packet's. A number typed from memory, or
+    left over from an earlier packet, is not the count."""
+    import redundancy_evidence
+    fractions = [
+        packet.get("applicable_fraction"), packet.get("repeat_fraction"),
+        packet.get("applicable_time_fraction"), packet.get("repeat_time_fraction"),
+        packet.get("nested_calls_fraction"),
+        redundancy_evidence.supported_avoidable_fraction(packet),
+        redundancy_evidence.hypothesis_bound(packet, "applicable"),
+        redundancy_evidence.hypothesis_bound(packet, "repeat"),
+    ]
+    fractions = [float(f) for f in fractions if isinstance(f, (int, float))]
+    allowed = set()
+    for fraction in fractions:
+        allowed.add(100.0 * fraction)
+        allowed.add(100.0 * (1.0 - fraction))
+        if share is not None:
+            allowed.add(share * fraction)
+    if share is not None:
+        allowed.add(share)
+    if floor is not None:
+        allowed.add(floor)
+    calls = packet.get("calls_per_repetition_mean")
+    distinct = packet.get("distinct_inputs_mean")
+    problems = []
+    bound_name = pathlib.Path(str((item.get("redundancy_evidence") or {}).get("path", ""))).name
+    for text in row_text_strings(item):
+        for match in ROW_TEXT_PACKET_RE.finditer(text):
+            if match.group(1) != bound_name:
+                problems.append(
+                    f"quotes packet {match.group(1)!r} but binds {bound_name!r}"
+                )
+        for match in ROW_TEXT_PERCENT_RE.finditer(text):
+            value = float(match.group(1))
+            if not any(abs(value - want) <= max(ROW_TEXT_PERCENT_TOLERANCE, 0.02 * abs(want))
+                       for want in allowed):
+                problems.append(
+                    f"quotes {match.group(0).strip()!r}, which is none of the bound "
+                    f"packet's numbers ({', '.join(f'{v:.2f}%' for v in sorted(allowed))})"
+                )
+        for match in ROW_TEXT_CALLS_RE.finditer(text):
+            value = float(match.group(1))
+            if isinstance(calls, (int, float)) and abs(value - float(calls)) > 0.5 and (
+                    not isinstance(distinct, (int, float)) or abs(value - float(distinct)) > 0.5):
+                problems.append(
+                    f"quotes {match.group(0).strip()!r}, but the bound packet "
+                    f"measured {float(calls):.1f} calls per repetition"
+                )
+    return problems
+
+
+def enforce_row_text_numbers(paths, bound_rows, story_shares, config, base_floor,
+                             default_story, campaign_dir):
+    """The numbers in a row's text are the bound packet's numbers."""
+    packets = bound_packets(paths, bound_rows, campaign_dir)
+    by_index = {}
+    for path, (packet, indexes) in packets.items():
+        for index in indexes:
+            by_index[index] = packet
+    for index, item in bound_rows:
+        packet = by_index.get(index)
+        if packet is None:
+            continue
+        story = item.get("target_story") or default_story
+        floor, _ = story_floor_pct(config, story)
+        floor = max(floor, base_floor)
+        problems = row_text_number_problems(item, packet, story_shares.get(index), floor)
+        if problems:
+            raise CampaignError(
+                f"Path {index} ({item['anchor'][:80]!r}) text does not match the "
+                f"packet it binds: {'; '.join(problems[:4])}. A row's text quotes "
+                "the bound packet's numbers (its fractions, calls per repetition, "
+                "share x fraction) and names that packet; text carried over from "
+                "another packet or another revision is not this row's count."
+            )
+
 
 PACKET_HYPOTHESES = ("applicable", "repeat")
 APPLICABLE_SATURATED = 0.999
@@ -3297,6 +3647,7 @@ def bind_redundancy_evidence(path_item, story, fraction, campaign_dir):
             f"{PACKET_HYPOTHESES}"
         )
     require_time_weighted(packet, path_item)
+    require_build_id(packet, path_item)
     applicable = float(packet["applicable_fraction"])
     repeat = float(packet["repeat_fraction"])
     applicable_time = float(packet["applicable_time_fraction"])
@@ -6021,6 +6372,15 @@ def cmd_decompose(args):
         enforce_packet_relevance(
             result["paths"], relevance_rows, source_profile,
             parent.get("target_story"), ledger.dir,
+        )
+        enforce_build_consistency(result["paths"], ledger.dir)
+        enforce_packet_time_coverage(
+            result["paths"], relevance_rows, source_profile,
+            parent.get("target_story"), ledger.dir,
+        )
+        enforce_row_text_numbers(
+            result["paths"], relevance_rows, story_shares, ledger.data["config"],
+            floor, parent.get("target_story"), ledger.dir,
         )
     wrongly_below_floor = [
         item for item in result["paths"]

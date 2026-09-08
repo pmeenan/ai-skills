@@ -384,7 +384,9 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
 
     def write_packet(self, name, *, story=STORY, applicable, repeat, site="probe/site",
                      symbol=None, repetitions=4, calls=100, timed=True,
-                     applicable_time=None, repeat_time=None, distinct=None):
+                     applicable_time=None, repeat_time=None, distinct=None,
+                     ns_per_call=1000, build_id="b" * 40, timing="exclusive",
+                     nested=0, patch_name="probes.patch"):
         """A packet the way the host makes one: rows in a browser log, a probe
         patch that defines the site, and redundancy_evidence.py reducing them."""
         import redundancy_evidence
@@ -400,15 +402,20 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
                 "repeated_inputs": repeated, "overflow": 0,
             }
             if timed:
-                total_ns = calls * 1000
+                total_ns = calls * ns_per_call
                 data.update({
                     "timed_calls": calls, "total_ns": total_ns,
                     "applicable_ns": round((applicable if applicable_time is None else applicable_time) * total_ns),
                     "repeated_ns": round((repeat if repeat_time is None else repeat_time) * total_ns),
                 })
+            if build_id:
+                data["build_id"] = build_id
+            if timing:
+                data["timing"] = timing
+                data["nested_calls"] = nested
             rows.append(json.dumps(data))
         log.write_text("".join(f"[SP3_REDUNDANCY_ROW] {row}\n" for row in rows))
-        patch = self.dir / "evidence" / "probes.patch"
+        patch = self.dir / "evidence" / patch_name
         patch.parent.mkdir(parents=True, exist_ok=True)
         existing = patch.read_text() if patch.is_file() else ""
         if f'"{site}"' not in existing:
@@ -713,6 +720,131 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         symbols = campaign.owner_probe_symbols(rows, lambda key: ledger_owner, self.dir)
         self.assertEqual({"layout/oof": "OutOfFlow"}, symbols)
         campaign.enforce_covered_by_probe_identity(rows, symbols, profile, STORY)
+
+    def test_packets_are_tied_to_their_build_and_timed_exclusively(self):
+        with mock.patch.object(campaign, "test_bypass_active", return_value=False):
+            config = {"share_floor_pct": 0.1, "calibration": {"story_mde_pct": {STORY: 0.5}}}
+            legacy = self.write_packet("legacy", applicable=0.3, repeat=0.0, build_id=None, timing=None)
+            item = {"anchor": "Root", "disposition": "novel", "mechanism_key": "x/y",
+                    "redundancy_evidence": legacy}
+            with self.assertRaisesRegex(campaign.CampaignError, "name no build"):
+                campaign.bind_redundancy_evidence(item, STORY, 0.1, self.dir)
+            rows = [{"anchor": "Root", "disposition": "mandatory", "redundancy_evidence": legacy}]
+            with self.assertRaisesRegex(campaign.CampaignError, "name no build"):
+                campaign.enforce_measured_dispositions(rows, {1: 5.0}, config, 0.1, STORY, self.dir)
+            inclusive = self.write_packet("inclusive", applicable=0.3, repeat=0.0, timing=None)
+            item["redundancy_evidence"] = inclusive
+            with self.assertRaisesRegex(campaign.CampaignError, "not timed exclusively"):
+                campaign.bind_redundancy_evidence(item, STORY, 0.1, self.dir)
+            current = self.write_packet("current", applicable=0.3, repeat=0.0, nested=40)
+            item["redundancy_evidence"] = current
+            campaign.bind_redundancy_evidence(item, STORY, 0.1, self.dir)
+            # One patch is one build: a second build claiming the same patch,
+            # or one build claiming two patches, is refused.
+            other_build = self.write_packet("other-build", applicable=0.3, repeat=0.0,
+                                            build_id="c" * 40)
+            paths = [
+                {"anchor": "Root", "disposition": "novel", "redundancy_evidence": current},
+                {"anchor": "Leaf", "disposition": "mandatory", "redundancy_evidence": other_build},
+            ]
+            with self.assertRaisesRegex(campaign.CampaignError, "from 2 different builds"):
+                campaign.enforce_build_consistency(paths, self.dir)
+            other_patch = self.write_packet("other-patch", applicable=0.3, repeat=0.0,
+                                            site="probe/third", patch_name="probes-2.patch")
+            paths[1]["redundancy_evidence"] = other_patch
+            with self.assertRaisesRegex(campaign.CampaignError, "2 different probe patches"):
+                campaign.enforce_build_consistency(paths, self.dir)
+            same = self.write_packet("same-build", applicable=0.3, repeat=0.0)
+            paths[1]["redundancy_evidence"] = same
+            campaign.enforce_build_consistency(paths, self.dir)
+
+    def test_symbols_match_whole_functions(self):
+        self.assertTrue(campaign.symbol_matches(
+            "blink::LayoutView::HitTest(blink::HitTestLocation const&, blink::HitTestResult&)",
+            "blink::LayoutView::HitTest"))
+        self.assertTrue(campaign.symbol_matches("blink::ShapeResultView::ComputeInkBounds() const",
+                                                "blink::ShapeResultView::ComputeInkBounds("))
+        self.assertTrue(campaign.symbol_matches("Root", "Root"))
+        self.assertFalse(campaign.symbol_matches(
+            "blink::LayoutView::HitTestNoLifecycleUpdate(blink::HitTestLocation const&)",
+            "blink::LayoutView::HitTest"))
+        self.assertFalse(campaign.symbol_matches("Rooted(int)", "Root"))
+
+    def test_packets_time_the_whole_of_the_function_they_name(self):
+        story_dir = self.dir / "results" / "analysis" / "stories" / STORY
+        story_dir.mkdir(parents=True, exist_ok=True)
+        artifact = story_dir / "candidate_frontier.json"
+        artifact.write_text("{}")
+        (story_dir / "profile.collapsed").write_text(
+            "main;Root(int);Lifecycle();Style();Match() 40\n"
+            "main;Root(int);Lifecycle();Layout();Box() 50\n"
+            "main;Root(int);Commit() 10\n"
+        )
+        profile = {"id": "p", "capture_provenance": [{
+            "capture_id": "c1",
+            "story_frontiers": [{"story": STORY, "artifact": str(artifact)}],
+        }]}
+        # Root carries 100% of the story and times 1000 ns per call; every
+        # other packet's ms-per-share-point is measured against it.
+        root = self.write_packet("root", applicable=0.0, repeat=0.0, site="root/update",
+                                 symbol="Root", ns_per_call=1000)
+        lifecycle = self.write_packet("lifecycle", applicable=0.0, repeat=0.0, site="phase/lifecycle",
+                                      symbol="Lifecycle", ns_per_call=900)
+        # A scope opened after most of the work: Style carries 40% but the
+        # packet times a tenth of what it should.
+        late = self.write_packet("late", applicable=0.0, repeat=0.0, site="style/late",
+                                 symbol="Style", ns_per_call=40)
+        rows = [
+            {"anchor": "Root(int)", "disposition": "mandatory", "redundancy_evidence": root},
+            {"anchor": "Lifecycle()", "disposition": "mandatory", "redundancy_evidence": lifecycle},
+            {"anchor": "Style()", "disposition": "mandatory", "redundancy_evidence": late},
+        ]
+        bound = list(enumerate(rows, 1))
+        table, reference = campaign.packet_time_coverage(rows, bound, profile, STORY, self.dir)
+        self.assertEqual("evidence/root.json", reference)
+        by_packet = {row["packet"]: row for row in table}
+        self.assertAlmostEqual(1.0, by_packet["evidence/lifecycle.json"]["coverage"], places=6)
+        self.assertAlmostEqual(0.1, by_packet["evidence/late.json"]["coverage"], places=6)
+        with self.assertRaisesRegex(campaign.CampaignError, "0.10 of the function's time.*scope opened after"):
+            campaign.enforce_packet_time_coverage(rows, bound, profile, STORY, self.dir)
+        # Nested scopes counted once per level: three times the function's time.
+        nested = self.write_packet("nested", applicable=0.0, repeat=0.0, site="style/nested",
+                                   symbol="Style", ns_per_call=1200)
+        rows[2]["redundancy_evidence"] = nested
+        with self.assertRaisesRegex(campaign.CampaignError, "3.00 of the function's time.*nested scopes"):
+            campaign.enforce_packet_time_coverage(rows, bound, profile, STORY, self.dir)
+        # A symbol that is a neighbour of the probed function counts nothing
+        # (no frame is `Sty(`), so the packet has no share and is left alone;
+        # the relevance check refuses it instead. The whole function passes.
+        whole = self.write_packet("whole", applicable=0.0, repeat=0.0, site="style/whole",
+                                  symbol="Style", ns_per_call=400)
+        rows[2]["redundancy_evidence"] = whole
+        campaign.enforce_packet_time_coverage(rows, bound, profile, STORY, self.dir)
+        self.assertAlmostEqual(1.0, rows[2]["packet_time_coverage"], places=3)
+
+    def test_row_text_quotes_the_bound_packet(self):
+        packet = self.write_packet("quoted", applicable=0.3, repeat=0.5, applicable_time=0.25,
+                                   repeat_time=0.6, calls=15)
+        config = {"share_floor_pct": 0.1, "calibration": {"story_mde_pct": {STORY: 0.5}}}
+        item = {"anchor": "Root", "disposition": "novel", "mechanism_key": "x/y",
+                "redundancy_evidence": packet,
+                "existing_mechanism": "Root checks dirty bits; probe measures 52.18% avoidable "
+                                      "time fraction (15.0 calls/rep in quoted.json)."}
+        bound = [(1, item)]
+        with self.assertRaisesRegex(campaign.CampaignError, "quotes '52.18%'"):
+            campaign.enforce_row_text_numbers([item], bound, {1: 10.0}, config, 0.1, STORY, self.dir)
+        item["existing_mechanism"] = ("Root checks dirty bits; probe measures 25.0% of its time "
+                                      "on calls where nothing was dirty (26.67% of 15.0 calls/rep), "
+                                      "2.5% of the story, in probe_old.json.")
+        with self.assertRaisesRegex(campaign.CampaignError, "quotes packet 'probe_old.json' but binds 'quoted.json'"):
+            campaign.enforce_row_text_numbers([item], bound, {1: 10.0}, config, 0.1, STORY, self.dir)
+        item["existing_mechanism"] = ("Root checks dirty bits; probe measures 25.0% of its time "
+                                      "on calls where nothing was dirty (26.67% of 15.0 calls/rep), "
+                                      "2.5% of the story, in quoted.json; floor 1.0%.")
+        campaign.enforce_row_text_numbers([item], bound, {1: 10.0}, config, 0.1, STORY, self.dir)
+        item["rationale"] = "12 calls/rep were repeats"
+        with self.assertRaisesRegex(campaign.CampaignError, "measured 15.0 calls per repetition"):
+            campaign.enforce_row_text_numbers([item], bound, {1: 10.0}, config, 0.1, STORY, self.dir)
 
     def test_novel_rows_name_the_existing_mechanism(self):
         item = {"anchor": "blink::InlineNode::PrepareLayout", "disposition": "novel"}

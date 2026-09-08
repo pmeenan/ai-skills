@@ -10,7 +10,7 @@ import redundancy_evidence as re_
 
 def row(site="style/resolve", group="1|TodoMVC-React", calls=100, applicable=40,
         distinct=25, repeated=75, overflow=0, timed=True, ns_per_call=10,
-        applicable_ns=None, repeated_ns=None):
+        applicable_ns=None, repeated_ns=None, build_id=None, timing=None, nested=None):
     data = {
         "schema_version": 1, "block": 1, "capture_nonce": "n", "site": site,
         "group": group, "pid": 1, "tid": 1, "emitted_monotonic_raw_ns": 5,
@@ -24,6 +24,12 @@ def row(site="style/resolve", group="1|TodoMVC-React", calls=100, applicable=40,
             "applicable_ns": applicable * ns_per_call if applicable_ns is None else applicable_ns,
             "repeated_ns": repeated * ns_per_call if repeated_ns is None else repeated_ns,
         })
+    if build_id is not None:
+        data["build_id"] = build_id
+    if timing is not None:
+        data["timing"] = timing
+    if nested is not None:
+        data["nested_calls"] = nested
     return "[SP3_REDUNDANCY_ROW] " + json.dumps(data) + "\n"
 
 
@@ -36,6 +42,28 @@ class RedundancyEvidenceTest(unittest.TestCase):
             rc = re_.main(["--site", site, "--symbol", "blink::Probe(", "--target-story", story,
                            "--browser-log", str(log), "--out", str(out)])
             return rc, (json.loads(out.read_text()) if out.exists() else None)
+
+    def test_records_the_build_and_the_timing_of_its_rows(self):
+        rc, packet = self.packet([row(build_id="ab" * 20, timing="exclusive", nested=10),
+                                  row(build_id="ab" * 20, timing="exclusive", nested=30)])
+        self.assertEqual(0, rc)
+        self.assertEqual("ab" * 20, packet["build_id"])
+        self.assertEqual("exclusive", packet["timing"])
+        self.assertAlmostEqual(0.2, packet["nested_calls_fraction"])
+        # Rows from before the build-id header carry none of it.
+        rc, packet = self.packet([row(), row()])
+        self.assertEqual(0, rc)
+        self.assertIsNone(packet["build_id"])
+        self.assertIsNone(packet["timing"])
+        self.assertIsNone(packet["nested_calls_fraction"])
+        # One packet, one binary.
+        with self.assertRaises(re_.RedundancyError):
+            re_.reduce_rows([json.loads(row(build_id="a" * 40)[len(re_.ROW_PREFIX):]),
+                             json.loads(row(build_id="b" * 40)[len(re_.ROW_PREFIX):])],
+                            "style/resolve", "TodoMVC-React")
+        # A row that is timed exclusively beside one that is not is inclusive.
+        rc, packet = self.packet([row(timing="exclusive"), row()])
+        self.assertIsNone(packet["timing"])
 
     def test_reduces_only_the_target_story(self):
         rc, packet = self.packet([
