@@ -657,9 +657,11 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         rows = [{"anchor": "Match", "disposition": "covered-by", "covered_by": "root/cache"}]
         with self.assertRaisesRegex(campaign.CampaignError, "probed function 'Style' sits between"):
             campaign.enforce_covered_by_nearest_probe(rows, owners, probes, profile, STORY)
-        # The probed function itself is not covered by an ancestor either.
-        rows = [{"anchor": "Style", "disposition": "covered-by", "covered_by": "root/cache"}]
-        with self.assertRaisesRegex(campaign.CampaignError, "sits between"):
+        # The probed function itself is not covered by an ancestor either, and
+        # rows sharing one anchor are each measured once (never above 100%).
+        rows = [{"anchor": "Style", "disposition": "covered-by", "covered_by": "root/cache"},
+                {"anchor": "Style", "disposition": "covered-by", "covered_by": "root/cache"}]
+        with self.assertRaisesRegex(campaign.CampaignError, "in 100% of its samples"):
             campaign.enforce_covered_by_nearest_probe(rows, owners, probes, profile, STORY)
         # No probe between root and Box (Layout has no packet for this story): covered.
         rows = [{"anchor": "Box", "disposition": "covered-by", "covered_by": "root/cache"},

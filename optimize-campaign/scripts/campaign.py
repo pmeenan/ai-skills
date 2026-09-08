@@ -3155,7 +3155,7 @@ def enforce_covered_by_nearest_probe(paths, owner_symbols, probe_symbols, profil
     for index, item, owner, others in rows:
         by_anchor.setdefault(item["anchor"], []).append((index, item, owner, others))
     row_weight = {a: 0.0 for a in anchors}
-    between = {a: {} for a in anchors}
+    between = {index: {} for index, _, _, _ in rows}
     all_symbols = set(probe_symbols) | {o for _, _, o, _ in rows}
     for path in files:
         with open(path, errors="replace") as handle:
@@ -3182,13 +3182,13 @@ def enforce_covered_by_nearest_probe(paths, owner_symbols, probe_symbols, profil
                         io = owner_pos[-1] if owner_pos else -1
                         for symbol in others:
                             if any(io < i <= ia for i in positions.get(symbol, [])):
-                                between[anchor][symbol] = between[anchor].get(symbol, 0.0) + weight
+                                between[index][symbol] = between[index].get(symbol, 0.0) + weight
     for index, item, owner, others in rows:
         anchor = item["anchor"]
         total = row_weight[anchor]
         if total <= 0:
             continue
-        for symbol, weight in sorted(between[anchor].items(), key=lambda kv: -kv[1]):
+        for symbol, weight in sorted(between[index].items(), key=lambda kv: -kv[1]):
             fraction = weight / total
             if fraction >= COVERED_BY_SAMPLE_IDENTITY:
                 raise CampaignError(
