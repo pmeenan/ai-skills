@@ -2600,6 +2600,7 @@ PACKET_DERIVED_FIELDS = (
     "distinct_overflow", "time_weighted", "applicable_time_fraction",
     "repeat_time_fraction",
 )
+PACKET_TIME_FIELDS = ("time_weighted", "applicable_time_fraction", "repeat_time_fraction")
 REPEAT_KEY_MIN_DISTINCT = 2.0
 
 
@@ -2660,6 +2661,10 @@ def verify_packet_provenance(packet, packet_path, campaign_dir):
             f"Packet {packet_path} does not re-derive from its sources: {exc}"
         ) from exc
     for field in PACKET_DERIVED_FIELDS:
+        if field in PACKET_TIME_FIELDS and field not in packet:
+            # A packet reduced before time weighting existed carries no time
+            # fields; require_time_weighted refuses it with the right message.
+            continue
         have, want = packet.get(field), rebuilt.get(field)
         if isinstance(want, bool) or not isinstance(want, (int, float)):
             same = have == want

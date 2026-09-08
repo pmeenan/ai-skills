@@ -437,6 +437,16 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         # Typed fractions on a real log.
         refused(lambda d: d.update(applicable_fraction=0.0, repeat_fraction=0.0),
                 "not produced by redundancy_evidence.py")
+        # A packet reduced before time weighting existed re-derives (and is
+        # then refused for carrying no time, not for being hand-written).
+        legacy = json.loads(packet_path.read_text())
+        for field in campaign.PACKET_TIME_FIELDS + ("total_ns_per_repetition_mean",):
+            legacy.pop(field, None)
+        legacy_path = self.dir / "evidence" / "legacy.json"
+        legacy_path.write_text(json.dumps(legacy))
+        campaign.verify_packet_provenance(legacy, legacy_path, self.dir)
+        with self.assertRaisesRegex(campaign.CampaignError, "carries no time"):
+            campaign.require_time_weighted(legacy, {"anchor": "Row"})
         # A site the twin never counted, pointed at a real log.
         refused(lambda d: d.update(site="root/update"), "does not re-derive")
         # A log that is not on the host, or was replaced.
