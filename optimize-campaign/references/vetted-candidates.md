@@ -92,6 +92,9 @@ condition, not a value.
     site is defined in its recorded probe patch (`decompose` checks both).
     A packet whose numbers differ from its own log is fabricated evidence;
     the human decides whether the campaign continues with that operator.
+14. No `covered-by` row has a probed function with a packet for its story
+    between it and its owner (`covered_by_nearest_probe` on the row), and no
+    `applicable` predicate reads state written by another function.
 13. Every bound packet is time-weighted (`time_weighted` true: every call
     recorded through `RedundancyScope`), the candidate's fraction is within
     both the call and the time fraction of its hypothesis, and a `repeat`

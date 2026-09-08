@@ -2602,6 +2602,7 @@ PACKET_DERIVED_FIELDS = (
 )
 PACKET_TIME_FIELDS = ("time_weighted", "applicable_time_fraction", "repeat_time_fraction")
 REPEAT_KEY_MIN_DISTINCT = 2.0
+REPEAT_KEY_POINTER_MAX_CALLS = 10.0
 
 
 def require_time_weighted(packet, path_item):
@@ -3100,6 +3101,109 @@ def owner_probe_symbols(paths, ledger_owner_lookup, campaign_dir):
     return symbols
 
 
+def story_probe_symbols(campaign_dir, story):
+    """probe_symbol of every time-weighted packet under evidence/ that
+    measured this story: the probed functions the decomposition may bind."""
+    import redundancy_evidence
+    symbols = set()
+    for path in sorted(pathlib.Path(campaign_dir, "evidence").glob("*.json")):
+        try:
+            packet = redundancy_evidence.load_packet(path)
+        except (ValueError, OSError):
+            continue
+        symbol = packet.get("probe_symbol")
+        if packet.get("target_story") == story and packet.get("time_weighted") \
+                and isinstance(symbol, str) and symbol.strip():
+            symbols.add(symbol.strip())
+    return symbols
+
+
+def enforce_covered_by_nearest_probe(paths, owner_symbols, probe_symbols, profile, story):
+    """A row is dispositioned by the nearest probe on its stack.
+
+    When another probed function (one with a time-weighted packet for this
+    story) sits between the owner's probed function and the row in at least
+    COVERED_BY_SAMPLE_IDENTITY of the row's samples, or the row is that
+    function, the owner's count is not the row's count: the row binds the
+    nearer packet (as `mandatory` by its bound, or `novel`/`known` at its
+    fraction) or is covered by that packet's row. A root-update probe cannot
+    cover the style, layout and paint phases beneath it once those phases
+    have probes of their own.
+    """
+    rows = []
+    for index, item in enumerate(paths, 1):
+        if item.get("disposition") != "covered-by":
+            continue
+        owner = owner_symbols.get(item.get("covered_by"))
+        if not owner:
+            continue
+        others = [s for s in probe_symbols if s != owner]
+        if not others:
+            continue
+        rows.append((index, item, owner, others))
+    if not rows:
+        return
+    files = collapsed_stack_files(profile, story)
+    if not files:
+        raise CampaignError(
+            f"covered-by rows need the story's profile.collapsed beside the "
+            f"analyzer artifacts of profile {profile.get('id')!r} for {story!r}; "
+            "none resolves on this host"
+        )
+    anchors = {item["anchor"] for _, item, _, _ in rows}
+    by_anchor = {}
+    for index, item, owner, others in rows:
+        by_anchor.setdefault(item["anchor"], []).append((index, item, owner, others))
+    row_weight = {a: 0.0 for a in anchors}
+    between = {a: {} for a in anchors}
+    all_symbols = set(probe_symbols) | {o for _, _, o, _ in rows}
+    for path in files:
+        with open(path, errors="replace") as handle:
+            for line in handle:
+                stack, _, weight = line.rstrip("\n").rpartition(" ")
+                try:
+                    weight = float(weight)
+                except ValueError:
+                    continue
+                frames = stack.split(";")
+                present = set(frames) & anchors
+                if not present:
+                    continue
+                positions = {}
+                for i, frame in enumerate(frames):
+                    for symbol in all_symbols:
+                        if frame.startswith(symbol):
+                            positions.setdefault(symbol, []).append(i)
+                for anchor in present:
+                    row_weight[anchor] += weight
+                    ia = len(frames) - 1 - frames[::-1].index(anchor)
+                    for index, item, owner, others in by_anchor[anchor]:
+                        owner_pos = [i for i in positions.get(owner, []) if i <= ia]
+                        io = owner_pos[-1] if owner_pos else -1
+                        for symbol in others:
+                            if any(io < i <= ia for i in positions.get(symbol, [])):
+                                between[anchor][symbol] = between[anchor].get(symbol, 0.0) + weight
+    for index, item, owner, others in rows:
+        anchor = item["anchor"]
+        total = row_weight[anchor]
+        if total <= 0:
+            continue
+        for symbol, weight in sorted(between[anchor].items(), key=lambda kv: -kv[1]):
+            fraction = weight / total
+            if fraction >= COVERED_BY_SAMPLE_IDENTITY:
+                raise CampaignError(
+                    f"Path {index} ({anchor[:80]!r}) is covered by "
+                    f"{item['covered_by']!r} (probe {owner!r}), but in {fraction:.0%} "
+                    f"of its samples the probed function {symbol!r} sits between "
+                    "that owner and the row. The nearer probe measured this "
+                    "row's work; bind its packet (mandatory by its bound, or a "
+                    "candidate at its fraction) or cover the row by that "
+                    "packet's row. An update root does not cover the phases "
+                    "beneath it once they have probes."
+                )
+        item["covered_by_nearest_probe"] = owner
+
+
 def enforce_covered_by_probe_identity(paths, owner_symbols, profile, story):
     """A covered-by row is work the owner's probe counted.
 
@@ -3215,7 +3319,8 @@ def bind_redundancy_evidence(path_item, story, fraction, campaign_dir):
                 f"packet {packet['site']!r} whose distinct-input set overflowed; "
                 "its repeat fraction is not a measurement"
             )
-        if float(packet.get("distinct_inputs_mean") or 0.0) < REPEAT_KEY_MIN_DISTINCT:
+        if (float(packet.get("distinct_inputs_mean") or 0.0) < REPEAT_KEY_MIN_DISTINCT
+                and float(packet.get("calls_per_repetition_mean") or 0.0) < REPEAT_KEY_POINTER_MAX_CALLS):
             raise CampaignError(
                 f"Path {path_item['anchor']!r} claims a repeat hypothesis on "
                 f"packet {packet['site']!r} whose key took "
@@ -6110,6 +6215,11 @@ def cmd_decompose(args):
         enforce_covered_by_probe_identity(
             result["paths"], owner_symbols, source_profile,
             parent.get("target_story"),
+        )
+        enforce_covered_by_nearest_probe(
+            result["paths"], owner_symbols,
+            story_probe_symbols(ledger.dir, parent.get("target_story")),
+            source_profile, parent.get("target_story"),
         )
     parent["known_mechanism_ids"] = sorted(
         {

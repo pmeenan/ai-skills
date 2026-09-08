@@ -155,11 +155,29 @@ hypothesis would skip, so the packet carries `applicable_time_fraction` and
 `repeat_time_fraction` beside the call fractions. `decompose` refuses a
 count-only packet at or above the floor; a candidate's fraction is bounded
 by the smaller of the call and time fractions for its hypothesis, and a
-`mandatory` row closes only when the larger of them keeps `share x bound`
-below the floor. A root update that finds nothing dirty on 92% of its calls
+`mandatory` row closes when the larger of the two *time* fractions keeps
+`share x bound` below the floor (once time is measured, a call fraction says
+nothing about time: a repeated request that hits a cache is counted and
+costs nothing). A root update that finds nothing dirty on 92% of its calls
 and 5% of its time is a 5% claim. A `repeat` hypothesis on a key that takes
-fewer than two distinct values per repetition (an object pointer) is refused:
-it names no input.
+fewer than two distinct values over a handful of calls per repetition (an
+object pointer seen three times) is refused: it names no input. A hundred
+calls per step sharing one key value is the finding, not a pointer.
+
+The `applicable` predicate is computed from the call's own inputs. A flag
+left behind by another function (the last document update's clean bit read
+by the frame update) is that call's state, not this one's; a predicate that
+reads thread-global state written elsewhere measures nothing about the
+call it is attached to, and the reviewer refuses the packet on reading the
+patch.
+
+A row binds the nearest probe on its stack. When a probed function with a
+time-weighted packet for the story sits between a `covered-by` row and its
+owner's probed function in 80% of the row's samples, or the row is that
+function, `decompose` refuses the coverage: the nearer packet measured the
+row's work, so the row binds it (`mandatory` by its bound, or a candidate
+at its fraction) or is covered by that packet's row. Once the style, layout
+and paint phases have probes, an update root covers nothing beneath them.
 
 A packet is a reduction, never a file. `decompose` reduces every bound
 packet's `sources` again with `redundancy_evidence.py` on the ledger host

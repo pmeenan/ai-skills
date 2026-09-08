@@ -163,19 +163,18 @@ def load_packet(path: pathlib.Path) -> dict:
 
 
 def supported_avoidable_fraction(packet: dict) -> float | None:
-    """Largest avoidable fraction the packet can support: the greater of the
-    call-count and time-weighted bounds, so a row closes as mandatory only
-    when both say the avoidable share is small."""
-    if packet.get("distinct_overflow"):
-        bound = float(packet["applicable_fraction"])
-        if packet.get("time_weighted"):
-            bound = max(bound, float(packet["applicable_time_fraction"]))
-        return bound
-    bound = max(float(packet["applicable_fraction"]), float(packet["repeat_fraction"]))
+    """Largest avoidable fraction the packet can support. A time-weighted
+    packet bounds avoidable *time*: the greater of its applicable and repeat
+    time fractions (a call fraction says nothing about time once time is
+    measured). A count-only packet falls back to the call fractions."""
     if packet.get("time_weighted"):
-        bound = max(bound, float(packet["applicable_time_fraction"]),
-                    float(packet["repeat_time_fraction"]))
-    return bound
+        if packet.get("distinct_overflow"):
+            return float(packet["applicable_time_fraction"])
+        return max(float(packet["applicable_time_fraction"]),
+                   float(packet["repeat_time_fraction"]))
+    if packet.get("distinct_overflow"):
+        return float(packet["applicable_fraction"])
+    return max(float(packet["applicable_fraction"]), float(packet["repeat_fraction"]))
 
 
 def hypothesis_bound(packet: dict, hypothesis: str) -> float | None:

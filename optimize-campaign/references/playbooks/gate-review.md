@@ -51,7 +51,8 @@ packet's probe key and `applicable` predicate (quoted from the probe patch)
 answer the row's hypothesis, that every novel/known row binds a time-weighted packet from
 a probe on its own work and claims no more than the smaller of the call and
 time fractions its `packet_hypothesis` names (a scope that covers less than
-the work the hypothesis would skip understates the time and is refused), that every count quoted in an `existing_mechanism`
+the work the hypothesis would skip understates the time and is refused;
+a predicate that reads a flag another function left behind is refused), that every count quoted in an `existing_mechanism`
 sentence is the packet's count (calls per repetition, applicable, repeat)
 and not a typed one, the recomputed floor arithmetic for every bound and
 novel row, and for every novel row the existing Chromium code that already

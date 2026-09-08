@@ -613,17 +613,59 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
                 campaign.bind_redundancy_evidence(item, STORY, 0.5, self.dir)
             campaign.bind_redundancy_evidence(item, STORY, 0.05, self.dir)
             self.assertAlmostEqual(0.05, item["redundancy_summary"]["supported_avoidable_fraction"])
-            # ... and such a row does not close as mandatory either: the
-            # closing bound is the larger of the count and time bounds.
+            # ... and as mandatory it closes by time: 5% of 5.0% is below the floor.
             rows = [{"anchor": "Root", "disposition": "mandatory", "redundancy_evidence": cheap}]
-            with self.assertRaisesRegex(campaign.CampaignError, "cannot close as mandatory"):
-                campaign.enforce_measured_dispositions(rows, {1: 5.0}, config, 0.1, STORY, self.dir)
-            # A repeat hypothesis on a key that never varies names no input.
-            pointer = self.write_packet("pointer", applicable=0.0, repeat=0.67, distinct=1)
+            self.assertEqual({1}, campaign.enforce_measured_dispositions(rows, {1: 5.0}, config, 0.1, STORY, self.dir))
+            # A repeat hypothesis on a key that never varies names no input
+            # (a few calls sharing one value: an object pointer) ...
+            pointer = self.write_packet("pointer", applicable=0.0, repeat=0.67, distinct=1, calls=3)
             item = {"anchor": "Root", "disposition": "novel", "mechanism_key": "x/z",
                     "redundancy_evidence": pointer, "packet_hypothesis": "repeat"}
             with self.assertRaisesRegex(campaign.CampaignError, "key that never varies"):
                 campaign.bind_redundancy_evidence(item, STORY, 0.6, self.dir)
+            # ... but a hundred calls per step sharing one input is the finding.
+            same = self.write_packet("same", applicable=0.0, repeat=0.99, distinct=1, calls=100)
+            item["redundancy_evidence"] = same
+            campaign.bind_redundancy_evidence(item, STORY, 0.9, self.dir)
+            # The closing bound is the time bound once time is measured.
+            cheap_repeat = self.write_packet("cheap-repeat", applicable=0.0, repeat=0.9, repeat_time=0.001)
+            rows = [{"anchor": "Root", "disposition": "mandatory", "redundancy_evidence": cheap_repeat}]
+            self.assertEqual({1}, campaign.enforce_measured_dispositions(rows, {1: 5.0}, config, 0.1, STORY, self.dir))
+
+    def test_covered_by_rows_bind_the_nearest_probe(self):
+        story_dir = self.dir / "results" / "analysis" / "stories" / STORY
+        story_dir.mkdir(parents=True, exist_ok=True)
+        artifact = story_dir / "candidate_frontier.json"
+        artifact.write_text("{}")
+        (story_dir / "profile.collapsed").write_text(
+            "main;Root;Lifecycle;Style;Match 40\n"
+            "main;Root;Lifecycle;Layout;Box 50\n"
+            "main;Root;Commit 10\n"
+        )
+        profile = {"id": "p", "capture_provenance": [{
+            "capture_id": "c1",
+            "story_frontiers": [{"story": STORY, "artifact": str(artifact)}],
+        }]}
+        self.write_packet("root", applicable=0.5, repeat=0.0, site="root/update", symbol="Root")
+        self.write_packet("style", applicable=0.3, repeat=0.0, site="style/recalc", symbol="Style")
+        self.write_packet("other-story", story="Other", applicable=0.3, repeat=0.0,
+                          site="paint/walk", symbol="Layout")
+        self.assertEqual({"Root", "Style"}, campaign.story_probe_symbols(self.dir, STORY))
+        owners = {"root/cache": "Root"}
+        probes = {"Root", "Style"}
+        # Style sits between the root and Match: the root does not cover it.
+        rows = [{"anchor": "Match", "disposition": "covered-by", "covered_by": "root/cache"}]
+        with self.assertRaisesRegex(campaign.CampaignError, "probed function 'Style' sits between"):
+            campaign.enforce_covered_by_nearest_probe(rows, owners, probes, profile, STORY)
+        # The probed function itself is not covered by an ancestor either.
+        rows = [{"anchor": "Style", "disposition": "covered-by", "covered_by": "root/cache"}]
+        with self.assertRaisesRegex(campaign.CampaignError, "sits between"):
+            campaign.enforce_covered_by_nearest_probe(rows, owners, probes, profile, STORY)
+        # No probe between root and Box (Layout has no packet for this story): covered.
+        rows = [{"anchor": "Box", "disposition": "covered-by", "covered_by": "root/cache"},
+                {"anchor": "Commit", "disposition": "covered-by", "covered_by": "root/cache"}]
+        campaign.enforce_covered_by_nearest_probe(rows, owners, probes, profile, STORY)
+        self.assertEqual("Root", rows[0]["covered_by_nearest_probe"])
 
     def test_covered_by_rows_sit_under_the_owners_probe(self):
         story_dir = self.dir / "results" / "analysis" / "stories" / STORY
