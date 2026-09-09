@@ -334,13 +334,34 @@ reduced refuses the request. `campaign.py probe-union-all --browser-log
 <log> --patch <patch> --out-dir evidence/` then sizes every named site
 across every story in one pass and writes `union_<site>.json` per site.
 
+## What `repeat` can and cannot support
+
+A packet carries two hypotheses. `applicable` is the row's own predicate:
+the count of calls where the invariant the row names held. `repeat` is
+input identity: calls whose key was seen earlier in the repetition. A
+repeat supports a mechanism only where the function's output is a value
+that can be reused in place of running it again: a size (flex min/max
+keyed on the box, its text, style, constraint space and the DOM and style
+versions), a layout result, a hit-test result, a parsed tree that can be
+cloned. A function whose point is its effect has no reusable output: an
+event dispatch runs listeners, a mutation changes the tree, a listener
+call is the work. For those, `repeat` measures how often the same kind of
+thing happened, not avoidable work, and only `applicable` (a skip the row
+states: no listener on the path, nothing dirty) can close or open the row.
+
+The converse mistake: an `applicable` predicate that counts the existing
+mechanism's successes (`cache_status == kHit`) measures the cache working,
+not work a mechanism could remove. The avoidable candidate is the miss
+whose key repeats. A novel row on such a count is refused.
+
 ## A decomposition without a count is open work
 
 A discovery whose decomposition binds no packet, no cost packet and no
 `below-floor` row was written from reading, whatever its status says. The
 ledger treats it as open: `next` lists it beside the untouched candidates,
 marked `DECOMPOSED-BY-PROSE`, STATUS names it under discovery coverage, and
-it is decomposed again by count under its next revision. The gate now
+it is decomposed again by count under its next revision, which `decompose`
+accepts without a recorded skeptic FAIL on the prose revision. The gate now
 refuses such a file at import, so this concerns decompositions imported
 before the count rules.
 

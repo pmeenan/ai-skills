@@ -7099,6 +7099,9 @@ def cmd_decompose(args):
         and (
             skeptic_verdict == "FAIL"
             or decomposition_changed_outside_workflow
+            # A decomposition that binds no count is open work: its next
+            # revision replaces it without a recorded FAIL.
+            or ledger.decomposed_by_prose(parent)
         )
     )
     if parent["status"] != "investigating" and not revising_failed_decomposition:

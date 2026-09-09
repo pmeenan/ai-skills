@@ -183,6 +183,11 @@ def supported_avoidable_fraction(packet: dict) -> float | None:
     packet bounds avoidable *time*: the greater of its applicable and repeat
     time fractions (a call fraction says nothing about time once time is
     measured). A count-only packet falls back to the call fractions."""
+    if float(packet.get("applicable_fraction") or 0.0) >= 0.999:
+        rep = float(packet["repeat_time_fraction"]) if packet.get("time_weighted") and packet.get("repeat_time_fraction") is not None else float(packet.get("repeat_fraction") or 0.0)
+        if rep > 0.0:
+            return rep
+        return 1.0
     if packet.get("time_weighted"):
         if packet.get("distinct_overflow"):
             return float(packet["applicable_time_fraction"])
