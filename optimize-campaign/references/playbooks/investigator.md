@@ -21,6 +21,20 @@ Layer 4 leaf work (inlining, branch hints, empty checks in inlined loops) is
 not a shape. The discarded catalog is full of it, and none of it clears a
 story floor.
 
+The third shape has its own evidence: a cost packet (`campaign.py
+cost-packet`) that says, from the story's cycle profile, which child and
+leaf frames carry the row's time. A row that closes by count and still
+carries 5% or more of its story is not done: probe the descendants that
+carry the time, or state an `algorithmic` row whose `avoided_frames` come
+from the cost packet, or record the Layer 3/4 hypotheses tried and the
+numbers that falsified them. See "Where a large row's time goes" in
+[decomposition.md](../decomposition.md).
+
+Size every mechanism across the suite before ranking it: one instrumented
+run over all campaign stories, then `campaign.py probe-union` for the
+site. A win that qualifies in one story and appears in six is six rows,
+not one.
+
 ## What the milestone is
 
 Under a review hold the deliverable is a **vetted candidate list**, defined

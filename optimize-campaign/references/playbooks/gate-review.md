@@ -62,7 +62,13 @@ multiple of its function, that every count quoted in an `existing_mechanism`
 sentence is the packet's count (calls per repetition, applicable, repeat)
 and not a typed one, the recomputed floor arithmetic for every bound and
 novel row, and for every novel row the existing Chromium code that already
-avoids the work and the count showing it does not here. A row whose anchor
+avoids the work and the count showing it does not here; for every
+`algorithmic` row, that the cost packet re-derives from the story's
+collapsed stacks, that `avoided_frames` name frames the packet lists and
+their summed fraction bounds the claim, and that the hypothesis states what
+the cheaper algorithm computes and why the result is the same; and for
+every mandatory row at or above 5% of the story, which of the three
+"where the time goes" forms it carries. A row whose anchor
 is the area root or the frame update, marked novel with every other row
 covered by it, is a mechanically generated file, not a decomposition. A
 packet from a probe at the update root bound to the rows beneath it is

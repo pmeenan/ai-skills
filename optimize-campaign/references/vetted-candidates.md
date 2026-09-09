@@ -113,6 +113,18 @@ condition, not a value.
     (`decompose` checks percentages, calls/rep figures and `probe_*.json`
     names); dispositions were assigned row by row with their text, not by
     a script that left another packet's numbers behind.
+19. Every `mandatory` or `no-qualifying-mechanism` row at or above 5% of its
+    story shows where its time goes: descendants probed beneath it
+    (`probed_below`), an `algorithmic` row with a cost packet that
+    re-derives from `profile.collapsed`, or an investigation with the
+    Layer 3/4 hypotheses and the numbers that falsified them.
+20. Every `algorithmic` candidate's fraction is at most the summed
+    fraction of its `avoided_frames` in its cost packet, its hypothesis
+    names existing code, and the export labels it `candidate_type:
+    algorithmic` (a cost claim, not a measured redundancy).
+21. Every mechanism that qualifies in one story was sized across the
+    suite with `campaign.py probe-union` from one run, and every story
+    where it clears the floor carries a row for it.
 18. Every row's text is its own: no `wrapper_of` to the same function, no
     `existing_mechanism` that names only the row's function, an
     `invariant` on every bound mandatory row, and no two rows sharing one

@@ -762,6 +762,33 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             paths[1]["redundancy_evidence"] = same
             campaign.enforce_build_consistency(paths, self.dir)
 
+    def test_probe_union_sizes_a_site_per_story(self):
+        story_dir = self.dir / "results" / "analysis" / "stories"
+        profile = {"id": "p", "capture_provenance": [{"capture_id": "c1", "story_frontiers": []}]}
+        for story, share in (("A", 40), ("B", 5)):
+            d = story_dir / story; d.mkdir(parents=True)
+            (d / "candidate_frontier.json").write_text("{}")
+            (d / "profile.collapsed").write_text(f"main;Root;Probe() {share}\nmain;Other() {100-share}\n")
+            profile["capture_provenance"][0]["story_frontiers"].append({"story": story, "artifact": str(d / "candidate_frontier.json")})
+        log = self.dir / "logs" / "union.log"; log.parent.mkdir(exist_ok=True)
+        rows = []
+        for story in ("A", "B"):
+            rows.append(json.dumps({"schema_version": 1, "site": "x/y", "group": f"run|{story}", "calls": 100,
+                                    "applicable_calls": 50, "distinct_inputs": 100, "repeated_inputs": 0, "overflow": 0,
+                                    "timed_calls": 100, "total_ns": 100000, "applicable_ns": 50000, "repeated_ns": 0,
+                                    "build_id": "b" * 40, "timing": "exclusive", "nested_calls": 0}))
+        log.write_text("".join(f"[SP3_REDUNDANCY_ROW] {r}\n" for r in rows))
+        ledger = campaign.Ledger(self.dir).load()
+        ledger.data["profile_runs"] = [profile]
+        ledger.data["config"]["calibration"] = {"story_mde_pct": {"A": 0.5, "B": 0.5}}
+        out = campaign.probe_union_rows(ledger, [str(log)], "x/y", "Probe")
+        by = {r["story"]: r for r in out}
+        self.assertAlmostEqual(40.0, by["A"]["symbol_share_pct"])
+        self.assertAlmostEqual(20.0, by["A"]["impact_pct"])
+        self.assertTrue(by["A"]["qualifies"])
+        self.assertAlmostEqual(2.5, by["B"]["impact_pct"])
+        self.assertTrue(by["B"]["qualifies"])
+
     def test_symbols_match_whole_functions(self):
         self.assertTrue(campaign.symbol_matches(
             "blink::LayoutView::HitTest(blink::HitTestLocation const&, blink::HitTestResult&)",

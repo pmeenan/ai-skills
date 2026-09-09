@@ -2744,7 +2744,8 @@ def verify_packet_provenance(packet, packet_path, campaign_dir):
     _PACKET_PROVENANCE_CACHE.add(key)
 
 
-MEASURED_DISPOSITIONS = ("mandatory", "no-qualifying-mechanism")
+MEASURED_DISPOSITIONS = ("mandatory", "no-qualifying-mechanism", "algorithmic")
+ALGORITHMIC_ATTENTION_PCT = 5.0
 WRAPPER_DOMINANT_FRACTION = 0.8
 WRAPPER_CHAIN_MAX_DEPTH = 4
 EXISTING_MECHANISM_MIN_CHARS = 40
@@ -3704,6 +3705,8 @@ def enforce_mandatory_invariants(paths, bound):
         item = paths[index - 1]
         if item.get("disposition") not in MEASURED_DISPOSITIONS:
             continue
+        if item.get("disposition") == "algorithmic":
+            continue  # its text is the algorithm hypothesis, checked at binding
         text = item.get("invariant") or item.get("rationale")
         stripped = " ".join(text.split()) if isinstance(text, str) else ""
         if (len(stripped) < ROW_INVARIANT_MIN_CHARS
@@ -3804,6 +3807,294 @@ def enforce_row_text_symbols(paths, rows, repository_root):
                 "the class's header); a name invented to satisfy the rule is "
                 "refused."
             )
+
+
+ALGORITHM_HYPOTHESIS_MIN_CHARS = 80
+_COST_PROVENANCE_CACHE = set()
+
+
+def require_algorithmic_fields(path_item, index):
+    """An algorithmic row carries its cost claim in fields the gate reads."""
+    layer = path_item.get("investigation_layer")
+    if layer not in (3, 4):
+        raise CampaignError(
+            f"Path {index} is algorithmic and needs investigation_layer 3 or 4 "
+            "(a representation or algorithm change, or a leaf that does less)"
+        )
+    ref = path_item.get("cost_evidence")
+    if not isinstance(ref, dict) or not ref.get("path") or not ref.get("sha256"):
+        raise CampaignError(
+            f"Path {index} is algorithmic without cost_evidence: build the "
+            "packet with `campaign.py cost-packet --opp <id> --path <index> "
+            "--children <file> --out evidence/cost_<key>.json` and cite it as "
+            "cost_evidence: {path, sha256}"
+        )
+    frames = path_item.get("avoided_frames")
+    if not isinstance(frames, list) or not frames or not all(isinstance(f, str) and f.strip() for f in frames):
+        raise CampaignError(
+            f"Path {index} is algorithmic without avoided_frames: name the "
+            "child or leaf frames from the cost packet that the cheaper "
+            "algorithm would not run"
+        )
+    text = path_item.get("algorithm_hypothesis")
+    stripped = " ".join(text.split()) if isinstance(text, str) else ""
+    if (len(stripped) < ALGORITHM_HYPOTHESIS_MIN_CHARS
+            or not EXISTING_MECHANISM_SYMBOL_RE.search(stripped)
+            or not ROW_TEXT_PERCENT_RE.search(stripped)):
+        raise CampaignError(
+            f"Path {index} is algorithmic without an algorithm_hypothesis: say "
+            "what the current code computes (its symbol), what the cheaper "
+            "algorithm computes instead and why the result is the same, and "
+            "quote the cost packet's fraction for the frames it avoids"
+        )
+    if path_item.get("estimated_avoidable_fraction") is None:
+        raise CampaignError(f"Path {index} is algorithmic without estimated_avoidable_fraction")
+
+
+def verify_cost_provenance(packet, packet_path, campaign_dir):
+    """A cost packet is a reduction of the story's collapsed stacks on this
+    host; `decompose` rebuilds it and refuses one whose tables differ."""
+    import cost_evidence
+    key = sha256_file(packet_path)
+    if key in _COST_PROVENANCE_CACHE:
+        return
+    files = []
+    for source in packet.get("sources") or []:
+        path = pathlib.Path(str(source.get("path", "")))
+        if not path.is_absolute():
+            path = pathlib.Path(campaign_dir) / path
+        if not path.is_file() or sha256_file(path) != source.get("sha256"):
+            raise CampaignError(
+                f"Cost packet {packet_path} cites collapsed stacks {source.get('path')!r} "
+                "that do not resolve on this host with that digest"
+            )
+        files.append(path)
+    if not files:
+        raise CampaignError(f"Cost packet {packet_path} records no sources")
+    try:
+        rebuilt = cost_evidence.build_cost_packet(files, packet["anchor"], packet["target_story"], packet.get("profile_id"))
+    except ValueError as exc:
+        raise CampaignError(f"Cost packet {packet_path} does not re-derive: {exc}") from exc
+    if abs(float(rebuilt["row_share_pct"]) - float(packet["row_share_pct"])) > 1e-3:
+        raise CampaignError(
+            f"Cost packet {packet_path} was not produced by cost_evidence.py from its "
+            f"sources: row_share_pct {packet['row_share_pct']} vs re-derived {rebuilt['row_share_pct']}"
+        )
+    for table in ("children", "leaves"):
+        have = [(e["frame"], round(float(e["fraction_of_row"]), 4)) for e in packet[table]]
+        want = [(e["frame"], round(float(e["fraction_of_row"]), 4)) for e in rebuilt[table]][:len(have)]
+        if have != want:
+            raise CampaignError(
+                f"Cost packet {packet_path} {table} table differs from the re-derived one; "
+                "a packet edited by hand is not evidence"
+            )
+    _COST_PROVENANCE_CACHE.add(key)
+
+
+def bind_cost_evidence(path_item, story, fraction, campaign_dir):
+    """An algorithmic row's fraction is bounded by the cost packet.
+
+    The packet lists the row's time by child and by leaf frame. The row
+    names the frames the cheaper algorithm would not run; their summed
+    fraction of the row bounds `estimated_avoidable_fraction`. A name that
+    matches no frame in the packet, or a fraction above the sum, is refused.
+    """
+    import cost_evidence
+    ref = path_item.get("cost_evidence") or {}
+    packet_path = pathlib.Path(str(ref.get("path", "")))
+    if not packet_path.is_absolute():
+        packet_path = pathlib.Path(campaign_dir) / packet_path
+    if not packet_path.is_file():
+        raise CampaignError(f"Cost evidence {packet_path} does not exist")
+    if sha256_file(packet_path) != ref.get("sha256"):
+        raise CampaignError(f"Cost evidence {packet_path} does not match its sha256")
+    try:
+        packet = cost_evidence.load_cost_packet(packet_path)
+    except ValueError as exc:
+        raise CampaignError(str(exc)) from exc
+    if packet.get("anchor") != path_item.get("anchor"):
+        raise CampaignError(
+            f"Cost packet {packet_path} was reduced for anchor {packet.get('anchor')!r}, "
+            f"not this row's {path_item.get('anchor')!r}"
+        )
+    if story and packet.get("target_story") != story:
+        raise CampaignError(
+            f"Cost packet {packet_path} measured {packet.get('target_story')!r}, not {story!r}"
+        )
+    verify_cost_provenance(packet, packet_path, campaign_dir)
+    bound, unmatched = cost_evidence.avoided_fraction(packet, path_item["avoided_frames"])
+    if unmatched:
+        raise CampaignError(
+            f"Path {path_item['anchor'][:80]!r} names avoided_frames that are not in its "
+            f"cost packet's child or leaf tables: {unmatched[:4]}; name frames the "
+            "packet lists"
+        )
+    if fraction > bound + 1e-9:
+        raise CampaignError(
+            f"Path {path_item['anchor'][:80]!r} claims avoidable fraction {fraction:.4f} "
+            f"but the frames it avoids carry {bound:.4f} of the row's time in "
+            f"{packet_path.name}; the claim is bounded by the cost packet"
+        )
+    path_item["cost_summary"] = {
+        "packet": str(ref.get("path")),
+        "row_share_pct": packet["row_share_pct"],
+        "avoided_frames": list(path_item["avoided_frames"]),
+        "avoided_fraction_of_row": round(bound, 6),
+        "top_children": packet["children"][:5],
+        "top_leaves": packet["leaves"][:5],
+    }
+
+
+def enforce_large_mandatory_rows(paths, story_shares, profile, story):
+    """A large row closed by count is not the end of its investigation.
+
+    Redundancy is one of four shapes. For a `mandatory` (or
+    `no-qualifying-mechanism`) row at or above ALGORITHMIC_ATTENTION_PCT of
+    the story, the decomposition also shows one of: rows beneath it bound to
+    other packets (the search moved down into the work that carries the
+    time), an `algorithmic` row on the same function (a cost claim with its
+    packet), or an `investigation` packet naming the Layer 3/4 hypotheses
+    tried, each with the number that falsified it, and a stop reason.
+    """
+    large = [
+        (index, item) for index, item in enumerate(paths, 1)
+        if item.get("disposition") in ("mandatory", "no-qualifying-mechanism")
+        and story_shares.get(index, 0.0) >= ALGORITHMIC_ATTENTION_PCT
+    ]
+    if not large:
+        return
+    algorithmic = {anchor_function(item.get("anchor")) for item in paths if item.get("disposition") == "algorithmic"}
+    bound_rows = [(index, item, (item.get("redundancy_evidence") or {}).get("path"))
+                  for index, item in enumerate(paths, 1) if (item.get("redundancy_evidence") or {}).get("path")]
+    pairs = set()
+    for index, item in large:
+        own = (item.get("redundancy_evidence") or {}).get("path")
+        for j, other, packet in bound_rows:
+            if j != index and packet != own and other.get("anchor") != item.get("anchor"):
+                pairs.add((other["anchor"], item["anchor"]))
+    identity = {}
+    if pairs:
+        files = collapsed_stack_files(profile, story)
+        if files:
+            totals = sample_identity(files, pairs)
+            identity = {pair: (shared / total if total else 0.0) for pair, (total, shared) in totals.items()}
+    for index, item in large:
+        own = (item.get("redundancy_evidence") or {}).get("path")
+        below = [j for j, other, packet in bound_rows
+                 if j != index and packet != own and other.get("anchor") != item.get("anchor")
+                 and identity.get((other["anchor"], item["anchor"]), 0.0) >= COVERED_BY_SAMPLE_IDENTITY]
+        if below:
+            item["probed_below"] = below[:12]
+            continue
+        if anchor_function(item.get("anchor")) in algorithmic:
+            continue
+        investigation = item.get("investigation")
+        ok = (isinstance(investigation, dict) and investigation.get("hypotheses")
+              and investigation.get("falsifications") and investigation.get("stop_reason")
+              and any(re.search(r"\d", str(f)) for f in investigation["falsifications"]))
+        if not ok:
+            raise CampaignError(
+                f"Path {index} ({item['anchor'][:80]!r}) closes by count at "
+                f"{story_shares.get(index, 0.0):.2f}% of {story}, above "
+                f"{ALGORITHMIC_ATTENTION_PCT:.0f}%. Redundancy is one of four shapes; a "
+                "row this size also shows where its time goes: probe the descendants "
+                "that carry it (rows beneath it bound to their own packets), state an "
+                "`algorithmic` row on this function with a cost packet, or carry an "
+                "`investigation` naming the Layer 3/4 hypotheses tried, the number that "
+                "falsified each, and the stop reason."
+            )
+
+
+def probe_union_rows(ledger, logs, site, symbol, patch=None):
+    """One probe run over many stories, sized per story: for every story in
+    the logs, the packet, the probed function's profile share, the bounds
+    under both hypotheses and the story's floor."""
+    import redundancy_evidence
+    rows_all = []
+    for path in logs:
+        rows_all.extend(redundancy_evidence.parse_rows(pathlib.Path(path)))
+    stories = sorted({redundancy_evidence.story_of(row["group"]) for row in rows_all if row.get("site") == site})
+    profile = ledger.data["profile_runs"][-1] if ledger.data.get("profile_runs") else {}
+    cfg = ledger.data["config"]
+    out = []
+    for story in stories:
+        try:
+            packet = redundancy_evidence.build_packet([pathlib.Path(p) for p in logs], site, story, probe_symbol=symbol, patch=pathlib.Path(patch) if patch else None)
+        except ValueError as exc:
+            out.append({"story": story, "error": str(exc)})
+            continue
+        files = collapsed_stack_files(profile, story)
+        share = None
+        if files:
+            total, inclusive = symbol_inclusive_shares(files, {symbol})
+            share = 100.0 * inclusive[symbol] / total if total else 0.0
+        floor = max(story_floor_pct(cfg, story)[0], float(cfg.get("share_floor_pct", 0.0)))
+        app = redundancy_evidence.hypothesis_bound(packet, "applicable")
+        rep_ = redundancy_evidence.hypothesis_bound(packet, "repeat")
+        best = max([b for b in (app, rep_) if b is not None] or [0.0])
+        out.append({
+            "story": story, "symbol_share_pct": share, "floor_pct": floor,
+            "calls_per_repetition": packet["calls_per_repetition_mean"],
+            "applicable_bound": app, "repeat_bound": rep_,
+            "impact_pct": (share * best) if share is not None else None,
+            "qualifies": (share is not None and share * best >= floor),
+            "build_id": packet.get("build_id"), "timing": packet.get("timing"),
+        })
+    return out
+
+
+def cmd_probe_union(args):
+    """Size one probe site across every story in its log."""
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    rows = probe_union_rows(ledger, args.browser_log, args.site, args.symbol, args.patch)
+    print(f"{'story':34} {'share':>7} {'floor':>6} {'calls':>8} {'app':>6} {'rep':>6} {'impact':>7} qualifies")
+    for r in rows:
+        if r.get("error"):
+            print(f"{r['story']:34} {r['error']}")
+            continue
+        sh = f"{r['symbol_share_pct']:.2f}%" if r["symbol_share_pct"] is not None else "n/a"
+        im = f"{r['impact_pct']:.2f}%" if r["impact_pct"] is not None else "n/a"
+        print(f"{r['story']:34} {sh:>7} {r['floor_pct']:5.2f}% {r['calls_per_repetition']:8.1f} "
+              f"{(r['applicable_bound'] or 0):6.3f} {(r['repeat_bound'] or 0):6.3f} {im:>7} {'yes' if r['qualifies'] else 'no'}")
+    if args.out:
+        pathlib.Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        pathlib.Path(args.out).write_text(json.dumps({
+            "kind": "probe-union", "site": args.site, "probe_symbol": args.symbol,
+            "logs": [str(p) for p in args.browser_log], "patch": args.patch, "rows": rows,
+            "generated_at": utc_now()}, indent=2) + "\n")
+        print(args.out)
+    return 0
+
+
+def cmd_cost_packet(args):
+    """Reduce the story's collapsed stacks into a cost packet for one row."""
+    import cost_evidence
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    parent = ledger.opp(args.opp)
+    profile = ledger.profile(parent.get("profile_id"))
+    story = parent.get("target_story")
+    if args.anchor:
+        anchor = args.anchor
+    else:
+        result = load_decomposition(args.children)
+        anchor = result["paths"][args.path - 1]["anchor"]
+    files = collapsed_stack_files(profile, story)
+    if not files:
+        raise CampaignError(f"no profile.collapsed for {story!r} beside the analyzer artifacts of profile {profile.get('id')!r}")
+    try:
+        packet = cost_evidence.build_cost_packet(files, anchor, story, profile.get("id"))
+    except ValueError as exc:
+        raise CampaignError(str(exc)) from exc
+    out = pathlib.Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(packet, indent=2, sort_keys=True) + "\n")
+    print(f"{anchor[:80]}: {packet['row_share_pct']:.2f}% of {story}")
+    for label in ("children", "leaves"):
+        print(f"  top {label}:")
+        for e in packet[label][:8]:
+            print(f"    {e['fraction_of_row']:.3f} of row ({e['share_pct']:.2f}% of story)  {e['frame'][:90]}")
+    print(out)
+    return 0
 
 
 PACKET_HYPOTHESES = ("applicable", "repeat")
@@ -4188,7 +4479,8 @@ EXPORT_OPP_FIELDS = (
     "subtree_pruned", "invariant_description", "safety_and_spec_analysis",
     "redundancy_summary", "redundancy_evidence", "opportunity_budget",
     "parent", "children", "profile_id", "evidence", "reason", "notes",
-    "platform_sensitivity",
+    "platform_sensitivity", "candidate_type", "algorithm_hypothesis",
+    "avoided_frames", "cost_summary", "cost_evidence",
 )
 
 
@@ -4287,7 +4579,7 @@ def cmd_export_candidates(args):
             f"{(r.get('measured_priority_pct') or 0):.2f}% | "
             f"{'' if impact is None else f'{impact:.2f}%'} | "
             f"{'' if r.get('story_floor_pct') is None else f'{r['story_floor_pct']:.2f}%'} | "
-            f"{r.get('investigation_layer') or ''} | {r.get('win_shape') or ''} |"
+            f"{r.get('investigation_layer') or ''} | {r.get('candidate_type') or r.get('win_shape') or ''} |"
         )
     lines += ["", "## Files", ""]
     for section in ("proposals", "dossiers", "reviews"):
@@ -6171,11 +6463,13 @@ def load_decomposition(path):
         disposition = path_item.get("disposition")
         if disposition not in (
             "novel", "known", "covered-by", "mandatory", "below-floor",
-            "out-of-scope", "no-qualifying-mechanism"
+            "out-of-scope", "no-qualifying-mechanism", "algorithmic"
         ):
             raise CampaignError(
                 f"Path {index} has invalid disposition {disposition!r}"
             )
+        if disposition == "algorithmic":
+            require_algorithmic_fields(path_item, index)
         if disposition == "no-qualifying-mechanism":
             packet = path_item.get("investigation")
             if (not isinstance(packet, dict) or not packet.get("source_revision")
@@ -6189,7 +6483,7 @@ def load_decomposition(path):
             missing.append("share_pct")
         if not isinstance(path_item.get("evidence"), str) or not path_item["evidence"].strip():
             missing.append("evidence")
-        if disposition in ("novel", "known") and not path_item.get("mechanism_key"):
+        if disposition in ("novel", "known", "algorithmic") and not path_item.get("mechanism_key"):
             missing.append("mechanism_key")
         if disposition == "covered-by" and not path_item.get("covered_by"):
             missing.append("covered_by")
@@ -6482,9 +6776,9 @@ def cmd_decompose(args):
             story_shares[path_index] = min(
                 measured_work[ref] for ref in path_primary
             )
-            if path_item["disposition"] == "novel" and not test_bypass_active():
+            if path_item["disposition"] in ("novel", "algorithmic") and not test_bypass_active():
                 require_existing_mechanism(path_item, path_index)
-            if path_item["disposition"] in ("novel", "known"):
+            if path_item["disposition"] in ("novel", "known", "algorithmic"):
                 story_share = min(measured_work[ref] for ref in path_primary)
                 fraction = path_item.get("estimated_avoidable_fraction")
                 if fraction is None and test_bypass_active():
@@ -6541,7 +6835,10 @@ def cmd_decompose(args):
                     )
                 path_item["qualification_floor_pct"] = path_floor
                 path_item["qualification_floor_basis"] = floor_basis
-                bind_redundancy_evidence(path_item, story_name, fraction, ledger.dir)
+                if path_item["disposition"] == "algorithmic":
+                    bind_cost_evidence(path_item, story_name, fraction, ledger.dir)
+                else:
+                    bind_redundancy_evidence(path_item, story_name, fraction, ledger.dir)
                 path_item["story_profile_share_pct"] = story_share
                 path_item["estimated_avoidable_fraction"] = fraction
                 path_item["estimated_local_story_impact_pct"] = impact
@@ -6590,6 +6887,8 @@ def cmd_decompose(args):
         enforce_row_text_distinct(result["paths"])
         enforce_row_text_symbols(
             result["paths"], relevance_rows, source_profile.get("repository_root"))
+        enforce_large_mandatory_rows(
+            result["paths"], story_shares, source_profile, parent.get("target_story"))
     wrongly_below_floor = [
         item for item in result["paths"]
         if item["disposition"] == "below-floor" and item["share_pct"] >= floor
@@ -6606,7 +6905,7 @@ def cmd_decompose(args):
     decomposition_keys = {
         path_item["mechanism_key"]
         for path_item in result["paths"]
-        if path_item["disposition"] in ("novel", "known")
+        if path_item["disposition"] in ("novel", "known", "algorithmic")
     }
     for path_item in result["paths"]:
         if path_item["disposition"] == "covered-by":
@@ -6621,7 +6920,7 @@ def cmd_decompose(args):
                 )
             covered.append(path_item)
             continue
-        if path_item["disposition"] not in ("novel", "known"):
+        if path_item["disposition"] not in ("novel", "known", "algorithmic"):
             if path_item.get("mechanism_key"):
                 existing = ledger.mechanism(
                     path_item.get("area_key") or parent["area_key"],
@@ -6638,7 +6937,7 @@ def cmd_decompose(args):
             continue
         area_key = path_item.get("area_key") or parent["area_key"]
         existing = ledger.mechanism(area_key, path_item["mechanism_key"])
-        if path_item["disposition"] == "novel":
+        if path_item["disposition"] in ("novel", "algorithmic"):
             if existing:
                 raise CampaignError(
                     f"Path {path_item['mechanism_key']} is marked novel but "
@@ -6671,6 +6970,13 @@ def cmd_decompose(args):
             notes=path_item.get("notes"),
         )
         opp["target_story"] = parent.get("target_story")
+        opp["investigation_layer"] = path_item.get("investigation_layer")
+        if path_item["disposition"] == "algorithmic":
+            opp["candidate_type"] = "algorithmic"
+            opp["algorithm_hypothesis"] = path_item.get("algorithm_hypothesis")
+            opp["avoided_frames"] = list(path_item.get("avoided_frames") or [])
+            opp["cost_summary"] = path_item.get("cost_summary")
+            opp["cost_evidence"] = path_item.get("cost_evidence")
         record_mechanism_observation(opp, parent, path_item)
         created.append(opp)
     for opp, path_item in known:
@@ -8713,6 +9019,28 @@ def build_parser():
     p.add_argument("--children", required=True, help="Decomposition JSON to be imported")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_decompose_review_scaffold)
+
+    p = sub.add_parser(
+        "cost-packet",
+        help="Reduce the story's profile.collapsed into a cost packet (time by child and leaf frame) for one decomposition row",
+    )
+    p.add_argument("--opp", type=int, required=True, help="Discovery opportunity id")
+    p.add_argument("--children", default=None, help="Decomposition JSON holding the row")
+    p.add_argument("--path", type=int, default=None, help="1-based row index in --children")
+    p.add_argument("--anchor", default=None, help="Exact anchor frame instead of --children/--path")
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_cost_packet)
+
+    p = sub.add_parser(
+        "probe-union",
+        help="Size one probe site across every story in a browser log: share, bounds, impact and floor per story",
+    )
+    p.add_argument("--site", required=True)
+    p.add_argument("--symbol", required=True, help="probed function (whole name)")
+    p.add_argument("--browser-log", action="append", required=True)
+    p.add_argument("--patch", default=None)
+    p.add_argument("--out", default=None, help="JSON output path")
+    p.set_defaults(func=cmd_probe_union)
 
     p = sub.add_parser(
         "decompose", help="Atomically fan a discovery out into mechanism candidates"

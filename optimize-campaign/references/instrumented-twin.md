@@ -66,6 +66,21 @@ python3 .agents/skills/optimize-campaign/scripts/redundancy_evidence.py \
   --browser-log <cb browser log> --out <campaign>/evidence/<key>.redundancy.json
 ```
 
+Run the probe over every campaign story in one run, not the target story
+alone, and size it per story afterwards:
+
+```bash
+python3 .agents/skills/optimize-campaign/scripts/campaign.py probe-union \
+  --site style/resolve-style --symbol 'blink::StyleResolver::ResolveStyle' \
+  --browser-log <cb browser log> --patch <campaign>/evidence/probes-<sha>.patch \
+  --out <campaign>/evidence/union_style-resolve-style.json
+```
+
+A row that closes by count and still carries 5% of its story gets a cost
+packet (`campaign.py cost-packet --opp <id> --children <file> --path <row>
+--out <campaign>/evidence/cost_<key>.json`): the row's time by child and
+leaf frame from the story's profile, which bounds an `algorithmic` row.
+
 `--symbol` is the demangled function the counter sits in, written as a
 frame prefix from `profile.collapsed`; `decompose` refuses a packet bound
 to a row whose samples do not share that function (a packet closes only
