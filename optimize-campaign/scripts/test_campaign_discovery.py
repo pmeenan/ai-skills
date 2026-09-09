@@ -788,6 +788,35 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         self.assertTrue(by["A"]["qualifies"])
         self.assertAlmostEqual(2.5, by["B"]["impact_pct"])
         self.assertTrue(by["B"]["qualifies"])
+        # A second log from another binary is not the same probe.
+        other = self.dir / "logs" / "other.log"
+        other.write_text("[SP3_REDUNDANCY_ROW] " + json.dumps({
+            "schema_version": 1, "site": "x/y", "group": "run|C", "calls": 10, "applicable_calls": 0,
+            "distinct_inputs": 10, "repeated_inputs": 0, "overflow": 0, "timed_calls": 10, "total_ns": 1000,
+            "applicable_ns": 0, "repeated_ns": 0, "build_id": "c" * 40, "timing": "exclusive", "nested_calls": 0}) + "\n")
+        with self.assertRaisesRegex(campaign.CampaignError, "One union, one build"):
+            campaign.probe_union_rows(ledger, [str(log), str(other)], "x/y", "Probe")
+
+    def test_out_of_scope_is_not_for_blink_code(self):
+        rows = [{"anchor": "blink::V8HTMLCollection::IndexedPropertyGetterCallback(unsigned int)", "disposition": "out-of-scope"}]
+        with self.assertRaisesRegex(campaign.CampaignError, "blink:: code, which this campaign owns"):
+            campaign.enforce_out_of_scope_anchors(rows)
+        rows[0]["anchor"] = "cc::LayerTreeHost::RequestMainFrameUpdate(bool)"
+        with self.assertRaisesRegex(campaign.CampaignError, "cc:: code"):
+            campaign.enforce_out_of_scope_anchors(rows)
+        campaign.enforce_out_of_scope_anchors([{"anchor": "v8::internal::Heap::CollectGarbage()", "disposition": "out-of-scope"},
+                                               {"anchor": "blink::Foo()", "disposition": "mandatory"}])
+        campaign.enforce_out_of_scope_anchors(rows, {"in_scope_namespaces": ["blink"]})
+
+    def test_mandatory_rows_bind_a_packet_whatever_their_share(self):
+        rows = [{"anchor": "A()", "disposition": "mandatory", "redundancy_evidence": {"path": "evidence/a.json"}},
+                {"anchor": "B()", "disposition": "mandatory", "wrapper_of": 1},
+                {"anchor": "C()", "disposition": "below-floor"}]
+        campaign.enforce_mandatory_packets(rows)
+        rows.append({"anchor": "D()", "disposition": "mandatory", "evidence": "below the floor"})
+        rows.append({"anchor": "E()", "disposition": "no-qualifying-mechanism"})
+        with self.assertRaisesRegex(campaign.CampaignError, r"2 rows \(4, 5\) close as mandatory"):
+            campaign.enforce_mandatory_packets(rows)
 
     def test_symbols_match_whole_functions(self):
         self.assertTrue(campaign.symbol_matches(

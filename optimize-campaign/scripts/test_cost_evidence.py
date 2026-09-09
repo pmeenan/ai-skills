@@ -107,6 +107,22 @@ class CostEvidenceTest(unittest.TestCase):
         campaign.enforce_large_mandatory_rows([big], {1: 50.0}, profile, "S")
         # Small rows are left alone.
         campaign.enforce_large_mandatory_rows([{"anchor": "Paint()", "disposition": "mandatory"}], {1: 4.0}, profile, "S")
+        # On the ledger host the investigation must say where the time goes:
+        # a cost packet for the row, and falsifications quoting its frames.
+        with self.assertRaisesRegex(campaign.CampaignError, "no cost_evidence"):
+            campaign.enforce_large_mandatory_rows([big], {1: 50.0}, profile, "S", self.dir)
+        packet = cost_evidence.build_cost_packet([story_dir / "profile.collapsed"], "Layout(int)", "S", "p")
+        packet_path = self.dir / "evidence" / "cost_layout.json"; packet_path.parent.mkdir()
+        packet_path.write_text(json.dumps(packet))
+        big["cost_evidence"] = {"path": "evidence/cost_layout.json", "sha256": campaign.sha256_file(packet_path)}
+        # The closing count's own number is not a falsification.
+        big["investigation"]["falsifications"] = ["0.22% repeat time across 13.0 calls falsifies Layer 3 and 4"]
+        with self.assertRaisesRegex(campaign.CampaignError, "does not say where the time goes"):
+            campaign.enforce_large_mandatory_rows([big], {1: 50.0}, profile, "S", self.dir)
+        # A child frame's fraction of the row is.
+        big["investigation"]["falsifications"] = ["MinMax() is 90.0% of the row; an incremental min-content pass saves at most 2% of it"]
+        campaign.enforce_large_mandatory_rows([big], {1: 50.0}, profile, "S", self.dir)
+        self.assertEqual("MinMax()", big["cost_summary"]["children"][0][0])
 
 
 if __name__ == "__main__":

@@ -2746,6 +2746,7 @@ def verify_packet_provenance(packet, packet_path, campaign_dir):
 
 MEASURED_DISPOSITIONS = ("mandatory", "no-qualifying-mechanism", "algorithmic")
 ALGORITHMIC_ATTENTION_PCT = 5.0
+IN_SCOPE_NAMESPACES = ("blink", "cc")
 WRAPPER_DOMINANT_FRACTION = 0.8
 WRAPPER_CHAIN_MAX_DEPTH = 4
 EXISTING_MECHANISM_MIN_CHARS = 40
@@ -3901,27 +3902,7 @@ def bind_cost_evidence(path_item, story, fraction, campaign_dir):
     """
     import cost_evidence
     ref = path_item.get("cost_evidence") or {}
-    packet_path = pathlib.Path(str(ref.get("path", "")))
-    if not packet_path.is_absolute():
-        packet_path = pathlib.Path(campaign_dir) / packet_path
-    if not packet_path.is_file():
-        raise CampaignError(f"Cost evidence {packet_path} does not exist")
-    if sha256_file(packet_path) != ref.get("sha256"):
-        raise CampaignError(f"Cost evidence {packet_path} does not match its sha256")
-    try:
-        packet = cost_evidence.load_cost_packet(packet_path)
-    except ValueError as exc:
-        raise CampaignError(str(exc)) from exc
-    if packet.get("anchor") != path_item.get("anchor"):
-        raise CampaignError(
-            f"Cost packet {packet_path} was reduced for anchor {packet.get('anchor')!r}, "
-            f"not this row's {path_item.get('anchor')!r}"
-        )
-    if story and packet.get("target_story") != story:
-        raise CampaignError(
-            f"Cost packet {packet_path} measured {packet.get('target_story')!r}, not {story!r}"
-        )
-    verify_cost_provenance(packet, packet_path, campaign_dir)
+    packet, packet_path = load_bound_cost_packet(path_item, story, campaign_dir)
     bound, unmatched = cost_evidence.avoided_fraction(packet, path_item["avoided_frames"])
     if unmatched:
         raise CampaignError(
@@ -3945,7 +3926,109 @@ def bind_cost_evidence(path_item, story, fraction, campaign_dir):
     }
 
 
-def enforce_large_mandatory_rows(paths, story_shares, profile, story):
+def enforce_out_of_scope_anchors(paths, config=None):
+    """`out-of-scope` names work Chromium does not own. A row whose anchor
+    is Blink or cc code is Chromium's; it closes by count, by mechanism, or
+    by cost claim, never by declaring itself outside the campaign."""
+    namespaces = tuple((config or {}).get("in_scope_namespaces") or IN_SCOPE_NAMESPACES)
+    for index, item in enumerate(paths, 1):
+        if item.get("disposition") != "out-of-scope":
+            continue
+        anchor = str(item.get("anchor") or "")
+        head = anchor.split("::", 1)[0].strip()
+        if "::" in anchor and head in namespaces:
+            raise CampaignError(
+                f"Path {index} ({anchor[:80]!r}) is out-of-scope, but its anchor is "
+                f"{head}:: code, which this campaign owns. A row in "
+                f"{'/'.join(namespaces)} closes by count (mandatory, known or novel "
+                "with a redundancy packet), by an algorithmic row with its count and "
+                "cost packet, or as below-floor; out-of-scope is for work Chromium "
+                "does not own (V8 internals, the kernel, the harness)."
+            )
+
+
+def enforce_mandatory_packets(paths):
+    """A row is `mandatory` because a count said so. Below the floor a row
+    with no packet is `below-floor`; above it the measured-disposition rule
+    already refuses it. A wrapper of a counted row declares `wrapper_of`."""
+    unbound = [
+        index for index, item in enumerate(paths, 1)
+        if item.get("disposition") in ("mandatory", "no-qualifying-mechanism")
+        and not (item.get("redundancy_evidence") or {}).get("path")
+        and item.get("wrapper_of") is None
+    ]
+    if unbound:
+        raise CampaignError(
+            f"{len(unbound)} {'row' if len(unbound) == 1 else 'rows'} "
+            f"({', '.join(str(i) for i in unbound[:20])}{' ...' if len(unbound) > 20 else ''}) "
+            "close as mandatory or no-qualifying-mechanism without a bound redundancy "
+            "packet or wrapper_of. A count is what makes a row mandatory; a row below "
+            "the floor that nothing counted is below-floor."
+        )
+
+
+def load_bound_cost_packet(path_item, story, campaign_dir):
+    """Resolve, digest-check and re-derive the row's `cost_evidence` packet;
+    it must be reduced for this row's anchor in this story."""
+    import cost_evidence
+    ref = path_item.get("cost_evidence") or {}
+    packet_path = pathlib.Path(str(ref.get("path", "")))
+    if not packet_path.is_absolute():
+        packet_path = pathlib.Path(campaign_dir) / packet_path
+    if not packet_path.is_file():
+        raise CampaignError(f"Cost evidence {packet_path} does not exist")
+    if sha256_file(packet_path) != ref.get("sha256"):
+        raise CampaignError(f"Cost evidence {packet_path} does not match its sha256")
+    try:
+        packet = cost_evidence.load_cost_packet(packet_path)
+    except ValueError as exc:
+        raise CampaignError(str(exc)) from exc
+    if packet.get("anchor") != path_item.get("anchor"):
+        raise CampaignError(
+            f"Cost packet {packet_path} was reduced for anchor {packet.get('anchor')!r}, "
+            f"not this row's {path_item.get('anchor')!r}"
+        )
+    if story and packet.get("target_story") != story:
+        raise CampaignError(
+            f"Cost packet {packet_path} measured {packet.get('target_story')!r}, not {story!r}"
+        )
+    verify_cost_provenance(packet, packet_path, campaign_dir)
+    return packet, packet_path
+
+
+def cost_packet_percentages(packet):
+    """Every percentage a cost packet supports: each child and leaf frame's
+    fraction of the row and share of the story, and the row's share."""
+    allowed = set()
+    for table in ("children", "leaves"):
+        for entry in packet.get(table) or []:
+            allowed.add(100.0 * float(entry.get("fraction_of_row", 0.0)))
+            allowed.add(float(entry.get("share_pct", 0.0)))
+    allowed.add(float(packet.get("row_share_pct", 0.0)))
+    return allowed
+
+
+def investigation_problems(item, packet):
+    """An investigation on a large row says where the time goes: every
+    falsification quotes a number from the row's cost packet (a child or leaf
+    frame's fraction), not the closing count's repeat fraction again."""
+    allowed = cost_packet_percentages(packet)
+    problems = []
+    for text in item["investigation"].get("falsifications") or []:
+        values = [float(m.group(1)) for m in ROW_TEXT_PERCENT_RE.finditer(str(text))]
+        if not values:
+            problems.append(f"{str(text)[:80]!r} quotes no percentage")
+            continue
+        if not any(abs(v - want) <= max(ROW_TEXT_PERCENT_TOLERANCE, 0.02 * abs(want))
+                   for v in values for want in allowed):
+            problems.append(
+                f"{str(text)[:80]!r} quotes {', '.join(f'{v:g}%' for v in values)}, none of "
+                "which is a child or leaf fraction of the row's cost packet"
+            )
+    return problems
+
+
+def enforce_large_mandatory_rows(paths, story_shares, profile, story, campaign_dir=None):
     """A large row closed by count is not the end of its investigation.
 
     Redundancy is one of four shapes. For a `mandatory` (or
@@ -3992,6 +4075,33 @@ def enforce_large_mandatory_rows(paths, story_shares, profile, story):
         ok = (isinstance(investigation, dict) and investigation.get("hypotheses")
               and investigation.get("falsifications") and investigation.get("stop_reason")
               and any(re.search(r"\d", str(f)) for f in investigation["falsifications"]))
+        if ok:
+            if campaign_dir is None:
+                continue
+            if not (item.get("cost_evidence") or {}).get("path"):
+                raise CampaignError(
+                    f"Path {index} ({item['anchor'][:80]!r}) closes by count at "
+                    f"{story_shares.get(index, 0.0):.2f}% of {story} and carries an "
+                    "investigation, but no cost_evidence. Where the time goes is the "
+                    "row's cost packet: `campaign.py cost-packet --opp <id> --children "
+                    "<file> --path <row>`, bound as cost_evidence: {path, sha256}; each "
+                    "falsification then quotes a child or leaf frame's fraction from it."
+                )
+            packet, _ = load_bound_cost_packet(item, story, campaign_dir)
+            problems = investigation_problems(item, packet)
+            if problems:
+                raise CampaignError(
+                    f"Path {index} ({item['anchor'][:80]!r}) investigation does not say "
+                    "where the time goes: " + "; ".join(problems) + ". The closing count's "
+                    "repeat fraction is not a falsification of a Layer 3/4 hypothesis; "
+                    "the cost packet's frames and their fractions are."
+                )
+            item["cost_summary"] = {
+                "row_share_pct": packet.get("row_share_pct"),
+                "children": [(e["frame"], round(float(e["fraction_of_row"]), 4))
+                             for e in (packet.get("children") or [])[:6]],
+            }
+            continue
         if not ok:
             raise CampaignError(
                 f"Path {index} ({item['anchor'][:80]!r}) closes by count at "
@@ -4014,6 +4124,18 @@ def probe_union_rows(ledger, logs, site, symbol, patch=None):
     for path in logs:
         rows_all.extend(redundancy_evidence.parse_rows(pathlib.Path(path)))
     stories = sorted({redundancy_evidence.story_of(row["group"]) for row in rows_all if row.get("site") == site})
+    builds = {}
+    for path in logs:
+        for row in redundancy_evidence.parse_rows(pathlib.Path(path)):
+            if row.get("site") == site:
+                builds.setdefault(str(row.get("build_id")), set()).add(str(path))
+    if len(builds) > 1:
+        raise CampaignError(
+            "One union, one build: the logs carry rows for this site from "
+            f"{len(builds)} builds ({'; '.join(f'{b[:12]} in ' + ', '.join(sorted(p)) for b, p in sorted(builds.items()))}). "
+            "A story measured on an older binary with an older patch is not the "
+            "same probe; rerun every story on one binary and reduce from those logs."
+        )
     profile = ledger.data["profile_runs"][-1] if ledger.data.get("profile_runs") else {}
     cfg = ledger.data["config"]
     out = []
@@ -4060,7 +4182,8 @@ def cmd_probe_union(args):
         pathlib.Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         pathlib.Path(args.out).write_text(json.dumps({
             "kind": "probe-union", "site": args.site, "probe_symbol": args.symbol,
-            "logs": [str(p) for p in args.browser_log], "patch": args.patch, "rows": rows,
+            "logs": [str(p) for p in args.browser_log], "patch": args.patch,
+            "build_id": next((r.get("build_id") for r in rows if r.get("build_id")), None), "rows": rows,
             "generated_at": utc_now()}, indent=2) + "\n")
         print(args.out)
     return 0
@@ -6887,8 +7010,11 @@ def cmd_decompose(args):
         enforce_row_text_distinct(result["paths"])
         enforce_row_text_symbols(
             result["paths"], relevance_rows, source_profile.get("repository_root"))
+        enforce_out_of_scope_anchors(result["paths"], ledger.data["config"])
+        enforce_mandatory_packets(result["paths"])
         enforce_large_mandatory_rows(
-            result["paths"], story_shares, source_profile, parent.get("target_story"))
+            result["paths"], story_shares, source_profile, parent.get("target_story"),
+            ledger.dir)
     wrongly_below_floor = [
         item for item in result["paths"]
         if item["disposition"] == "below-floor" and item["share_pct"] >= floor

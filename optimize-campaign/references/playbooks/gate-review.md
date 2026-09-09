@@ -68,7 +68,11 @@ collapsed stacks, that `avoided_frames` name frames the packet lists and
 their summed fraction bounds the claim, and that the hypothesis states what
 the cheaper algorithm computes and why the result is the same; and for
 every mandatory row at or above 5% of the story, which of the three
-"where the time goes" forms it carries. A row whose anchor
+"where the time goes" forms it carries (an `investigation` binds the row's
+cost packet and quotes its frames; the closing count's repeat fraction
+repeated is not one); that no `out-of-scope` row names Blink or cc code;
+and that no `mandatory` row, whatever its share, lacks a packet or a
+`wrapper_of` (a row nothing counted is `below-floor`). A row whose anchor
 is the area root or the frame update, marked novel with every other row
 covered by it, is a mechanically generated file, not a decomposition. A
 packet from a probe at the update root bound to the rows beneath it is

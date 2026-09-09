@@ -76,10 +76,10 @@ Each investigated opportunity must be recorded as an investigation proposal cont
 | `novel` | one new invariant can remove the work (must pass Adversarial Qualification) | stable `component/strategy` key, 4-layer proposal, primary work reference, `existing_mechanism`, and a bound packet from a probe on this row's work whose named number supports the fraction |
 | `known` | the exact mechanism already exists in the ledger | existing mechanism key, matching work references, and the same bound packet as `novel` |
 | `covered-by` | the samples are literally the same samples as another row | owning mechanism key; `decompose` checks the story's `profile.collapsed`: at least 80% of the samples carrying this row's anchor must also carry the owner's anchor **and** a frame of the owner's probed function (`probe_symbol` of the owner's packet), so a caller holding other work, a sibling phase, or everything under a shared ancestor cannot be covered; an owner without a counted probe covers nothing |
-| `mandatory` | the per-trigger amount of work is invariant (each call does new work) | at/above the story floor: a bound redundancy packet from the target story with `story share × supported avoidable fraction < floor`, or `wrapper_of` a counted row; below the floor: the invariant and source evidence. A spec clause names the trigger, never the amount |
+| `mandatory` | the per-trigger amount of work is invariant (each call does new work) | a bound redundancy packet from the target story (at/above the story floor with `story share × supported avoidable fraction < floor`), or `wrapper_of` a counted row, whatever the row's share: a count is what makes a row mandatory, and a row below the floor that nothing counted is `below-floor`. A spec clause names the trigger, never the amount |
 | `algorithmic` | the row closes by count (no skip, no reuse) and a cheaper algorithm or representation would do less of its work (Layer 3/4) | `mechanism_key`, `investigation_layer` 3 or 4, the same bound redundancy packet and arithmetic as `mandatory` (redundancy below the floor), `cost_evidence: {path, sha256}` from `campaign.py cost-packet` (the row's time by child and leaf frame from the story's `profile.collapsed`, re-derived at import), `avoided_frames` naming frames from that packet, `algorithm_hypothesis` (what the code computes, what the cheaper one computes, why the result is the same, the packet's fraction), `existing_mechanism`, and `estimated_avoidable_fraction` at most the avoided frames' summed fraction of the row |
 | `no-qualifying-mechanism` | a bounded search found no invariant that removes enough work | the investigation packet (revision, hypotheses, falsifications, budget, stop reason) **and**, at/above the floor, the same bound packet and arithmetic as `mandatory` |
-| `out-of-scope` | the work is not Chromium-owned or not within the campaign goal; a V8/JS **hand-off** row names the owner and quotes the lens numbers so exhaustion is scoped honestly | ownership/critical-path evidence, lens numbers |
+| `out-of-scope` | the work is not Chromium-owned or not within the campaign goal; a V8/JS **hand-off** row names the owner and quotes the lens numbers so exhaustion is scoped honestly | ownership/critical-path evidence, lens numbers. `decompose` refuses an anchor in an owned namespace (`blink::`, `cc::`; `config.in_scope_namespaces`): generated bindings, collections and DOM code are Chromium's and close by count, mechanism or cost claim |
 | `below-floor` | the estimated impact is below the story's qualification floor (max(share floor, 2 × calibrated MDE)) | profiler work reference, measured share and the floor basis |
 
 Do not use `covered-by` for a semantically adjacent caller, wrapper, or later
@@ -293,7 +293,10 @@ one of three ways, and `decompose` refuses the row otherwise:
 - **An `algorithmic` row** on the same function: a cost claim with its
   cost packet (above).
 - **An `investigation`** on the row naming the Layer 3/4 hypotheses tried,
-  the number that falsified each, and the stop reason.
+  the number that falsified each, and the stop reason. The row binds its
+  cost packet as `cost_evidence: {path, sha256}` and every falsification
+  quotes a child or leaf frame's fraction from it; the closing count's own
+  repeat fraction, quoted again, falsifies nothing and is refused.
 
 `campaign.py cost-packet --opp <id> --children <file> --path <row> --out
 evidence/cost_<key>.json` reduces the story's collapsed stacks for the
@@ -314,6 +317,12 @@ hypothesis bounds, share x bound against the story's floor, and which
 stories qualify; each qualifying story's area then carries a `known` row
 for the mechanism (or a `novel` row where the area is first decomposed),
 with a packet reduced for that story from the same log.
+
+One union, one build. Every row the union reduces carries the same
+`build_id`, and the union records it; logs from two binaries (an earlier
+round's stories beside a new story on the current build) are refused, since
+a story measured on an older binary with an older patch is not the same
+probe. When the probe or its key changes, every story is rerun.
 
 A packet is a reduction, never a file. `decompose` reduces every bound
 packet's `sources` again with `redundancy_evidence.py` on the ledger host
