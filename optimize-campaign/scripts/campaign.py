@@ -4844,6 +4844,51 @@ EXPORT_OPP_FIELDS = (
 )
 
 
+def mechanism_overlaps(ledger, opps, threshold=COVERED_BY_SAMPLE_IDENTITY):
+    """Which candidate mechanisms sit inside another's samples.
+
+    Two mechanisms found in one story at nested functions (a rule-collector
+    cache under a recalc-style skip) are not additive: the inner one's
+    samples are the outer one's samples. For every pair of mechanism
+    opportunities in the same story, the story's collapsed stacks decide:
+    when at least `threshold` of the inner anchor's samples also carry the
+    outer anchor, the inner records `overlaps` naming the outer. Returns
+    {inner id: [{id, mechanism_key, identity}]}."""
+    profile = ledger.data["profile_runs"][-1] if ledger.data.get("profile_runs") else {}
+    mechanisms = [row for row in opps
+                  if row.get("kind") == "mechanism" and row.get("anchor") and row.get("target_story")]
+    by_story = {}
+    for row in mechanisms:
+        by_story.setdefault(row["target_story"], []).append(row)
+    out = {}
+    # A mechanism is compared, in its own story's stacks, against every other
+    # mechanism's anchor: the outer may have been found in another story.
+    for story, rows in by_story.items():
+        if len(mechanisms) < 2:
+            continue
+        files = collapsed_stack_files(profile, story)
+        if not files:
+            continue
+        # sample_identity((a, b)) -> (weight carrying a, weight carrying both):
+        # the pair is (inner, outer) so identity is the inner's share inside the outer.
+        pairs = {(inner["anchor"], outer["anchor"]) for outer in mechanisms for inner in rows
+                 if outer["id"] != inner["id"] and outer["anchor"] != inner["anchor"]}
+        if not pairs:
+            continue
+        totals = sample_identity(files, pairs)
+        for inner in rows:
+            for outer in mechanisms:
+                if outer["id"] == inner["id"] or outer["anchor"] == inner["anchor"]:
+                    continue
+                total, shared = totals.get((inner["anchor"], outer["anchor"]), (0.0, 0.0))
+                identity = shared / total if total else 0.0
+                if identity >= threshold:
+                    out.setdefault(inner["id"], []).append({
+                        "id": outer["id"], "mechanism_key": outer.get("mechanism_key"),
+                        "identity": round(identity, 4)})
+    return out
+
+
 def cmd_export_candidates(args):
     """Bundle the candidate list for review outside the workhorse session."""
     ledger = Ledger(args.dir or default_campaign_dir()).load()
@@ -4862,6 +4907,10 @@ def cmd_export_candidates(args):
             row["story_floor_pct"], row["story_floor_basis"] = story_floor_pct(cfg, story)
         opps.append(row)
     opps.sort(key=lambda r: (-(r.get("priority") or 0), r["id"]))
+    overlaps = mechanism_overlaps(ledger, opps)
+    for row in opps:
+        if row["id"] in overlaps:
+            row["overlaps"] = overlaps[row["id"]]
 
     def listing(sub):
         base = ledger.dir / sub
@@ -4923,8 +4972,8 @@ def cmd_export_candidates(args):
     if lens_lines:
         lines += [""] + lens_lines
     lines += ["", "## Opportunities (by priority)", "",
-              "| # | Kind | Status | Story | Anchor / key | Share | Est. impact | Floor | Layer | Shape |",
-              "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |"]
+              "| # | Kind | Status | Story | Anchor / key | Share | Est. impact | Floor | Layer | Shape | Not additive with |",
+              "| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |"]
     for r in opps:
         impact = r.get("estimated_local_story_impact_pct")
         promoted = r.get("promoted_descendants") or []
@@ -4939,7 +4988,9 @@ def cmd_export_candidates(args):
             f"{(r.get('measured_priority_pct') or 0):.2f}% | "
             f"{'' if impact is None else f'{impact:.2f}%'} | "
             f"{'' if r.get('story_floor_pct') is None else f'{r['story_floor_pct']:.2f}%'} | "
-            f"{r.get('investigation_layer') or ''} | {r.get('candidate_type') or r.get('win_shape') or ''} |"
+            f"{r.get('investigation_layer') or ''} | {r.get('candidate_type') or r.get('win_shape') or ''} | "
+            + "; ".join(f"#{o['id']} `{o['mechanism_key']}` ({o['identity']:.0%} of its samples)" for o in r.get("overlaps") or [])
+            + " |"
         )
     lines += ["", "## Files", ""]
     for section in ("proposals", "dossiers", "reviews"):

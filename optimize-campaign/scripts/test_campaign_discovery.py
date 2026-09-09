@@ -881,6 +881,22 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         self.assertEqual({"root/update": "Root", "layout/box": "Layout", "style/within": "Style", "style/across": "Style"},
                          campaign.build_site_symbols(self.dir, "b" * 40))
 
+    def test_nested_mechanisms_are_marked_not_additive(self):
+        story_dir = self.dir / "results" / "analysis" / "stories" / "S"
+        story_dir.mkdir(parents=True, exist_ok=True)
+        artifact = story_dir / "candidate_frontier.json"; artifact.write_text("{}")
+        (story_dir / "profile.collapsed").write_text(
+            "main;Recalc(int);Collect(int) 40\nmain;Recalc(int) 20\nmain;Layout(int) 40\n")
+        ledger = campaign.Ledger(self.dir).load()
+        ledger.data["profile_runs"] = [{"id": "p", "capture_provenance": [{"capture_id": "c1",
+            "story_frontiers": [{"story": "S", "artifact": str(artifact)}]}]}]
+        opps = [{"id": 1, "kind": "mechanism", "mechanism_key": "css/recalc", "anchor": "Recalc(int)", "target_story": "S"},
+                {"id": 2, "kind": "mechanism", "mechanism_key": "css/collect", "anchor": "Collect(int)", "target_story": "S"},
+                {"id": 3, "kind": "mechanism", "mechanism_key": "layout/x", "anchor": "Layout(int)", "target_story": "T"},
+                {"id": 4, "kind": "discovery", "anchor": "Recalc(int)", "target_story": "S"}]
+        overlaps = campaign.mechanism_overlaps(ledger, opps)
+        self.assertEqual({2: [{"id": 1, "mechanism_key": "css/recalc", "identity": 1.0}]}, overlaps)
+
     def test_out_of_scope_is_not_for_blink_code(self):
         rows = [{"anchor": "blink::V8HTMLCollection::IndexedPropertyGetterCallback(unsigned int)", "disposition": "out-of-scope"}]
         with self.assertRaisesRegex(campaign.CampaignError, "blink:: code, which this campaign owns"):

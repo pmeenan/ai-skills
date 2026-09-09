@@ -317,8 +317,15 @@ row closing as `mandatory` or `no-qualifying-mechanism` satisfies
 `share x supported bound < floor` for every site on its function, not only
 the one it binds: a function with two counters, one reading zero, is not
 closed by the zero. When one site bounds above the floor the row is `novel`
-or `known` at that site's fraction, or `covered-by` the mechanism row whose
-probe sits above it.
+or `known` at that site's fraction. It is never `covered-by` an ancestor's
+mechanism row: a probed function is dispositioned by its own count (the
+nearest-probe rule), whatever the ancestor's count explains. Two mechanisms
+at nested functions in one story are instead marked in the export: when at
+least 80% of the inner mechanism's samples carry the outer's anchor, the
+inner row says `Not additive with` the outer, and the two are ranked as one
+win in experiments (the collector's repeats under recalc-style are one
+example: the within-resolve counter reads zero, so they are re-resolutions,
+and the two candidates are one).
 
 For that the gate must know which function every counter sits in: every
 site that ran in the story (rows in the twin log) is reduced at least once
