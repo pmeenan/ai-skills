@@ -819,6 +819,18 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             self.assertIn(900, [o["id"] for o in ledger.next_candidates(50)])
             self.assertNotIn(901, [o["id"] for o in ledger.next_candidates(50)])
 
+    def test_below_floor_is_judged_against_the_story_floor(self):
+        # A row at 1.4% of a story whose floor is 2.9% (2 x MDE) is below the
+        # floor even though the campaign-wide share floor is 1.0%.
+        story_dir = self.dir / "results" / "analysis" / "stories" / STORY
+        story_dir.mkdir(parents=True, exist_ok=True)
+        ledger = campaign.Ledger(self.dir).load()
+        ledger.data["config"]["share_floor_pct"] = 1.0
+        ledger.data["config"]["calibration"] = {"story_mde_pct": {STORY: 1.45}}
+        floor, basis = campaign.story_floor_pct(ledger.data["config"], STORY)
+        self.assertAlmostEqual(2.9, floor)
+        self.assertGreater(floor, ledger.data["config"]["share_floor_pct"])
+
     def test_out_of_scope_is_not_for_blink_code(self):
         rows = [{"anchor": "blink::V8HTMLCollection::IndexedPropertyGetterCallback(unsigned int)", "disposition": "out-of-scope"}]
         with self.assertRaisesRegex(campaign.CampaignError, "blink:: code, which this campaign owns"):

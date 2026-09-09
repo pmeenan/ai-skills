@@ -6889,6 +6889,11 @@ def cmd_decompose(args):
         for ref in parent.get("expected_work_refs", [])
     }
     floor = ledger.data["config"]["share_floor_pct"]
+    # A row is below the floor against its story's qualification floor
+    # (max(share floor, 2 x MDE)), the same floor every other rule uses.
+    area_floor = max(
+        story_floor_pct(ledger.data["config"], parent.get("target_story"))[0], float(floor)
+    )
     primary_counts = {ref: 0 for ref in expected_work}
     story_shares = {}
     for path_index, path_item in enumerate(result["paths"], 1):
@@ -6921,11 +6926,11 @@ def cmd_decompose(args):
                     "that hotspot from every capture in one semantic row"
                 )
             if path_item["disposition"] == "below-floor" and any(
-                measured_work[ref] >= floor for ref in path_primary
+                measured_work[ref] >= area_floor for ref in path_primary
             ):
                 raise CampaignError(
                     f"Profiler measurements for {hotspot_key!r} are at/above "
-                    f"the campaign floor {floor}%; it cannot be dispositioned "
+                    f"the story floor {area_floor:.3f}%; it cannot be dispositioned "
                     "below-floor using an investigator-supplied share"
                 )
             story_shares[path_index] = min(
@@ -7049,7 +7054,7 @@ def cmd_decompose(args):
             ledger.dir)
     wrongly_below_floor = [
         item for item in result["paths"]
-        if item["disposition"] == "below-floor" and item["share_pct"] >= floor
+        if item["disposition"] == "below-floor" and item["share_pct"] >= area_floor
     ]
     if wrongly_below_floor:
         raise CampaignError(
