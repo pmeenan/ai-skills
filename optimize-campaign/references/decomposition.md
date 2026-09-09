@@ -306,6 +306,16 @@ cheaper algorithm would not run; their summed fraction bounds the claim.
 Export lists such candidates with `candidate_type: algorithmic`; they are
 cost claims, untested, ranked with the rest by share x fraction.
 
+## A decomposition without a count is open work
+
+A discovery whose decomposition binds no packet, no cost packet and no
+`below-floor` row was written from reading, whatever its status says. The
+ledger treats it as open: `next` lists it beside the untouched candidates,
+marked `DECOMPOSED-BY-PROSE`, STATUS names it under discovery coverage, and
+it is decomposed again by count under its next revision. The gate now
+refuses such a file at import, so this concerns decompositions imported
+before the count rules.
+
 ## One probe, every story
 
 A mechanism found in one story is sized across the suite before it is

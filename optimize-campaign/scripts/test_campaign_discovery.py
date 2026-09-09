@@ -797,6 +797,28 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         with self.assertRaisesRegex(campaign.CampaignError, "One union, one build"):
             campaign.probe_union_rows(ledger, [str(log), str(other)], "x/y", "Probe")
 
+    def test_a_decomposition_without_a_count_is_open_work(self):
+        ledger = campaign.Ledger(self.dir).load()
+        prose = {"id": 900, "kind": "discovery", "status": "decomposed", "anchor": "A()", "area_key": "a",
+                 "target_story": "S", "share_pct": 40.0, "decomposition_revision": 2,
+                 "path_accounting": [{"anchor": "A()", "disposition": "mandatory", "evidence": "spec says so"}]}
+        counted = {"id": 901, "kind": "discovery", "status": "decomposed", "anchor": "B()", "area_key": "b",
+                   "target_story": "S", "share_pct": 30.0, "decomposition_revision": 1,
+                   "path_accounting": [{"anchor": "B()", "disposition": "mandatory",
+                                        "redundancy_evidence": {"path": "evidence/b.json"}}]}
+        small = {"id": 902, "kind": "discovery", "status": "decomposed", "anchor": "C()", "area_key": "c",
+                 "target_story": "S", "share_pct": 1.0, "decomposition_revision": 1,
+                 "path_accounting": [{"anchor": "C()", "disposition": "below-floor"}]}
+        ledger.data["opportunities"] += [prose, counted, small]
+        import unittest.mock
+        ledger.data["test_only_taint"] = False
+        with unittest.mock.patch.object(campaign, "test_bypass_active", return_value=False):
+            self.assertTrue(ledger.decomposed_by_prose(prose))
+            self.assertFalse(ledger.decomposed_by_prose(counted))
+            self.assertFalse(ledger.decomposed_by_prose(small))
+            self.assertIn(900, [o["id"] for o in ledger.next_candidates(50)])
+            self.assertNotIn(901, [o["id"] for o in ledger.next_candidates(50)])
+
     def test_out_of_scope_is_not_for_blink_code(self):
         rows = [{"anchor": "blink::V8HTMLCollection::IndexedPropertyGetterCallback(unsigned int)", "disposition": "out-of-scope"}]
         with self.assertRaisesRegex(campaign.CampaignError, "blink:: code, which this campaign owns"):

@@ -1099,8 +1099,28 @@ class Ledger:
     def priority(self, opp):
         return self.priority_info(opp)[0]
 
+    def decomposed_by_prose(self, opp):
+        """A discovery whose decomposition binds no count. The rows were
+        written from reading, not measured; for `next`, STATUS and export
+        coverage it is open work, to be decomposed again by count under the
+        next revision."""
+        if opp.get("kind") != "discovery" or opp.get("status") != "decomposed":
+            return False
+        if test_bypass_active() or self.data.get("test_only_taint"):
+            return False
+        rows = opp.get("path_accounting") or []
+        if not rows:
+            return False
+        return not any(
+            (row.get("redundancy_evidence") or {}).get("path")
+            or (row.get("cost_evidence") or {}).get("path")
+            or row.get("disposition") == "below-floor"
+            for row in rows
+        )
+
     def next_candidates(self, count):
-        pool = [o for o in self.data["opportunities"] if o["status"] == "candidate"]
+        pool = [o for o in self.data["opportunities"]
+                if o["status"] == "candidate" or self.decomposed_by_prose(o)]
         pool.sort(
             key=lambda opp: (
                 self.priority(opp),
@@ -1343,6 +1363,16 @@ class Ledger:
         discoveries = [o for o in opps if o.get("kind") == "discovery"]
         lines.append("")
         lines.append("## Discovery coverage")
+        prose = [d for d in discoveries if self.decomposed_by_prose(d)]
+        if prose:
+            lines.append(
+                f"_{len(prose)} decomposed area(s) bind no count (rows written from "
+                "reading): open work, listed by `next`; decompose each again by "
+                "count under its next revision: "
+                + ", ".join(f"#{d['id']:03d}" for d in prose[:40])
+                + (" ..." if len(prose) > 40 else "") + "_"
+            )
+            lines.append("")
         if discoveries:
             lines.append("| Profile | Opp | Area | Status | Child paths | Next action |")
             lines.append("| --- | --- | --- | --- | --- | --- |")
@@ -1370,6 +1400,8 @@ class Ledger:
                     action = f"resolve {len(unresolved)} child path(s)"
                 elif stale_runtime_child:
                     action = "follow-on profile required"
+                elif self.decomposed_by_prose(discovery):
+                    action = "decomposed by prose (no counted row): decompose again by count"
                 elif discovery["status"] == "decomposed":
                     skeptic = (
                         discovery.get("reviews", {})
@@ -8887,11 +8919,15 @@ def cmd_next(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     for o in ledger.next_candidates(args.count):
         priority, basis, measured = ledger.priority_info(o)
+        prose = ""
+        if ledger.decomposed_by_prose(o):
+            prose = (f" DECOMPOSED-BY-PROSE(rev {o.get('decomposition_revision')}: "
+                     "no row binds a count; decompose again by count)")
         print(
             f"#{o['id']:03d} {o['anchor']} "
             f"story={o.get('target_story') or '?'} priority={priority:.3f} "
             f"basis={basis} measured={measured:.3f}% "
-            f"reported={o.get('share_pct', 0.0):.3f}%"
+            f"reported={o.get('share_pct', 0.0):.3f}%{prose}"
         )
     return 0
 
