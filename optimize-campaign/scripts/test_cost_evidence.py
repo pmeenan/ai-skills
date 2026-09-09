@@ -119,6 +119,10 @@ class CostEvidenceTest(unittest.TestCase):
         big["investigation"]["falsifications"] = ["0.22% repeat time across 13.0 calls falsifies Layer 3 and 4"]
         with self.assertRaisesRegex(campaign.CampaignError, "does not say where the time goes"):
             campaign.enforce_large_mandatory_rows([big], {1: 50.0}, profile, "S", self.dir)
+        # Nor is the row's own share of the story.
+        big["investigation"]["falsifications"] = ["Layout(int) carries 50.0% of the story; the layout pass is mandatory"]
+        with self.assertRaisesRegex(campaign.CampaignError, "does not say where the time goes"):
+            campaign.enforce_large_mandatory_rows([big], {1: 50.0}, profile, "S", self.dir)
         # A child frame's fraction of the row is.
         big["investigation"]["falsifications"] = ["MinMax() is 90.0% of the row; an incremental min-content pass saves at most 2% of it"]
         campaign.enforce_large_mandatory_rows([big], {1: 50.0}, profile, "S", self.dir)

@@ -3958,6 +3958,166 @@ def bind_cost_evidence(path_item, story, fraction, campaign_dir):
     }
 
 
+def build_site_symbols(campaign_dir, build_id):
+    """site -> probed function, from every time-weighted packet under
+    evidence/ reduced from the given build (any story). A site reduced twice
+    with two different symbols is refused."""
+    import redundancy_evidence
+    symbols = {}
+    for path in sorted(pathlib.Path(campaign_dir, "evidence").glob("*.json")):
+        try:
+            packet = redundancy_evidence.load_packet(path)
+        except (ValueError, OSError):
+            continue
+        if packet.get("build_id") != build_id or not packet.get("time_weighted"):
+            continue
+        symbol = str(packet.get("probe_symbol") or "").strip()
+        site = packet.get("site")
+        if not symbol or not site:
+            continue
+        if site in symbols and symbols[site] != symbol:
+            raise CampaignError(
+                f"Site {site!r} was reduced with two probe symbols on build "
+                f"{build_id[:12]}: {symbols[site]!r} and {symbol!r} ({path.name}); "
+                "one site is one function"
+            )
+        symbols[site] = symbol
+    return symbols
+
+
+def story_site_packets(campaign_dir, story, build_id):
+    """site -> [(packet, relative path)] for every time-weighted packet under
+    evidence/ that measured this story on this build."""
+    import redundancy_evidence
+    out = {}
+    root = pathlib.Path(campaign_dir)
+    for path in sorted((root / "evidence").glob("*.json")):
+        try:
+            packet = redundancy_evidence.load_packet(path)
+        except (ValueError, OSError):
+            continue
+        if packet.get("build_id") != build_id or not packet.get("time_weighted"):
+            continue
+        if packet.get("target_story") != story or not packet.get("site"):
+            continue
+        out.setdefault(packet["site"], []).append((packet, str(path.relative_to(root))))
+    return out
+
+
+def request_build_and_logs(paths, bound_rows, campaign_dir):
+    """The one build the request's bound packets came from, and the browser
+    logs they were reduced from."""
+    packets = bound_packets(paths, bound_rows, campaign_dir)
+    builds = {pk.get("build_id") for pk, _ in packets.values()} - {None, ""}
+    logs = set()
+    for pk, _ in packets.values():
+        for source in pk.get("sources") or []:
+            path = pathlib.Path(str(source.get("path", "")))
+            if not path.is_absolute():
+                path = pathlib.Path(campaign_dir) / path
+            logs.add(path)
+    return (next(iter(builds)) if len(builds) == 1 else None), sorted(logs)
+
+
+def enforce_sites_named(paths, bound_rows, story, campaign_dir):
+    """Every counter that ran in the story names its function.
+
+    The twin's log carries rows for every site in the patch. Each of those
+    sites is reduced at least once on this build (any story, with
+    `--symbol`), so the gate knows which function every counter sits in and
+    can tell when a row's own function is counted. A site that ran and was
+    never reduced is a count nobody looked at."""
+    import redundancy_evidence
+    build, logs = request_build_and_logs(paths, bound_rows, campaign_dir)
+    if not build or not logs:
+        return {}
+    symbols = build_site_symbols(campaign_dir, build)
+    ran = set()
+    for log in logs:
+        if not log.is_file():
+            continue
+        for row in redundancy_evidence.parse_rows(log):
+            if redundancy_evidence.story_of(row.get("group", "")) == story and row.get("site"):
+                ran.add(row["site"])
+    missing = sorted(site for site in ran if site not in symbols)
+    if missing:
+        raise CampaignError(
+            f"{len(missing)} counter site(s) ran in {story!r} on build {build[:12]} "
+            f"and were never reduced with a probe symbol on that build: {missing}. "
+            "Reduce each once (any story) with redundancy_evidence.py --symbol "
+            "<function> so the gate knows which function every counter sits in."
+        )
+    return symbols
+
+
+def enforce_own_counters(paths, story_shares, config, base_floor, story, campaign_dir,
+                         bound_rows, site_symbols=None):
+    """Every counter on a row's own function speaks.
+
+    A row whose anchor is itself a probed function binds that function's
+    packet for this story, not an ancestor's: the ancestor's count says
+    nothing about repeats beneath it. And a row closing as `mandatory` or
+    `no-qualifying-mechanism` satisfies `share x supported bound < floor`
+    for every site on that function, not only the one it chose to bind: a
+    function with two counters, one reading zero, is not closed by the zero.
+    """
+    import redundancy_evidence
+    build, _ = request_build_and_logs(paths, bound_rows, campaign_dir)
+    if not build:
+        return
+    if site_symbols is None:
+        site_symbols = build_site_symbols(campaign_dir, build)
+    if not site_symbols:
+        return
+    story_packets = story_site_packets(campaign_dir, story, build)
+    floor = max(story_floor_pct(config, story)[0], float(base_floor))
+    for index, item in enumerate(paths, 1):
+        disposition = item.get("disposition")
+        if disposition not in MEASURED_DISPOSITIONS + ("novel", "known"):
+            continue
+        share = story_shares.get(index)
+        if share is None or share < floor or item.get("wrapper_of") is not None:
+            continue
+        own_sites = sorted(site for site, symbol in site_symbols.items()
+                           if symbol_matches(item.get("anchor", ""), symbol))
+        if not own_sites:
+            continue
+        unreduced = [site for site in own_sites if site not in story_packets]
+        if unreduced:
+            raise CampaignError(
+                f"Path {index} ({item['anchor'][:80]!r}) is itself a probed function "
+                f"(site(s) {unreduced}), but no packet for {story!r} on build "
+                f"{build[:12]} exists for it under evidence/. Reduce it for this story "
+                "and bind it: a row binds the count on its own function."
+            )
+        own_paths = {rel for site in own_sites for _, rel in story_packets[site]}
+        bound = (item.get("redundancy_evidence") or {}).get("path")
+        if bound not in own_paths:
+            raise CampaignError(
+                f"Path {index} ({item['anchor'][:80]!r}) is itself a probed function "
+                f"(site(s) {own_sites}), but binds {bound!r}, a packet from another "
+                f"probe. A row binds the count on its own function: one of "
+                f"{sorted(own_paths)}. An ancestor's count says nothing about the "
+                "repeats beneath it."
+            )
+        if disposition in MEASURED_DISPOSITIONS:
+            for site in own_sites:
+                for packet, rel in story_packets[site]:
+                    supported = redundancy_evidence.supported_avoidable_fraction(packet)
+                    upper = share * supported
+                    if upper >= floor:
+                        raise CampaignError(
+                            f"Path {index} ({item['anchor'][:80]!r}) closes as {disposition} "
+                            f"on {bound!r}, but site {site!r} on the same function ({rel}) "
+                            f"bounds the avoidable work at {supported:.3f} of {share:.3f}% = "
+                            f"{upper:.3f}%, not below the {floor:.3f}% floor. Every counter "
+                            "on the function speaks: the row is novel or known at that "
+                            "site's fraction, or covered-by the mechanism row whose probe "
+                            "sits above it."
+                        )
+        item["own_counters"] = own_sites
+
+
 def enforce_out_of_scope_anchors(paths, config=None):
     """`out-of-scope` names work Chromium does not own. A row whose anchor
     is Blink or cc code is Chromium's; it closes by count, by mechanism, or
@@ -4030,13 +4190,13 @@ def load_bound_cost_packet(path_item, story, campaign_dir):
 
 def cost_packet_percentages(packet):
     """Every percentage a cost packet supports: each child and leaf frame's
-    fraction of the row and share of the story, and the row's share."""
+    fraction of the row and share of the story. The row's own share is not
+    among them: "X carries N% of the story" says nothing about where N% goes."""
     allowed = set()
     for table in ("children", "leaves"):
         for entry in packet.get(table) or []:
             allowed.add(100.0 * float(entry.get("fraction_of_row", 0.0)))
             allowed.add(float(entry.get("share_pct", 0.0)))
-    allowed.add(float(packet.get("row_share_pct", 0.0)))
     return allowed
 
 
@@ -4218,6 +4378,51 @@ def cmd_probe_union(args):
             "build_id": next((r.get("build_id") for r in rows if r.get("build_id")), None), "rows": rows,
             "generated_at": utc_now()}, indent=2) + "\n")
         print(args.out)
+    return 0
+
+
+def cmd_probe_union_all(args):
+    """Size every counter in the log across every story it ran in."""
+    import redundancy_evidence
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    logs = [pathlib.Path(p) for p in args.browser_log]
+    builds = {}
+    sites = set()
+    for log in logs:
+        for row in redundancy_evidence.parse_rows(log):
+            builds.setdefault(str(row.get("build_id")), set()).add(str(log))
+            if row.get("site"):
+                sites.add(row["site"])
+    if len(builds) != 1:
+        raise CampaignError(
+            "One union, one build: the logs carry rows from "
+            f"{len(builds)} builds ({sorted(builds)})"
+        )
+    build = next(iter(builds))
+    symbols = build_site_symbols(ledger.dir, build)
+    out_dir = pathlib.Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    unnamed = sorted(site for site in sites if site not in symbols)
+    print(f"{len(sites)} sites in the log on build {build[:12]}; {len(symbols)} named by a packet")
+    if unnamed:
+        print(f"no packet on this build names the function of: {unnamed}")
+    print(f"{'site':44} {'function':52} {'best story':30} {'impact':>7} qualifying")
+    for site in sorted(sites):
+        if site not in symbols:
+            continue
+        rows = probe_union_rows(ledger, [str(p) for p in logs], site, symbols[site], args.patch)
+        out = out_dir / ("union_" + site.replace("/", "_") + ".json")
+        out.write_text(json.dumps({
+            "kind": "probe-union", "site": site, "probe_symbol": symbols[site],
+            "logs": [str(p) for p in logs], "patch": args.patch, "build_id": build,
+            "rows": rows, "generated_at": utc_now()}, indent=2) + "\n")
+        ok = [r for r in rows if not r.get("error") and r.get("impact_pct") is not None]
+        best = max(ok, key=lambda r: r["impact_pct"]) if ok else None
+        qualifying = [r["story"] for r in ok if r.get("qualifies")]
+        print(f"{site:44} {symbols[site][:52]:52} "
+              f"{(best['story'][:30] if best else '-'):30} "
+              f"{(('%.2f%%' % best['impact_pct']) if best else 'n/a'):>7} "
+              f"{len(qualifying)}: {', '.join(qualifying)}")
     return 0
 
 
@@ -7035,6 +7240,11 @@ def cmd_decompose(args):
             parent.get("target_story"), ledger.dir,
         )
         enforce_build_consistency(result["paths"], ledger.dir)
+        site_symbols = enforce_sites_named(
+            result["paths"], relevance_rows, parent.get("target_story"), ledger.dir)
+        enforce_own_counters(
+            result["paths"], story_shares, ledger.data["config"], floor,
+            parent.get("target_story"), ledger.dir, relevance_rows, site_symbols)
         enforce_packet_time_coverage(
             result["paths"], relevance_rows, source_profile,
             parent.get("target_story"), ledger.dir,
@@ -9208,6 +9418,14 @@ def build_parser():
     p.add_argument("--patch", default=None)
     p.add_argument("--out", default=None, help="JSON output path")
     p.set_defaults(func=cmd_probe_union)
+    p = sub.add_parser(
+        "probe-union-all",
+        help="Size every counter in a twin log across every story it ran in (one build); writes union_<site>.json per site",
+    )
+    p.add_argument("--browser-log", action="append", required=True, help="Twin browser log(s), one build")
+    p.add_argument("--patch", default=None, help="The probe patch the build carries")
+    p.add_argument("--out-dir", required=True, help="Directory for union_<site>.json files")
+    p.set_defaults(func=cmd_probe_union_all)
 
     p = sub.add_parser(
         "decompose", help="Atomically fan a discovery out into mechanism candidates"

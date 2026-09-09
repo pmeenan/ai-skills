@@ -831,6 +831,56 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         self.assertAlmostEqual(2.9, floor)
         self.assertGreater(floor, ledger.data["config"]["share_floor_pct"])
 
+    def test_every_counter_on_a_rows_own_function_speaks(self):
+        story_dir = self.dir / "results" / "analysis" / "stories" / STORY
+        story_dir.mkdir(parents=True, exist_ok=True)
+        artifact = story_dir / "candidate_frontier.json"; artifact.write_text("{}")
+        (story_dir / "profile.collapsed").write_text("main;Root;Layout;Box 50\nmain;Root;Style 50\n")
+        ledger = campaign.Ledger(self.dir).load()
+        ledger.data["config"]["share_floor_pct"] = 1.0
+        ledger.data["config"]["calibration"] = {"story_mde_pct": {STORY: 0.5}}
+        # Every packet from one build: a root probe reading zero, a layout
+        # probe reading half, and two sites on Style: one zero, one 0.4.
+        root = self.write_packet("root", applicable=0.0, repeat=0.0, site="root/update", symbol="Root")
+        layout = self.write_packet("layout", applicable=0.5, repeat=0.0, site="layout/box", symbol="Layout")
+        style_a = self.write_packet("style-a", applicable=0.0, repeat=0.0, site="style/within", symbol="Style")
+        style_b = self.write_packet("style-b", applicable=0.4, repeat=0.0, site="style/across", symbol="Style")
+        ref = lambda p: dict(p)
+        cfg = ledger.data["config"]
+        # A layout row bound to the root's packet: its own function is counted.
+        rows = [{"anchor": "Root", "disposition": "mandatory", "redundancy_evidence": ref(root)},
+                {"anchor": "Layout", "disposition": "mandatory", "redundancy_evidence": ref(root)}]
+        bound = [(1, rows[0]), (2, rows[1])]
+        with self.assertRaisesRegex(campaign.CampaignError, "itself a probed function.*binds"):
+            campaign.enforce_own_counters(rows, {1: 40.0, 2: 20.0}, cfg, 1.0, STORY, self.dir, bound)
+        # Bound to its own packet but mandatory at 20% x 0.5: refused.
+        rows[1]["redundancy_evidence"] = ref(layout)
+        with self.assertRaisesRegex(campaign.CampaignError, "Every counter on the function speaks"):
+            campaign.enforce_own_counters(rows, {1: 40.0, 2: 20.0}, cfg, 1.0, STORY, self.dir, bound)
+        # Known at the packet's fraction: fine.
+        rows[1].update({"disposition": "known", "mechanism_key": "layout/cache", "estimated_avoidable_fraction": 0.5})
+        campaign.enforce_own_counters(rows, {1: 40.0, 2: 20.0}, cfg, 1.0, STORY, self.dir, bound)
+        # Two sites on Style: closing on the zero one is refused by the other.
+        rows = [{"anchor": "Style", "disposition": "mandatory", "redundancy_evidence": ref(style_a)}]
+        with self.assertRaisesRegex(campaign.CampaignError, "site 'style/across' on the same function"):
+            campaign.enforce_own_counters(rows, {1: 30.0}, cfg, 1.0, STORY, self.dir, [(1, rows[0])])
+        rows[0].update({"disposition": "known", "mechanism_key": "style/cache", "estimated_avoidable_fraction": 0.4,
+                        "redundancy_evidence": ref(style_b)})
+        campaign.enforce_own_counters(rows, {1: 30.0}, cfg, 1.0, STORY, self.dir, [(1, rows[0])])
+        self.assertEqual(["style/across", "style/within"], rows[0]["own_counters"])
+        # A site that ran in the story but was never reduced with a symbol.
+        log = self.dir / "logs" / "root.log"
+        log.write_text(log.read_text() + "[SP3_REDUNDANCY_ROW] " + json.dumps({
+            "schema_version": 1, "site": "paint/unnamed", "group": f"run|{STORY}", "calls": 3,
+            "applicable_calls": 0, "distinct_inputs": 3, "repeated_inputs": 0, "overflow": 0,
+            "timed_calls": 3, "total_ns": 300, "applicable_ns": 0, "repeated_ns": 0,
+            "build_id": "b" * 40, "timing": "exclusive", "nested_calls": 0}) + "\n")
+        rows = [{"anchor": "Root", "disposition": "mandatory", "redundancy_evidence": ref(root)}]
+        with self.assertRaisesRegex(campaign.CampaignError, r"never reduced.*\['paint/unnamed'\]"):
+            campaign.enforce_sites_named(rows, [(1, rows[0])], STORY, self.dir)
+        self.assertEqual({"root/update": "Root", "layout/box": "Layout", "style/within": "Style", "style/across": "Style"},
+                         campaign.build_site_symbols(self.dir, "b" * 40))
+
     def test_out_of_scope_is_not_for_blink_code(self):
         rows = [{"anchor": "blink::V8HTMLCollection::IndexedPropertyGetterCallback(unsigned int)", "disposition": "out-of-scope"}]
         with self.assertRaisesRegex(campaign.CampaignError, "blink:: code, which this campaign owns"):

@@ -72,7 +72,10 @@ every mandatory row at or above 5% of the story, which of the three
 cost packet and quotes its frames; the closing count's repeat fraction
 repeated is not one); that no `out-of-scope` row names Blink or cc code;
 and that no `mandatory` row, whatever its share, lacks a packet or a
-`wrapper_of` (a row nothing counted is `below-floor`). A row whose anchor
+`wrapper_of` (a row nothing counted is `below-floor`); that every row whose
+own function carries a counter binds that counter's packet and, if
+mandatory, clears the floor on every site of that function; and that every
+site that ran in the story is named by a packet on the build. A row whose anchor
 is the area root or the frame update, marked novel with every other row
 covered by it, is a mechanically generated file, not a decomposition. A
 packet from a probe at the update root bound to the rows beneath it is

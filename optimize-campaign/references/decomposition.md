@@ -296,7 +296,8 @@ one of three ways, and `decompose` refuses the row otherwise:
   the number that falsified each, and the stop reason. The row binds its
   cost packet as `cost_evidence: {path, sha256}` and every falsification
   quotes a child or leaf frame's fraction from it; the closing count's own
-  repeat fraction, quoted again, falsifies nothing and is refused.
+  repeat fraction, or the row's share of the story, quoted again, falsifies
+  nothing and is refused.
 
 `campaign.py cost-packet --opp <id> --children <file> --path <row> --out
 evidence/cost_<key>.json` reduces the story's collapsed stacks for the
@@ -305,6 +306,26 @@ story and fraction of the row). An `algorithmic` row names the frames the
 cheaper algorithm would not run; their summed fraction bounds the claim.
 Export lists such candidates with `candidate_type: algorithmic`; they are
 cost claims, untested, ranked with the rest by share x fraction.
+
+## Every counter speaks
+
+A row whose anchor is itself a probed function binds that function's packet
+for its story, never an ancestor's: the ancestor's count says nothing about
+the repeats beneath it (a layout-root packet reading 1% closes nothing
+about an out-of-flow pass beneath it that repeats 55% of its time). And a
+row closing as `mandatory` or `no-qualifying-mechanism` satisfies
+`share x supported bound < floor` for every site on its function, not only
+the one it binds: a function with two counters, one reading zero, is not
+closed by the zero. When one site bounds above the floor the row is `novel`
+or `known` at that site's fraction, or `covered-by` the mechanism row whose
+probe sits above it.
+
+For that the gate must know which function every counter sits in: every
+site that ran in the story (rows in the twin log) is reduced at least once
+on the build, for any story, with `--symbol`; a site that ran and was never
+reduced refuses the request. `campaign.py probe-union-all --browser-log
+<log> --patch <patch> --out-dir evidence/` then sizes every named site
+across every story in one pass and writes `union_<site>.json` per site.
 
 ## A decomposition without a count is open work
 
