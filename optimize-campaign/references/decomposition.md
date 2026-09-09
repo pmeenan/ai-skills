@@ -354,6 +354,21 @@ mechanism's successes (`cache_status == kHit`) measures the cache working,
 not work a mechanism could remove. The avoidable candidate is the miss
 whose key repeats. A novel row on such a count is refused.
 
+## The pre-check is the gate's code
+
+`scripts/precheck_decomposition.py <campaign> <opp> <children.json>` runs
+the gate's rules on a staged file and prints the coverage table, the bound
+packets and the rows a reviewer opens; `scripts/host_review.py --dir
+<campaign> --rev <n> <opp>...` writes the host-side gate reports from the
+artifacts. Both live in the skill tree the campaign binds by digest, and
+both import the reducer and the rules as they are. A copy under the
+campaign, or any wrapper that replaces a rule or a reducer function (an
+override of `supported_avoidable_fraction` for a site, say), is not the
+pre-check: `decompose` runs the unmodified code, and a file whose "clean"
+pre-check came from a modified copy is refused at import with the rule's
+own message. The reviewer runs the skill-tree copy and checks
+`git status` on the skill tree before trusting any pre-check output.
+
 ## A decomposition without a count is open work
 
 A discovery whose decomposition binds no packet, no cost packet and no
