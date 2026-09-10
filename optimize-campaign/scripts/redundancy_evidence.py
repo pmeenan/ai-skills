@@ -38,7 +38,27 @@ def sha256_file(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+_ROWS_CACHE: dict = {}
+
+
 def parse_rows(path: pathlib.Path) -> list[dict]:
+    """Rows of one browser log; parsed once per (path, size, mtime) so the
+    gate can re-derive every packet on a build without re-reading the log
+    hundreds of times."""
+    try:
+        stat = path.stat()
+        cache_key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        cache_key = None
+    if cache_key is not None and cache_key in _ROWS_CACHE:
+        return _ROWS_CACHE[cache_key]
+    rows = _parse_rows_uncached(path)
+    if cache_key is not None:
+        _ROWS_CACHE[cache_key] = rows
+    return rows
+
+
+def _parse_rows_uncached(path: pathlib.Path) -> list[dict]:
     rows = []
     with path.open(errors="replace") as source:
         for line in source:
@@ -132,11 +152,16 @@ def reduce_rows(rows: list[dict], site: str, target_story: str) -> dict:
 
 
 def build_packet(logs: list[pathlib.Path], site: str, target_story: str,
-                 probe_symbol: str | None = None, patch: pathlib.Path | None = None) -> dict:
+                 probe_symbol: str | None = None, patch: pathlib.Path | None = None,
+                 scope_symbol: str | None = None) -> dict:
     """`probe_symbol` is the demangled function the RedundancyCounter sits in
     (a frame prefix as it appears in profile.collapsed); the gate uses it to
     check that the packet measured the row it is bound to. `patch` is the
-    saved instrumentation diff the twin was built from."""
+    saved instrumentation diff the twin was built from. `scope_symbol` names
+    the function the scope is actually in when that function has no frame
+    of its own in the profile (an inlined callee): the packet then names the
+    enclosing frame as `probe_symbol` and the gate scales its bound by the
+    fraction of that frame's time the scope covers."""
     rows = []
     sources = []
     for path in logs:
@@ -154,6 +179,8 @@ def build_packet(logs: list[pathlib.Path], site: str, target_story: str,
     }
     if probe_symbol:
         packet["probe_symbol"] = probe_symbol
+    if scope_symbol:
+        packet["scope_symbol"] = scope_symbol
     if patch is not None:
         if not patch.is_file():
             raise RedundancyError(f"probe patch not found: {patch}")
@@ -222,10 +249,16 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--patch", type=pathlib.Path, default=None,
                         help="saved instrumentation diff the twin was built from (recorded with its sha256)")
+    parser.add_argument("--scope-symbol", default=None,
+                        help="the function the scope is in when it is not --symbol: an inlined "
+                             "callee with no frame of its own (e.g. blink::OutOfFlowLayoutPart::LayoutOOFNode "
+                             "under --symbol blink::OutOfFlowLayoutPart::Run); the gate checks the patch "
+                             "places the counter in it and scales the packet's bound by its coverage")
     args = parser.parse_args(argv)
     try:
         packet = build_packet(args.browser_log, args.site, args.target_story,
-                              probe_symbol=args.symbol, patch=args.patch)
+                              probe_symbol=args.symbol, patch=args.patch,
+                              scope_symbol=args.scope_symbol)
     except RedundancyError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

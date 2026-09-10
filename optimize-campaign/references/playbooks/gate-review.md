@@ -80,10 +80,13 @@ function; that every mandatory row binds the nearest packet on its stack
 ancestor that reads lowest), that no per-update packet closes a row that
 is less than a third of the update, and that no row at 5% or more closes
 on an ancestor's count with no probe beneath it; that every packet's
-`probe_symbol` is the function the scope is in (a scope in a callee or a
-lambda names the callee, `NOINLINE` if it has no frame) and its coverage
-is judged against the story's largest-share packet on the build, bound or
-not; and that every site that ran in the story is named by a packet on
+`probe_symbol` is the function the scope is in (a scope in an inlined
+callee names the enclosing frame as `probe_symbol` and the callee as
+`scope_symbol`, which the patch's hunk must show, and its bound is scaled
+by its coverage) and its coverage is judged against the story's
+largest-share packet on the build, bound or not; that every packet on the
+build re-derives from its logs whether or not a row binds it; that every
+row's anchor is the function its work refs name; and that every site that ran in the story is named by a packet on
 the build. A row whose anchor
 is the area root or the frame update, marked novel with every other row
 covered by it, is a mechanically generated file, not a decomposition. A

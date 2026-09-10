@@ -2,7 +2,7 @@
 """Host-side pre-check for a decomposition review request: runs the same
 row rules the gate runs (measured dispositions, covered-by sample identity,
 candidate packet bounds by hypothesis, packet relevance, build consistency,
-sites named, own counters, nearest packet, packet time coverage, row-text numbers, symbols
+evidence provenance on the build, anchors, sites named, own counters, nearest packet, packet time coverage, row-text numbers, symbols
 in the tree, large rows, below-floor per capture, covered-by probe identity,
 nearest-probe) and prints the rows a reviewer has to open. One problem per
 rule: the gate stops at the first row a rule refuses, so fix and rerun.
@@ -35,6 +35,9 @@ def main(campaign_dir, opp_id, children):
     floor = ledger.data["config"]["share_floor_pct"]
     problems = []
     story_floor = max(campaign.story_floor_pct(ledger.data["config"], story)[0], floor)
+    coverage_map = campaign.packet_coverage_map(result["paths"], profile, story, campaign_dir)
+    try: campaign.enforce_anchor_names_its_work(result["paths"])
+    except campaign.CampaignError as e: problems.append(str(e))
     for i, p in enumerate(result["paths"], 1):
         if p["disposition"] in ("novel", "algorithmic"):
             try: campaign.require_existing_mechanism(p, i)
@@ -51,13 +54,13 @@ def main(campaign_dir, opp_id, children):
             try:
                 if frac is None:
                     raise campaign.CampaignError(f"Path {i} ({p['anchor'][:60]!r}) has no estimated_avoidable_fraction")
-                campaign.bind_redundancy_evidence(p, story, float(frac), campaign_dir)
+                campaign.bind_redundancy_evidence(p, story, float(frac), campaign_dir, coverage=coverage_map)
                 summ = p["redundancy_summary"]
                 print(f"row {i} {p['disposition']} {p['anchor'][:60]} share={shares.get(i,0):.2f} frac={frac} hypothesis={summ['packet_hypothesis']} applicable={summ['applicable_fraction']:.4f}/{summ['applicable_time_fraction']:.4f}(time) repeat={summ['repeat_fraction']:.4f}/{summ['repeat_time_fraction']:.4f}(time) supported={summ['supported_avoidable_fraction']:.4f} probe={summ.get('probe_symbol')}")
             except campaign.CampaignError as e: problems.append(str(e))
     bound = set()
     try:
-        bound = campaign.enforce_measured_dispositions(result["paths"], shares, ledger.data["config"], floor, story, campaign_dir)
+        bound = campaign.enforce_measured_dispositions(result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, coverage=coverage_map)
     except campaign.CampaignError as e: problems.append(str(e))
     unbound = [i for i, p in enumerate(result["paths"], 1)
                if p["disposition"] in ("mandatory", "no-qualifying-mechanism")
@@ -81,17 +84,21 @@ def main(campaign_dir, opp_id, children):
     try:
         campaign.enforce_build_consistency(result["paths"], campaign_dir)
     except campaign.CampaignError as e: problems.append(str(e))
+    try:
+        request_build, _ = campaign.request_build_and_logs(result["paths"], relevance_rows, campaign_dir)
+        campaign.enforce_evidence_provenance(campaign_dir, request_build)
+    except campaign.CampaignError as e: problems.append(str(e))
     site_symbols = None
     try:
         site_symbols = campaign.enforce_sites_named(result["paths"], relevance_rows, story, campaign_dir)
     except campaign.CampaignError as e: problems.append(str(e))
     try:
-        campaign.enforce_own_counters(result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, relevance_rows, site_symbols)
+        campaign.enforce_own_counters(result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, relevance_rows, site_symbols, coverage=coverage_map)
         own = [(i, p["own_counters"]) for i, p in enumerate(result["paths"], 1) if p.get("own_counters")]
         if own: print("\nrows closed on their own counters:", own[:20])
     except campaign.CampaignError as e: problems.append(str(e))
     try:
-        campaign.enforce_nearest_packet(result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, relevance_rows, profile)
+        campaign.enforce_nearest_packet(result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, relevance_rows, profile, coverage=coverage_map)
     except campaign.CampaignError as e: problems.append(str(e))
     try:
         rows_cov, reference = campaign.packet_time_coverage(result["paths"], relevance_rows, profile, story, campaign_dir)

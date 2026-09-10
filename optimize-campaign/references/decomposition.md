@@ -216,13 +216,26 @@ coverage)" in the table).
 The symbol is the function the scope is in. A scope placed in a callee or a
 lambda (`LayoutOOFNode` under `OutOfFlowLayoutPart::Run`; the min/max lambda
 under `FlexLayoutAlgorithm::ConstructAndAppendFlexItems`) times that callee,
-and the packet names that callee, whatever the function above it is called;
-where the callee has no frame of its own (inlined), the probe patch marks it
-`NOINLINE` so the profile can see it. Round 21 found both: the flex packet
-timed 0.11 of the function it named in Next and 0.14 in Nuxt, the
-out-of-flow packet 0.10 of `Run` in Nuxt and 0.33 in Backbone, and the
-candidate list carried `share x fraction` of the wrong function (Next flex
-9.4% where the scope's own time supports about 1%).
+and the packet names that callee whatever the function above it is called.
+When the callee has no frame of its own in the profile (inlined; and the
+profile is fixed, captured before the probes, so `NOINLINE` in the probe
+patch does not put it there: round 21 asked for that and round 22 could not
+deliver it), the packet names the enclosing frame as `probe_symbol` and the
+callee as `scope_symbol` (`redundancy_evidence.py --scope-symbol`). The gate
+checks the patch shows that function above the counter in the hunk that
+defines the site, exempts the packet from the lower coverage band, and
+scales its bound by the coverage instead: on the row whose function is the
+frame, a mandatory closing uses `share x coverage x supported`, the
+uncounted `share x (1 - coverage)` must itself be below the floor (else the
+rest of the function needs a counter of its own), and a candidate claims at
+most `time fraction x coverage`. `probe-union` carries the same scaling.
+Round 21 found both cases: the flex packet timed 0.11 of the function it
+named in Next and 0.14 in Nuxt, the out-of-flow packet 0.10 of `Run` in
+Nuxt and 0.33 in Backbone, and the candidate list carried `share x fraction`
+of the wrong function (Next flex 9.4% where the scope's own time supports
+about 1.6%). The flex counter now sits at the top of
+`BlockNode::ComputeMinMaxSizes`, a frame; the out-of-flow counter stays in
+`LayoutOOFNode` with `scope_symbol`.
 
 Scopes of one counter are timed exclusively. A box's layout lays out its
 children through the same function and a pre-paint walk visits its subtree;
@@ -397,6 +410,23 @@ round-21 files declared `InlineLayoutAlgorithm::Layout` a wrapper of
 `LineBreaker::NextLine` bound to the lifecycle root, hiding 0.86 of its
 time repeating in Angular (2.8% of the story), and `OutOfFlowLayoutPart::Run`
 a wrapper of `LayoutCandidates` bound to the box packet.
+
+## The evidence base is one artifact
+
+Every packet under `evidence/` on the request's build must re-derive from
+the logs it cites, bound or not (`enforce_evidence_provenance`). The gate
+reads unbound packets too: the sites named on the build, every counter on
+a row's function, the story's packets for the nearest-packet and coverage
+rules. A packet edited by hand anywhere in the evidence base changes what
+the gate sees without any row binding it: in round 22 a `time_weighted`
+flag flipped to `false` on the Backbone out-of-flow packet took that site
+out of the story's packet set, and with the row's anchor renamed to a
+function that does not exist (`OutOfFlowLayoutPart::RunLayout()`) the row
+escaped the own-counter rule and passed the pre-check. One edited packet
+now refuses every request on that build until it is regenerated or
+removed, and an anchor must be the function its primary work refs name
+(`function:<symbol>` in the hotspot key): a row renamed away from its
+function is outside every rule keyed on it.
 
 ## What `repeat` can and cannot support
 

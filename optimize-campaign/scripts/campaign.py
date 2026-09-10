@@ -2767,13 +2767,120 @@ def verify_packet_provenance(packet, packet_path, campaign_dir):
     # the line's "+" marker.
     site_re = re.compile(
         r'RedundancyCounter\(\s*(?:[+ ]\s*)?"' + re.escape(packet["site"]) + '"')
-    if not site_re.search(patch_path.read_text(errors="replace")):
+    patch_text = patch_path.read_text(errors="replace")
+    if not site_re.search(patch_text):
         raise CampaignError(
             f"Packet {packet_path} names site {packet['site']!r}, but the probe "
             f"patch {patch!r} defines no RedundancyCounter for it; the twin this "
             "packet claims to come from never counted that site"
         )
+    scope = str(packet.get("scope_symbol") or "").strip()
+    if scope:
+        hunk = patch_hunk_before_counter(patch_text, packet["site"])
+        wanted = "::".join(scope.split("::")[-2:]) + "("
+        if hunk is None or wanted not in hunk:
+            raise CampaignError(
+                f"Packet {packet_path} records scope_symbol {scope!r}, but in the probe "
+                f"patch the hunk that defines site {packet['site']!r} does not show that "
+                f"function ({wanted!r}) above the counter. scope_symbol names the function "
+                "the RedundancyScope is in; the patch is the proof."
+            )
     _PACKET_PROVENANCE_CACHE.add(key)
+
+
+def patch_hunk_before_counter(patch_text, site):
+    """The text of the unified-diff hunk that defines `site`'s counter, from
+    its @@ header down to the counter line."""
+    site_re = re.compile(r'RedundancyCounter\(\s*(?:[+ ]\s*)?"' + re.escape(site) + '"')
+    lines = patch_text.split("\n")
+    start = None
+    for index, line in enumerate(lines):
+        if line.startswith("@@"):
+            start = index
+        joined = line + ("\n" + lines[index + 1] if index + 1 < len(lines) else "")
+        if site_re.search(joined):
+            return "\n".join(lines[start:index + 2]) if start is not None else None
+    return None
+
+
+def scope_counted_fraction(packet, anchor, coverage, rel=None):
+    """How much of the row's function a packet's scope timed: 1.0 for a
+    scope at the top of the function it names; for a packet whose scope is
+    in a callee with no frame (`scope_symbol`), min(1, coverage) when the
+    row is that function, else 1.0 (another row's relation to the scope is
+    not the coverage ratio)."""
+    if not packet.get("scope_symbol") or not coverage:
+        return 1.0
+    if anchor_function(anchor) != anchor_function(packet.get("probe_symbol")):
+        return 1.0
+    value = coverage.get(rel or "")
+    if value is None:
+        return 1.0
+    return max(0.0, min(1.0, float(value)))
+
+
+def enforce_evidence_provenance(campaign_dir, build_id):
+    """Every packet under evidence/ on the request's build re-derives from
+    the logs it cites, bound or not. The gate reads unbound packets too (the
+    sites named on the build, every counter on a function, the story's
+    packets for the nearest-packet and coverage rules), so a packet edited
+    by hand anywhere in the evidence base changes what the gate sees: a
+    `time_weighted` flag flipped to false takes a site out of the story's
+    packet set. One edited packet refuses every request on that build until
+    it is regenerated or removed."""
+    import redundancy_evidence
+    if not build_id:
+        return
+    root = pathlib.Path(campaign_dir)
+    bad = []
+    for path in sorted((root / "evidence").glob("*.json")):
+        try:
+            packet = redundancy_evidence.load_packet(path)
+        except (ValueError, OSError):
+            continue
+        if packet.get("build_id") != build_id:
+            continue
+        try:
+            verify_packet_provenance(packet, path, campaign_dir)
+        except CampaignError as exc:
+            bad.append((str(path.relative_to(root)), str(exc)))
+    if bad:
+        rel, why = bad[0]
+        raise CampaignError(
+            f"{len(bad)} packet(s) on build {build_id[:12]} under evidence/ do not "
+            f"re-derive from their logs; the first is {rel!r}: {why} Every packet on "
+            "the build is evidence the gate reads, bound or not; regenerate or remove "
+            "the edited ones."
+            + (f" Also: {', '.join(r for r, _ in bad[1:6])}" if len(bad) > 1 else "")
+        )
+
+
+def enforce_anchor_names_its_work(paths):
+    """A row's anchor is the function its work refs name. The profile's
+    hotspot key (`function:<symbol>`) says which function a row accounts
+    for; an anchor typed to differ from it (a name that exists nowhere, or a
+    neighbour's) puts the row outside every rule keyed on the function:
+    own counters, sites named, nearest packet, symbols in the tree."""
+    for index, item in enumerate(paths, 1):
+        functions = set()
+        for ref in item.get("work_refs") or []:
+            if ref.get("accounting") != "primary":
+                continue
+            key = str(ref.get("hotspot_key") or "")
+            marker = key.rfind("function:")
+            if marker >= 0:
+                functions.add(key[marker + len("function:"):])
+        if not functions:
+            continue
+        anchor = str(item.get("anchor") or "")
+        if anchor in functions or anchor_function(anchor) in {anchor_function(f) for f in functions}:
+            continue
+        raise CampaignError(
+            f"Path {index} anchor {anchor[:80]!r} is not the function its primary "
+            f"work refs account for ({sorted(functions)[0][:80]!r}). The anchor is the "
+            "hotspot's function; a row renamed away from its function is outside "
+            "every rule keyed on it (own counters, nearest packet, symbols in the tree)."
+        )
 
 
 MEASURED_DISPOSITIONS = ("mandatory", "no-qualifying-mechanism", "algorithmic")
@@ -2844,7 +2951,7 @@ def require_existing_mechanism(path_item, index):
 
 
 def enforce_measured_dispositions(
-    paths, story_shares, config, base_floor, default_story, campaign_dir
+    paths, story_shares, config, base_floor, default_story, campaign_dir, coverage=None
 ):
     """Above the story floor, mandatory and no-qualifying rows close by count.
 
@@ -2889,7 +2996,9 @@ def enforce_measured_dispositions(
         )
         require_time_weighted(packet, item)
         require_build_id(packet, item)
-        supported = redundancy_evidence.supported_avoidable_fraction(packet)
+        rel = (item.get("redundancy_evidence") or {}).get("path")
+        counted = scope_counted_fraction(packet, item.get("anchor"), coverage, rel)
+        supported = redundancy_evidence.supported_avoidable_fraction(packet) * counted
         upper = share * supported
         if upper >= floor:
             raise CampaignError(
@@ -2902,10 +3011,21 @@ def enforce_measured_dispositions(
                 "make the work skippable (a pointer-only key or applicable="
                 "true bounds nothing)."
             )
+        uncounted = share * (1.0 - counted)
+        if counted < 1.0 and uncounted >= floor:
+            raise CampaignError(
+                f"{label}. Its packet {packet['site']!r} has its scope in "
+                f"{packet.get('scope_symbol')!r}, which times {counted:.2f} of "
+                f"{packet.get('probe_symbol')!r}; the other {uncounted:.3f}% of the story "
+                "in this row is uncounted and not below the floor. A count on the rest "
+                "of the function (or a counter on its dominant descendant, named with "
+                "wrapper_of) closes it; the callee's count does not."
+            )
         item["measured_bound"] = {
             "site": packet["site"],
             "story_profile_share_pct": share,
             "supported_avoidable_fraction": supported,
+            "scope_counted_fraction": counted,
             "avoidable_share_upper_pct": upper,
             "qualification_floor_pct": floor,
             "qualification_floor_basis": basis,
@@ -3557,14 +3677,35 @@ def format_time_coverage(rows, reference):
     return "\n".join(lines)
 
 
+def packet_coverage_map(paths, profile, story, campaign_dir):
+    """{packet path: coverage} for every packet a row binds, computed before
+    the disposition rules so a packet whose scope sits in an inlined callee
+    (`scope_symbol`) can have its bound scaled where those rules run."""
+    rows = [(index, item) for index, item in enumerate(paths, 1)
+            if (item.get("redundancy_evidence") or {}).get("path")]
+    if not rows:
+        return {}
+    try:
+        table, _ = packet_time_coverage(paths, rows, profile, story, campaign_dir)
+    except CampaignError:
+        return {}
+    return {row["packet"]: row["coverage"] for row in table if row["coverage"] is not None}
+
+
 def enforce_packet_time_coverage(paths, bound_rows, profile, story, campaign_dir):
-    """A packet times the function it names, all of it and only it."""
+    """A packet times the function it names, all of it and only it. A packet
+    whose scope is in an inlined callee (`scope_symbol`) times part of the
+    frame it names by construction: it is exempt from the lower band and its
+    bound is scaled by the coverage instead."""
     rows, reference = packet_time_coverage(paths, bound_rows, profile, story, campaign_dir)
+    packets = bound_packets(paths, bound_rows, campaign_dir)
+    scoped = {rel for rel, (pk, _) in packets.items() if pk.get("scope_symbol")}
     bad = [
         row for row in rows
         if row["coverage"] is not None and row["rows"]
         and row["symbol_share_pct"] >= PACKET_TIME_COVERAGE_MIN_SHARE_PCT
         and not (1.0 / PACKET_TIME_COVERAGE_FACTOR <= row["coverage"] <= PACKET_TIME_COVERAGE_FACTOR)
+        and not (row["packet"] in scoped and row["coverage"] < 1.0)
     ]
     for row in rows:
         for index in row["rows"]:
@@ -3986,6 +4127,23 @@ def bind_cost_evidence(path_item, story, fraction, campaign_dir):
     }
 
 
+def build_site_scopes(campaign_dir, build_id):
+    """site -> scope_symbol from the packets on the build that record one."""
+    import redundancy_evidence
+    scopes = {}
+    for path in sorted(pathlib.Path(campaign_dir, "evidence").glob("*.json")):
+        try:
+            packet = redundancy_evidence.load_packet(path)
+        except (ValueError, OSError):
+            continue
+        if packet.get("build_id") != build_id or not packet.get("site"):
+            continue
+        scope = str(packet.get("scope_symbol") or "").strip()
+        if scope:
+            scopes.setdefault(packet["site"], scope)
+    return scopes
+
+
 def build_site_symbols(campaign_dir, build_id):
     """site -> probed function, from every time-weighted packet under
     evidence/ reduced from the given build (any story). A site reduced twice
@@ -4079,7 +4237,7 @@ def enforce_sites_named(paths, bound_rows, story, campaign_dir):
 
 
 def enforce_own_counters(paths, story_shares, config, base_floor, story, campaign_dir,
-                         bound_rows, site_symbols=None):
+                         bound_rows, site_symbols=None, coverage=None):
     """Every counter on a row's own function speaks.
 
     A row whose anchor is itself a probed function binds that function's
@@ -4142,6 +4300,7 @@ def enforce_own_counters(paths, story_shares, config, base_floor, story, campaig
             for site in own_sites:
                 for packet, rel in story_packets[site]:
                     supported = redundancy_evidence.supported_avoidable_fraction(packet)
+                    supported *= scope_counted_fraction(packet, item.get("anchor"), coverage, rel)
                     upper = share * supported
                     if upper >= floor:
                         raise CampaignError(
@@ -4185,7 +4344,7 @@ def anchor_symbol_weights(collapsed_files, anchors, symbols):
 
 
 def enforce_nearest_packet(paths, story_shares, config, base_floor, story, campaign_dir,
-                           bound_rows, profile):
+                           bound_rows, profile, coverage=None):
     """A row closed by count binds the nearest packet on its stack.
 
     Among the story's packets whose probed function shares PACKET_RELEVANCE
@@ -4292,7 +4451,8 @@ def enforce_nearest_packet(paths, story_shares, config, base_floor, story, campa
                 "the key, the applicable predicate) before staging the area again."
             )
         supported = max(redundancy_evidence.supported_avoidable_fraction(pk)
-                        for _, pk, _ in by_symbol[bound_symbol])
+                        * scope_counted_fraction(pk, anchor, coverage, rel)
+                        for _, pk, rel in by_symbol[bound_symbol])
         upper = share * supported
         if upper >= floor:
             reading = sorted((site, round(redundancy_evidence.supported_avoidable_fraction(pk), 3))
@@ -4501,7 +4661,7 @@ def enforce_large_mandatory_rows(paths, story_shares, profile, story, campaign_d
             )
 
 
-def probe_union_rows(ledger, logs, site, symbol, patch=None):
+def probe_union_rows(ledger, logs, site, symbol, patch=None, scope_symbol=None):
     """One probe run over many stories, sized per story: for every story in
     the logs, the packet, the probed function's profile share, the bounds
     under both hypotheses and the story's floor."""
@@ -4527,7 +4687,7 @@ def probe_union_rows(ledger, logs, site, symbol, patch=None):
     out = []
     for story in stories:
         try:
-            packet = redundancy_evidence.build_packet([pathlib.Path(p) for p in logs], site, story, probe_symbol=symbol, patch=pathlib.Path(patch) if patch else None)
+            packet = redundancy_evidence.build_packet([pathlib.Path(p) for p in logs], site, story, probe_symbol=symbol, patch=pathlib.Path(patch) if patch else None, scope_symbol=scope_symbol)
         except ValueError as exc:
             out.append({"story": story, "error": str(exc)})
             continue
@@ -4542,12 +4702,18 @@ def probe_union_rows(ledger, logs, site, symbol, patch=None):
         best = max([b for b in (app, rep_) if b is not None] or [0.0])
         coverage, coverage_reference = union_packet_coverage(
             ledger, profile, story, packet, symbol, share, files)
-        covered = coverage is None or (
-            1.0 / PACKET_TIME_COVERAGE_FACTOR <= coverage <= PACKET_TIME_COVERAGE_FACTOR)
+        counted = 1.0
+        if scope_symbol and coverage is not None:
+            counted = max(0.0, min(1.0, coverage))
+        covered = (coverage is None or (share or 0.0) < PACKET_TIME_COVERAGE_MIN_SHARE_PCT or (
+            (bool(scope_symbol) or coverage >= 1.0 / PACKET_TIME_COVERAGE_FACTOR)
+            and coverage <= PACKET_TIME_COVERAGE_FACTOR))
+        best *= counted
         out.append({
             "story": story, "symbol_share_pct": share, "floor_pct": floor,
             "calls_per_repetition": packet["calls_per_repetition_mean"],
             "applicable_bound": app, "repeat_bound": rep_,
+            "scope_symbol": scope_symbol, "scope_counted_fraction": counted,
             "impact_pct": (share * best) if share is not None else None,
             "coverage": coverage, "coverage_reference": coverage_reference,
             "qualifies": (share is not None and share * best >= floor and covered),
@@ -4631,6 +4797,7 @@ def cmd_probe_union_all(args):
         )
     build = next(iter(builds))
     symbols = build_site_symbols(ledger.dir, build)
+    scopes = build_site_scopes(ledger.dir, build)
     out_dir = pathlib.Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     unnamed = sorted(site for site in sites if site not in symbols)
@@ -4641,10 +4808,12 @@ def cmd_probe_union_all(args):
     for site in sorted(sites):
         if site not in symbols:
             continue
-        rows = probe_union_rows(ledger, [str(p) for p in logs], site, symbols[site], args.patch)
+        rows = probe_union_rows(ledger, [str(p) for p in logs], site, symbols[site], args.patch,
+                                scope_symbol=scopes.get(site))
         out = out_dir / ("union_" + site.replace("/", "_") + ".json")
         out.write_text(json.dumps({
             "kind": "probe-union", "site": site, "probe_symbol": symbols[site],
+            "scope_symbol": scopes.get(site),
             "logs": [str(p) for p in logs], "patch": args.patch, "build_id": build,
             "rows": rows, "generated_at": utc_now()}, indent=2) + "\n")
         ok = [r for r in rows if not r.get("error") and r.get("impact_pct") is not None]
@@ -4694,7 +4863,7 @@ PACKET_HYPOTHESES = ("applicable", "repeat")
 APPLICABLE_SATURATED = 0.999
 
 
-def bind_redundancy_evidence(path_item, story, fraction, campaign_dir):
+def bind_redundancy_evidence(path_item, story, fraction, campaign_dir, coverage=None):
     """A candidate's avoidable fraction is a count, whatever its layer.
 
     "Avoidable fraction" is otherwise a typed guess. Every `novel` / `known`
@@ -4776,6 +4945,10 @@ def bind_redundancy_evidence(path_item, story, fraction, campaign_dir):
                 "probe on the inputs the hypothesis says are unchanged."
             )
         supported = repeat_time if packet.get("time_weighted") else repeat
+    counted = scope_counted_fraction(
+        packet, path_item.get("anchor"), coverage,
+        (path_item.get("redundancy_evidence") or {}).get("path"))
+    supported *= counted
     if fraction > supported + REDUNDANCY_FRACTION_TOLERANCE:
         raise CampaignError(
             f"Path {path_item['anchor']!r} claims avoidable fraction {fraction:.2f} "
@@ -4784,6 +4957,7 @@ def bind_redundancy_evidence(path_item, story, fraction, campaign_dir):
             f"{applicable_time:.2f} of time; repeated inputs {repeat:.2f} of calls, "
             f"{repeat_time:.2f} of time, over {packet['calls_total']} calls"
             + (", distinct-input set overflowed" if packet.get("distinct_overflow") else "")
+            + (f"; the scope in {packet.get('scope_symbol')!r} times {counted:.2f} of the function" if counted < 1.0 else "")
             + "); lower the claim, name the other hypothesis in the row text with "
             "packet_hypothesis, or find the missing applicability"
         )
@@ -7395,6 +7569,10 @@ def cmd_decompose(args):
     )
     primary_counts = {ref: 0 for ref in expected_work}
     story_shares = {}
+    coverage_map = {}
+    if not test_bypass_active():
+        coverage_map = packet_coverage_map(
+            result["paths"], source_profile, parent.get("target_story"), ledger.dir)
     for path_index, path_item in enumerate(result["paths"], 1):
         path_primary = set()
         for ref in path_item["work_refs"]:
@@ -7497,7 +7675,8 @@ def cmd_decompose(args):
                 if path_item["disposition"] == "algorithmic":
                     bind_cost_evidence(path_item, story_name, fraction, ledger.dir)
                 else:
-                    bind_redundancy_evidence(path_item, story_name, fraction, ledger.dir)
+                    bind_redundancy_evidence(path_item, story_name, fraction, ledger.dir,
+                                             coverage=coverage_map)
                 path_item["story_profile_share_pct"] = story_share
                 path_item["estimated_avoidable_fraction"] = fraction
                 path_item["estimated_local_story_impact_pct"] = impact
@@ -7518,9 +7697,10 @@ def cmd_decompose(args):
             f"accounting reference: {preview}"
         )
     if not test_bypass_active():
+        enforce_anchor_names_its_work(result["paths"])
         bound = enforce_measured_dispositions(
             result["paths"], story_shares, ledger.data["config"], floor,
-            parent.get("target_story"), ledger.dir,
+            parent.get("target_story"), ledger.dir, coverage=coverage_map,
         )
         relevance_rows = [
             (index, item) for index, item in enumerate(result["paths"], 1)
@@ -7534,14 +7714,18 @@ def cmd_decompose(args):
             parent.get("target_story"), ledger.dir,
         )
         enforce_build_consistency(result["paths"], ledger.dir)
+        request_build, _ = request_build_and_logs(result["paths"], relevance_rows, ledger.dir)
+        enforce_evidence_provenance(ledger.dir, request_build)
         site_symbols = enforce_sites_named(
             result["paths"], relevance_rows, parent.get("target_story"), ledger.dir)
         enforce_own_counters(
             result["paths"], story_shares, ledger.data["config"], floor,
-            parent.get("target_story"), ledger.dir, relevance_rows, site_symbols)
+            parent.get("target_story"), ledger.dir, relevance_rows, site_symbols,
+            coverage=coverage_map)
         enforce_nearest_packet(
             result["paths"], story_shares, ledger.data["config"], floor,
-            parent.get("target_story"), ledger.dir, relevance_rows, source_profile)
+            parent.get("target_story"), ledger.dir, relevance_rows, source_profile,
+            coverage=coverage_map)
         enforce_packet_time_coverage(
             result["paths"], relevance_rows, source_profile,
             parent.get("target_story"), ledger.dir,

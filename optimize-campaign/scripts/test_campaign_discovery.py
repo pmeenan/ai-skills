@@ -927,6 +927,103 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         run(rows, {1: 2.0})  # relevance refuses this one; the nearest rule leaves it alone
         self.assertNotIn("nearest_packet", rows[0])
 
+    def test_every_packet_on_the_build_re_derives(self):
+        good = self.write_packet("good", applicable=0.1, repeat=0.0, site="a/one", symbol="One")
+        campaign.enforce_evidence_provenance(self.dir, "b" * 40)
+        # A packet nobody binds, with one flag flipped by hand, refuses the build.
+        edited = self.dir / "evidence" / "edited.json"
+        data = json.loads((self.dir / "evidence" / "good.json").read_text())
+        data["time_weighted"] = False
+        edited.write_text(json.dumps(data))
+        with self.assertRaisesRegex(campaign.CampaignError, "(?s)do not re-derive.*edited.json.*time_weighted"):
+            campaign.enforce_evidence_provenance(self.dir, "b" * 40)
+        edited.unlink()
+        campaign.enforce_evidence_provenance(self.dir, "b" * 40)
+        # Another build's packets are not this request's evidence.
+        campaign.enforce_evidence_provenance(self.dir, "c" * 40)
+
+    def test_an_anchor_is_the_function_its_work_refs_name(self):
+        ref = lambda key: {"accounting": "primary", "capture_id": "c1", "entry_key": "e", "hotspot_key": key}
+        rows = [
+            {"anchor": "blink::A::Run()", "work_refs": [ref("function:blink::A::Run()")]},
+            {"anchor": "blink::A::Run()", "work_refs": [ref("alternative:story:S/function:blink::A::Run()")]},
+            {"anchor": "blink::A::Run()", "work_refs": [ref("context:blink::A::Run()@ab12")]},
+            {"anchor": "cc::Host::Update(bool)", "work_refs": [ref("@root")]},
+        ]
+        campaign.enforce_anchor_names_its_work(rows)
+        rows[0]["anchor"] = "blink::A::RunLayout()"
+        with self.assertRaisesRegex(campaign.CampaignError, "not the function its primary work refs account for"):
+            campaign.enforce_anchor_names_its_work(rows)
+
+    def test_a_scope_in_an_inlined_callee_is_scaled_by_its_coverage(self):
+        story_dir = self.dir / "results" / "analysis" / "stories" / STORY
+        story_dir.mkdir(parents=True, exist_ok=True)
+        artifact = story_dir / "candidate_frontier.json"; artifact.write_text("{}")
+        # Run carries 40% of the story; its scope (in the inlined Node) times
+        # a quarter of it. Root carries 100% and is the reference.
+        (story_dir / "profile.collapsed").write_text(
+            "main;Root;Run;Other 30\n"
+            "main;Root;Run;Node 10\n"
+            "main;Root;Style 60\n"
+        )
+        profile = {"id": "p", "capture_provenance": [{
+            "capture_id": "c1",
+            "story_frontiers": [{"story": STORY, "artifact": str(artifact)}],
+        }]}
+        root = self.write_packet("root", applicable=0.0, repeat=0.0, site="root/update", symbol="Root",
+                                 ns_per_call=1000)
+        # The scope in Node: a quarter of Run's time, 80% of it repeated.
+        import redundancy_evidence
+        node = self.write_packet("node", applicable=0.0, repeat=0.8, site="layout/oof", symbol="Run",
+                                 ns_per_call=100)
+        path = self.dir / "evidence" / "node.json"
+        data = json.loads(path.read_text())
+        # The patch must show the scope's function above the counter.
+        patch = self.dir / "evidence" / "probes.patch"
+        patch.write_text(patch.read_text().replace(
+            '+  new RedundancyCounter(\n+      "layout/oof");',
+            '@@ -1,3 +1,4 @@ const LayoutResult* OutOfFlowLayoutPart::LayoutOOFNode(\n'
+            '+  new RedundancyCounter(\n+      "layout/oof");'))
+        data["scope_symbol"] = "blink::OutOfFlowLayoutPart::LayoutOOFNode"
+        data["patch_sha256"] = campaign.sha256_file(patch)
+        path.write_text(json.dumps(data))
+        node = {"path": "evidence/node.json", "sha256": campaign.sha256_file(path)}
+        rootdata = json.loads((self.dir / "evidence" / "root.json").read_text())
+        rootdata["patch_sha256"] = campaign.sha256_file(patch)
+        (self.dir / "evidence" / "root.json").write_text(json.dumps(rootdata))
+        root = {"path": "evidence/root.json", "sha256": campaign.sha256_file(self.dir / "evidence" / "root.json")}
+        campaign.verify_packet_provenance(data, path, self.dir)
+        # A scope_symbol the patch does not show is refused.
+        wrong = dict(data, scope_symbol="blink::OutOfFlowLayoutPart::Elsewhere")
+        wrong_path = self.dir / "evidence" / "wrong.json"; wrong_path.write_text(json.dumps(wrong))
+        with self.assertRaisesRegex(campaign.CampaignError, "does not show that function"):
+            campaign.verify_packet_provenance(wrong, wrong_path, self.dir)
+        wrong_path.unlink()
+        rows = [{"anchor": "Run", "disposition": "mandatory", "redundancy_evidence": node},
+                {"anchor": "Root", "disposition": "mandatory", "redundancy_evidence": root}]
+        coverage = campaign.packet_coverage_map(rows, profile, STORY, self.dir)
+        self.assertAlmostEqual(0.25, coverage["evidence/node.json"], places=3)
+        # Exempt from the lower band: the scope times a quarter by construction.
+        campaign.enforce_packet_time_coverage(rows, [(1, rows[0]), (2, rows[1])], profile, STORY, self.dir)
+        config = {"share_floor_pct": 1.0, "calibration": {"story_mde_pct": {STORY: 0.5}}}
+        # Mandatory: the counted quarter (40 x 0.25 x 0.8 = 8) is not below the floor.
+        with self.assertRaisesRegex(campaign.CampaignError, "0.200 of 40.000% = 8.000%"):
+            campaign.enforce_measured_dispositions(rows, {1: 40.0, 2: 100.0}, config, 1.0, STORY, self.dir, coverage=coverage)
+        # A row small enough to close still has three quarters uncounted above the floor.
+        with self.assertRaisesRegex(campaign.CampaignError, "uncounted and not below the floor"):
+            campaign.enforce_measured_dispositions(rows, {1: 2.0, 2: 100.0}, config, 1.0, STORY, self.dir, coverage=coverage)
+        campaign.enforce_measured_dispositions(rows, {1: 1.2, 2: 100.0}, config, 1.0, STORY, self.dir, coverage=coverage)
+        self.assertAlmostEqual(0.25, rows[0]["measured_bound"]["scope_counted_fraction"])
+        # A candidate claims the repeat time fraction of the scope, scaled: 0.8 x 0.25.
+        with mock.patch.object(campaign, "test_bypass_active", return_value=False):
+            item = {"anchor": "Run", "disposition": "known", "mechanism_key": "layout/oof-cache",
+                    "redundancy_evidence": node, "packet_hypothesis": "repeat"}
+            with self.assertRaisesRegex(campaign.CampaignError, "times 0.25 of the function"):
+                campaign.bind_redundancy_evidence(item, STORY, 0.8, self.dir, coverage=coverage)
+            campaign.bind_redundancy_evidence(item, STORY, 0.2, self.dir, coverage=coverage)
+            # Without the scope declared, the same numbers are a whole-function claim.
+            campaign.bind_redundancy_evidence(dict(item), STORY, 0.2, self.dir)
+
     def test_every_counter_on_a_rows_own_function_speaks(self):
         story_dir = self.dir / "results" / "analysis" / "stories" / STORY
         story_dir.mkdir(parents=True, exist_ok=True)
