@@ -127,6 +127,13 @@ class CostEvidenceTest(unittest.TestCase):
         big["investigation"]["falsifications"] = ["MinMax() is 90.0% of the row; an incremental min-content pass saves at most 2% of it"]
         campaign.enforce_large_mandatory_rows([big], {1: 50.0}, profile, "S", self.dir)
         self.assertEqual("MinMax()", big["cost_summary"]["children"][0][0])
+        # And the redundancy-packet number check leaves the investigation alone.
+        packet = {"applicable_fraction": 0.1, "repeat_fraction": 0.0, "applicable_time_fraction": 0.1,
+                  "repeat_time_fraction": 0.0, "calls_per_repetition_mean": 4.0, "distinct_inputs_mean": 4.0,
+                  "time_weighted": True, "timed_calls_fraction": 1.0}
+        self.assertEqual([], campaign.row_text_number_problems(
+            {"invariant": "10.0% of 4.0 calls per repetition", "investigation": big["investigation"]},
+            packet, 50.0, 1.0))
 
 
 if __name__ == "__main__":

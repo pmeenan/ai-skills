@@ -3628,7 +3628,10 @@ def row_text_number_problems(item, packet, share, floor):
     distinct = packet.get("distinct_inputs_mean")
     problems = []
     bound_name = pathlib.Path(str((item.get("redundancy_evidence") or {}).get("path", ""))).name
-    for text in row_text_strings(item):
+    # An investigation's numbers are the cost packet's (investigation_problems
+    # checks them); asking them to be the redundancy packet's too would force
+    # a falsification to quote a frame whose fraction happens to coincide.
+    for text in row_text_strings({k: v for k, v in item.items() if k != "investigation"}):
         for match in ROW_TEXT_PACKET_RE.finditer(text):
             if match.group(1) != bound_name:
                 problems.append(
