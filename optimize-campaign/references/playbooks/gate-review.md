@@ -49,8 +49,8 @@ accounting, that every row above the floor closes by a packet, a
 `wrapper_of` chain, `covered-by` or a mechanism row, that every bound
 packet's probe key and `applicable` predicate (quoted from the probe patch)
 answer the row's hypothesis, that every novel/known row binds a time-weighted packet from
-a probe on its own work and claims no more than the smaller of the call and
-time fractions its `packet_hypothesis` names (a scope that covers less than
+a probe on its own work and claims no more than the time fraction its
+`packet_hypothesis` names (rounding, not a 0.05 tolerance) (a scope that covers less than
 the work the hypothesis would skip understates the time and is refused;
 a predicate that reads a flag another function left behind is refused; a
 predicate that is a literal `true` or `false` is refused; a `repeat` key
@@ -73,9 +73,18 @@ cost packet and quotes its frames; the closing count's repeat fraction
 repeated is not one); that no `out-of-scope` row names Blink or cc code;
 and that no `mandatory` row, whatever its share, lacks a packet or a
 `wrapper_of` (a row nothing counted is `below-floor`); that every row whose
-own function carries a counter binds that counter's packet and, if
-mandatory, clears the floor on every site of that function; and that every
-site that ran in the story is named by a packet on the build. A row whose anchor
+own function carries a counter binds that counter's packet (never
+`wrapper_of`) and, if mandatory, clears the floor on every site of that
+function; that every mandatory row binds the nearest packet on its stack
+(the probed function whose weight is nearest the row's, not the farthest
+ancestor that reads lowest), that no per-update packet closes a row that
+is less than a third of the update, and that no row at 5% or more closes
+on an ancestor's count with no probe beneath it; that every packet's
+`probe_symbol` is the function the scope is in (a scope in a callee or a
+lambda names the callee, `NOINLINE` if it has no frame) and its coverage
+is judged against the story's largest-share packet on the build, bound or
+not; and that every site that ran in the story is named by a packet on
+the build. A row whose anchor
 is the area root or the frame update, marked novel with every other row
 covered by it, is a mechanically generated file, not a decomposition. A
 packet from a probe at the update root bound to the rows beneath it is

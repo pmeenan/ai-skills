@@ -112,7 +112,9 @@ scaffold. `audit-exhaustion` is the final machine check.
 profiler story share reaches the story floor unless it binds a
 `redundancy_evidence` packet measured on the target story and
 `share × supported_avoidable_fraction(packet) < floor`, where the supported
-fraction is `max(applicable_fraction, repeat_fraction)`. A probe whose
+fraction is the larger of the packet's applicable and repeat *time*
+fractions (the call fractions, for a count-only packet, which cannot close
+a row at the floor anyway). A probe whose
 `applicable` flag is always true, or whose key is a pointer that is new on
 every call, bounds nothing and cannot close a row; the key names the inputs
 the hypothesis says are unchanged (text hash, constraint space, font, sheet
@@ -131,9 +133,15 @@ mechanism's samples are `covered-by`.
 
 A candidate is a count too. Every `novel` and `known` row binds the packet
 from a probe on its own work, whatever its `investigation_layer`; the claimed
-fraction is bounded by the packet number the row's `packet_hypothesis` names
-(`applicable_fraction`, or `repeat_fraction` when the row states the repeat
-hypothesis). Marking the area root `novel` and covering every other row by
+fraction is bounded by the packet's *time* fraction for the hypothesis the
+row's `packet_hypothesis` names (`applicable_time_fraction`, or
+`repeat_time_fraction` when the row states the repeat hypothesis): the same
+bound the closing check uses, so a row is never trapped between a closing
+bound that says it qualifies and a claim bound that says it does not (the
+round-21 Stockcharts out-of-flow row: repeat 0.62 of calls, 0.80 of time,
+and a claim of 0.65 typed to clear the floor). A claim may be lower than the
+bound, never above it by more than rounding (0.005); the old 0.05
+tolerance was a lever. Marking the area root `novel` and covering every other row by
 it is refused twice: the root has no packet, and a `covered-by` row must sit
 under the owner's probed function, not merely share an ancestor with it.
 
@@ -155,9 +163,9 @@ through `RedundancyScope` (redundancy_probe.h) around the work the
 hypothesis would skip, so the packet carries `applicable_time_fraction` and
 `repeat_time_fraction` beside the call fractions. `decompose` refuses a
 count-only packet at or above the floor; a candidate's fraction is bounded
-by the smaller of the call and time fractions for its hypothesis, and a
-`mandatory` row closes when the larger of the two *time* fractions keeps
-`share x bound` below the floor (once time is measured, a call fraction says
+by the *time* fraction for its hypothesis, and a `mandatory` row closes
+when the larger of the two *time* fractions keeps `share x bound` below
+the floor (once time is measured, a call fraction says
 nothing about time: a repeated request that hits a cache is counted and
 costs nothing). A root update that finds nothing dirty on 92% of its calls
 and 5% of its time is a 5% claim. A `repeat` hypothesis on a key that takes
@@ -195,6 +203,26 @@ function. Above twice: a recursive site was counted once per nesting level,
 or the scope is wider than the function named. A `probe_symbol` matches a
 frame only as the whole function name followed by its parameter list;
 `LayoutView::HitTest` no longer matches `LayoutView::HitTestNoLifecycleUpdate`.
+
+The reference is the story's largest-share packet on the request's build,
+bound or not. A request that binds only packets whose scopes time a
+fraction of their functions is consistent with itself and with nothing
+else; judged against the story's other counters it is refused, and the
+table prints the unbound packets as `(not bound)`. `probe-union` applies the
+same ratio per story and does not size a story where the probe's coverage
+is outside the band (`not_sized` in the union row, "not sized (scope
+coverage)" in the table).
+
+The symbol is the function the scope is in. A scope placed in a callee or a
+lambda (`LayoutOOFNode` under `OutOfFlowLayoutPart::Run`; the min/max lambda
+under `FlexLayoutAlgorithm::ConstructAndAppendFlexItems`) times that callee,
+and the packet names that callee, whatever the function above it is called;
+where the callee has no frame of its own (inlined), the probe patch marks it
+`NOINLINE` so the profile can see it. Round 21 found both: the flex packet
+timed 0.11 of the function it named in Next and 0.14 in Nuxt, the
+out-of-flow packet 0.10 of `Run` in Nuxt and 0.33 in Backbone, and the
+candidate list carried `share x fraction` of the wrong function (Next flex
+9.4% where the scope's own time supports about 1%).
 
 Scopes of one counter are timed exclusively. A box's layout lays out its
 children through the same function and a pre-paint walk visits its subtree;
@@ -333,6 +361,42 @@ on the build, for any story, with `--symbol`; a site that ran and was never
 reduced refuses the request. `campaign.py probe-union-all --browser-log
 <log> --patch <patch> --out-dir evidence/` then sizes every named site
 across every story in one pass and writes `union_<site>.json` per site.
+
+## The nearest packet
+
+A row closed by count binds the nearest packet on its stack. Among the
+story's packets whose probed function shares 80% of its samples with the
+row (either side), the row binds the one whose function's sample weight is
+nearest the row's own: its own function, else the nearest ancestor or
+descendant on the stack (`enforce_nearest_packet`; weights within 5% are
+the same distance). A farther packet that reads lower closes nothing: the
+round-21 builder bound the lifecycle root to every phase it could, chose
+among ancestors by `share x supported < floor`, and closed out-of-flow
+candidate layout on the box packet while the out-of-flow packet sat one
+frame above. The closing bound of a mandatory row is the largest supported
+fraction over every packet on the bound function in the story, whichever
+site the row bound.
+
+Two rows an ancestor's count does not close. A per-update count (a probe
+that fires at most 40 times per repetition: the lifecycle roots, the frame
+update) closes a row beneath it only when the row is at least a third of
+the update's time; a smaller row is a phase's part, and its count is a
+counter nearer to it. And a row at or above 5% of its story that is less
+than a third of what the packet's function weighs, with no probed function
+beneath it, closes on nothing: an ancestor's count says nothing about the
+repeats beneath it, and a row that large gets a counter on its own function
+or its dominant descendant (round 21: `Element::SetAttributeHinted` at
+5.1% of Stockcharts bound to the event dispatch count, 7% of it, with an
+investigation quoting where the time goes and a stop reason that tested
+no redundancy). The report names the function, the key and the predicate
+before the counter is added.
+
+`wrapper_of` never names a counted function's row. A row whose own function
+carries a counter binds that counter's packet whatever else it is; the
+round-21 files declared `InlineLayoutAlgorithm::Layout` a wrapper of
+`LineBreaker::NextLine` bound to the lifecycle root, hiding 0.86 of its
+time repeating in Angular (2.8% of the story), and `OutOfFlowLayoutPart::Run`
+a wrapper of `LayoutCandidates` bound to the box packet.
 
 ## What `repeat` can and cannot support
 

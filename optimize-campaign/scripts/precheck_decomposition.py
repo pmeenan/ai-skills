@@ -2,7 +2,7 @@
 """Host-side pre-check for a decomposition review request: runs the same
 row rules the gate runs (measured dispositions, covered-by sample identity,
 candidate packet bounds by hypothesis, packet relevance, build consistency,
-sites named, own counters, packet time coverage, row-text numbers, symbols
+sites named, own counters, nearest packet, packet time coverage, row-text numbers, symbols
 in the tree, large rows, below-floor per capture, covered-by probe identity,
 nearest-probe) and prints the rows a reviewer has to open. One problem per
 rule: the gate stops at the first row a rule refuses, so fix and rerun.
@@ -89,6 +89,9 @@ def main(campaign_dir, opp_id, children):
         campaign.enforce_own_counters(result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, relevance_rows, site_symbols)
         own = [(i, p["own_counters"]) for i, p in enumerate(result["paths"], 1) if p.get("own_counters")]
         if own: print("\nrows closed on their own counters:", own[:20])
+    except campaign.CampaignError as e: problems.append(str(e))
+    try:
+        campaign.enforce_nearest_packet(result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, relevance_rows, profile)
     except campaign.CampaignError as e: problems.append(str(e))
     try:
         rows_cov, reference = campaign.packet_time_coverage(result["paths"], relevance_rows, profile, story, campaign_dir)

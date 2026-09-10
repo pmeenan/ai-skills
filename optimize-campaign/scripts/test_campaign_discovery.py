@@ -627,6 +627,24 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             # ... and as mandatory it closes by time: 5% of 5.0% is below the floor.
             rows = [{"anchor": "Root", "disposition": "mandatory", "redundancy_evidence": cheap}]
             self.assertEqual({1}, campaign.enforce_measured_dispositions(rows, {1: 5.0}, config, 0.1, STORY, self.dir))
+            # 35% of calls repeated but 86% of the time (the repeated calls are
+            # the expensive ones): the claim is the time fraction, the same bound
+            # the closing check uses, so a candidate row is never trapped between
+            # "cannot close as mandatory" and "cannot claim the fraction".
+            dear = self.write_packet("dear", applicable=0.0, repeat=0.35, repeat_time=0.86)
+            item = {"anchor": "Root", "disposition": "novel", "mechanism_key": "x/w",
+                    "redundancy_evidence": dear, "packet_hypothesis": "repeat"}
+            campaign.bind_redundancy_evidence(item, STORY, 0.86, self.dir)
+            self.assertAlmostEqual(0.86, item["redundancy_summary"]["supported_avoidable_fraction"])
+            rows = [{"anchor": "Root", "disposition": "mandatory", "redundancy_evidence": dear}]
+            with self.assertRaisesRegex(campaign.CampaignError, "0.860 of 5.000%"):
+                campaign.enforce_measured_dispositions(rows, {1: 5.0}, config, 0.1, STORY, self.dir)
+            # Over the bound by more than rounding is a claim the packet does not support.
+            item = {"anchor": "Root", "disposition": "novel", "mechanism_key": "x/w",
+                    "redundancy_evidence": dear, "packet_hypothesis": "repeat"}
+            with self.assertRaisesRegex(campaign.CampaignError, "supports at most 0.86"):
+                campaign.bind_redundancy_evidence(item, STORY, 0.89, self.dir)
+            campaign.bind_redundancy_evidence(item, STORY, 0.864, self.dir)
             # A repeat hypothesis on a key that never varies names no input
             # (a few calls sharing one value: an object pointer) ...
             pointer = self.write_packet("pointer", applicable=0.0, repeat=0.67, distinct=1, calls=3)
@@ -786,8 +804,24 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         self.assertAlmostEqual(40.0, by["A"]["symbol_share_pct"])
         self.assertAlmostEqual(20.0, by["A"]["impact_pct"])
         self.assertTrue(by["A"]["qualifies"])
+        self.assertIsNone(by["A"]["coverage"])  # no other packet on the build to compare with
         self.assertAlmostEqual(2.5, by["B"]["impact_pct"])
         self.assertTrue(by["B"]["qualifies"])
+        # The union sizes a function only when its scope timed the whole of
+        # it: against the story's largest-share packet on the same build, the
+        # probe's ms per share point is 1.5x in A (sized) and 0.38x in B (a
+        # scope that times a third of the function sizes nothing).
+        self.write_packet("a-other", story="A", applicable=0.0, repeat=0.0, site="z/other",
+                          symbol="Other", ns_per_call=1000)
+        self.write_packet("b-other", story="B", applicable=0.0, repeat=0.0, site="z/other",
+                          symbol="Other", ns_per_call=50000)
+        out = campaign.probe_union_rows(ledger, [str(log)], "x/y", "Probe")
+        by = {r["story"]: r for r in out}
+        self.assertAlmostEqual(1.5, by["A"]["coverage"], places=3)
+        self.assertTrue(by["A"]["qualifies"])
+        self.assertAlmostEqual(0.38, by["B"]["coverage"], places=2)
+        self.assertFalse(by["B"]["qualifies"])
+        self.assertIn("timed the whole of it", by["B"]["not_sized"])
         # A second log from another binary is not the same probe.
         other = self.dir / "logs" / "other.log"
         other.write_text("[SP3_REDUNDANCY_ROW] " + json.dumps({
@@ -831,6 +865,68 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         self.assertAlmostEqual(2.9, floor)
         self.assertGreater(floor, ledger.data["config"]["share_floor_pct"])
 
+    def test_a_row_binds_the_nearest_packet_on_its_stack(self):
+        story_dir = self.dir / "results" / "analysis" / "stories" / STORY
+        story_dir.mkdir(parents=True, exist_ok=True)
+        artifact = story_dir / "candidate_frontier.json"; artifact.write_text("{}")
+        (story_dir / "profile.collapsed").write_text(
+            "main;Root;Phase;Box 40\n"
+            "main;Root;Phase;Style;Cascade 30\n"
+            "main;Root;Phase;Style 10\n"
+            "main;Root;Other 20\n"
+        )
+        profile = {"id": "p", "capture_provenance": [{
+            "capture_id": "c1",
+            "story_frontiers": [{"story": STORY, "artifact": str(artifact)}],
+        }]}
+        ledger = campaign.Ledger(self.dir).load()
+        ledger.data["config"]["share_floor_pct"] = 1.0
+        ledger.data["config"]["calibration"] = {"story_mde_pct": {STORY: 0.5}}
+        cfg = ledger.data["config"]
+        # A per-update root probe reading zero, a box probe reading zero, and
+        # two sites on Style: one zero, one 0.4.
+        root = self.write_packet("root", applicable=0.0, repeat=0.0, site="root/update", symbol="Root", calls=10)
+        box = self.write_packet("box", applicable=0.0, repeat=0.0, site="layout/box", symbol="Box")
+        style_a = self.write_packet("style-a", applicable=0.0, repeat=0.0, site="style/within", symbol="Style")
+        style_b = self.write_packet("style-b", applicable=0.4, repeat=0.0, site="style/across", symbol="Style")
+        ref = lambda pk: dict(pk)
+
+        def run(rows, shares):
+            bound = [(i, r) for i, r in enumerate(rows, 1) if r.get("redundancy_evidence")]
+            campaign.enforce_nearest_packet(rows, shares, cfg, 1.0, STORY, self.dir, bound, profile)
+
+        # The box row bound to the root's packet: its own function is nearer.
+        rows = [{"anchor": "Box", "disposition": "mandatory", "redundancy_evidence": ref(root)}]
+        with self.assertRaisesRegex(campaign.CampaignError, "nearer probed function"):
+            run(rows, {1: 40.0})
+        # The phase, 80% of the update: the root's count is its count.
+        rows = [{"anchor": "Phase", "disposition": "mandatory", "redundancy_evidence": ref(root)}]
+        run(rows, {1: 80.0})
+        self.assertEqual("Root", rows[0]["nearest_packet"]["probe_symbol"])
+        # A fifth of the update, with no nearer probe: the update's unit is not the row's.
+        rows = [{"anchor": "Other", "disposition": "mandatory", "redundancy_evidence": ref(root)}]
+        with self.assertRaisesRegex(campaign.CampaignError, "unit of count is the update"):
+            run(rows, {1: 20.0})
+        # A per-event count on the same function (100 calls per repetition)
+        # closes a small row beneath it, but not a large one with no probe of
+        # its own: an ancestor's count says nothing about repeats beneath it.
+        dispatch = self.write_packet("dispatch", applicable=0.0, repeat=0.0, site="events/dispatch", symbol="Root")
+        rows = [{"anchor": "Other", "disposition": "mandatory", "redundancy_evidence": ref(dispatch)}]
+        run(rows, {1: 4.0})
+        with self.assertRaisesRegex(campaign.CampaignError, "no probed function sits beneath"):
+            run(rows, {1: 6.0})
+        # Under Style, closing on the site that reads zero: the other site speaks.
+        rows = [{"anchor": "Cascade", "disposition": "mandatory", "redundancy_evidence": ref(style_a)}]
+        with self.assertRaisesRegex(campaign.CampaignError, "sites on 'Style' read"):
+            run(rows, {1: 30.0})
+        # ... unless the row is small enough that 0.4 of it is below the floor.
+        run(rows, {1: 2.0})
+        self.assertAlmostEqual(0.4, rows[0]["nearest_packet"]["supported_avoidable_fraction_max"])
+        # Bound to the box packet from under Style: the row's stack has no Box.
+        rows = [{"anchor": "Cascade", "disposition": "mandatory", "redundancy_evidence": ref(box)}]
+        run(rows, {1: 2.0})  # relevance refuses this one; the nearest rule leaves it alone
+        self.assertNotIn("nearest_packet", rows[0])
+
     def test_every_counter_on_a_rows_own_function_speaks(self):
         story_dir = self.dir / "results" / "analysis" / "stories" / STORY
         story_dir.mkdir(parents=True, exist_ok=True)
@@ -860,6 +956,13 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         # Known at the packet's fraction: fine.
         rows[1].update({"disposition": "known", "mechanism_key": "layout/cache", "estimated_avoidable_fraction": 0.5})
         campaign.enforce_own_counters(rows, {1: 40.0, 2: 20.0}, cfg, 1.0, STORY, self.dir, bound)
+        # wrapper_of does not exempt a counted function from its own counter.
+        wrapped = [{"anchor": "Root", "disposition": "mandatory", "redundancy_evidence": ref(root)},
+                   {"anchor": "Layout", "disposition": "mandatory", "wrapper_of": 3},
+                   {"anchor": "Box", "disposition": "mandatory", "redundancy_evidence": ref(root)}]
+        with self.assertRaisesRegex(campaign.CampaignError, "counted function is never a wrapper"):
+            campaign.enforce_own_counters(wrapped, {1: 40.0, 2: 20.0, 3: 19.0}, cfg, 1.0, STORY, self.dir,
+                                          [(1, wrapped[0]), (3, wrapped[2])])
         # Two sites on Style: closing on the zero one is refused by the other.
         rows = [{"anchor": "Style", "disposition": "mandatory", "redundancy_evidence": ref(style_a)}]
         with self.assertRaisesRegex(campaign.CampaignError, "site 'style/across' on the same function"):
@@ -981,6 +1084,11 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         rows[2]["redundancy_evidence"] = whole
         campaign.enforce_packet_time_coverage(rows, bound, profile, STORY, self.dir)
         self.assertAlmostEqual(1.0, rows[2]["packet_time_coverage"], places=3)
+        # A request that binds only the late packet is judged against the
+        # story's largest-share packet on the build, bound or not.
+        alone = [{"anchor": "Style()", "disposition": "mandatory", "redundancy_evidence": late}]
+        with self.assertRaisesRegex(campaign.CampaignError, "(?s)0.10 of the function's time.*not bound"):
+            campaign.enforce_packet_time_coverage(alone, [(1, alone[0])], profile, STORY, self.dir)
 
     def test_row_text_quotes_the_bound_packet(self):
         packet = self.write_packet("quoted", applicable=0.3, repeat=0.5, applicable_time=0.25,
