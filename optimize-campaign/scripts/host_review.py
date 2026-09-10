@@ -91,7 +91,10 @@ def review(oid, rev):
     for s in syms:
         r = subprocess.run(['git', '-C', SRC, 'grep', '-n', '-m1', '-F', s, '--', 'third_party/blink/renderer', 'cc'], capture_output=True, text=True)
         hits[s] = (r.stdout.split('\n')[0][:120] if r.stdout else 'declared in the class header')
-    pre = (C / f'outbox/review-requests/decomp-{oid}-r{rev}.precheck.txt').read_text()
+    # The pre-check output in the transcript is this host's own run of the
+    # skill-tree tool, never a file the operator staged.
+    pre = subprocess.run([sys.executable, str(SCRIPTS / 'precheck_decomposition.py'), str(C), str(oid), str(children)],
+                         capture_output=True, text=True).stdout
     cov = '\n'.join(l for l in pre.splitlines() if l.startswith('evidence/') or l.startswith('nce/') or 'probe share' in l)
     # ---- facts to sentences
     arith = []
