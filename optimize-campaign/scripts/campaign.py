@@ -187,10 +187,22 @@ def require_finite_number(value, label, *, nonnegative=False):
     return number
 
 
+_SHA256_CACHE = {}
+
+
 def sha256_file(path):
+    """Digest of a file, cached by (path, size, mtime) for large files: the
+    gate digests the same browser log once per packet it re-derives."""
     path = pathlib.Path(path)
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        stat = path.stat()
+        key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+        if key in _SHA256_CACHE:
+            return _SHA256_CACHE[key]
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if stat.st_size >= 1 << 20:
+            _SHA256_CACHE[key] = digest
+        return digest
     except OSError as exc:
         raise CampaignError(f"Cannot read evidence artifact {path}: {exc}") from exc
 
