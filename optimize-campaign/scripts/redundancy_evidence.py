@@ -226,14 +226,17 @@ def supported_avoidable_fraction(packet: dict) -> float | None:
 
 
 def hypothesis_bound(packet: dict, hypothesis: str) -> float | None:
-    """What a candidate may claim under one hypothesis: the smaller of the
-    call-count and time-weighted fractions for it, or None when the packet
-    carries no time."""
+    """What a candidate may claim under one hypothesis: its time-weighted
+    fraction (the same bound `decompose` applies to a novel/known row), or
+    None when the packet carries no time."""
     if not packet.get("time_weighted"):
         return None
+    # The bound is the hypothesis's *time* fraction, the same number a
+    # candidate row may claim under the gate (a call fraction says nothing
+    # about time once time is measured).
     if hypothesis == "repeat":
-        return min(float(packet["repeat_fraction"]), float(packet["repeat_time_fraction"]))
-    return min(float(packet["applicable_fraction"]), float(packet["applicable_time_fraction"]))
+        return float(packet["repeat_time_fraction"])
+    return float(packet["applicable_time_fraction"])
 
 
 def main(argv=None) -> int:

@@ -93,8 +93,10 @@ class RedundancyEvidenceTest(unittest.TestCase):
         self.assertAlmostEqual(0.90, re_.supported_avoidable_fraction(packet))
         rc, cheap = self.packet([row(applicable=90, repeated=10, applicable_ns=50, repeated_ns=20)])
         self.assertAlmostEqual(0.05, re_.supported_avoidable_fraction(cheap))
+        # A claim is the hypothesis's time fraction (the gate's bound): the
+        # 10% of calls that repeat carry 90% of the time.
         self.assertAlmostEqual(0.05, re_.hypothesis_bound(packet, "applicable"))
-        self.assertAlmostEqual(0.10, re_.hypothesis_bound(packet, "repeat"))
+        self.assertAlmostEqual(0.90, re_.hypothesis_bound(packet, "repeat"))
         # Rows without time, or with some calls untimed, are count-only.
         rc, packet = self.packet([row(timed=False)])
         self.assertFalse(packet["time_weighted"])
