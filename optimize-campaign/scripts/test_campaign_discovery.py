@@ -595,6 +595,15 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             item["packet_hypothesis"] = "maybe"
             with self.assertRaisesRegex(campaign.CampaignError, "packet_hypothesis"):
                 campaign.bind_redundancy_evidence(item, STORY, 0.1, self.dir)
+            # A candidate row is the probed function's own row, not an ancestor's.
+            probed = self.write_packet("probed", applicable=0.3, repeat=0.0, site="style/recalc", symbol="Recalc")
+            above = {"anchor": "StyleRoot()", "disposition": "known", "mechanism_key": "x/y",
+                     "redundancy_evidence": probed}
+            with self.assertRaisesRegex(campaign.CampaignError, "probed function's own row"):
+                campaign.bind_redundancy_evidence(above, STORY, 0.3, self.dir)
+            own = {"anchor": "Recalc(int)", "disposition": "known", "mechanism_key": "x/y",
+                   "redundancy_evidence": probed}
+            campaign.bind_redundancy_evidence(own, STORY, 0.3, self.dir)
             # A predicate that held on every call measured nothing.
             saturated = self.write_packet("saturated", applicable=1.0, repeat=0.2)
             item = {"anchor": "Root", "disposition": "novel", "investigation_layer": 1,

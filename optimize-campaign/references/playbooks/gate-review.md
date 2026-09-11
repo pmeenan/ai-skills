@@ -48,7 +48,8 @@ sentence naming an artifact and a number. The skeptic checks bijective
 accounting, that every row above the floor closes by a packet, a
 `wrapper_of` chain, `covered-by` or a mechanism row, that every bound
 packet's probe key and `applicable` predicate (quoted from the probe patch)
-answer the row's hypothesis, that every novel/known row binds a time-weighted packet from
+answer the row's hypothesis, that every novel/known row sits on the probed function's own row (never an
+ancestor of it) and binds a time-weighted packet from
 a probe on its own work and claims no more than the time fraction its
 `packet_hypothesis` names (rounding, not a 0.05 tolerance) (a scope that covers less than
 the work the hypothesis would skip understates the time and is refused;

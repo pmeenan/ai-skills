@@ -404,6 +404,18 @@ investigation quoting where the time goes and a stop reason that tested
 no redundancy). The report names the function, the key and the predicate
 before the counter is added.
 
+A candidate row is the probed function's own row. A `novel` or `known`
+row's anchor is the function the packet's probe sits in; the other rows on
+that function are `covered-by` it, and an ancestor never claims the count
+of the function beneath it (round 23: a 4.6% style-tree row marked `known`
+at recalc-style's fraction while the recalc rows beneath it carried 3.3%).
+When the function appears in several rows of the profile (a recursive
+style recalc under several contexts, each below the floor on its own), the
+mechanism qualifies in the story by the probed function's inclusive share
+times the fraction, the number `probe-union` sizes; `decompose` records
+`mechanism_function_share_pct` and `mechanism_function_impact_pct` on the
+row and the pre-check prints them.
+
 `wrapper_of` never names a counted function's row. A row whose own function
 carries a counter binds that counter's packet whatever else it is; the
 round-21 files declared `InlineLayoutAlgorithm::Layout` a wrapper of

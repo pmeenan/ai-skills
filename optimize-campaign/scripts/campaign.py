@@ -4484,6 +4484,35 @@ def enforce_nearest_packet(paths, story_shares, config, base_floor, story, campa
         }
 
 
+def mechanism_function_impact(path_item, fraction, profile, story, campaign_dir):
+    """(function share, function share x fraction) for a candidate row whose
+    function appears in several rows of the profile (a recursive style
+    recalc under several contexts): the mechanism qualifies in the story by
+    the probed function's inclusive share, the number `probe-union` sizes,
+    not by the one context the row happens to be. None when the row is not
+    the probed function's row or the profile is not on this host."""
+    import redundancy_evidence
+    ref = path_item.get("redundancy_evidence") or {}
+    if not ref.get("path"):
+        return None
+    packet_path = pathlib.Path(str(ref["path"]))
+    if not packet_path.is_absolute():
+        packet_path = pathlib.Path(campaign_dir) / packet_path
+    try:
+        packet = redundancy_evidence.load_packet(packet_path)
+    except (ValueError, OSError):
+        return None
+    symbol = str(packet.get("probe_symbol") or "").strip()
+    if not symbol or not symbol_matches(str(path_item.get("anchor") or ""), symbol):
+        return None
+    files = collapsed_stack_files(profile, story) if profile else []
+    if not files:
+        return None
+    total, inclusive = symbol_inclusive_shares(files, {symbol})
+    share = 100.0 * inclusive[symbol] / total if total else 0.0
+    return share, share * float(fraction)
+
+
 def enforce_out_of_scope_anchors(paths, config=None):
     """`out-of-scope` names work Chromium does not own. A row whose anchor
     is Blink or cc code is Chromium's; it closes by count, by mechanism, or
@@ -4673,7 +4702,7 @@ def enforce_large_mandatory_rows(paths, story_shares, profile, story, campaign_d
             )
 
 
-def probe_union_rows(ledger, logs, site, symbol, patch=None, scope_symbol=None):
+def probe_union_rows(ledger, logs, site, symbol, patch=None, scope_symbol=None, reference_cache=None):
     """One probe run over many stories, sized per story: for every story in
     the logs, the packet, the probed function's profile share, the bounds
     under both hypotheses and the story's floor."""
@@ -4713,7 +4742,7 @@ def probe_union_rows(ledger, logs, site, symbol, patch=None, scope_symbol=None):
         rep_ = redundancy_evidence.hypothesis_bound(packet, "repeat")
         best = max([b for b in (app, rep_) if b is not None] or [0.0])
         coverage, coverage_reference = union_packet_coverage(
-            ledger, profile, story, packet, symbol, share, files)
+            ledger, profile, story, packet, symbol, share, files, reference_cache=reference_cache)
         counted = 1.0
         if scope_symbol and coverage is not None:
             counted = max(0.0, min(1.0, coverage))
@@ -4737,7 +4766,7 @@ def probe_union_rows(ledger, logs, site, symbol, patch=None, scope_symbol=None):
     return out
 
 
-def union_packet_coverage(ledger, profile, story, packet, symbol, share, files):
+def union_packet_coverage(ledger, profile, story, packet, symbol, share, files, reference_cache=None):
     """The union packet's time per share point against the story's
     largest-share packet on the same build (the rule `decompose` applies to
     a bound packet): a scope that times a tenth of the function it names
@@ -4746,24 +4775,36 @@ def union_packet_coverage(ledger, profile, story, packet, symbol, share, files):
     ms = float(packet.get("total_ns_per_repetition_mean") or 0.0) / 1e6
     if not build or not files or not share or ms <= 0:
         return None, None
+    best = story_coverage_reference(ledger.dir, story, build, files, cache=reference_cache)
+    if best is None:
+        return None, None
+    return (ms / share) / best[1], best[2]
+
+
+def story_coverage_reference(campaign_dir, story, build, files, cache=None):
+    """(share, ms per share point, packet path) of the story's largest-share
+    packet on the build; with a `cache` dict, one pass over the story's
+    stacks per union run, since the union asks for every site of every story."""
+    key = (str(campaign_dir), story, build, tuple(str(f) for f in files))
+    if cache is not None and key in cache:
+        return cache[key]
     candidates = []
-    for site, entries in story_site_packets(ledger.dir, story, build).items():
+    for site, entries in story_site_packets(campaign_dir, story, build).items():
         for other, rel in entries:
             other_symbol = str(other.get("probe_symbol") or "").strip()
             other_ms = float(other.get("total_ns_per_repetition_mean") or 0.0) / 1e6
             if other_symbol and other_ms > 0:
                 candidates.append((other_symbol, other_ms, rel))
-    if not candidates:
-        return None, None
-    total, inclusive = symbol_inclusive_shares(files, {c[0] for c in candidates})
     best = None
-    for other_symbol, other_ms, rel in candidates:
-        other_share = 100.0 * inclusive[other_symbol] / total if total else 0.0
-        if other_share > 0 and (best is None or other_share > best[0]):
-            best = (other_share, other_ms / other_share, rel)
-    if best is None:
-        return None, None
-    return (ms / share) / best[1], best[2]
+    if candidates:
+        total, inclusive = symbol_inclusive_shares(files, {c[0] for c in candidates})
+        for other_symbol, other_ms, rel in candidates:
+            other_share = 100.0 * inclusive[other_symbol] / total if total else 0.0
+            if other_share > 0 and (best is None or other_share > best[0]):
+                best = (other_share, other_ms / other_share, rel)
+    if cache is not None:
+        cache[key] = best
+    return best
 
 
 def cmd_probe_union(args):
@@ -4810,6 +4851,7 @@ def cmd_probe_union_all(args):
     build = next(iter(builds))
     symbols = build_site_symbols(ledger.dir, build)
     scopes = build_site_scopes(ledger.dir, build)
+    reference_cache = {}
     out_dir = pathlib.Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     unnamed = sorted(site for site in sites if site not in symbols)
@@ -4821,7 +4863,7 @@ def cmd_probe_union_all(args):
         if site not in symbols:
             continue
         rows = probe_union_rows(ledger, [str(p) for p in logs], site, symbols[site], args.patch,
-                                scope_symbol=scopes.get(site))
+                                scope_symbol=scopes.get(site), reference_cache=reference_cache)
         out = out_dir / ("union_" + site.replace("/", "_") + ".json")
         out.write_text(json.dumps({
             "kind": "probe-union", "site": site, "probe_symbol": symbols[site],
@@ -4916,6 +4958,17 @@ def bind_redundancy_evidence(path_item, story, fraction, campaign_dir, coverage=
             "redundancy_evidence: {path, sha256}."
         ),
     )
+    probe_symbol = str(packet.get("probe_symbol") or "").strip()
+    if probe_symbol and not symbol_matches(str(path_item.get("anchor") or ""), probe_symbol) \
+            and anchor_function(path_item.get("anchor")) != anchor_function(probe_symbol):
+        raise CampaignError(
+            f"Path {path_item['anchor']!r} is {path_item.get('disposition')} on packet "
+            f"{packet['site']!r}, whose probe sits in {probe_symbol!r}. A candidate row "
+            "is the probed function's own row (the row on that function, with the "
+            "other instances covered-by it); an ancestor cannot claim the count of "
+            "the function beneath it (round 23: a 4.6% style-tree row claiming "
+            "recalc-style's fraction while the recalc rows beneath it carried 3.3%)."
+        )
     hypothesis = path_item.get("packet_hypothesis") or "applicable"
     if hypothesis not in PACKET_HYPOTHESES:
         raise CampaignError(
@@ -7673,6 +7726,15 @@ def cmd_decompose(args):
                 story_name = path_item.get("target_story") or parent.get("target_story")
                 path_floor, floor_basis = story_floor_pct(ledger.data["config"], story_name)
                 path_floor = max(path_floor, floor)
+                function_impact = None
+                if not test_bypass_active() and impact < path_floor:
+                    function_impact = mechanism_function_impact(
+                        path_item, fraction, source_profile, story_name, ledger.dir)
+                    if function_impact is not None:
+                        path_item["mechanism_function_share_pct"] = function_impact[0]
+                        path_item["mechanism_function_impact_pct"] = function_impact[1]
+                        if function_impact[1] >= path_floor:
+                            budget_qualifies = True
                 if not test_bypass_active() and impact < path_floor and not budget_qualifies:
                     raise CampaignError(
                         f"Path {path_item['anchor']!r} estimated target-story "

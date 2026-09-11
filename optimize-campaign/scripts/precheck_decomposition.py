@@ -170,7 +170,11 @@ def main(campaign_dir, opp_id, children):
                 if existing:
                     problems.append(f"Path {i} ({p['anchor'][:60]!r}) is novel for mechanism_key {p['mechanism_key']!r}, which already exists as #{existing['id']}; mark it known.")
             if frac is not None and shares[i] * float(frac) < story_floor:
-                problems.append(f"Path {i} ({p['anchor'][:60]!r}) is {p['disposition']} at {float(frac):.4f} of {shares[i]:.2f}% = {shares[i]*float(frac):.3f}%, below the {story_floor:.3f}% floor; decompose refuses it as a candidate. Close it by count (mandatory / no-qualifying-mechanism) instead.")
+                fi = campaign.mechanism_function_impact(p, float(frac), profile, story, campaign_dir)
+                if fi is not None and fi[1] >= story_floor:
+                    print(f"row {i} {p['disposition']} qualifies by its function's share: {fi[0]:.2f}% x {float(frac):.4f} = {fi[1]:.3f}% (row {shares[i]:.2f}%)")
+                else:
+                    problems.append(f"Path {i} ({p['anchor'][:60]!r}) is {p['disposition']} at {float(frac):.4f} of {shares[i]:.2f}% = {shares[i]*float(frac):.3f}%, below the {story_floor:.3f}% floor" + (f" (the function's share {fi[0]:.2f}% x {float(frac):.4f} = {fi[1]:.3f}% too)" if fi else "") + "; decompose refuses it as a candidate. Close it by count (mandatory / no-qualifying-mechanism) instead.")
     rows = campaign.decomposition_rows_at_or_above_floor(parent, result, ledger.data["config"])
     print(f"\n{len(rows)} rows at/above floor; dispositions:", {d: sum(1 for r in rows if r['disposition'] == d) for d in set(r['disposition'] for r in rows)})
     print("\nPROBLEMS:" if problems else "\nno gate problems")
