@@ -85,7 +85,7 @@ def review(oid, rev):
     # symbols named by candidate rows
     syms = set()
     for i in cands:
-        syms.update(s for s in campaign.ROW_TEXT_SYMBOL_RE.findall(paths[i - 1].get('existing_mechanism') or ''))
+        syms.update(s for s in campaign.ROW_TEXT_SYMBOL_RE.findall(str(paths[i - 1].get('existing_mechanism') or '')))
     present = campaign.symbols_in_tree(syms, SRC) if syms else {}
     hits = {}
     for s in syms:
@@ -127,7 +127,7 @@ def review(oid, rev):
                 'rows_above_floor_bound': f"{len(above)} rows at/above the {floor:.3f}% floor: {len(cands)} novel/known with packets, {sum(len(v) for v in bound_by_pkt.values())-len([i for i in cands if (paths[i-1].get('redundancy_evidence') or {}).get('path')])} mandatory rows bound to {len(bound_by_pkt)} packets, {len(covered)} covered-by, {len(wrappers)} wrapper_of, 0 by prose (dispositions {dict(disp)}).",
                 'probe_key_states_hypothesis': (' || '.join(key_lines)[:3000] if key_lines else f"no packet bound: decomp-{oid}-r{rev}.json has {len(paths)} row(s), largest primary share {max(shares.values()):.3f}% < floor {floor:.3f}%, every row below-floor; nothing to key."),
                 'floor_arithmetic_recomputed': ('; '.join(arith) + ('; candidates: ' + '; '.join(cand_lines) if cand_lines else '')) if arith or cand_lines else f"no bound row: largest share in decomp-{oid}-r{rev}.json is {max(shares.values()):.3f}% against the {floor:.3f}% floor, so no share x fraction to recompute.",
-                'existing_reuse_examined': ('; '.join(f"row {i}: {paths[i-1]['existing_mechanism'][:220]}" for i in cands) + ' | symbols in tree: ' + '; '.join(f"{s} -> {hits[s]}" for s in sorted(syms))) if cands else f"no novel row at/above the floor; all {len(above)} rows close by count (0 novel)",
+                'existing_reuse_examined': ('; '.join(f"row {i}: {str(paths[i-1]['existing_mechanism'])[:220]}" for i in cands) + ' | symbols in tree: ' + '; '.join(f"{s} -> {hits[s]}" for s in sorted(syms))) if cands else f"no novel row at/above the floor; all {len(above)} rows close by count (0 novel)",
             }
         else:
             rep['checks'] = {k: True for k in rep['checks']}
