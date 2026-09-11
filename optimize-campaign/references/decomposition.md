@@ -143,7 +143,10 @@ One low-fraction packet bound to every row of an area is refused row by
 row. Pure wrappers of a counted descendant use `wrapper_of` instead of
 their own packet; every hop of a `wrapper_of` chain must carry at least 80%
 of the share of the row that started the chain (a run of gradually smaller
-rows is not descent), and chains are at most four hops; wrappers of a
+rows is not descent) and sit beneath it in the story's stacks (the target's
+frame below the wrapper's on at least 80% of the wrapper's samples: a row
+naming its own caller, whose share is nearly its own, is refused), and
+chains are at most four hops; wrappers of a
 mechanism's samples are `covered-by`. A row whose time splits across
 several counted rows beneath it (a style phase that is 70% recalc-style and
 25% layout-tree rebuild) names them all: `wrapper_of: [15, 44]`. Each named

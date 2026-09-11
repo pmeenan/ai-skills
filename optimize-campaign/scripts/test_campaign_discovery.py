@@ -1132,6 +1132,12 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         # The shares add to 100% of the wrapper; the samples say 60%.
         with self.assertRaisesRegex(campaign.CampaignError, "cover 60% of its samples"):
             campaign.enforce_wrapper_descent(rows, shares, profile, STORY, self.dir, config, 1.0)
+        # A single wrapper_of is judged the same way, in the same direction:
+        # Recalc(inner) naming Recalc(outer), its caller, covers none of its samples.
+        inner = {"anchor": "Recalc(inner)", "disposition": "mandatory", "wrapper_of": 1}
+        with self.assertRaisesRegex(campaign.CampaignError, "cover 0% of its samples"):
+            campaign.enforce_wrapper_descent([{"anchor": "Recalc(outer)", "disposition": "mandatory"}, inner],
+                                             {1: 30.0, 2: 20.0}, profile, STORY, self.dir, config, 1.0)
         # Rebuild beneath the wrapper covers the rest: named, or bound as a packet.
         rows[0]["wrapper_of"] = [2, 3, 4]
         campaign.enforce_wrapper_descent(rows, shares, profile, STORY, self.dir, config, 1.0)

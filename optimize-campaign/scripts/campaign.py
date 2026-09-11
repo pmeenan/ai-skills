@@ -3090,8 +3090,10 @@ def enforce_wrapper_descent(paths, story_shares, profile, story, campaign_dir=No
     wrappers = []
     for index, item in enumerate(paths, 1):
         targets = item.get("wrapper_of")
-        if not isinstance(targets, (list, tuple)):
+        if targets is None:
             continue
+        if not isinstance(targets, (list, tuple)):
+            targets = [targets]
         anchors = []
         for raw in targets:
             try:
@@ -3122,9 +3124,10 @@ def enforce_wrapper_descent(paths, story_shares, profile, story, campaign_dir=No
         share = story_shares.get(index) or 0.0
         if covered < COVERED_BY_SAMPLE_IDENTITY:
             uncovered = share * (1.0 - covered)
+            named = item["wrapper_of"] if isinstance(item["wrapper_of"], (list, tuple)) else [item["wrapper_of"]]
             raise CampaignError(
                 f"Path {index} ({item['anchor'][:80]!r}, {share:.3f}%) names rows "
-                f"{list(item['wrapper_of'])} as its wrapper_of, but they cover {covered:.0%} of "
+                f"{list(named)} as its wrapper_of, but they cover {covered:.0%} of "
                 f"its samples in the {story!r} stacks (nested contexts of one function count "
                 f"once); the other {uncovered:.3f}% of the story is uncounted. Name the rows "
                 "that carry it, or bind the packet of the probed function that covers it "
@@ -10320,19 +10323,19 @@ def cmd_explain(args):
     # wrapper candidates: rows beneath this one.
     others = {p["anchor"] for i, p in enumerate(paths, 1) if i != index and p["anchor"] != anchor}
     if others:
-        totals = sample_identity(files, {(a, anchor) for a in others})
         beneath = []
         for i, p in enumerate(paths, 1):
-            if i == index or p["anchor"] == anchor:
+            if i == index or p["anchor"] == anchor or not shares.get(i):
                 continue
-            total, shared = totals.get((p["anchor"], anchor), (0.0, 0.0))
-            if total and shared / total >= COVERED_BY_SAMPLE_IDENTITY and shares.get(i):
-                beneath.append((shares[i], i, p))
+            under, _ = wrapper_coverage(files, anchor, {p["anchor"]})
+            if under >= 0.05:
+                beneath.append((shares[i], i, p, under))
         beneath.sort(reverse=True)
         if beneath:
             total_share = sum(b[0] for b in beneath)
-            covered, _ = wrapper_coverage(files, anchor, {p["anchor"] for _, _, p in beneath})
-            print(f"    - rows beneath it (each >= 80% under this row): "
+            covered, _ = wrapper_coverage(files, anchor, {p["anchor"] for _, _, p, _ in beneath})
+            beneath = [(s_, i, p) for s_, i, p, _ in beneath]
+            print(f"    - rows beneath it (each on >= 5% of this row's samples, below its frame): "
                   + ", ".join(f"{i} ({s:.2f}% {p.get('disposition')})" for s, i, p in beneath[:12])
                   + f"; together {total_share:.2f}% = {total_share / share:.0%} of the row's share, "
                   f"covering {covered:.0%} of its samples (rows counted once)"
