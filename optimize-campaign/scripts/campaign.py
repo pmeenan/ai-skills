@@ -3524,7 +3524,7 @@ def enforce_packet_relevance(paths, bound_rows, profile, story, campaign_dir):
         item["packet_relevance"] = round(relevance, 4)
 
 
-def split_row_union(item, index, bound_symbol, files, story, campaign_dir, bound_row_side):
+def split_row_union(item, index, bound_symbol, files, story, campaign_dir, bound_row_side, build=None):
     """A row whose samples split between several probed callers (a paint-op
     allocator under both `stroke` and `fill`) belongs to none of them at 80%,
     yet every one of them counts it. It closes on their union when the nearest
@@ -3534,14 +3534,15 @@ def split_row_union(item, index, bound_symbol, files, story, campaign_dir, bound
     (part share x its supported fraction below the floor). Returns the
     parts, or None when the union does not hold."""
     import redundancy_evidence
-    ref = item.get("redundancy_evidence") or {}
-    packet_path = pathlib.Path(ref.get("path", ""))
-    if not packet_path.is_absolute():
-        packet_path = pathlib.Path(campaign_dir) / packet_path
-    try:
-        build = redundancy_evidence.load_packet(packet_path).get("build_id")
-    except ValueError:
-        return None
+    if not build:
+        ref = item.get("redundancy_evidence") or {}
+        packet_path = pathlib.Path(ref.get("path", ""))
+        if not packet_path.is_absolute():
+            packet_path = pathlib.Path(campaign_dir) / packet_path
+        try:
+            build = redundancy_evidence.load_packet(packet_path).get("build_id")
+        except (ValueError, OSError):
+            return None
     if not build:
         return None
     story_packets = story_site_packets(campaign_dir, story, build)
@@ -10363,7 +10364,7 @@ def cmd_explain(args):
         print("    - probed callers carrying part of this row (share of its samples; their bound): "
               + ", ".join(f"{site} {rs:.0%} (x{b:.3f})" for rs, _, site, b in above[:8]))
         largest = above[0][1]
-        union = split_row_union(item, index, largest, files, story, ledger.dir, above[0][0])
+        union = split_row_union(item, index, largest, files, story, ledger.dir, above[0][0], build=build)
         if union is not None:
             largest_sites = sorted({c[1] for c in candidates if c[0] == largest})
             bounds = {}
