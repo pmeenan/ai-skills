@@ -135,8 +135,12 @@ on the callers' union when the story's probed functions together cover 80%
 of its samples and every caller's part closes by that caller's own bound
 (`share × part × supported < floor`; `decompose` records `ancestor_union`).
 A part that does not clear the floor is that caller's candidate work,
-claimed on its own row. One low-fraction packet bound to every row of an
-area is refused row by row. Pure wrappers of a counted descendant use `wrapper_of` instead of
+claimed on its own row. A packet above those callers (the event dispatch
+or the frame update every sample carries) is farther than they are and is
+refused for such a row: the nearest-packet rule sends the row to the
+callers' union (`explain` prints the callers, their union and its bound).
+One low-fraction packet bound to every row of an area is refused row by
+row. Pure wrappers of a counted descendant use `wrapper_of` instead of
 their own packet; every hop of a `wrapper_of` chain must carry at least 80%
 of the share of the row that started the chain (a run of gradually smaller
 rows is not descent), and chains are at most four hops; wrappers of a

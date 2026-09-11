@@ -1184,6 +1184,23 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         rows = [{"anchor": "Alloc", "disposition": "mandatory", "redundancy_evidence": fill}]
         with self.assertRaisesRegex(campaign.CampaignError, "closes only the work it measured"):
             campaign.enforce_packet_relevance(rows, [(1, rows[0])], profile, STORY, self.dir)
+        # A packet above the callers (the root every sample carries) is farther:
+        # the nearest rule sends the row to the callers' union.
+        (story_dir / "profile.collapsed").write_text(
+            "main;RootUpdate;StrokePath;Alloc 60\n"
+            "main;RootUpdate;FillPath;Alloc 38\n"
+            "main;RootUpdate;Other;Alloc 2\n"
+            "main;RootUpdate;StrokePath 100\n"
+            "main;RootUpdate;FillPath 100\n"
+            "main;RootUpdate 300\n"
+        )
+        root = self.write_packet("root", applicable=0.01, repeat=0.0, site="root/update", symbol="RootUpdate",
+                                 patch_name="root.patch", calls=1000)
+        rows = [{"anchor": "Alloc", "disposition": "mandatory", "redundancy_evidence": root}]
+        campaign.enforce_packet_relevance(rows, [(1, rows[0])], profile, STORY, self.dir)
+        with self.assertRaisesRegex(campaign.CampaignError, "above the probed callers that carry it"):
+            campaign.enforce_nearest_packet(rows, {1: 5.0}, config, 1.0, STORY, self.dir,
+                                            [(1, rows[0])], profile)
 
     def test_inspection_commands_answer_without_touching_internals(self):
         import argparse, io, contextlib

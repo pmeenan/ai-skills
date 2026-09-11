@@ -3527,9 +3527,9 @@ def enforce_packet_relevance(paths, bound_rows, profile, story, campaign_dir):
 def split_row_union(item, index, bound_symbol, files, story, campaign_dir, bound_row_side):
     """A row whose samples split between several probed callers (a paint-op
     allocator under both `stroke` and `fill`) belongs to none of them at 80%,
-    yet every one of them counts it. It closes on their union when the probed
-    functions on its stacks together cover COVERED_BY_SAMPLE_IDENTITY of its
-    samples, the bound packet's function is the largest part, and each
+    yet every one of them counts it. It closes on their union when the nearest
+    probed caller above it, sample by sample, covers COVERED_BY_SAMPLE_IDENTITY
+    of its samples, the bound packet's function is the largest part, and each
     function's part closes by that function's own bound in this story
     (part share x its supported fraction below the floor). Returns the
     parts, or None when the union does not hold."""
@@ -3569,11 +3569,18 @@ def split_row_union(item, index, bound_symbol, files, story, campaign_dir, bound
                 if anchor not in frames:
                     continue
                 row_w += weight
-                present = [sym for sym in by_symbol if any(symbol_matches(fr, sym) for fr in frames)]
-                if present:
+                # The nearest probed caller above the row's outermost frame:
+                # a root probe (the frame update) sits above every caller and
+                # is not the caller that splits the row.
+                nearest = None
+                for frame in reversed(frames[:frames.index(anchor)]):
+                    hit = next((sym for sym in by_symbol if symbol_matches(frame, sym)), None)
+                    if hit:
+                        nearest = hit
+                        break
+                if nearest:
                     any_w += weight
-                    for sym in present:
-                        per_symbol[sym] += weight
+                    per_symbol[nearest] += weight
     if row_w <= 0 or any_w / row_w < COVERED_BY_SAMPLE_IDENTITY:
         return None
     parts = {sym: w / row_w for sym, w in per_symbol.items() if w > 0}
@@ -4719,6 +4726,28 @@ def enforce_nearest_packet(paths, story_shares, config, base_floor, story, campa
                 "probe: the packet from the function closest to the row, not the "
                 "farther one that reads lowest."
             )
+        # Nearer probed callers between the row and the bound function that
+        # together carry the row close it on their union (round 25: an
+        # AttributeChanged row 2% of the event dispatch, 60% under importNode
+        # and 30% under SetAttributeHinted, binds importNode, not dispatch).
+        nearer = {
+            sym: both_w.get((anchor, sym), 0.0) / row_w
+            for sym, weight in symbol_w.items()
+            if sym != bound_symbol and row_w < weight < symbol_w[bound_symbol]
+            and both_w.get((anchor, sym), 0.0) >= 0.05 * row_w
+            and both_w.get((anchor, sym), 0.0) / row_w < PACKET_RELEVANCE
+        }
+        if nearer:
+            largest = max(nearer, key=nearer.get)
+            union = split_row_union(item, index, largest, files, story, campaign_dir, nearer[largest])
+            if union is not None:
+                sites = sorted({site for site, _, _ in by_symbol[largest]})
+                raise CampaignError(
+                    f"Path {index} ({anchor[:80]!r}, {share:.2f}%) binds {packet.get('site')!r} on "
+                    f"{bound_symbol!r} ({symbol_w[bound_symbol] / row_w:.1f}x the row), above the "
+                    f"probed callers that carry it: {union['parts']}. Bind the largest "
+                    f"({sites}) and the row closes on their union, each part by its caller's bound."
+                )
         calls = float(packet.get("calls_per_repetition_mean") or 0.0)
         ratio = row_w / symbol_w[bound_symbol] if symbol_w[bound_symbol] else 1.0
         beneath = sorted(
@@ -10301,14 +10330,55 @@ def cmd_explain(args):
         beneath.sort(reverse=True)
         if beneath:
             total_share = sum(b[0] for b in beneath)
+            covered, _ = wrapper_coverage(files, anchor, {p["anchor"] for _, _, p in beneath})
             print(f"    - rows beneath it (each >= 80% under this row): "
                   + ", ".join(f"{i} ({s:.2f}% {p.get('disposition')})" for s, i, p in beneath[:12])
-                  + f"; together {total_share:.2f}% = {total_share / share:.0%} of the row"
-                  + (" -> wrapper_of a list works" if total_share >= WRAPPER_DOMINANT_FRACTION * share
-                     else " -> below 80%: the rest needs a count of its own"))
+                  + f"; together {total_share:.2f}% = {total_share / share:.0%} of the row's share, "
+                  f"covering {covered:.0%} of its samples (rows counted once)"
+                  + (" -> wrapper_of a list works" if covered >= COVERED_BY_SAMPLE_IDENTITY
+                     else " -> below 80%: the rest is uncounted"))
             top = beneath[0]
             if top[0] >= WRAPPER_DOMINANT_FRACTION * share:
                 print(f"    - wrapper_of {top[1]} alone works ({top[0]:.2f}% >= 80% of the row)")
+        declared = item.get("wrapper_of")
+        if isinstance(declared, (list, tuple)):
+            named = {paths[int(t) - 1]["anchor"] for t in declared if 1 <= int(t) <= len(paths)}
+            covered, _ = wrapper_coverage(files, anchor, named)
+            print(f"    - declared wrapper_of {list(declared)} covers {covered:.0%} of this row's samples"
+                  + ("" if covered >= COVERED_BY_SAMPLE_IDENTITY else
+                     f"; the other {share * (1 - covered):.3f}% of the story is uncounted"))
+        # The packets beneath: a story packet whose probed function carries
+        # part of this row's samples (row_side) can cover a wrapper's remainder.
+        under = sorted({(c[3], c[1], c[7]) for c in candidates
+                        if c[3] >= 0.05 and c[4] >= COVERED_BY_SAMPLE_IDENTITY}, reverse=True)
+        if under:
+            print("    - probed functions beneath this row (share of its samples; their bound): "
+                  + ", ".join(f"{site} {rs:.0%} (x{b:.3f})" for rs, site, b in under[:8])
+                  + "; a wrapper binds one of them (redundancy_evidence on the wrapper) to cover "
+                  "what its named rows do not, closing that part at share x fraction x bound < floor")
+    # A split row: probed callers that each carry part of its samples.
+    above = sorted({(c[3], c[0], c[1], c[7]) for c in candidates
+                    if 0.05 <= c[3] < PACKET_RELEVANCE and c[4] < COVERED_BY_SAMPLE_IDENTITY}, reverse=True)
+    if above:
+        print("    - probed callers carrying part of this row (share of its samples; their bound): "
+              + ", ".join(f"{site} {rs:.0%} (x{b:.3f})" for rs, _, site, b in above[:8]))
+        largest = above[0][1]
+        union = split_row_union(item, index, largest, files, story, ledger.dir, above[0][0])
+        if union is not None:
+            largest_sites = sorted({c[1] for c in candidates if c[0] == largest})
+            bounds = {}
+            for c in candidates:
+                if c[0] in union["parts"]:
+                    bounds[c[0]] = max(bounds.get(c[0], 0.0), c[7])
+            worst = max(share * frac * bounds.get(sym, 0.0) for sym, frac in union["parts"].items())
+            print(f"    - the nearest probed caller, sample by sample, covers {union['covered']:.0%} of the row: "
+                  f"bind {largest_sites[0]!r} and the row closes on the callers' union"
+                  + (f" (largest part x bound {worst:.3f}% < floor)" if worst < floor else
+                     f" only if every part clears the floor (largest part x bound {worst:.3f}% >= floor: that part is a candidate)")
+                  + "; a packet above these callers is refused as farther")
+        else:
+            print("    - the nearest probed callers cover less than 80% of the row's samples: no union; "
+                  "the row needs a counter on its own work or beneath it")
     return 0
 
 
