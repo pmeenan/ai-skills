@@ -1222,12 +1222,21 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         with self.assertRaisesRegex(campaign.CampaignError, "not a C\\+\\+ function"):
             campaign.load_bound_redundancy_packet(item, STORY, self.dir, missing_message="m")
         import redundancy_evidence, json
-        # A scope symbol equal to the row's own function is the same dodge.
-        data = json.loads((self.dir / "evidence" / "builtin.json").read_text())
-        data["probe_symbol"] = "blink::Outer::Call"; data["scope_symbol"] = "blink::Canvas2DRecorderContext::fill"
+        # A scope symbol equal to the row's own function is the same dodge:
+        # the patch shows the scope in fill(), the packet names a frame above.
+        patch = self.dir / "evidence" / "fill-scoped.patch"
+        patch.write_text("@@ -1,3 +1,5 @@\n void Canvas2DRecorderContext::fill() {\n"
+                         '+  new RedundancyCounter("canvas/fill-scoped");\n')
+        log = self.dir / "logs" / "builtin.log"
+        row = json.loads(log.read_text().split("[SP3_REDUNDANCY_ROW] ", 1)[1].splitlines()[0])
+        row["site"] = "canvas/fill-scoped"
+        log2 = self.dir / "logs" / "scoped.log"
+        log2.write_text("".join(f"[SP3_REDUNDANCY_ROW] {json.dumps(row)}\n" for _ in range(4)))
+        data = redundancy_evidence.build_packet([log2], "canvas/fill-scoped", STORY, probe_symbol="blink::Outer::Call",
+                                                patch=patch, scope_symbol="blink::Canvas2DRecorderContext::fill")
         scoped = self.dir / "evidence" / "scoped.json"; scoped.write_text(json.dumps(data))
         item["redundancy_evidence"] = {"path": "evidence/scoped.json", "sha256": campaign.sha256_file(scoped)}
-        with self.assertRaisesRegex(campaign.CampaignError, "scope's own function|not produced by"):
+        with self.assertRaisesRegex(campaign.CampaignError, "scope's own function"):
             campaign.load_bound_redundancy_packet(item, STORY, self.dir, missing_message="m")
 
     def test_inspection_commands_answer_without_touching_internals(self):
