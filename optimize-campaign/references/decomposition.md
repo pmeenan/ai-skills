@@ -126,9 +126,16 @@ space, font, sheet list) and `applicable` states the condition under which
 the work could be skipped. When the arithmetic does not clear the floor the
 row is a `novel` candidate at that fraction, or the probe is re-keyed; it is
 never closed by prose. A packet closes only the work it measured: it
-records the probed function as `probe_symbol`, and `decompose` refuses it on
-a row whose samples do not share that function in the story's stacks (80%,
-in either direction). A row whose samples split between several probed
+records the probed function as `probe_symbol`, the C++ function the
+counter's scope is compiled into (with `--scope-symbol`, the function that
+scope is inlined into; never a V8 builtin or a JS frame above it, which
+carries every API call), and `decompose` refuses it on a row whose samples
+do not share that function in the story's stacks (80%, in either
+direction). A row on the scope's own function binds the packet reduced on
+that function, not one scoped from a frame above it: the coverage band
+judges the timer against that function's profile share, and a timer far
+above it (the probe's own key and predicate inside the scope) is a probe
+defect for the next build, not a symbol to shop for. A row whose samples split between several probed
 callers (a paint-op allocator under both `stroke` and `fill`) belongs to
 none of them at 80%; it binds the packet of its largest caller and closes
 on the callers' union when the story's probed functions together cover 80%

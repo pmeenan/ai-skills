@@ -1208,6 +1208,28 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             campaign.enforce_nearest_packet(rows, {1: 5.0}, config, 1.0, STORY, self.dir,
                                             [(1, rows[0])], profile)
 
+    def test_a_packet_names_the_function_its_scope_is_in(self):
+        """Round 27: a fill timer reduced under a V8 builtin frame (which carries
+        every API call) and bound to the fill row is refused twice over: the
+        symbol is no function, and a row on the scope's own function binds the
+        packet reduced on that function."""
+        config = {"share_floor_pct": 0.1, "calibration": {"story_mde_pct": {STORY: 0.5}}}
+        builtin = self.write_packet("builtin", applicable=0.0, repeat=0.0, site="canvas/fill-builtin",
+                                    symbol="Builtins_CallApiCallbackOptimizedNoProfiling",
+                                    patch_name="fill-b.patch")
+        item = {"anchor": "blink::Canvas2DRecorderContext::fill()", "disposition": "mandatory",
+                "redundancy_evidence": builtin}
+        with self.assertRaisesRegex(campaign.CampaignError, "not a C\\+\\+ function"):
+            campaign.load_bound_redundancy_packet(item, STORY, self.dir, missing_message="m")
+        import redundancy_evidence, json
+        # A scope symbol equal to the row's own function is the same dodge.
+        data = json.loads((self.dir / "evidence" / "builtin.json").read_text())
+        data["probe_symbol"] = "blink::Outer::Call"; data["scope_symbol"] = "blink::Canvas2DRecorderContext::fill"
+        scoped = self.dir / "evidence" / "scoped.json"; scoped.write_text(json.dumps(data))
+        item["redundancy_evidence"] = {"path": "evidence/scoped.json", "sha256": campaign.sha256_file(scoped)}
+        with self.assertRaisesRegex(campaign.CampaignError, "scope's own function|not produced by"):
+            campaign.load_bound_redundancy_packet(item, STORY, self.dir, missing_message="m")
+
     def test_inspection_commands_answer_without_touching_internals(self):
         import argparse, io, contextlib
         packet = self.write_packet("insp", applicable=0.3, repeat=0.1, site="a/one", symbol="One")

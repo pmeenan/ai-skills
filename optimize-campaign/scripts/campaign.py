@@ -2635,7 +2635,43 @@ def load_bound_redundancy_packet(path_item, story, campaign_dir, *, missing_mess
             f"path's target story {story!r}"
         )
     verify_packet_provenance(packet, packet_path, campaign_dir)
+    require_function_symbol(packet, path_item)
+    scope = str(packet.get("scope_symbol") or "").strip()
+    if scope and symbol_matches(str(path_item.get("anchor") or ""), scope):
+        raise CampaignError(
+            f"Path {path_item.get('anchor')!r} is the function the scope of "
+            f"{packet.get('site')!r} sits in ({scope!r}), yet the packet names "
+            f"{packet.get('probe_symbol')!r} as its function. A row on the scope's own "
+            "function binds the packet reduced on that function (--symbol without "
+            "--scope-symbol); the coverage band then judges the timer against that "
+            "function's profile share, which is the check a scope symbol above it would "
+            "move (round 27: a canvas fill timer at 3.2x its function's share, reduced "
+            "under a V8 builtin frame instead)."
+        )
     return packet
+
+
+NON_FUNCTION_SYMBOL_PREFIXES = ("Builtins_", "JS:", "v8::internal::Builtins", "[unknown]")
+
+
+def require_function_symbol(packet, path_item=None):
+    """A packet's probe_symbol is the C++ function the counter's scope is
+    compiled into (or, with scope_symbol, the function that scope is inlined
+    into). A V8 builtin, a JS frame or a bare word is a frame the scope's
+    code cannot be part of; a packet reduced under one measures nothing
+    about that frame and is refused wherever it is bound."""
+    symbol = str(packet.get("probe_symbol") or "").strip()
+    if not symbol:
+        return
+    if symbol.startswith(NON_FUNCTION_SYMBOL_PREFIXES):
+        where = f"Path {path_item.get('anchor')!r} binds" if path_item else "Packet"
+        raise CampaignError(
+            f"{where} {packet.get('site')!r} whose probe_symbol {symbol!r} is not a C++ "
+            "function: the counter's scope is compiled into a Blink function, and only "
+            "that function (or the function it is inlined into, named with --symbol next to "
+            "--scope-symbol) carries its time in the profile. A V8 builtin or a JS frame "
+            "above it carries every API call, not this one."
+        )
 
 
 PACKET_DERIVED_FIELDS = (
@@ -3486,6 +3522,7 @@ def enforce_packet_relevance(paths, bound_rows, profile, story, campaign_dir):
             packet = redundancy_evidence.load_packet(packet_path)
         except ValueError as exc:
             raise CampaignError(str(exc)) from exc
+        require_function_symbol(packet, item)
         symbol = packet.get("probe_symbol")
         if not isinstance(symbol, str) or len(symbol.strip()) < 8:
             raise CampaignError(
@@ -4030,7 +4067,15 @@ def enforce_packet_time_coverage(paths, bound_rows, profile, story, campaign_dir
     else:
         why = (
             "nested scopes of a recursive site were counted once per nesting "
-            "level, or the scope covers more than the function the packet names"
+            "level, the scope covers more than the function the packet names, or "
+            "the probe's own work (its key and predicate: a hash of a path, a "
+            "style lookup, a growing distinct-key set) runs inside the timed scope "
+            "and the profile, taken on the build without probes, never saw it "
+            "(round 27: a fill timer at 3.2x its function's share with the same "
+            "call count as the stroke timer at 1.2x). That is a probe defect for "
+            "the next build (compute the key and predicate before opening the "
+            "scope; construct the scope with them); it is not repaired by naming "
+            "a bigger frame above the function as --symbol"
         )
     raise CampaignError(
         f"Packet {worst['packet']!r} (rows {worst['rows'][:8]}) times "
