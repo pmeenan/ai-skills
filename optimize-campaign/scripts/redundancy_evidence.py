@@ -23,6 +23,7 @@ import statistics
 import sys
 
 ROW_PREFIX = "[SP3_REDUNDANCY_ROW] "
+APPLICABLE_SATURATED = 0.999
 SCHEMA_VERSION = 1
 
 
@@ -205,16 +206,38 @@ def load_packet(path: pathlib.Path) -> dict:
     return packet
 
 
+REPEAT_KEY_MIN_DISTINCT = 2.0
+REPEAT_KEY_POINTER_MAX_CALLS = 10.0
+
+
+def repeat_key_names_an_input(packet):
+    """A repeat count measures repeated work only when its key varies: a key
+    that takes fewer than REPEAT_KEY_MIN_DISTINCT values per repetition on a
+    site called fewer than REPEAT_KEY_POINTER_MAX_CALLS times is an object
+    pointer, and an overflowed distinct set is no measurement."""
+    if packet.get("distinct_overflow"):
+        return False
+    return not (float(packet.get("distinct_inputs_mean") or 0.0) < REPEAT_KEY_MIN_DISTINCT
+                and float(packet.get("calls_per_repetition_mean") or 0.0) < REPEAT_KEY_POINTER_MAX_CALLS)
+
+
 def supported_avoidable_fraction(packet: dict) -> float | None:
     """Largest avoidable fraction the packet can support. A time-weighted
     packet bounds avoidable *time*: the greater of its applicable and repeat
     time fractions (a call fraction says nothing about time once time is
     measured). A count-only packet falls back to the call fractions."""
-    if float(packet.get("applicable_fraction") or 0.0) >= 0.999:
-        rep = float(packet["repeat_time_fraction"]) if packet.get("time_weighted") and packet.get("repeat_time_fraction") is not None else float(packet.get("repeat_fraction") or 0.0)
-        if rep > 0.0:
-            return rep
-        return 1.0
+    if float(packet.get("applicable_fraction") or 0.0) >= APPLICABLE_SATURATED:
+        # A predicate that held on every call measured nothing (round 18);
+        # the packet's only measurement is its repeat fraction, which is
+        # its bound: zero repeats close the row, they do not size it at 1.0
+        # (round 25: a repeat-only counter written as applicable=true was
+        # sized at 100% of its function by the union and refused every
+        # closing by the gate).
+        if not repeat_key_names_an_input(packet):
+            return 1.0  # a key that never varies bounds nothing either
+        if packet.get("time_weighted") and packet.get("repeat_time_fraction") is not None:
+            return float(packet["repeat_time_fraction"])
+        return float(packet.get("repeat_fraction") or 0.0)
     if packet.get("time_weighted"):
         if packet.get("distinct_overflow"):
             return float(packet["applicable_time_fraction"])
@@ -236,6 +259,8 @@ def hypothesis_bound(packet: dict, hypothesis: str) -> float | None:
     # about time once time is measured).
     if hypothesis == "repeat":
         return float(packet["repeat_time_fraction"])
+    if float(packet.get("applicable_fraction") or 0.0) >= APPLICABLE_SATURATED:
+        return None  # always true: measured nothing
     return float(packet["applicable_time_fraction"])
 
 

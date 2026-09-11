@@ -58,12 +58,22 @@ def main(campaign_dir, opp_id, children):
                 summ = p["redundancy_summary"]
                 print(f"row {i} {p['disposition']} {p['anchor'][:60]} share={shares.get(i,0):.2f} frac={frac} hypothesis={summ['packet_hypothesis']} applicable={summ['applicable_fraction']:.4f}/{summ['applicable_time_fraction']:.4f}(time) repeat={summ['repeat_fraction']:.4f}/{summ['repeat_time_fraction']:.4f}(time) supported={summ['supported_avoidable_fraction']:.4f} probe={summ.get('probe_symbol')}")
             except campaign.CampaignError as e: problems.append(str(e))
+    # Relevance first: it records the callers' union for split rows, which the
+    # measured rule closes part by part. Wrapper packets cover a remainder;
+    # wrapper descent judges them.
+    try:
+        campaign.enforce_packet_relevance(
+            result["paths"],
+            [(i, p) for i, p in enumerate(result["paths"], 1)
+             if p.get("redundancy_evidence") and p.get("wrapper_of") is None],
+            profile, story, campaign_dir)
+    except campaign.CampaignError as e: problems.append(str(e))
     bound = set()
     try:
         bound = campaign.enforce_measured_dispositions(result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, coverage=coverage_map)
     except campaign.CampaignError as e: problems.append(str(e))
     try:
-        campaign.enforce_wrapper_descent(result["paths"], shares, profile, story)
+        campaign.enforce_wrapper_descent(result["paths"], shares, profile, story, campaign_dir, ledger.data["config"], floor)
     except campaign.CampaignError as e: problems.append(str(e))
     unbound = [i for i, p in enumerate(result["paths"], 1)
                if p["disposition"] in ("mandatory", "no-qualifying-mechanism")
@@ -77,9 +87,6 @@ def main(campaign_dir, opp_id, children):
     relevance_rows = [(i, p) for i, p in enumerate(result["paths"], 1)
                       if i in bound or (p["disposition"] in ("novel", "known", "mandatory", "no-qualifying-mechanism")
                                         and p.get("redundancy_evidence"))]
-    try:
-        campaign.enforce_packet_relevance(result["paths"], relevance_rows, profile, story, campaign_dir)
-    except campaign.CampaignError as e: problems.append(str(e))
     packets = campaign.bound_packets(result["paths"], relevance_rows, campaign_dir)
     print("\nbound packets:")
     for path, (pk, idx) in sorted(packets.items()):

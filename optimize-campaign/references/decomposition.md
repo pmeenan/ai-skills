@@ -114,18 +114,29 @@ profiler story share reaches the story floor unless it binds a
 `share × supported_avoidable_fraction(packet) < floor`, where the supported
 fraction is the larger of the packet's applicable and repeat *time*
 fractions (the call fractions, for a count-only packet, which cannot close
-a row at the floor anyway). A probe whose
-`applicable` flag is always true, or whose key is a pointer that is new on
-every call, bounds nothing and cannot close a row; the key names the inputs
-the hypothesis says are unchanged (text hash, constraint space, font, sheet
-list) and `applicable` states the condition under which the work could be
-skipped. When the arithmetic does not clear the floor the row is a `novel`
-candidate at that fraction, or the probe is re-keyed; it is never closed by
-prose. A packet closes only the work it measured: it records the probed
-function as `probe_symbol`, and `decompose` refuses it on a row whose
-samples do not share that function in the story's stacks (80%, in either
-direction). One low-fraction packet bound to every row of an area is
-refused row by row. Pure wrappers of a counted descendant use `wrapper_of` instead of
+a row at the floor anyway). A predicate that held on every call measured
+nothing: a saturated `applicable` (≥ 99.9%) drops out of the bound and the
+packet's repeat *time* fraction is its supported fraction, a repeat count of
+zero closing the row (a repeat-only counter declared `applicable=true` is
+sized by its repeats, never at 100% of its function). A key that is a
+pointer new on every call (fewer than two distinct values per repetition on
+a site called fewer than ten times) bounds nothing either way; the key
+names the inputs the hypothesis says are unchanged (text hash, constraint
+space, font, sheet list) and `applicable` states the condition under which
+the work could be skipped. When the arithmetic does not clear the floor the
+row is a `novel` candidate at that fraction, or the probe is re-keyed; it is
+never closed by prose. A packet closes only the work it measured: it
+records the probed function as `probe_symbol`, and `decompose` refuses it on
+a row whose samples do not share that function in the story's stacks (80%,
+in either direction). A row whose samples split between several probed
+callers (a paint-op allocator under both `stroke` and `fill`) belongs to
+none of them at 80%; it binds the packet of its largest caller and closes
+on the callers' union when the story's probed functions together cover 80%
+of its samples and every caller's part closes by that caller's own bound
+(`share × part × supported < floor`; `decompose` records `ancestor_union`).
+A part that does not clear the floor is that caller's candidate work,
+claimed on its own row. One low-fraction packet bound to every row of an
+area is refused row by row. Pure wrappers of a counted descendant use `wrapper_of` instead of
 their own packet; every hop of a `wrapper_of` chain must carry at least 80%
 of the share of the row that started the chain (a run of gradually smaller
 rows is not descent), and chains are at most four hops; wrappers of a
@@ -135,10 +146,17 @@ several counted rows beneath it (a style phase that is 70% recalc-style and
 row is another function, dispositioned on its own (a counted mandatory row,
 a candidate, a `covered-by` row, or a row below the floor) and not a
 wrapper itself; together they carry at least 80% of the wrapper's share;
-and each sits beneath the wrapper in the story's stacks (80% of its samples
-carry the wrapper's anchor, `enforce_wrapper_descent`). What the named
-rows do not carry is uncounted, and above 20% it needs a row and a count of
-its own.
+and together they cover at least 80% of the wrapper's samples in the
+story's stacks (`enforce_wrapper_descent`: of the samples carrying the
+wrapper's anchor, those carrying a named row beneath it, each sample
+counted once, so two nested recursion contexts of one function cover what
+they cover, not the sum of their shares). What the named rows do not cover
+is uncounted. The wrapper may bind the packet of the probed function that
+carries that remainder (`redundancy_evidence` on the wrapper itself, a
+rebuild packet under a style phase whose recalc rows are named): the probed
+function's samples beneath the wrapper count as covered, and that part
+closes by the packet's bound (`share × part × supported < floor`) or it is
+a candidate on its own row.
 
 A candidate is a count too. Every `novel` and `known` row binds the packet
 from a probe on its own work, whatever its `investigation_layer`; the claimed

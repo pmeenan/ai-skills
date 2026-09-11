@@ -2675,7 +2675,7 @@ def require_build_id(packet, path_item):
             "packet's time fractions are not fractions of the function's time. "
             "Rebuild the twin with the current redundancy_probe.h and re-run."
         )
-REPEAT_KEY_MIN_DISTINCT = 2.0
+REPEAT_KEY_MIN_DISTINCT = 2.0  # mirrored in redundancy_evidence.repeat_key_names_an_input
 REPEAT_KEY_POINTER_MAX_CALLS = 10.0
 
 
@@ -3044,24 +3044,64 @@ def validate_wrapper_list(paths, index, item, share, story_shares, bound):
     item["wrapper_targets_share_pct"] = round(total, 4)
 
 
-def enforce_wrapper_descent(paths, story_shares, profile, story):
-    """Every row a list wrapper names sits beneath it: at least
-    COVERED_BY_SAMPLE_IDENTITY of the target's samples carry the wrapper's
-    anchor. A row that merely shares an ancestor does not carry the
-    wrapper's count."""
-    pairs = {}
+def wrapper_coverage(files, wrapper_anchor, target_anchors, packet_symbol=None):
+    """Of the samples carrying the wrapper's anchor, the fraction that carry
+    one of the target anchors (or the packet's probed function) beneath it,
+    and that fraction for the packet's function alone. Overlapping targets
+    (nested recursion contexts of one function) count once."""
+    wrapper_w = 0.0
+    covered_w = 0.0
+    packet_w = 0.0
+    targets = set(target_anchors)
+    for path in files:
+        with open(path, errors="replace") as handle:
+            for line in handle:
+                stack, _, weight = line.rstrip("\n").rpartition(" ")
+                try:
+                    weight = float(weight)
+                except ValueError:
+                    continue
+                frames = stack.split(";")
+                if wrapper_anchor not in frames:
+                    continue
+                wrapper_w += weight
+                below = frames[frames.index(wrapper_anchor) + 1:]
+                if targets & set(below):
+                    covered_w += weight
+                elif packet_symbol and any(symbol_matches(fr, packet_symbol) for fr in below):
+                    covered_w += weight
+                    packet_w += weight
+    if wrapper_w <= 0:
+        return 0.0, 0.0
+    return covered_w / wrapper_w, packet_w / wrapper_w
+
+
+def enforce_wrapper_descent(paths, story_shares, profile, story, campaign_dir=None, config=None,
+                            base_floor=0.0):
+    """A list wrapper's samples are covered by the rows it names: at least
+    COVERED_BY_SAMPLE_IDENTITY of the samples carrying the wrapper's anchor
+    carry one of the named rows beneath it, overlapping rows (nested
+    contexts of one function) counted once. The part no named row covers may
+    be covered by a packet the wrapper binds (`redundancy_evidence`): its
+    probed function beneath the wrapper covers the rest, and that part
+    closes by the packet's bound (share x covered fraction x supported below
+    the floor). Rows that merely share an ancestor cover nothing."""
+    import redundancy_evidence
+    wrappers = []
     for index, item in enumerate(paths, 1):
         targets = item.get("wrapper_of")
         if not isinstance(targets, (list, tuple)):
             continue
+        anchors = []
         for raw in targets:
             try:
                 target = int(raw)
             except (TypeError, ValueError):
                 continue
             if 1 <= target <= len(paths):
-                pairs[(paths[target - 1]["anchor"], item["anchor"])] = (index, target)
-    if not pairs:
+                anchors.append(paths[target - 1]["anchor"])
+        wrappers.append((index, item, anchors))
+    if not wrappers:
         return
     files = collapsed_stack_files(profile, story)
     if not files:
@@ -3069,17 +3109,42 @@ def enforce_wrapper_descent(paths, story_shares, profile, story):
             f"wrapper descent needs the story's profile.collapsed beside the analyzer "
             f"artifacts of profile {profile.get('id')!r} for {story!r}"
         )
-    totals = sample_identity(files, set(pairs))
-    for pair, (index, target) in pairs.items():
-        total, shared = totals.get(pair, (0.0, 0.0))
-        fraction = shared / total if total else 0.0
-        if fraction < COVERED_BY_SAMPLE_IDENTITY:
+    for index, item, anchors in wrappers:
+        packet = None
+        symbol = None
+        ref = item.get("redundancy_evidence") or {}
+        if ref.get("path") and campaign_dir:
+            packet = load_bound_redundancy_packet(
+                item, story, campaign_dir,
+                missing_message=f"Path {index} binds redundancy evidence without a path and sha256")
+            symbol = str(packet.get("probe_symbol") or "").strip() or None
+        covered, by_packet = wrapper_coverage(files, item["anchor"], anchors, symbol)
+        share = story_shares.get(index) or 0.0
+        if covered < COVERED_BY_SAMPLE_IDENTITY:
+            uncovered = share * (1.0 - covered)
             raise CampaignError(
-                f"Path {index} ({paths[index - 1]['anchor'][:80]!r}) names path {target} "
-                f"({paths[target - 1]['anchor'][:80]!r}) among its wrapper_of rows, but only "
-                f"{fraction:.0%} of that row's samples sit under this row in the {story!r} "
-                "stacks; a wrapper names the rows beneath it."
+                f"Path {index} ({item['anchor'][:80]!r}, {share:.3f}%) names rows "
+                f"{list(item['wrapper_of'])} as its wrapper_of, but they cover {covered:.0%} of "
+                f"its samples in the {story!r} stacks (nested contexts of one function count "
+                f"once); the other {uncovered:.3f}% of the story is uncounted. Name the rows "
+                "that carry it, or bind the packet of the probed function that covers it "
+                "(redundancy_evidence on the wrapper), or the remainder needs a counter."
             )
+        item["wrapper_coverage"] = round(covered, 4)
+        if packet is not None and symbol:
+            floor = base_floor
+            if config is not None:
+                floor = max(story_floor_pct(config, story)[0], float(base_floor))
+            supported = redundancy_evidence.supported_avoidable_fraction(packet) or 0.0
+            upper = share * by_packet * supported
+            item["wrapper_packet_share_pct"] = round(share * by_packet, 4)
+            if floor and upper >= floor:
+                raise CampaignError(
+                    f"Path {index} ({item['anchor'][:80]!r}) binds {packet.get('site')!r} for the "
+                    f"{by_packet:.0%} of its samples its named rows do not cover, but that part "
+                    f"({share * by_packet:.3f}%) x {supported:.3f} = {upper:.3f}% is not below the "
+                    f"{floor:.3f}% floor; the remainder is a candidate of its own, on its own row."
+                )
 
 
 def enforce_measured_dispositions(
@@ -3132,6 +3197,29 @@ def enforce_measured_dispositions(
         counted = scope_counted_fraction(packet, item.get("anchor"), coverage, rel)
         supported = redundancy_evidence.supported_avoidable_fraction(packet) * counted
         upper = share * supported
+        union = item.get("ancestor_union")
+        if union and union.get("parts"):
+            # A split row: every probed caller's part closes by that caller's bound.
+            readings = {}
+            for site, entries in story_site_packets(campaign_dir, story, packet.get("build_id")).items():
+                for pk, rel2 in entries:
+                    sym = str(pk.get("probe_symbol") or "").strip()
+                    if sym in union["parts"]:
+                        readings[sym] = max(readings.get(sym, 0.0),
+                                            redundancy_evidence.supported_avoidable_fraction(pk) or 0.0)
+            worst = max(((share * frac * readings.get(sym, 0.0), sym, frac) for sym, frac in union["parts"].items()),
+                        default=(0.0, None, 0.0))
+            if worst[0] >= floor:
+                raise CampaignError(
+                    f"{label}. Its samples split across probed callers {union['parts']}, and the "
+                    f"part under {worst[1]!r} ({share * worst[2]:.3f}%) x that function's bound "
+                    f"{readings.get(worst[1], 0.0):.3f} = {worst[0]:.3f}% is not below the floor; "
+                    "that part is a candidate's, covered by its mechanism row or claimed on its own."
+                )
+            item["measured_bound"] = {"site": packet["site"], "story_profile_share_pct": share,
+                                      "ancestor_union": union, "qualification_floor_pct": floor}
+            bound.add(index)
+            continue
         if upper >= floor:
             raise CampaignError(
                 f"{label}. Its packet {packet['site']!r} bounds the avoidable "
@@ -3418,6 +3506,12 @@ def enforce_packet_relevance(paths, bound_rows, profile, story, campaign_dir):
         row_side = both_w[pair] / anchor_w[pair[0]] if anchor_w[pair[0]] else 0.0
         probe_side = both_w[pair] / prefix_w[pair[1]] if prefix_w[pair[1]] else 0.0
         relevance = max(row_side, probe_side)
+        if relevance < PACKET_RELEVANCE and campaign_dir:
+            union = split_row_union(item, index, pair[1], files, story, campaign_dir, row_side)
+            if union is not None:
+                item["packet_relevance"] = round(relevance, 4)
+                item["ancestor_union"] = union
+                continue
         if relevance < PACKET_RELEVANCE:
             raise CampaignError(
                 f"Path {index} ({item['anchor'][:80]!r}) binds packet "
@@ -3428,6 +3522,65 @@ def enforce_packet_relevance(paths, bound_rows, profile, story, campaign_dir):
                 "descendant with wrapper_of."
             )
         item["packet_relevance"] = round(relevance, 4)
+
+
+def split_row_union(item, index, bound_symbol, files, story, campaign_dir, bound_row_side):
+    """A row whose samples split between several probed callers (a paint-op
+    allocator under both `stroke` and `fill`) belongs to none of them at 80%,
+    yet every one of them counts it. It closes on their union when the probed
+    functions on its stacks together cover COVERED_BY_SAMPLE_IDENTITY of its
+    samples, the bound packet's function is the largest part, and each
+    function's part closes by that function's own bound in this story
+    (part share x its supported fraction below the floor). Returns the
+    parts, or None when the union does not hold."""
+    import redundancy_evidence
+    ref = item.get("redundancy_evidence") or {}
+    packet_path = pathlib.Path(ref.get("path", ""))
+    if not packet_path.is_absolute():
+        packet_path = pathlib.Path(campaign_dir) / packet_path
+    try:
+        build = redundancy_evidence.load_packet(packet_path).get("build_id")
+    except ValueError:
+        return None
+    if not build:
+        return None
+    story_packets = story_site_packets(campaign_dir, story, build)
+    by_symbol = {}
+    for site, entries in story_packets.items():
+        for packet, rel in entries:
+            symbol = str(packet.get("probe_symbol") or "").strip()
+            if symbol:
+                by_symbol.setdefault(symbol, []).append((site, packet))
+    if not by_symbol:
+        return None
+    anchor = item["anchor"]
+    row_w = 0.0
+    any_w = 0.0
+    per_symbol = {sym: 0.0 for sym in by_symbol}
+    for path in files:
+        with open(path, errors="replace") as handle:
+            for line in handle:
+                stack, _, weight = line.rstrip("\n").rpartition(" ")
+                try:
+                    weight = float(weight)
+                except ValueError:
+                    continue
+                frames = stack.split(";")
+                if anchor not in frames:
+                    continue
+                row_w += weight
+                present = [sym for sym in by_symbol if any(symbol_matches(fr, sym) for fr in frames)]
+                if present:
+                    any_w += weight
+                    for sym in present:
+                        per_symbol[sym] += weight
+    if row_w <= 0 or any_w / row_w < COVERED_BY_SAMPLE_IDENTITY:
+        return None
+    parts = {sym: w / row_w for sym, w in per_symbol.items() if w > 0}
+    if bound_symbol not in parts or parts[bound_symbol] < max(parts.values()) - 1e-9:
+        return None
+    return {"covered": round(any_w / row_w, 4),
+            "parts": {sym: round(frac, 4) for sym, frac in sorted(parts.items(), key=lambda kv: -kv[1])}}
 
 
 def enforce_covered_by_sample_identity(paths, owner_anchors, profile, story):
@@ -7902,23 +8055,31 @@ def cmd_decompose(args):
         )
     if not test_bypass_active():
         enforce_anchor_names_its_work(result["paths"])
-        bound = enforce_measured_dispositions(
-            result["paths"], story_shares, ledger.data["config"], floor,
-            parent.get("target_story"), ledger.dir, coverage=coverage_map,
-        )
-        enforce_wrapper_descent(result["paths"], story_shares, source_profile,
-                                parent.get("target_story"))
+        # Relevance first: it records the callers' union for a row whose
+        # samples split between probed functions, which the measured rule
+        # then closes part by part. A list wrapper's packet covers only the
+        # remainder of its samples; wrapper descent judges it, not relevance.
         relevance_rows = [
             (index, item) for index, item in enumerate(result["paths"], 1)
-            if index in bound or (
-                item["disposition"] in ("novel", "known")
-                and item.get("redundancy_evidence")
-            )
+            if item.get("redundancy_evidence") and item.get("wrapper_of") is None
         ]
         enforce_packet_relevance(
             result["paths"], relevance_rows, source_profile,
             parent.get("target_story"), ledger.dir,
         )
+        bound = enforce_measured_dispositions(
+            result["paths"], story_shares, ledger.data["config"], floor,
+            parent.get("target_story"), ledger.dir, coverage=coverage_map,
+        )
+        enforce_wrapper_descent(result["paths"], story_shares, source_profile,
+                                parent.get("target_story"), ledger.dir, ledger.data["config"], floor)
+        relevance_rows = [
+            (index, item) for index, item in enumerate(result["paths"], 1)
+            if index in bound or (
+                item["disposition"] in ("novel", "known", "mandatory", "no-qualifying-mechanism")
+                and item.get("redundancy_evidence")
+            )
+        ]
         enforce_build_consistency(result["paths"], ledger.dir)
         request_build, _ = request_build_and_logs(result["paths"], relevance_rows, ledger.dir)
         enforce_evidence_provenance(ledger.dir, request_build)

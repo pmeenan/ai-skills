@@ -46,8 +46,11 @@ story floor with their dispositions and bound packets, and lists the checks.
 The import refuses a PASS unless every check is true with its own evidence
 sentence naming an artifact and a number. The skeptic checks bijective
 accounting, that every row above the floor closes by a packet, a
-`wrapper_of` chain or list (a list's rows together carry 80% of the wrapper
-and each sits beneath it), `covered-by` or a mechanism row, that every bound
+`wrapper_of` chain or list (a list's rows together cover 80% of the
+wrapper's samples, overlapping rows counted once, with a packet the wrapper
+binds covering the rest below the floor), a split row's `ancestor_union`
+(each caller's part below the floor by its own bound), `covered-by` or a
+mechanism row, that every bound
 packet's probe key and `applicable` predicate (quoted from the probe patch)
 answer the row's hypothesis, that every novel/known row sits on the probed function's own row (never an
 ancestor of it) and binds a time-weighted packet from

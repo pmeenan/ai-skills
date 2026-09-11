@@ -486,7 +486,11 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
     def test_rows_above_floor_close_by_count_not_prose(self):
         config = {"share_floor_pct": 0.1,
                   "calibration": {"story_mde_pct": {STORY: 0.5}}}  # floor 1.0%
-        unbounded = self.write_packet("always-applicable", applicable=1.0, repeat=0.0)
+        # A saturated predicate on a pointer key (one value per repetition)
+        unbounded = self.write_packet("always-applicable", applicable=1.0, repeat=0.0, distinct=1, calls=4)
+        # ... and on a key that varies: the repeat count is the bound (round 25).
+        keyed = self.write_packet("keyed", applicable=1.0, repeat=0.0, distinct=400, site="probe/keyed",
+                                  patch_name="keyed.patch")
         tight = self.write_packet("tight", applicable=0.02, repeat=0.01)
         other_story = self.write_packet("other", story="Other", applicable=0.0, repeat=0.0)
 
@@ -503,6 +507,11 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         # A packet whose applicable predicate is always true bounds nothing.
         with self.assertRaisesRegex(campaign.CampaignError, "cannot close as mandatory"):
             run([row("Shape", "mandatory", redundancy_evidence=unbounded)], {1: 5.0})
+        # A predicate that always held measured nothing; a keyed repeat count
+        # of zero closes the row (the key names its inputs and none repeated).
+        keyed_rows = [row("Shape", "mandatory", redundancy_evidence=keyed)]
+        self.assertEqual({1}, run(keyed_rows, {1: 5.0}))
+        self.assertAlmostEqual(0.0, keyed_rows[0]["measured_bound"]["avoidable_share_upper_pct"])
         # A packet from another story is refused.
         with self.assertRaisesRegex(campaign.CampaignError, "not the path's target story"):
             run([row("Shape", "no-qualifying-mechanism", redundancy_evidence=other_story)], {1: 5.0})
@@ -1079,7 +1088,7 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             campaign.enforce_measured_dispositions(rows, {1: 100.0, 2: 35.0, 3: 12.5, 4: 50.0}, config, 1.0, STORY, self.dir)
         # A sibling does not sit beneath the wrapper.
         campaign.enforce_measured_dispositions(rows, {1: 60.0, 2: 35.0, 3: 12.5, 4: 50.0}, config, 1.0, STORY, self.dir)
-        with self.assertRaisesRegex(campaign.CampaignError, "sit under this row"):
+        with self.assertRaisesRegex(campaign.CampaignError, "cover 25% of its samples"):
             campaign.enforce_wrapper_descent(rows, shares, profile, STORY)
         # A target that is itself a wrapper, or an unbound mandatory row, is refused.
         rows[0]["wrapper_of"] = [2, 3]
@@ -1089,6 +1098,92 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         rows[2]["wrapper_of"] = None
         with self.assertRaisesRegex(campaign.CampaignError, "without a bound count"):
             campaign.enforce_measured_dispositions(rows, shares, config, 1.0, STORY, self.dir)
+
+    def test_wrapper_targets_cover_the_wrapper_once_and_a_packet_covers_the_rest(self):
+        """Round 25: two nested recursion contexts of one function are one
+        cover, not two shares; the remainder may be a packet the wrapper
+        binds, closing by that packet's bound."""
+        story_dir = self.dir / "results" / "analysis" / "stories" / STORY
+        story_dir.mkdir(parents=True, exist_ok=True)
+        artifact = story_dir / "candidate_frontier.json"; artifact.write_text("{}")
+        # Phase = Recalc(outer) 60, of which Recalc(inner) 40 nested; Rebuild 30; self 10.
+        (story_dir / "profile.collapsed").write_text(
+            "main;Root;Phase;Recalc(outer);Recalc(inner) 40\n"
+            "main;Root;Phase;Recalc(outer) 20\n"
+            "main;Root;Phase;Rebuild 30\n"
+            "main;Root;Phase 10\n"
+        )
+        profile = {"id": "p", "capture_provenance": [{
+            "capture_id": "c1", "story_frontiers": [{"story": STORY, "artifact": str(artifact)}]}]}
+        config = {"share_floor_pct": 1.0, "calibration": {"story_mde_pct": {STORY: 0.5}}}  # floor 1.0%
+        recalc = self.write_packet("recalc2", applicable=0.3, repeat=0.0, site="style/recalc2", symbol="Recalc")
+        rebuild = self.write_packet("rebuild2", applicable=0.02, repeat=0.0, site="style/rebuild2", symbol="Rebuild",
+                                    patch_name="rebuild2.patch")
+        rows = [
+            {"anchor": "Phase", "disposition": "mandatory", "wrapper_of": [2, 3]},
+            {"anchor": "Recalc(outer)", "disposition": "known", "mechanism_key": "css/recalc",
+             "estimated_avoidable_fraction": 0.3, "redundancy_evidence": recalc},
+            {"anchor": "Recalc(inner)", "disposition": "known", "mechanism_key": "css/recalc",
+             "estimated_avoidable_fraction": 0.3, "redundancy_evidence": recalc},
+            {"anchor": "Rebuild", "disposition": "mandatory", "redundancy_evidence": rebuild},
+        ]
+        shares = {1: 50.0, 2: 30.0, 3: 20.0, 4: 15.0}
+        campaign.enforce_measured_dispositions(rows, shares, config, 1.0, STORY, self.dir)
+        # The shares add to 100% of the wrapper; the samples say 60%.
+        with self.assertRaisesRegex(campaign.CampaignError, "cover 60% of its samples"):
+            campaign.enforce_wrapper_descent(rows, shares, profile, STORY, self.dir, config, 1.0)
+        # Rebuild beneath the wrapper covers the rest: named, or bound as a packet.
+        rows[0]["wrapper_of"] = [2, 3, 4]
+        campaign.enforce_wrapper_descent(rows, shares, profile, STORY, self.dir, config, 1.0)
+        self.assertAlmostEqual(0.9, rows[0]["wrapper_coverage"])
+        rows[0]["wrapper_of"] = [2, 3]
+        rows[0]["redundancy_evidence"] = rebuild
+        campaign.enforce_wrapper_descent(rows, shares, profile, STORY, self.dir, config, 1.0)
+        self.assertAlmostEqual(15.0, rows[0]["wrapper_packet_share_pct"])  # 30% of 50%
+        # ... only while that remainder x its bound is below the floor.
+        loose = self.write_packet("rebuild-loose", applicable=0.5, repeat=0.0, site="style/rebuild-loose",
+                                  symbol="Rebuild", patch_name="rebuild3.patch")
+        rows[0]["redundancy_evidence"] = loose
+        with self.assertRaisesRegex(campaign.CampaignError, "candidate of its own"):
+            campaign.enforce_wrapper_descent(rows, shares, profile, STORY, self.dir, config, 1.0)
+
+    def test_a_row_split_between_probed_callers_closes_on_their_union(self):
+        """Round 25: a paint-op allocator under both stroke and fill belongs
+        to neither at 80%; it closes when the probed callers together cover
+        it and each part closes by its caller's bound."""
+        story_dir = self.dir / "results" / "analysis" / "stories" / STORY
+        story_dir.mkdir(parents=True, exist_ok=True)
+        artifact = story_dir / "candidate_frontier.json"; artifact.write_text("{}")
+        (story_dir / "profile.collapsed").write_text(
+            "main;Root;StrokePath;Alloc 60\n"
+            "main;Root;FillPath;Alloc 38\n"
+            "main;Root;Other;Alloc 2\n"
+            "main;Root;StrokePath 40\n"
+            "main;Root;FillPath 40\n"
+        )
+        profile = {"id": "p", "capture_provenance": [{
+            "capture_id": "c1", "story_frontiers": [{"story": STORY, "artifact": str(artifact)}]}]}
+        config = {"share_floor_pct": 1.0, "calibration": {"story_mde_pct": {STORY: 0.5}}}  # floor 1.0%
+        stroke = self.write_packet("stroke", applicable=0.1, repeat=0.0, site="canvas/stroke", symbol="StrokePath",
+                                   patch_name="stroke.patch")
+        fill = self.write_packet("fill", applicable=0.1, repeat=0.0, site="canvas/fill", symbol="FillPath",
+                                 patch_name="fill.patch")
+        rows = [{"anchor": "Alloc", "disposition": "mandatory", "redundancy_evidence": stroke}]
+        campaign.enforce_packet_relevance(rows, [(1, rows[0])], profile, STORY, self.dir)
+        self.assertEqual(0.98, rows[0]["ancestor_union"]["covered"])
+        self.assertEqual({"StrokePath": 0.6, "FillPath": 0.38}, rows[0]["ancestor_union"]["parts"])
+        # Each part by its caller's bound: 5% x 0.6 x 0.1 = 0.3% and 5% x 0.38 x 0.1 < 1.0%.
+        bound = campaign.enforce_measured_dispositions(rows, {1: 5.0}, config, 1.0, STORY, self.dir)
+        self.assertEqual({1}, bound)
+        # A looser fill bound is that part's own candidate.
+        self.write_packet("fill", applicable=0.6, repeat=0.0, site="canvas/fill", symbol="FillPath",
+                          patch_name="fill.patch")
+        with self.assertRaisesRegex(campaign.CampaignError, "part under 'FillPath'"):
+            campaign.enforce_measured_dispositions(rows, {1: 5.0}, config, 1.0, STORY, self.dir)
+        # The bound packet must be the largest part.
+        rows = [{"anchor": "Alloc", "disposition": "mandatory", "redundancy_evidence": fill}]
+        with self.assertRaisesRegex(campaign.CampaignError, "closes only the work it measured"):
+            campaign.enforce_packet_relevance(rows, [(1, rows[0])], profile, STORY, self.dir)
 
     def test_inspection_commands_answer_without_touching_internals(self):
         import argparse, io, contextlib
