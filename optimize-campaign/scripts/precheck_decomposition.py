@@ -182,6 +182,10 @@ def main(campaign_dir, opp_id, children):
     print(f"\n{len(rows)} rows at/above floor; dispositions:", {d: sum(1 for r in rows if r['disposition'] == d) for d in set(r['disposition'] for r in rows)})
     print("\nPROBLEMS:" if problems else "\nno gate problems")
     for x in problems: print(" -", x)
+    if problems:
+        print(f"\nFor any row named above: python3 {SCRIPTS / 'campaign.py'} --dir {campaign_dir} explain "
+              f"--opp {opp_id} --children {children} --path <row>  (every packet's relevance, coverage and bound, "
+              "the rows beneath, and what the gate would accept)")
     return 1 if problems else 0
 
 if __name__ == "__main__":

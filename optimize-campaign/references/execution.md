@@ -21,6 +21,15 @@ out detached commits, builds the configured release/perf target, verifies the
 entire skill bundle digest, and copies evidence back. It never transfers or
 repairs skills automatically.
 
+Nothing is typed into `ssh <host> 'python3 -c ...'`. Inline Python behind
+two layers of shell quoting breaks on the first nested quote, and a script
+that reaches into `campaign.py`'s internals is a private tool the gate
+never sees. A campaign question goes to a `campaign.py` command (`rows`,
+`packet`, `candidates`, `explain`, `show`, `next`, the pre-check), forwarded
+through the linked pointer or run on the host; anything longer is a file
+under `scratch/` run with `ssh <host> bash -s < script.sh`, kept for the
+report.
+
 Compress every remote transfer: use `scp -C` or `rsync -z`. Never remove the
 shared lock file to recover a job; inspect the holder and terminate the stale
 process only when recovery is justified.

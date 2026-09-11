@@ -484,6 +484,20 @@ pre-check came from a modified copy is refused at import with the rule's
 own message. The reviewer runs the skill-tree copy and checks
 `git status` on the skill tree before trusting any pre-check output.
 
+Four read-only commands answer the questions a request raises, with the
+gate's own code: `campaign.py rows --children <file> [--opp N] [--rows 1,8,12-15]
+[--text]` lists rows with share, disposition, wrapper, covered-by, mechanism
+and packet; `campaign.py packet <path>...` prints a packet's numbers and
+whether it re-derives; `campaign.py candidates [--story S]` lists the areas
+still to decompose by priority; `campaign.py explain --opp N --children
+<file> --path K` prints, for one row, every packet on the build with its
+relevance, weight ratio, coverage and closing bound, which is nearest, the
+mechanism rows that could cover it with their identity, the rows beneath it
+a wrapper could name, and what the gate would accept. A refusal from the
+pre-check names the `explain` command for its rows. Nobody types Python at
+the host: a question the commands cannot answer is a missing command, and
+the report says so.
+
 ## A decomposition without a count is open work
 
 A discovery whose decomposition binds no packet, no cost packet and no

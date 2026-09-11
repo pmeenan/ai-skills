@@ -1090,6 +1090,39 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         with self.assertRaisesRegex(campaign.CampaignError, "without a bound count"):
             campaign.enforce_measured_dispositions(rows, shares, config, 1.0, STORY, self.dir)
 
+    def test_inspection_commands_answer_without_touching_internals(self):
+        import argparse, io, contextlib
+        packet = self.write_packet("insp", applicable=0.3, repeat=0.1, site="a/one", symbol="One")
+        children = self.dir / "children.json"
+        ref = lambda key: [{"accounting": "primary", "capture_id": "c1", "entry_key": "e", "hotspot_key": key}]
+        children.write_text(json.dumps({"accounting_evidence": "test", "paths": [
+            {"anchor": "One(int)", "disposition": "known", "mechanism_key": "a/one",
+             "estimated_avoidable_fraction": 0.3, "redundancy_evidence": packet, "share_pct": 4.0,
+             "work_refs": ref("function:One(int)"), "evidence": "counted"},
+            {"anchor": "Two()", "disposition": "mandatory", "wrapper_of": [1, 3], "share_pct": 5.0,
+             "work_refs": ref("function:Two()"), "evidence": "wrapper"},
+            {"anchor": "Three()", "disposition": "below-floor", "share_pct": 0.5,
+             "work_refs": ref("function:Three()"), "evidence": "below"},
+        ]}))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            campaign.cmd_rows(argparse.Namespace(dir=str(self.dir), children=str(children), opp=None, rows="1-2", text=True))
+        text = out.getvalue()
+        self.assertIn("known", text); self.assertIn("wrapper_of=[1, 3]", text); self.assertIn("counted", text)
+        self.assertNotIn("Three()", text)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            campaign.cmd_packet(argparse.Namespace(dir=str(self.dir), paths=[packet["path"]]))
+        self.assertIn("re-derives from its logs", out.getvalue())
+        self.assertIn("supported (closing bound / candidate claim)", out.getvalue())
+        self.assertEqual([1, 8, 12, 13, 14, 15], campaign.parse_row_list("1,8,12-15"))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            campaign.cmd_candidates(argparse.Namespace(dir=str(self.dir), story=None, count=5))
+        self.assertIn("area(s)", out.getvalue())
+        for name in ("rows", "packet", "candidates", "explain"):
+            self.assertIn(name, campaign.READ_ONLY_COMMANDS)
+
     def test_every_counter_on_a_rows_own_function_speaks(self):
         story_dir = self.dir / "results" / "analysis" / "stories" / STORY
         story_dir.mkdir(parents=True, exist_ok=True)
