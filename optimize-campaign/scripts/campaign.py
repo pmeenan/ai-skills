@@ -2895,6 +2895,10 @@ def enforce_anchor_names_its_work(paths):
         )
 
 
+READ_ONLY_COMMANDS = frozenset((
+    "show", "next", "status", "probe-union", "probe-union-all", "decompose-scaffold",
+    "cost-packet", "export-candidates", "show-remote",
+))
 MEASURED_DISPOSITIONS = ("mandatory", "no-qualifying-mechanism", "algorithmic")
 ALGORITHMIC_ATTENTION_PCT = 5.0
 IN_SCOPE_NAMESPACES = ("blink", "cc")
@@ -10310,7 +10314,11 @@ def main(argv=None):
             campaign_dir = pathlib.Path(args.dir or default_campaign_dir())
         campaign_dir.mkdir(parents=True, exist_ok=True)
         with open(campaign_dir / ".ledger.lock", "a+") as lock_file:
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            # Commands that only read the ledger share the lock; a union over
+            # twenty stories held the exclusive lock for two hours in round 23
+            # and every other command on the campaign waited behind it.
+            shared = args.command in READ_ONLY_COMMANDS
+            fcntl.flock(lock_file, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
             return args.func(args)
     except CampaignError as e:
         print(f"error: {e}", file=sys.stderr)
