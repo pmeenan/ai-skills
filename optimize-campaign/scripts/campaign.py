@@ -2777,8 +2777,7 @@ def verify_packet_provenance(packet, packet_path, campaign_dir):
         )
     # The site string may sit on the next line of a unified diff, behind
     # the line's "+" marker.
-    site_re = re.compile(
-        r'RedundancyCounter\(\s*(?:[+ ]\s*)?"' + re.escape(packet["site"]) + '"')
+    site_re = counter_site_re(packet["site"])
     patch_text = patch_path.read_text(errors="replace")
     if not site_re.search(patch_text):
         raise CampaignError(
@@ -2800,10 +2799,20 @@ def verify_packet_provenance(packet, packet_path, campaign_dir):
     _PACKET_PROVENANCE_CACHE.add(key)
 
 
+def counter_site_re(site):
+    """The line (or two lines of a unified diff) that constructs the site's
+    counter: `new RedundancyCounter("site")`, a named `static thread_local
+    RedundancyCounter name("site")`, or either with the string on the next
+    diff line behind its "+" marker. The site string is the proof; the
+    variable name between the type and the parenthesis is not."""
+    return re.compile(
+        r'RedundancyCounter(?:\s+[A-Za-z_]\w*)?\s*\(\s*(?:[+ ]\s*)?"' + re.escape(site) + '"')
+
+
 def patch_hunk_before_counter(patch_text, site):
     """The text of the unified-diff hunk that defines `site`'s counter, from
     its @@ header down to the counter line."""
-    site_re = re.compile(r'RedundancyCounter\(\s*(?:[+ ]\s*)?"' + re.escape(site) + '"')
+    site_re = counter_site_re(site)
     lines = patch_text.split("\n")
     start = None
     for index, line in enumerate(lines):

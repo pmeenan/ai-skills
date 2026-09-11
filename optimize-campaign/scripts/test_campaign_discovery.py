@@ -461,6 +461,15 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         refused(lambda d: d["sources"][0].update(sha256="0" * 64), "digest that does not match")
         # No patch, or a patch without the site.
         refused(lambda d: d.pop("patch"), "records no probe patch")
+        # A counter declared with a name between the type and the site string
+        # (`static thread_local RedundancyCounter name("site")`) defines the site too.
+        named = self.dir / "evidence" / "named.patch"
+        named.write_text('@@ -1,2 +1,4 @@ void Node::Query() {\n+  static thread_local perf_instrumentation::RedundancyCounter query_counter(\n+      "probe/site");\n')
+        renamed = json.loads(packet_path.read_text())
+        renamed["patch"] = str(named); renamed["patch_sha256"] = campaign.sha256_file(named)
+        named_packet = self.dir / "evidence" / "named.json"; named_packet.write_text(json.dumps(renamed))
+        campaign.verify_packet_provenance(renamed, named_packet, self.dir)
+        self.assertIn("Node::Query(", campaign.patch_hunk_before_counter(named.read_text(), "probe/site"))
         (self.dir / "evidence" / "other.patch").write_text('+  new RedundancyCounter("x/y");\n')
         refused(lambda d: d.update(patch="evidence/other.patch",
                                    patch_sha256=campaign.sha256_file(self.dir / "evidence" / "other.patch")),
