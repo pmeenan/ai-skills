@@ -26,9 +26,13 @@ two layers of shell quoting breaks on the first nested quote, and a script
 that reaches into `campaign.py`'s internals is a private tool the gate
 never sees. A campaign question goes to a `campaign.py` command (`rows`,
 `packet`, `candidates`, `explain`, `show`, `next`, the pre-check), forwarded
-through the linked pointer or run on the host; anything longer is a file
-under `scratch/` run with `ssh <host> bash -s < script.sh`, kept for the
-report.
+through the linked pointer or run on the host; anything longer is a shell
+file under `scratch/` run with `ssh <host> bash -s < script.sh`, kept for
+the report, and it calls those commands (`explain --path all` for every row
+of a file, `--path 2,8,12-15` for some). A script that does `import
+campaign` or `json.load`s a packet or a scaffold is the private tool this
+paragraph forbids, whatever file it lives in; a question the commands
+cannot answer is reported as a missing command.
 
 Compress every remote transfer: use `scp -C` or `rsync -z`. Never remove the
 shared lock file to recover a job; inspect the holder and terminate the stale

@@ -10166,11 +10166,29 @@ def cmd_candidates(args):
 
 
 def cmd_explain(args):
-    """For one row of a request: every packet on the build for the story
-    with its relevance, weight ratio, coverage and closing bound; the
-    nearest; the rows beneath it a wrapper list could name; the mechanism
-    rows that could cover it; and which dispositions the gate would accept.
-    The same code the gate runs, printed instead of refused."""
+    """For one or more rows of a request (`--path 8`, `--path 2,8,12-15`,
+    `--path all`): every packet on the build for the story with its
+    relevance, weight ratio, coverage and closing bound; the nearest; the
+    rows beneath it a wrapper list could name; the mechanism rows that
+    could cover it; and which dispositions the gate would accept. The same
+    code the gate runs, printed instead of refused."""
+    result = load_decomposition(args.children)
+    count = len(result["paths"])
+    if str(args.path).strip().lower() == "all":
+        rows = list(range(1, count + 1))
+    else:
+        rows = parse_row_list(args.path)
+    for index in rows:
+        if index < 1 or index > count:
+            raise CampaignError(f"--path {index} is not a row of {args.children} ({count} rows)")
+    for n, index in enumerate(rows):
+        if n:
+            print()
+        explain_row(args, index)
+    return 0
+
+
+def explain_row(args, index):
     import math
     import redundancy_evidence
     ledger = Ledger(args.dir or default_campaign_dir()).load()
@@ -10180,9 +10198,6 @@ def cmd_explain(args):
     result = load_decomposition(args.children)
     shares = request_shares(ledger, parent, result)
     paths = result["paths"]
-    index = int(args.path)
-    if index < 1 or index > len(paths):
-        raise CampaignError(f"--path {index} is not a row of {args.children} ({len(paths)} rows)")
     item = paths[index - 1]
     share = shares.get(index)
     floor = max(story_floor_pct(ledger.data["config"], story)[0], ledger.data["config"]["share_floor_pct"])
@@ -10898,7 +10913,7 @@ def build_parser():
                                        "the rows beneath, and what the gate would accept")
     p.add_argument("--opp", type=int, required=True)
     p.add_argument("--children", required=True)
-    p.add_argument("--path", type=int, required=True, help="1-based row index")
+    p.add_argument("--path", required=True, help="1-based row index, a list (2,8,12-15), or all")
     p.add_argument("--build", help="build id when the file binds no packet yet")
     p.set_defaults(func=cmd_explain)
 
