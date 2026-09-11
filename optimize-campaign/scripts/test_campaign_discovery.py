@@ -1042,6 +1042,54 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             # Without the scope declared, the same numbers are a whole-function claim.
             campaign.bind_redundancy_evidence(dict(item), STORY, 0.2, self.dir)
 
+    def test_a_wrapper_of_several_rows_names_the_counted_rows_beneath_it(self):
+        story_dir = self.dir / "results" / "analysis" / "stories" / STORY
+        story_dir.mkdir(parents=True, exist_ok=True)
+        artifact = story_dir / "candidate_frontier.json"; artifact.write_text("{}")
+        # Phase = Recalc (70%) + Rebuild (25%) + self (5%); Other is a sibling.
+        (story_dir / "profile.collapsed").write_text(
+            "main;Root;Phase;Recalc 70\n"
+            "main;Root;Phase;Rebuild 25\n"
+            "main;Root;Phase 5\n"
+            "main;Root;Other 100\n"
+        )
+        profile = {"id": "p", "capture_provenance": [{
+            "capture_id": "c1",
+            "story_frontiers": [{"story": STORY, "artifact": str(artifact)}],
+        }]}
+        config = {"share_floor_pct": 1.0, "calibration": {"story_mde_pct": {STORY: 0.5}}}
+        rebuild = self.write_packet("rebuild", applicable=0.0, repeat=0.0, site="style/rebuild", symbol="Rebuild",
+                                    patch_name="rebuild.patch")
+        recalc = self.write_packet("recalc", applicable=0.3, repeat=0.0, site="style/recalc", symbol="Recalc")
+        rows = [
+            {"anchor": "Phase", "disposition": "mandatory", "wrapper_of": [2, 3]},
+            {"anchor": "Recalc", "disposition": "known", "mechanism_key": "css/recalc",
+             "estimated_avoidable_fraction": 0.3, "redundancy_evidence": recalc},
+            {"anchor": "Rebuild", "disposition": "mandatory", "redundancy_evidence": rebuild},
+            {"anchor": "Other", "disposition": "mandatory", "redundancy_evidence": rebuild},
+        ]
+        shares = {1: 50.0, 2: 35.0, 3: 12.5, 4: 50.0}
+        bound = campaign.enforce_measured_dispositions(rows, shares, config, 1.0, STORY, self.dir)
+        self.assertEqual({3, 4}, bound)
+        self.assertAlmostEqual(47.5, rows[0]["wrapper_targets_share_pct"])
+        campaign.enforce_wrapper_descent(rows, shares, profile, STORY)
+        # Together the targets must carry 80% of the wrapper.
+        rows[0]["wrapper_of"] = [3, 4]
+        with self.assertRaisesRegex(campaign.CampaignError, "less than 80% of the row"):
+            campaign.enforce_measured_dispositions(rows, {1: 100.0, 2: 35.0, 3: 12.5, 4: 50.0}, config, 1.0, STORY, self.dir)
+        # A sibling does not sit beneath the wrapper.
+        campaign.enforce_measured_dispositions(rows, {1: 60.0, 2: 35.0, 3: 12.5, 4: 50.0}, config, 1.0, STORY, self.dir)
+        with self.assertRaisesRegex(campaign.CampaignError, "sit under this row"):
+            campaign.enforce_wrapper_descent(rows, shares, profile, STORY)
+        # A target that is itself a wrapper, or an unbound mandatory row, is refused.
+        rows[0]["wrapper_of"] = [2, 3]
+        rows[2]["wrapper_of"] = 4; rows[2]["redundancy_evidence"] = None
+        with self.assertRaisesRegex(campaign.CampaignError, "is a wrapper itself"):
+            campaign.enforce_measured_dispositions(rows, shares, config, 1.0, STORY, self.dir)
+        rows[2]["wrapper_of"] = None
+        with self.assertRaisesRegex(campaign.CampaignError, "without a bound count"):
+            campaign.enforce_measured_dispositions(rows, shares, config, 1.0, STORY, self.dir)
+
     def test_every_counter_on_a_rows_own_function_speaks(self):
         story_dir = self.dir / "results" / "analysis" / "stories" / STORY
         story_dir.mkdir(parents=True, exist_ok=True)

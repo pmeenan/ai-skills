@@ -62,6 +62,9 @@ def main(campaign_dir, opp_id, children):
     try:
         bound = campaign.enforce_measured_dispositions(result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, coverage=coverage_map)
     except campaign.CampaignError as e: problems.append(str(e))
+    try:
+        campaign.enforce_wrapper_descent(result["paths"], shares, profile, story)
+    except campaign.CampaignError as e: problems.append(str(e))
     unbound = [i for i, p in enumerate(result["paths"], 1)
                if p["disposition"] in ("mandatory", "no-qualifying-mechanism")
                and shares.get(i, 0.0) >= story_floor

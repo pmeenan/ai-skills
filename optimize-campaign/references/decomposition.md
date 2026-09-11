@@ -129,7 +129,16 @@ refused row by row. Pure wrappers of a counted descendant use `wrapper_of` inste
 their own packet; every hop of a `wrapper_of` chain must carry at least 80%
 of the share of the row that started the chain (a run of gradually smaller
 rows is not descent), and chains are at most four hops; wrappers of a
-mechanism's samples are `covered-by`.
+mechanism's samples are `covered-by`. A row whose time splits across
+several counted rows beneath it (a style phase that is 70% recalc-style and
+25% layout-tree rebuild) names them all: `wrapper_of: [15, 44]`. Each named
+row is another function, dispositioned on its own (a counted mandatory row,
+a candidate, a `covered-by` row, or a row below the floor) and not a
+wrapper itself; together they carry at least 80% of the wrapper's share;
+and each sits beneath the wrapper in the story's stacks (80% of its samples
+carry the wrapper's anchor, `enforce_wrapper_descent`). What the named
+rows do not carry is uncounted, and above 20% it needs a row and a count of
+its own.
 
 A candidate is a count too. Every `novel` and `known` row binds the packet
 from a probe on its own work, whatever its `investigation_layer`; the claimed
@@ -509,7 +518,9 @@ packet's `sources` again with `redundancy_evidence.py` on the ledger host
 and refuses the packet if any derived field (repetitions, calls, fractions,
 overflow) differs; a log that does not resolve or whose digest changed is
 refused; the recorded `patch` must resolve, match its digest, and define a
-`RedundancyCounter` for the packet's site. A packet written by hand, with a
+`RedundancyCounter` for the packet's site (`new RedundancyCounter("site")` or a
+named `static thread_local RedundancyCounter name("site")`; the site string is
+the proof). A packet written by hand, with a
 zero fraction typed where the log says otherwise or a site the twin never
 counted, is fabricated evidence and ends the request.
 

@@ -2975,6 +2975,113 @@ def require_existing_mechanism(path_item, index):
         )
 
 
+WRAPPER_TARGET_DISPOSITIONS = ("mandatory", "no-qualifying-mechanism", "novel", "known",
+                               "covered-by", "below-floor")
+
+
+def validate_wrapper_list(paths, index, item, share, story_shares, bound):
+    """A wrapper of several rows: the rows beneath it that together carry
+    its count. Each target is another row on another function, dispositioned
+    on its own (a counted mandatory row, a candidate, a covered-by row, or a
+    row below the floor) and not a wrapper itself; together they carry at
+    least WRAPPER_DOMINANT_FRACTION of the wrapper's share. Descent (each
+    target's samples sit under the wrapper's anchor) is checked against the
+    story's stacks by enforce_wrapper_descent."""
+    targets = list(item.get("wrapper_of") or [])
+    if len(targets) < 2:
+        raise CampaignError(
+            f"Path {index} wrapper_of names {len(targets)} row(s) as a list; a wrapper "
+            "of one row names that row's index, a wrapper of several names at least two"
+        )
+    seen = set()
+    total = 0.0
+    for raw in targets:
+        try:
+            target = int(raw)
+        except (TypeError, ValueError):
+            raise CampaignError(f"Path {index} wrapper_of {raw!r} is not a row index")
+        if target < 1 or target > len(paths) or target == index or target in seen:
+            raise CampaignError(
+                f"Path {index} wrapper_of {target} does not name another distinct row"
+            )
+        seen.add(target)
+        target_item = paths[target - 1]
+        if anchor_function(target_item.get("anchor")) == anchor_function(item.get("anchor")):
+            raise CampaignError(
+                f"Path {index} ({item['anchor'][:80]!r}) names path {target} among its "
+                "wrapper_of rows, but that row is the same function under another entry"
+            )
+        if target_item.get("wrapper_of") is not None:
+            raise CampaignError(
+                f"Path {index} names path {target} among its wrapper_of rows, but that "
+                "row is a wrapper itself; a wrapper of several rows names the counted "
+                "rows, not other wrappers"
+            )
+        disposition = target_item.get("disposition")
+        if disposition not in WRAPPER_TARGET_DISPOSITIONS:
+            raise CampaignError(
+                f"Path {index} names path {target} ({disposition}) among its wrapper_of "
+                f"rows; a target closes on its own: {WRAPPER_TARGET_DISPOSITIONS}"
+            )
+        if disposition in MEASURED_DISPOSITIONS and target not in bound \
+                and not (target_item.get("redundancy_evidence") or {}).get("path"):
+            raise CampaignError(
+                f"Path {index} names path {target} among its wrapper_of rows, but that "
+                "mandatory row binds no packet; the count that closes a wrapper sits "
+                "on the rows it points at"
+            )
+        target_share = story_shares.get(target)
+        if target_share is None:
+            raise CampaignError(f"Path {target} must carry primary work refs to be wrapped")
+        total += target_share
+    if total < WRAPPER_DOMINANT_FRACTION * share:
+        raise CampaignError(
+            f"Path {index} ({item['anchor'][:80]!r}, {share:.3f}%) names rows "
+            f"{sorted(seen)} as its wrapper_of, but together they carry {total:.3f}%, "
+            f"less than {WRAPPER_DOMINANT_FRACTION:.0%} of the row; the rest is uncounted "
+            "and needs a row of its own with a count (or a counter)."
+        )
+    item["wrapper_targets_share_pct"] = round(total, 4)
+
+
+def enforce_wrapper_descent(paths, story_shares, profile, story):
+    """Every row a list wrapper names sits beneath it: at least
+    COVERED_BY_SAMPLE_IDENTITY of the target's samples carry the wrapper's
+    anchor. A row that merely shares an ancestor does not carry the
+    wrapper's count."""
+    pairs = {}
+    for index, item in enumerate(paths, 1):
+        targets = item.get("wrapper_of")
+        if not isinstance(targets, (list, tuple)):
+            continue
+        for raw in targets:
+            try:
+                target = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= target <= len(paths):
+                pairs[(paths[target - 1]["anchor"], item["anchor"])] = (index, target)
+    if not pairs:
+        return
+    files = collapsed_stack_files(profile, story)
+    if not files:
+        raise CampaignError(
+            f"wrapper descent needs the story's profile.collapsed beside the analyzer "
+            f"artifacts of profile {profile.get('id')!r} for {story!r}"
+        )
+    totals = sample_identity(files, set(pairs))
+    for pair, (index, target) in pairs.items():
+        total, shared = totals.get(pair, (0.0, 0.0))
+        fraction = shared / total if total else 0.0
+        if fraction < COVERED_BY_SAMPLE_IDENTITY:
+            raise CampaignError(
+                f"Path {index} ({paths[index - 1]['anchor'][:80]!r}) names path {target} "
+                f"({paths[target - 1]['anchor'][:80]!r}) among its wrapper_of rows, but only "
+                f"{fraction:.0%} of that row's samples sit under this row in the {story!r} "
+                "stacks; a wrapper names the rows beneath it."
+            )
+
+
 def enforce_measured_dispositions(
     paths, story_shares, config, base_floor, default_story, campaign_dir, coverage=None
 ):
@@ -3058,17 +3165,27 @@ def enforce_measured_dispositions(
         }
         bound.add(index)
     for index, (item, share, floor) in wrappers.items():
+        if isinstance(item.get("wrapper_of"), (list, tuple)):
+            validate_wrapper_list(paths, index, item, share, story_shares, bound)
+            continue
         seen = [index]
         current = index
         while True:
             current_item = paths[current - 1]
             target = current_item.get("wrapper_of")
+            if isinstance(target, (list, tuple)):
+                raise CampaignError(
+                    f"Path {index} wrapper_of chain reaches path {current}, a wrapper "
+                    "of several rows; a chain ends at a counted row, and a wrapper of "
+                    "several rows is itself the end of one."
+                )
             try:
                 target = int(target)
             except (TypeError, ValueError):
                 raise CampaignError(
                     f"Path {current} wrapper_of must be the 1-based index of "
-                    "the dominant descendant row"
+                    "the dominant descendant row, or a list of the rows beneath it "
+                    "that together carry its count"
                 )
             if target < 1 or target > len(paths) or target == current:
                 raise CampaignError(
@@ -7789,6 +7906,8 @@ def cmd_decompose(args):
             result["paths"], story_shares, ledger.data["config"], floor,
             parent.get("target_story"), ledger.dir, coverage=coverage_map,
         )
+        enforce_wrapper_descent(result["paths"], story_shares, source_profile,
+                                parent.get("target_story"))
         relevance_rows = [
             (index, item) for index, item in enumerate(result["paths"], 1)
             if index in bound or (
