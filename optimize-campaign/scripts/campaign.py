@@ -10211,6 +10211,7 @@ for _sites, _cls in (
         SITE_HYPOTHESIS_CLASS[_site] = _cls
 
 AUDIT_PHASE_PATTERNS = [
+    ("ink-overflow", re.compile(r"blink::(ShapeResultView::ComputeInkBounds|ShapeResult::ComputeInkBounds|\w*InkOverflow)")),
     ("resource-loading", re.compile(r"blink::(ResourceFetcher|ImageLoader|ImageResource|MemoryCache|ResourceLoader|"
                                     r"Resource::|PrepareResourceRequestForCacheAccess|HTMLImageElement::SelectSourceURL)")),
     ("text-shaping", re.compile(r"blink::(HarfBuzzShaper|InlineNode::ShapeText|ShapeResult|PlainTextNode|PlainTextPainter|"
