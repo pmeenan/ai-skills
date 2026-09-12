@@ -3270,22 +3270,28 @@ def enforce_wrapper_descent(paths, story_shares, profile, story, campaign_dir=No
             symbol = str(packet.get("probe_symbol") or "").strip() or None
         covered, by_packet = wrapper_coverage(files, item["anchor"], anchors, symbol)
         share = story_shares.get(index) or 0.0
-        if covered < COVERED_BY_SAMPLE_IDENTITY:
-            uncovered = share * (1.0 - covered)
+        floor = float(base_floor)
+        if config is not None:
+            floor = max(story_floor_pct(config, story)[0], floor)
+        uncovered = share * (1.0 - covered)
+        # Below 80% the uncovered part is still nothing the campaign can act
+        # on when it is below the story floor (round 29: a Nuxt RemoveChild
+        # row 75% under its detach row, the other 0.38% of the story).
+        if covered < COVERED_BY_SAMPLE_IDENTITY and floor and uncovered < floor:
+            item["wrapper_uncovered_share_pct"] = round(uncovered, 4)
+        elif covered < COVERED_BY_SAMPLE_IDENTITY:
             named = item["wrapper_of"] if isinstance(item["wrapper_of"], (list, tuple)) else [item["wrapper_of"]]
             raise CampaignError(
                 f"Path {index} ({item['anchor'][:80]!r}, {share:.3f}%) names rows "
                 f"{list(named)} as its wrapper_of, but they cover {covered:.0%} of "
                 f"its samples in the {story!r} stacks (nested contexts of one function count "
-                f"once); the other {uncovered:.3f}% of the story is uncounted. Name the rows "
-                "that carry it, or bind the packet of the probed function that covers it "
-                "(redundancy_evidence on the wrapper), or the remainder needs a counter."
+                f"once); the other {uncovered:.3f}% of the story is uncounted and not below the "
+                f"{floor:.3f}% floor. Name the rows that carry it, or bind the packet of the "
+                "probed function that covers it (redundancy_evidence on the wrapper), or the "
+                "remainder needs a counter."
             )
         item["wrapper_coverage"] = round(covered, 4)
         if packet is not None and symbol:
-            floor = base_floor
-            if config is not None:
-                floor = max(story_floor_pct(config, story)[0], float(base_floor))
             supported = packet_supported(packet, campaign_dir) or 0.0
             upper = share * by_packet * supported
             item["wrapper_packet_share_pct"] = round(share * by_packet, 4)
@@ -10544,7 +10550,8 @@ def explain_row(args, index):
             covered, _ = wrapper_coverage(files, anchor, named)
             print(f"    - declared wrapper_of {list(declared)} covers {covered:.0%} of this row's samples"
                   + ("" if covered >= COVERED_BY_SAMPLE_IDENTITY else
-                     f"; the other {share * (1 - covered):.3f}% of the story is uncounted"))
+                     f"; the other {share * (1 - covered):.3f}% of the story is uncounted"
+                     + (" (below the floor: accepted)" if share * (1 - covered) < floor else " (not below the floor)")))
         # The packets beneath: a story packet whose probed function carries
         # part of this row's samples (row_side) can cover a wrapper's remainder.
         under = sorted({(c[3], c[1], c[7]) for c in candidates

@@ -1132,6 +1132,10 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         # The shares add to 100% of the wrapper; the samples say 60%.
         with self.assertRaisesRegex(campaign.CampaignError, "cover 60% of its samples"):
             campaign.enforce_wrapper_descent(rows, shares, profile, STORY, self.dir, config, 1.0)
+        # ... unless what they leave uncovered is below the story floor (round 29).
+        small = dict(shares); small[1] = 2.0  # 40% of 2.0% = 0.8% < 1.0% floor
+        campaign.enforce_wrapper_descent(rows, small, profile, STORY, self.dir, config, 1.0)
+        self.assertAlmostEqual(0.8, rows[0]["wrapper_uncovered_share_pct"])
         # A single wrapper_of is judged the same way, in the same direction:
         # Recalc(inner) naming Recalc(outer), its caller, covers none of its samples.
         inner = {"anchor": "Recalc(inner)", "disposition": "mandatory", "wrapper_of": 1}

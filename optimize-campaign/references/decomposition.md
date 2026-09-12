@@ -181,7 +181,9 @@ carries that remainder (`redundancy_evidence` on the wrapper itself, a
 rebuild packet under a style phase whose recalc rows are named): the probed
 function's samples beneath the wrapper count as covered, and that part
 closes by the packet's bound (`share × part × supported < floor`) or it is
-a candidate on its own row.
+a candidate on its own row. Coverage under 80% is accepted only when the
+uncovered part of the story (`share × (1 − coverage)`) is below the story
+floor: nothing the campaign could act on lives there.
 
 A candidate is a count too. Every `novel` and `known` row binds the packet
 from a probe on its own work, whatever its `investigation_layer`; the claimed
