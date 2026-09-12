@@ -44,7 +44,7 @@ Generate each report with `campaign.py decompose-review-scaffold --opp <id>
 digest and the capture provenance digests, lists the rows at or above the
 story floor with their dispositions and bound packets, and lists the checks.
 The import refuses a PASS unless every check is true with its own evidence
-sentence naming an artifact and a number. The skeptic checks bijective
+sentence naming an artifact and a number. The skeptic runs `campaign.py depth-audit --story <story>` and treats every open (phase, class) whose rows the file closes on an ancestor's count as a counter the operator owes, not a closing: a count on the attribute set says the attribute changed, not that the fetch it triggered needed the full request pipeline (round 28). The skeptic checks bijective
 accounting, that every row above the floor closes by a packet, a
 `wrapper_of` chain or list (a list's rows together cover 80% of the
 wrapper's samples, overlapping rows counted once, with a packet the wrapper

@@ -47,6 +47,8 @@ not until a human releases the hold.
 
 ## Procedure
 
+0. Read [hypotheses.md](../hypotheses.md) before proposing a counter. A counter tests one class of hypothesis for one phase; the row it closes stays open for the other classes that phase must answer. `campaign.py depth-audit --story <story>` says which classes no packet in the story has probed for the phases whose rows above the floor rest on an ancestor's count; propose those counters first, and tag every reduction with `--hypothesis-class`. A `cache-hit-path` counter scopes the whole call and asks whether the answer already existed at entry; an `unchanged-input` counter asks `HasSeen(key)` and lets the reading say whether the engine's cache already serves the repeat.
+
 1. Start from the story's lens (`lens.md` next to the profile, or the
    "Story lens" and "Underneath the frontier" sections of STATUS): which
    trigger owns the story (forced layout from which JS API, frame update,

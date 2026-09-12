@@ -1195,6 +1195,7 @@ class Ledger:
             and opp.get("profile_id") == latest["id"]
         ]
         blockers = []
+        blockers.extend(depth_audit_blockers(self))
         expected = latest.get("area_count")
         if expected is not None and len(latest_discoveries) != expected:
             blockers.append(
@@ -3055,6 +3056,7 @@ def enforce_anchor_names_its_work(paths):
 READ_ONLY_COMMANDS = frozenset((
     "show", "next", "status", "probe-union", "probe-union-all", "decompose-scaffold",
     "cost-packet", "export-candidates", "show-remote", "rows", "packet", "candidates", "explain",
+    "depth-audit",
 ))
 MEASURED_DISPOSITIONS = ("mandatory", "no-qualifying-mechanism", "algorithmic")
 ALGORITHMIC_ATTENTION_PCT = 5.0
@@ -10158,6 +10160,296 @@ def cmd_audit(args):
     return 0
 
 
+# --- hypothesis depth audit (references/hypotheses.md) -------------------
+
+PHASE_HYPOTHESES = {
+    "style-recalc": ("unchanged-input", "redundant-trigger", "notification-fanout"),
+    "active-style-update": ("unchanged-input", "redundant-trigger", "notification-fanout"),
+    "layout": ("unchanged-input", "redundant-trigger", "unconsumed-result"),
+    "line-breaking": ("unchanged-input", "redundant-trigger", "unconsumed-result"),
+    "min-max-sizing": ("unchanged-input", "redundant-trigger", "unconsumed-result"),
+    "text-shaping": ("unchanged-input", "cache-hit-path", "unconsumed-result"),
+    "ink-overflow": ("unchanged-input", "cache-hit-path", "unconsumed-result"),
+    "prepaint": ("unchanged-input", "redundant-trigger", "unconsumed-result"),
+    "paint": ("unchanged-input", "redundant-trigger", "unconsumed-result"),
+    "layerization": ("unchanged-input", "redundant-trigger", "unconsumed-result"),
+    "hit-test": ("redundant-trigger", "unchanged-input"),
+    "html-parsing": ("unchanged-input", "copy-churn"),
+    "dom-mutation": ("no-op-mutation", "notification-fanout", "redundant-trigger"),
+    "attribute-change": ("no-op-mutation", "notification-fanout"),
+    "selector-query": ("unchanged-input", "cache-hit-path"),
+    "event-dispatch": ("notification-fanout", "redundant-trigger"),
+    "custom-element-reactions": ("notification-fanout",),
+    "text-input-state": ("redundant-trigger",),
+    "resource-loading": ("cache-hit-path", "unchanged-input"),
+    "bindings": ("copy-churn", "cache-hit-path", "unchanged-input"),
+    "canvas-2d": ("unchanged-input", "copy-churn", "redundant-trigger"),
+    "lifecycle": ("redundant-trigger",),
+}
+
+SITE_HYPOTHESIS_CLASS = {}
+for _sites, _cls in (
+    ("style/element-recalc-style css/element-rule-collector-calls css/element-rule-collector-calls-within-resolve "
+     "style/style-engine-rebuild-layout-tree style/update-active-style-shadow-root layout/box-cached-layout-result "
+     "layout/inline-layout-algorithm layout/oof-layout-part layout/simplified-layout-algorithm layout/layout-svg-text "
+     "paint/pre-paint-tree-walk paint/run-paint-lifecycle-phase paint/box-fragment-paint "
+     "compositing/layerizer-layerize-group fonts/shape-result-view-ink-bounds parser/parse-html-fragment "
+     "parser/domparser-parse-from-string dom/document-import-node dom/container-node-query-selector "
+     "dom/container-node-query-selector-all dom/htmlcollection-item dom/v8-nodelist-indexed-property "
+     "canvas/flush-canvas-internal", "unchanged-input"),
+    ("flex/min-max-sizes-func bindings/to-blink-string bindings/to-blink-atomic-string", "cache-hit-path"),
+    ("lifecycle/update-lifecycle-phases root/request-main-frame-update root/document-update-style-and-layout "
+     "root/update-style-and-layout-for-node hittest/layout-view-hit-test hittest/tree-scope-element-from-point "
+     "input/widget-base-update-text-input-state dom/detach-layout-tree canvas/canvas-2d-recorder-context-fill "
+     "canvas/canvas-2d-recorder-context-stroke", "redundant-trigger"),
+    ("dom/element-set-attribute-hinted dom/element-set-attribute-without-validation dom/input-set-value-binding "
+     "dom/container-node-append-child dom/container-node-append-children dom/container-node-insert-before "
+     "dom/container-node-remove-children", "no-op-mutation"),
+    ("events/event-dispatcher-dispatch custom-elements/pop-invoking-reactions", "notification-fanout"),
+):
+    for _site in _sites.split():
+        SITE_HYPOTHESIS_CLASS[_site] = _cls
+
+AUDIT_PHASE_PATTERNS = [
+    ("resource-loading", re.compile(r"blink::(ResourceFetcher|ImageLoader|ImageResource|MemoryCache|ResourceLoader|"
+                                    r"Resource::|PrepareResourceRequestForCacheAccess|HTMLImageElement::SelectSourceURL)")),
+    ("text-shaping", re.compile(r"blink::(HarfBuzzShaper|InlineNode::ShapeText|ShapeResult|PlainTextNode|PlainTextPainter|"
+                                r"CachingWordShaper|ShapeCache)")),
+    ("bindings", re.compile(r"blink::(String |AtomicString )?blink::ToBlinkString|blink::V8Union\w*::Create|"
+                            r"blink::V8PerContextData::CreateWrapper|blink::V8\w+::IndexedPropertyGetterCallback|"
+                            r"blink::bindings::")),
+    ("canvas-2d", re.compile(r"blink::(Canvas2DRecorderContext|BaseRenderingContext2D|Canvas2DResourceProvider|"
+                             r"CanvasRenderingContext2D)|cc::PaintOp")),
+    ("lifecycle", re.compile(r"blink::LocalFrameView::(UpdateLifecyclePhases|UpdateAllLifecyclePhases|UpdateStyleAndLayout)|"
+                             r"cc::LayerTreeHost::RequestMainFrameUpdate|blink::WidgetBase::UpdateVisualState|"
+                             r"blink::WebFrameWidgetImpl::UpdateLifecycle|blink::PageAnimator::UpdateAllLifecyclePhases|"
+                             r"blink::Document::UpdateStyleAndLayout")),
+]
+
+
+def audit_phase(symbol):
+    """The phase a function belongs to for the depth audit: the audit's own
+    table first (phases the lens does not name), then the lens'."""
+    symbol = symbol or ""
+    for name, pattern in AUDIT_PHASE_PATTERNS:
+        if pattern.search(symbol):
+            return name
+    try:
+        import campaign_lens
+        phase = campaign_lens.own_phase(symbol)
+        if phase:
+            return phase
+    except ImportError:
+        pass
+    try:
+        import story_lens
+        phase = story_lens.own_phase_of(symbol)
+        if phase:
+            return phase
+    except ImportError:
+        pass
+    return "other"
+
+
+def packet_hypothesis_class(packet):
+    cls = packet.get("hypothesis_class")
+    if cls:
+        return cls
+    return SITE_HYPOTHESIS_CLASS.get(str(packet.get("site") or ""))
+
+
+def story_probed_classes(campaign_dir, story):
+    """{phase: {class}} probed in the story by any packet under evidence/,
+    plus the classes a lifecycle-root redundant-trigger packet covers."""
+    import redundancy_evidence
+    probed = collections.defaultdict(set)
+    root_trigger = False
+    for path in sorted(pathlib.Path(campaign_dir).glob("evidence/*.json")):
+        try:
+            packet = redundancy_evidence.load_packet(path)
+        except (ValueError, OSError):
+            continue
+        if packet.get("target_story") != story or not packet.get("site"):
+            continue
+        if float(packet.get("calls_per_repetition_mean") or 0.0) <= 0:
+            continue
+        cls = packet_hypothesis_class(packet)
+        if not cls:
+            continue
+        phase = audit_phase(str(packet.get("scope_symbol") or packet.get("probe_symbol") or ""))
+        probed[phase].add(cls)
+        if phase == "lifecycle" and cls == "redundant-trigger":
+            root_trigger = True
+    return probed, root_trigger
+
+
+def hypothesis_exclusions(ledger):
+    return list(ledger.data.get("hypothesis_exclusions") or [])
+
+
+def open_hypotheses(phase, probed, root_trigger, exclusions, story):
+    """Classes the phase must answer that no packet in the story has probed
+    and no host exclusion covers."""
+    required = PHASE_HYPOTHESES.get(phase, ())
+    have = set(probed.get(phase, set()))
+    if root_trigger:
+        have.add("redundant-trigger")
+    excluded = {e["class"] for e in exclusions
+                if e.get("phase") == phase and e.get("story") in (story, "*")}
+    return [c for c in required if c not in have and c not in excluded], sorted(excluded & set(required))
+
+
+def depth_audit(ledger, story=None, profile=None):
+    """Per story and phase: rows at/above the floor closed by an ancestor's
+    count, and the hypothesis classes never probed for that phase in that
+    story. Returns a list of dicts, one per (story, phase) with open
+    classes or ancestor-closed rows."""
+    import redundancy_evidence
+    cfg = ledger.data["config"]
+    profiles = ledger.data.get("profile_runs") or []
+    latest = profile or (profiles[-1] if profiles else None)
+    if latest is None:
+        return []
+    out = []
+    by_story = collections.defaultdict(list)
+    for opp in ledger.data["opportunities"]:
+        if opp.get("kind") != "discovery" or not opp.get("path_accounting"):
+            continue
+        if opp.get("profile_id") != latest["id"]:
+            continue
+        if story and opp.get("target_story") != story:
+            continue
+        by_story[opp["target_story"]].append(opp)
+    for target, opps in sorted(by_story.items()):
+        floor = max(story_floor_pct(cfg, target)[0], float(cfg.get("share_floor_pct") or 0.0))
+        rows = []
+        packets = {}
+        for opp in opps:
+            for index, row in enumerate(opp["path_accounting"], 1):
+                if row.get("disposition") not in MEASURED_DISPOSITIONS:
+                    continue
+                share = row.get("story_profile_share_pct")
+                if share is None:
+                    share = row.get("share_pct")
+                try:
+                    share = float(share)
+                except (TypeError, ValueError):
+                    continue
+                if share < floor:
+                    continue
+                ref = (row.get("redundancy_evidence") or {}).get("path")
+                if not ref:
+                    continue
+                if ref not in packets:
+                    path = pathlib.Path(ref)
+                    if not path.is_absolute():
+                        path = pathlib.Path(ledger.dir) / path
+                    try:
+                        packets[ref] = redundancy_evidence.load_packet(path)
+                    except (ValueError, OSError):
+                        packets[ref] = None
+                packet = packets[ref]
+                if not packet:
+                    continue
+                rows.append((opp["id"], index, row, share, packet))
+        if not rows:
+            continue
+        # own function / descendant / ancestor, by the probed function's
+        # inclusive weight against the row's in the story's stacks
+        anchors = {r[2]["anchor"] for r in rows}
+        symbols = {str(r[4].get("probe_symbol") or "") for r in rows}
+        files = collapsed_stack_files(latest, target)
+        anchor_w, symbol_w, both_w = ({}, {}, {})
+        if files:
+            anchor_w, symbol_w, both_w = anchor_symbol_weights(files, anchors, symbols)
+        probed, root_trigger = story_probed_classes(ledger.dir, target)
+        exclusions = hypothesis_exclusions(ledger)
+        per_phase = collections.defaultdict(list)
+        for opp_id, index, row, share, packet in rows:
+            sym = str(packet.get("probe_symbol") or "")
+            anchor = row["anchor"]
+            if symbol_matches(anchor, sym):
+                continue
+            rw = anchor_w.get(anchor, 0.0)
+            sw = symbol_w.get(sym, 0.0)
+            if files and not (sw > rw * 1.05):
+                continue  # a descendant's packet: the row's own work is counted beneath it
+            per_phase[audit_phase(anchor)].append((opp_id, index, share, anchor, packet.get("site")))
+        for phase, items in sorted(per_phase.items()):
+            open_classes, excluded = open_hypotheses(phase, probed, root_trigger, exclusions, target)
+            out.append({
+                "story": target, "phase": phase, "floor_pct": round(floor, 3),
+                "rows": sorted(items, key=lambda x: -x[2]),
+                "share_pct": round(sum(x[2] for x in items), 3),
+                "open": open_classes, "excluded": excluded,
+                "probed": sorted(probed.get(phase, set()) | ({"redundant-trigger"} if root_trigger else set())),
+            })
+    return out
+
+
+def depth_audit_blockers(ledger):
+    """Exhaustion blockers from the depth audit: a (story, phase) with rows
+    at/above the floor closed by an ancestor's count and a class no packet
+    probed and no host exclusion covers."""
+    blockers = []
+    try:
+        entries = depth_audit(ledger)
+    except CampaignError as exc:
+        return [f"depth audit could not run: {exc}"]
+    for entry in entries:
+        if entry["open"]:
+            blockers.append(
+                f"{entry['story']} {entry['phase']}: {len(entry['rows'])} row(s) at/above the floor "
+                f"({entry['share_pct']:.2f}%) close on an ancestor's count and no packet probed "
+                f"{entry['open']} for that phase (campaign.py depth-audit)"
+            )
+    return blockers
+
+
+def cmd_depth_audit(args):
+    """Rows at/above the floor closed by an ancestor's count, per story and
+    phase, with the hypothesis classes never probed for that phase."""
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    entries = depth_audit(ledger, story=args.story)
+    if not entries:
+        print("depth audit: no row at/above a floor closes on an ancestor's count")
+        return 0
+    open_total = 0
+    for entry in entries:
+        flag = "OPEN" if entry["open"] else ("excluded" if entry["excluded"] else "probed")
+        print(f"{entry['story']}  {entry['phase']}  {len(entry['rows'])} row(s) {entry['share_pct']:.2f}% "
+              f"(floor {entry['floor_pct']:.3f}%)  [{flag}]")
+        print(f"    probed: {entry['probed'] or '-'}  open: {entry['open'] or '-'}  excluded: {entry['excluded'] or '-'}")
+        for opp_id, index, share, anchor, site in entry["rows"][:6]:
+            print(f"    #{opp_id} row {index:2d} {share:6.2f}%  {anchor[:70]}  <- {site}")
+        if len(entry["rows"]) > 6:
+            print(f"    ... {len(entry['rows']) - 6} more")
+        open_total += bool(entry["open"])
+    print(f"\n{open_total} (story, phase) pair(s) open; each needs a counter of the open class on a "
+          "function of that phase in that story (references/hypotheses.md), or a host exclusion "
+          "(campaign.py exclude-hypothesis).")
+    return 0
+
+
+def cmd_exclude_hypothesis(args):
+    """Host-recorded judgment that a hypothesis class does not apply to a
+    story's phase. The operator proposes; the host records."""
+    import redundancy_evidence
+    if args.hypothesis_class not in redundancy_evidence.HYPOTHESIS_CLASSES:
+        raise CampaignError(f"unknown class {args.hypothesis_class!r}; one of {redundancy_evidence.HYPOTHESIS_CLASSES}")
+    if args.phase not in PHASE_HYPOTHESES:
+        raise CampaignError(f"unknown phase {args.phase!r}; one of {sorted(PHASE_HYPOTHESES)}")
+    if len((args.note or "").strip()) < 20:
+        raise CampaignError("--note must say why the class does not apply (20+ characters)")
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    entries = ledger.data.setdefault("hypothesis_exclusions", [])
+    entries.append({"story": args.story, "phase": args.phase, "class": args.hypothesis_class,
+                    "note": args.note.strip(), "recorded": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+    ledger.save()
+    print(f"excluded {args.hypothesis_class} for {args.story} {args.phase}")
+    return 0
+
+
 def cmd_audit_exhaustion(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     blockers = ledger.exhaustion_blockers()
@@ -11102,6 +11394,16 @@ def build_parser():
     p.add_argument("--path", required=True, help="1-based row index, a list (2,8,12-15), or all")
     p.add_argument("--build", help="build id when the file binds no packet yet")
     p.set_defaults(func=cmd_explain)
+    p = sub.add_parser("depth-audit", help="Rows at/above the floor closed by an ancestor's count, per story and "
+                                           "phase, with the hypothesis classes never probed there (references/hypotheses.md)")
+    p.add_argument("--story", default=None)
+    p.set_defaults(func=cmd_depth_audit)
+    p = sub.add_parser("exclude-hypothesis", help="Host: record that a hypothesis class does not apply to a story's phase")
+    p.add_argument("--story", required=True, help="story name, or * for every story")
+    p.add_argument("--phase", required=True)
+    p.add_argument("--class", dest="hypothesis_class", required=True)
+    p.add_argument("--note", required=True)
+    p.set_defaults(func=cmd_exclude_hypothesis)
 
     return parser
 

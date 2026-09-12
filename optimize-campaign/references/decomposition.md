@@ -108,6 +108,14 @@ scaffold. `audit-exhaustion` is the final machine check.
 
 ## Closing by count
 
+A count closes a row for one hypothesis: the class the counter's key and
+predicate test ([hypotheses.md](hypotheses.md)). A row closed on an ancestor's
+packet is closed for the ancestor's hypothesis only; `campaign.py depth-audit`
+lists, per story and phase, the rows above the floor in that position and the
+classes no packet has probed for that phase, and exhaustion is refused while
+it has open entries. Every packet records its class
+(`redundancy_evidence.py --hypothesis-class`).
+
 `decompose` refuses a `mandatory` or `no-qualifying-mechanism` row whose
 profiler story share reaches the story floor unless it binds a
 `redundancy_evidence` packet measured on the target story and

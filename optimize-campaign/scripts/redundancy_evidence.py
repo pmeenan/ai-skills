@@ -61,6 +61,9 @@ _guard_import()
 
 ROW_PREFIX = "[SP3_REDUNDANCY_ROW] "
 APPLICABLE_SATURATED = 0.999
+# references/hypotheses.md
+HYPOTHESIS_CLASSES = ("unchanged-input", "no-op-mutation", "redundant-trigger", "cache-hit-path",
+                      "unconsumed-result", "notification-fanout", "copy-churn")
 SCHEMA_VERSION = 1
 
 
@@ -191,7 +194,7 @@ def reduce_rows(rows: list[dict], site: str, target_story: str) -> dict:
 
 def build_packet(logs: list[pathlib.Path], site: str, target_story: str,
                  probe_symbol: str | None = None, patch: pathlib.Path | None = None,
-                 scope_symbol: str | None = None) -> dict:
+                 scope_symbol: str | None = None, hypothesis_class: str | None = None) -> dict:
     """`probe_symbol` is the demangled function the RedundancyCounter sits in
     (a frame prefix as it appears in profile.collapsed); the gate uses it to
     check that the packet measured the row it is bound to. `patch` is the
@@ -219,6 +222,11 @@ def build_packet(logs: list[pathlib.Path], site: str, target_story: str,
         packet["probe_symbol"] = probe_symbol
     if scope_symbol:
         packet["scope_symbol"] = scope_symbol
+    if hypothesis_class is not None:
+        if hypothesis_class not in HYPOTHESIS_CLASSES:
+            raise ValueError(f"unknown hypothesis class {hypothesis_class!r}; one of "
+                             f"{', '.join(HYPOTHESIS_CLASSES)} (references/hypotheses.md)")
+        packet["hypothesis_class"] = hypothesis_class
     if patch is not None:
         if not patch.is_file():
             raise RedundancyError(f"probe patch not found: {patch}")
@@ -314,6 +322,9 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--patch", type=pathlib.Path, default=None,
                         help="saved instrumentation diff the twin was built from (recorded with its sha256)")
+    parser.add_argument("--hypothesis-class", default=None, choices=HYPOTHESIS_CLASSES,
+                        help="the class of hypothesis the counter's key and predicate test "
+                             "(references/hypotheses.md); recorded in the packet for depth-audit")
     parser.add_argument("--scope-symbol", default=None,
                         help="the function the scope is in when it is not --symbol: an inlined "
                              "callee with no frame of its own (e.g. blink::OutOfFlowLayoutPart::LayoutOOFNode "
@@ -323,7 +334,7 @@ def main(argv=None) -> int:
     try:
         packet = build_packet(args.browser_log, args.site, args.target_story,
                               probe_symbol=args.symbol, patch=args.patch,
-                              scope_symbol=args.scope_symbol)
+                              scope_symbol=args.scope_symbol, hypothesis_class=args.hypothesis_class)
     except RedundancyError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

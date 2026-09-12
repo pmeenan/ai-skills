@@ -1315,6 +1315,41 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         r = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, env=env)
         self.assertEqual(0, r.returncode, r.stderr)
 
+    def test_hypothesis_classes_are_recorded_and_audited(self):
+        """references/hypotheses.md: packets carry a class, old sites map to
+        one, phases name the classes they must answer, and the audit lists
+        what a story never probed."""
+        import redundancy_evidence, json as _json
+        for site, cls in campaign.SITE_HYPOTHESIS_CLASS.items():
+            self.assertIn(cls, redundancy_evidence.HYPOTHESIS_CLASSES, site)
+        for phase, classes in campaign.PHASE_HYPOTHESES.items():
+            for cls in classes:
+                self.assertIn(cls, redundancy_evidence.HYPOTHESIS_CLASSES, phase)
+        self.assertEqual("resource-loading", campaign.audit_phase("blink::ResourceFetcher::RequestResource(blink::FetchParameters&)"))
+        self.assertEqual("style-recalc", campaign.audit_phase("blink::Element::RecalcStyle(blink::StyleRecalcChange)"))
+        self.assertEqual("lifecycle", campaign.audit_phase("blink::LocalFrameView::UpdateLifecyclePhases(x)"))
+        self.assertEqual("other", campaign.audit_phase("memcpy"))
+        # A packet with a class, and the reducer refusing an unknown one.
+        log = self.dir / "logs" / "cls.log"
+        self.write_packet("cls", applicable=0.1, repeat=0.0, site="net/fetch", symbol="blink::ResourceFetcher::RequestResource")
+        pk = redundancy_evidence.build_packet([log], "net/fetch", STORY, probe_symbol="blink::ResourceFetcher::RequestResource",
+                                              patch=self.dir / "evidence" / "probes.patch", hypothesis_class="cache-hit-path")
+        self.assertEqual("cache-hit-path", pk["hypothesis_class"])
+        with self.assertRaisesRegex(ValueError, "unknown hypothesis class"):
+            redundancy_evidence.build_packet([log], "net/fetch", STORY, hypothesis_class="magic")
+        (self.dir / "evidence" / "cls.json").write_text(_json.dumps(pk))
+        probed, root = campaign.story_probed_classes(self.dir, STORY)
+        self.assertIn("cache-hit-path", probed["resource-loading"])
+        self.assertFalse(root)
+        open_classes, excluded = campaign.open_hypotheses("resource-loading", probed, root, [], STORY)
+        self.assertEqual(["unchanged-input"], open_classes)
+        exclusions = [{"story": "*", "phase": "resource-loading", "class": "unchanged-input"}]
+        open_classes, excluded = campaign.open_hypotheses("resource-loading", probed, root, exclusions, STORY)
+        self.assertEqual(([], ["unchanged-input"]), (open_classes, excluded))
+        # A lifecycle-root redundant-trigger packet answers that class for every phase.
+        open_classes, _ = campaign.open_hypotheses("layout", {}, True, [], STORY)
+        self.assertEqual(["unchanged-input", "unconsumed-result"], open_classes)
+
     def test_inspection_commands_answer_without_touching_internals(self):
         import argparse, io, contextlib
         packet = self.write_packet("insp", applicable=0.3, repeat=0.1, site="a/one", symbol="One")
