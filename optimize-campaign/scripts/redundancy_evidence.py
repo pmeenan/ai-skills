@@ -22,6 +22,43 @@ import pathlib
 import statistics
 import sys
 
+
+def _guard_import():
+    """The gate is a command line, not a library. A scratch script that
+    imports it reaches into internals the gate does not see (rounds 26 and
+    28); one that calls `campaign.py`, `redundancy_evidence.py` and the
+    pre-check gets the same answers with provenance. The skill's own
+    scripts and tests import freely; a reviewer sets
+    OPTIMIZE_CAMPAIGN_ALLOW_IMPORT=1."""
+    import os as _os
+    import pathlib as _pathlib
+    import sys as _sys
+    if _os.environ.get("OPTIMIZE_CAMPAIGN_ALLOW_IMPORT"):
+        return
+    argv0 = _sys.argv[0] if _sys.argv else ""
+    name = _pathlib.Path(argv0).name
+    if "unittest" in argv0 or "pytest" in argv0 or name.startswith("test_"):
+        return
+    if argv0 and argv0 not in ("-c", "-m", "-"):
+        try:
+            entry = _pathlib.Path(argv0).resolve()
+        except OSError:
+            entry = None
+        root = _pathlib.Path(__file__).resolve().parent.parent.parent
+        if entry and root in entry.parents:
+            return
+    raise ImportError(
+        f"{_pathlib.Path(__file__).name} is the gate's command line, not a library: run "
+        "`campaign.py --dir <campaign> rows|packet|candidates|explain|...`, "
+        "`redundancy_evidence.py --site ...` or `precheck_decomposition.py` from a shell "
+        "script instead of importing it (a script that imports the gate is a private "
+        "tool the gate never sees)."
+    )
+
+
+_guard_import()
+
+
 ROW_PREFIX = "[SP3_REDUNDANCY_ROW] "
 APPLICABLE_SATURATED = 0.999
 SCHEMA_VERSION = 1

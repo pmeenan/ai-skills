@@ -114,18 +114,28 @@ profiler story share reaches the story floor unless it binds a
 `share × supported_avoidable_fraction(packet) < floor`, where the supported
 fraction is the larger of the packet's applicable and repeat *time*
 fractions (the call fractions, for a count-only packet, which cannot close
-a row at the floor anyway). A predicate that held on every call measured
-nothing: a saturated `applicable` (≥ 99.9%) drops out of the bound and the
-packet's repeat *time* fraction is its supported fraction, a repeat count of
-zero closing the row (a repeat-only counter declared `applicable=true` is
-sized by its repeats, never at 100% of its function). A key that is a
+a row at the floor anyway). A literal predicate (`true`, `false`, a
+`/*applicable=*/true` argument) that held on every call measured nothing: a
+saturated `applicable` (≥ 99.9%) drops out of the bound and the packet's
+repeat *time* fraction is its supported fraction, a repeat count of zero
+closing the row (a repeat-only counter declared `applicable=true` is sized
+by its repeats, never at 100% of its function). An expression predicate
+that held on every call measured everything: `FastGetAttribute(name) ==
+value` true on 100% of a story's attribute sets is a finding, the gate
+reads the patch to tell the two apart, and such a row does not close as
+mandatory (it is a candidate at the applicable time fraction). A key that is a
 pointer new on every call (fewer than two distinct values per repetition on
 a site called fewer than ten times) bounds nothing either way; the key
 names the inputs the hypothesis says are unchanged (text hash, constraint
 space, font, sheet list) and `applicable` states the condition under which
 the work could be skipped. When the arithmetic does not clear the floor the
 row is a `novel` candidate at that fraction, or the probe is re-keyed; it is
-never closed by prose. A packet closes only the work it measured: it
+never closed by prose. Every site with calls in the request's story on the request's build has a
+packet for that story on that build (`redundancy_evidence.py --target-story
+<story> --symbol <its function>` per site, one script for all of them): the
+nearest-packet rule, the callers' union and the coverage reference see only
+the packets that exist, and a site reduced in one story leaves every other
+story's checks blind. A packet closes only the work it measured: it
 records the probed function as `probe_symbol`, the C++ function the
 counter's scope is compiled into (with `--scope-symbol`, the function that
 scope is inlined into; never a V8 builtin or a JS frame above it, which

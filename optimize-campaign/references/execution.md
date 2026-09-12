@@ -31,8 +31,11 @@ file under `scratch/` run with `ssh <host> bash -s < script.sh`, kept for
 the report, and it calls those commands (`explain --path all` for every row
 of a file, `--path 2,8,12-15` for some). A script that does `import
 campaign` or `json.load`s a packet or a scaffold is the private tool this
-paragraph forbids, whatever file it lives in; a question the commands
-cannot answer is reported as a missing command.
+paragraph forbids, whatever file it lives in, and `campaign.py` and
+`redundancy_evidence.py` refuse the import (the skill's own scripts and
+tests excepted); a question the commands cannot answer is reported as a
+missing command. Editing a children file is `jq` or a heredoc, not
+`python3 -c`.
 
 Compress every remote transfer: use `scp -C` or `rsync -z`. Never remove the
 shared lock file to recover a job; inspect the holder and terminate the stale

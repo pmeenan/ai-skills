@@ -57,6 +57,43 @@ import shutil
 import mechanism_evidence as mechanism_contract
 import benchmark_adapters
 
+
+def _guard_import():
+    """The gate is a command line, not a library. A scratch script that
+    imports it reaches into internals the gate does not see (rounds 26 and
+    28); one that calls `campaign.py`, `redundancy_evidence.py` and the
+    pre-check gets the same answers with provenance. The skill's own
+    scripts and tests import freely; a reviewer sets
+    OPTIMIZE_CAMPAIGN_ALLOW_IMPORT=1."""
+    import os as _os
+    import pathlib as _pathlib
+    import sys as _sys
+    if _os.environ.get("OPTIMIZE_CAMPAIGN_ALLOW_IMPORT"):
+        return
+    argv0 = _sys.argv[0] if _sys.argv else ""
+    name = _pathlib.Path(argv0).name
+    if "unittest" in argv0 or "pytest" in argv0 or name.startswith("test_"):
+        return
+    if argv0 and argv0 not in ("-c", "-m", "-"):
+        try:
+            entry = _pathlib.Path(argv0).resolve()
+        except OSError:
+            entry = None
+        root = _pathlib.Path(__file__).resolve().parent.parent.parent
+        if entry and root in entry.parents:
+            return
+    raise ImportError(
+        f"{_pathlib.Path(__file__).name} is the gate's command line, not a library: run "
+        "`campaign.py --dir <campaign> rows|packet|candidates|explain|...`, "
+        "`redundancy_evidence.py --site ...` or `precheck_decomposition.py` from a shell "
+        "script instead of importing it (a script that imports the gate is a private "
+        "tool the gate never sees)."
+    )
+
+
+_guard_import()
+
+
 ACTIVE_GATES = ("investigating", "sized", "implementing", "review")
 FORWARD_TRANSITIONS = {
     "candidate": {"investigating", "sized"},
@@ -2845,6 +2882,81 @@ def counter_site_re(site):
         r'RedundancyCounter(?:\s+[A-Za-z_]\w*)?\s*\(\s*(?:[+ ]\s*)?"' + re.escape(site) + '"')
 
 
+_PATCH_TEXT_CACHE = {}
+_LITERAL_CACHE = {}
+
+
+def patch_applicable_is_literal(patch_text, site):
+    """True when the site's `applicable` is a literal (`true`, `false`, a
+    `/*applicable=*/true` argument) or cannot be found: a literal predicate
+    measured nothing. An expression that held on every call measured
+    everything (round 28: `FastGetAttribute(name) == value` true on 100% of a
+    story's attribute sets is a finding, not a saturated probe)."""
+    site_re = counter_site_re(site)
+    lines = patch_text.split("\n")
+    start = None
+    for index, line in enumerate(lines):
+        joined = line + ("\n" + lines[index + 1] if index + 1 < len(lines) else "")
+        if site_re.search(joined):
+            start = index
+            break
+    if start is None:
+        return True
+    window = "\n".join(l[1:] for l in lines[start:start + 60] if l.startswith("+"))
+    m = re.search(r"SetApplicable\(\s*(.*?)\s*\)\s*;", window, re.S)
+    if not m:
+        m = re.search(r"RedundancyScope\s+\w+\s*\([^;]*?,[^;]*?,\s*(.*?)\s*\)\s*;", window, re.S)
+    if not m:
+        return True
+    arg = re.sub(r"/\*.*?\*/", "", m.group(1)).strip()
+    if arg in ("true", "false"):
+        return True
+    # a variable set only to literals above the scope
+    if re.fullmatch(r"\w+", arg):
+        assigns = re.findall(r"\b" + re.escape(arg) + r"\s*=\s*([^;]+);", window)
+        if assigns and all(a.strip() in ("true", "false") for a in assigns):
+            return True
+    return False
+
+
+def packet_applicable_literal(packet, campaign_dir):
+    """Whether the bound packet's `applicable` predicate is a literal, read
+    from the probe patch the packet records; cached per patch and site."""
+    rel = str(packet.get("patch") or "")
+    if not rel or not campaign_dir:
+        return True
+    key = (rel, str(packet.get("patch_sha256")), str(packet.get("site")))
+    if key in _LITERAL_CACHE:
+        return _LITERAL_CACHE[key]
+    path = pathlib.Path(rel)
+    if not path.is_absolute():
+        path = pathlib.Path(campaign_dir) / path
+    text = _PATCH_TEXT_CACHE.get(str(path))
+    if text is None:
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            text = ""
+        _PATCH_TEXT_CACHE[str(path)] = text
+    _LITERAL_CACHE[key] = patch_applicable_is_literal(text, str(packet.get("site")))
+    return _LITERAL_CACHE[key]
+
+
+def packet_supported(packet, campaign_dir):
+    """The packet's supported avoidable fraction as the gate closes with it:
+    the reducer's (max of the applicable and repeat time fractions; the
+    repeat fraction alone when a literal `applicable` saturated), except that
+    an expression predicate that held on every call is the whole function."""
+    import redundancy_evidence
+    supported = redundancy_evidence.supported_avoidable_fraction(packet)
+    if (float(packet.get("applicable_fraction") or 0.0) >= redundancy_evidence.APPLICABLE_SATURATED
+            and not packet_applicable_literal(packet, campaign_dir)):
+        if packet.get("time_weighted") and packet.get("applicable_time_fraction") is not None:
+            return max(supported or 0.0, float(packet["applicable_time_fraction"]))
+        return max(supported or 0.0, float(packet.get("applicable_fraction") or 0.0))
+    return supported
+
+
 def patch_hunk_before_counter(patch_text, site):
     """The text of the unified-diff hunk that defines `site`'s counter, from
     its @@ header down to the counter line."""
@@ -3174,7 +3286,7 @@ def enforce_wrapper_descent(paths, story_shares, profile, story, campaign_dir=No
             floor = base_floor
             if config is not None:
                 floor = max(story_floor_pct(config, story)[0], float(base_floor))
-            supported = redundancy_evidence.supported_avoidable_fraction(packet) or 0.0
+            supported = packet_supported(packet, campaign_dir) or 0.0
             upper = share * by_packet * supported
             item["wrapper_packet_share_pct"] = round(share * by_packet, 4)
             if floor and upper >= floor:
@@ -3234,7 +3346,7 @@ def enforce_measured_dispositions(
         require_build_id(packet, item)
         rel = (item.get("redundancy_evidence") or {}).get("path")
         counted = scope_counted_fraction(packet, item.get("anchor"), coverage, rel)
-        supported = redundancy_evidence.supported_avoidable_fraction(packet) * counted
+        supported = packet_supported(packet, campaign_dir) * counted
         upper = share * supported
         union = item.get("ancestor_union")
         if union and union.get("parts"):
@@ -3245,7 +3357,7 @@ def enforce_measured_dispositions(
                     sym = str(pk.get("probe_symbol") or "").strip()
                     if sym in union["parts"]:
                         readings[sym] = max(readings.get(sym, 0.0),
-                                            redundancy_evidence.supported_avoidable_fraction(pk) or 0.0)
+                                            packet_supported(pk, campaign_dir) or 0.0)
             worst = max(((share * frac * readings.get(sym, 0.0), sym, frac) for sym, frac in union["parts"].items()),
                         default=(0.0, None, 0.0))
             if worst[0] >= floor:
@@ -4584,6 +4696,28 @@ def enforce_sites_named(paths, bound_rows, story, campaign_dir):
             "Reduce each once (any story) with redundancy_evidence.py --symbol "
             "<function> so the gate knows which function every counter sits in."
         )
+    # ... and every site with calls in this story has a packet for this
+    # story: the nearest-packet rule, the callers' union and the coverage
+    # reference see only the packets that exist (round 28: 45 sites reduced
+    # in one story each, 577 site-story pairs with calls and no packet).
+    called = set()
+    for log in logs:
+        if not log.is_file():
+            continue
+        for row in redundancy_evidence.parse_rows(log):
+            if (redundancy_evidence.story_of(row.get("group", "")) == story and row.get("site")
+                    and int(row.get("calls", 0) or 0) > 0):
+                called.add(row["site"])
+    have = set(story_site_packets(campaign_dir, story, build))
+    unreduced = sorted(site for site in called if site not in have)
+    if unreduced:
+        raise CampaignError(
+            f"{len(unreduced)} counter site(s) ran in {story!r} on build {build[:12]} and "
+            f"have no packet for that story on that build: {unreduced}. Every site with "
+            "calls in the story is reduced for the story (redundancy_evidence.py "
+            "--target-story <story> --symbol <its function>) before a request on it: the "
+            "gate's nearest, union and coverage checks see only the packets that exist."
+        )
     return symbols
 
 
@@ -4650,7 +4784,7 @@ def enforce_own_counters(paths, story_shares, config, base_floor, story, campaig
         if disposition in MEASURED_DISPOSITIONS:
             for site in own_sites:
                 for packet, rel in story_packets[site]:
-                    supported = redundancy_evidence.supported_avoidable_fraction(packet)
+                    supported = packet_supported(packet, campaign_dir)
                     supported *= scope_counted_fraction(packet, item.get("anchor"), coverage, rel)
                     upper = share * supported
                     if upper >= floor:
@@ -4823,12 +4957,12 @@ def enforce_nearest_packet(paths, story_shares, config, base_floor, story, campa
                 "descendant. Add that counter (say so in the report: the function, "
                 "the key, the applicable predicate) before staging the area again."
             )
-        supported = max(redundancy_evidence.supported_avoidable_fraction(pk)
+        supported = max(packet_supported(pk, campaign_dir)
                         * scope_counted_fraction(pk, anchor, coverage, rel)
                         for _, pk, rel in by_symbol[bound_symbol])
         upper = share * supported
         if upper >= floor:
-            reading = sorted((site, round(redundancy_evidence.supported_avoidable_fraction(pk), 3))
+            reading = sorted((site, round(packet_supported(pk, campaign_dir), 3))
                              for site, pk, _ in by_symbol[bound_symbol])
             raise CampaignError(
                 f"Path {index} ({anchor[:80]!r}) closes as {item.get('disposition')} on "
@@ -5343,7 +5477,7 @@ def bind_redundancy_evidence(path_item, story, fraction, campaign_dir, coverage=
     applicable_time = float(packet["applicable_time_fraction"])
     repeat_time = float(packet["repeat_time_fraction"])
     if hypothesis == "applicable":
-        if applicable >= APPLICABLE_SATURATED:
+        if applicable >= APPLICABLE_SATURATED and packet_applicable_literal(packet, campaign_dir):
             raise CampaignError(
                 f"Path {path_item['anchor']!r} binds packet {packet['site']!r} "
                 f"whose applicable predicate held on {applicable:.0%} of "
@@ -10299,7 +10433,7 @@ def explain_row(args, index):
         relevant = max(row_side, probe_side) >= PACKET_RELEVANCE
         distance = abs(math.log(weight / row_w)) if weight > 0 and row_w > 0 else float("inf")
         for site, packet, rel in entries:
-            supported = redundancy_evidence.supported_avoidable_fraction(packet) or 0.0
+            supported = packet_supported(packet, ledger.dir) or 0.0
             counted = scope_counted_fraction(packet, anchor, coverage, rel)
             candidates.append((symbol, site, rel, row_side, probe_side, weight / row_w if row_w else 0.0,
                                coverage.get(rel), supported * counted, relevant, distance, packet))
@@ -10329,7 +10463,7 @@ def explain_row(args, index):
     if own:
         for symbol in own:
             for site, packet, rel in by_symbol[symbol]:
-                supported = redundancy_evidence.supported_avoidable_fraction(packet) or 0.0
+                supported = packet_supported(packet, ledger.dir) or 0.0
                 counted = scope_counted_fraction(packet, anchor, coverage, rel)
                 upper = share * supported * counted
                 if upper < floor:

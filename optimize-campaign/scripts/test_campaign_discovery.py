@@ -1239,6 +1239,78 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         with self.assertRaisesRegex(campaign.CampaignError, "scope's own function"):
             campaign.load_bound_redundancy_packet(item, STORY, self.dir, missing_message="m")
 
+    def test_every_site_with_calls_in_the_story_is_reduced_for_it(self):
+        """Round 28: a site reduced in one story leaves the other stories'
+        nearest, union and coverage checks blind; every site with calls in
+        the request's story has a packet for that story on the build."""
+        one = self.write_packet("one", applicable=0.1, repeat=0.0, site="a/one", symbol="One")
+        # The same log carries a second site with calls in this story, reduced
+        # for another story only.
+        log = self.dir / "logs" / "one.log"
+        import json as _json
+        row = _json.loads(log.read_text().split("[SP3_REDUNDANCY_ROW] ", 1)[1].splitlines()[0])
+        row["site"] = "a/two"
+        other = dict(row, group="run|Other")
+        log.write_text(log.read_text() + "".join(f"[SP3_REDUNDANCY_ROW] {_json.dumps(r)}\n" for r in (row, other)))
+        patch = self.dir / "evidence" / "probes.patch"
+        patch.write_text(patch.read_text() + '+  new RedundancyCounter("a/two");\n')
+        import redundancy_evidence
+        pk = redundancy_evidence.build_packet([log], "a/one", STORY, probe_symbol="One", patch=patch)
+        (self.dir / "evidence" / "one.json").write_text(_json.dumps(pk))
+        one = {"path": "evidence/one.json", "sha256": campaign.sha256_file(self.dir / "evidence" / "one.json")}
+        two_other = redundancy_evidence.build_packet([log], "a/two", "Other", probe_symbol="Two", patch=patch)
+        (self.dir / "evidence" / "two-other.json").write_text(_json.dumps(two_other))
+        rows = [{"anchor": "One(int)", "disposition": "mandatory", "redundancy_evidence": one}]
+        with self.assertRaisesRegex(campaign.CampaignError, r"no packet for that story.*\['a/two'\]"):
+            campaign.enforce_sites_named(rows, [(1, rows[0])], STORY, self.dir)
+        two = redundancy_evidence.build_packet([log], "a/two", STORY, probe_symbol="Two", patch=patch)
+        (self.dir / "evidence" / "two.json").write_text(_json.dumps(two))
+        campaign.enforce_sites_named(rows, [(1, rows[0])], STORY, self.dir)
+
+    def test_an_expression_predicate_that_always_held_is_a_finding(self):
+        """Round 28: `applicable = (FastGetAttribute(name) == value)` true on
+        every call is 100% same-value sets, not a probe that measured
+        nothing; a literal `true` still is."""
+        patch = self.dir / "evidence" / "expr.patch"
+        patch.parent.mkdir(parents=True, exist_ok=True)
+        patch.write_text("@@ -1,3 +1,9 @@\n void Element::SetAttr() {\n"
+                         '+  static thread_local RedundancyCounter c("dom/set-attr");\n'
+                         "+  bool applicable = (FastGetAttribute(name) == value);\n"
+                         "+  RedundancyScope scope(c, key, applicable);\n")
+        self.assertFalse(campaign.patch_applicable_is_literal(patch.read_text(), "dom/set-attr"))
+        literal = ('+  new RedundancyCounter("dom/lit");\n+  RedundancyScope scope(counter, key, /*applicable=*/true);\n')
+        self.assertTrue(campaign.patch_applicable_is_literal(literal, "dom/lit"))
+        via_var = ('+  new RedundancyCounter("dom/var");\n+  bool app = true;\n+  scope.SetKey(k);\n+  scope.SetApplicable(app);\n')
+        self.assertTrue(campaign.patch_applicable_is_literal(via_var, "dom/var"))
+        self.assertTrue(campaign.patch_applicable_is_literal("nothing here", "dom/none"))
+        expr = self.write_packet("expr", applicable=1.0, repeat=0.0, site="dom/set-attr", symbol="blink::Element::SetAttr",
+                                 patch_name="expr.patch", distinct=100)
+        import json as _json
+        pk = _json.loads((self.dir / "evidence" / "expr.json").read_text())
+        self.assertAlmostEqual(0.0, __import__("redundancy_evidence").supported_avoidable_fraction(pk))
+        self.assertAlmostEqual(1.0, campaign.packet_supported(pk, self.dir))
+        config = {"share_floor_pct": 0.1, "calibration": {"story_mde_pct": {STORY: 0.5}}}
+        rows = [{"anchor": "blink::Element::SetAttr(int)", "disposition": "mandatory", "redundancy_evidence": expr}]
+        with self.assertRaisesRegex(campaign.CampaignError, "cannot close as mandatory"):
+            campaign.enforce_measured_dispositions(rows, {1: 5.0}, config, 0.1, STORY, self.dir)
+        # ... and a candidate may claim it under the applicable hypothesis.
+        item = {"anchor": "blink::Element::SetAttr(int)", "disposition": "novel", "mechanism_key": "dom/same-value",
+                "estimated_avoidable_fraction": 1.0, "packet_hypothesis": "applicable", "redundancy_evidence": expr}
+        campaign.bind_redundancy_evidence(item, STORY, 1.0, self.dir)
+
+    def test_the_gate_refuses_to_be_imported_by_a_scratch_script(self):
+        import subprocess, sys, os
+        env = {k: v for k, v in os.environ.items() if k != "OPTIMIZE_CAMPAIGN_ALLOW_IMPORT"}
+        env["PYTHONPATH"] = str(pathlib.Path(campaign.__file__).parent)
+        r = subprocess.run([sys.executable, "-c", "import campaign"], capture_output=True, text=True, env=env)
+        self.assertNotEqual(0, r.returncode); self.assertIn("not a library", r.stderr)
+        script = self.dir / "private.py"; script.write_text("import redundancy_evidence\n")
+        r = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, env=env)
+        self.assertNotEqual(0, r.returncode); self.assertIn("not a library", r.stderr)
+        env["OPTIMIZE_CAMPAIGN_ALLOW_IMPORT"] = "1"
+        r = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, env=env)
+        self.assertEqual(0, r.returncode, r.stderr)
+
     def test_inspection_commands_answer_without_touching_internals(self):
         import argparse, io, contextlib
         packet = self.write_packet("insp", applicable=0.3, repeat=0.1, site="a/one", symbol="One")
