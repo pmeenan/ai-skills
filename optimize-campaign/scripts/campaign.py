@@ -10388,6 +10388,8 @@ def site_registry_issues(campaign_dir, registry):
         site = str(packet.get("site") or "")
         if not site or float(packet.get("calls_per_repetition_mean") or 0.0) <= 0:
             continue
+        if not packet.get("build_id"):
+            continue  # pre-build-id evidence binds nothing and probes nothing
         registered = registry.get(site)
         label = packet.get("hypothesis_class")
         if registered and (not label or label == registered):
@@ -10418,6 +10420,8 @@ def story_probed_classes(campaign_dir, story, registry=None):
             continue
         if float(packet.get("calls_per_repetition_mean") or 0.0) <= 0:
             continue
+        if not packet.get("build_id"):
+            continue  # a packet with no build id is not evidence (require_build_id)
         cls = packet_hypothesis_class(packet, registry)
         if not cls:
             continue
