@@ -27,6 +27,14 @@ def load_tests(loader, tests, pattern):
 
 
 class DiscoveryRepairTest(test_campaign.CampaignTest):
+    def setUp(self):
+        super().setUp()
+        # A candidate claims only on a site whose class the host registered
+        # (round 32); the fixtures' sites are registered here once.
+        for site in ("probe/site", "layout/oof", "dom/set-attr", "style/recalc"):
+            campaign.main(["--dir", str(self.dir), "register-site", "--site", site, "--class", "unchanged-input",
+                           "--note", "test fixture: the key names the row's input"])
+
 
     # ---------------- helpers ----------------
 
@@ -826,8 +834,14 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         ledger = campaign.Ledger(self.dir).load()
         ledger.data["profile_runs"] = [profile]
         ledger.data["config"]["calibration"] = {"story_mde_pct": {"A": 0.5, "B": 0.5}}
+        # An unregistered site is not sized: the host records its class first.
+        out = campaign.probe_union_rows(ledger, [str(log)], "x/y", "Probe")
+        self.assertFalse(any(r["qualifies"] for r in out))
+        self.assertIn("register-site", out[0]["not_sized"])
+        ledger.data["site_hypothesis_classes"] = {"x/y": {"class": "no-op-mutation", "note": "n"}}
         out = campaign.probe_union_rows(ledger, [str(log)], "x/y", "Probe")
         by = {r["story"]: r for r in out}
+        self.assertEqual("no-op-mutation", by["A"]["hypothesis_class"])
         self.assertAlmostEqual(40.0, by["A"]["symbol_share_pct"])
         self.assertAlmostEqual(20.0, by["A"]["impact_pct"])
         self.assertTrue(by["A"]["qualifies"])
@@ -857,6 +871,53 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             "applicable_ns": 0, "repeated_ns": 0, "build_id": "c" * 40, "timing": "exclusive", "nested_calls": 0}) + "\n")
         with self.assertRaisesRegex(campaign.CampaignError, "One union, one build"):
             campaign.probe_union_rows(ledger, [str(log), str(other)], "x/y", "Probe")
+
+    def test_probe_union_sizes_by_the_site_class(self):
+        """A key-repeat sizes only an unchanged-input site (a fragment keyed
+        without its paint phase read 79-88% repeats in round 32); a predicate
+        that held on every call sizes a no-op-mutation, unchanged-input or
+        cache-hit-path site at the whole function and any other class at
+        nothing."""
+        story_dir = self.dir / "results" / "analysis" / "stories"
+        profile = {"id": "p", "capture_provenance": [{"capture_id": "c1", "story_frontiers": []}]}
+        d = story_dir / "A"; d.mkdir(parents=True)
+        (d / "candidate_frontier.json").write_text("{}")
+        (d / "profile.collapsed").write_text("main;Root;Probe() 40\nmain;Other() 60\n")
+        profile["capture_provenance"][0]["story_frontiers"].append({"story": "A", "artifact": str(d / "candidate_frontier.json")})
+        ledger = campaign.Ledger(self.dir).load()
+        ledger.data["profile_runs"] = [profile]
+        ledger.data["config"]["calibration"] = {"story_mde_pct": {"A": 0.5}}
+        patch = self.dir / "evidence" / "probes.patch"; patch.parent.mkdir(exist_ok=True)
+        patch.write_text("+  static thread_local auto* c = new RedundancyCounter(\"x/y\");\n"
+                         "+  bool applicable = !HasObservers();\n"
+                         "+  RedundancyScope s(*c, key, applicable);\n")
+        def log_with(applicable, repeated):
+            log = self.dir / "logs" / "union.log"; log.parent.mkdir(exist_ok=True)
+            log.write_text("[SP3_REDUNDANCY_ROW] " + json.dumps({
+                "schema_version": 1, "site": "x/y", "group": "run|A", "calls": 100,
+                "applicable_calls": applicable, "distinct_inputs": 100 - repeated, "repeated_inputs": repeated,
+                "overflow": 0, "timed_calls": 100, "total_ns": 100000, "applicable_ns": applicable * 1000,
+                "repeated_ns": repeated * 1000, "build_id": "b" * 40, "timing": "exclusive", "nested_calls": 0}) + "\n")
+            return str(log)
+        log = log_with(applicable=1, repeated=80)
+        ledger.data["site_hypothesis_classes"] = {"x/y": {"class": "unconsumed-result"}}
+        row = campaign.probe_union_rows(ledger, [log], "x/y", "Probe", patch=str(patch))[0]
+        self.assertAlmostEqual(0.4, row["impact_pct"])  # 40% x applicable 0.01, not x repeat 0.80
+        self.assertFalse(row["qualifies"])
+        ledger.data["site_hypothesis_classes"] = {"x/y": {"class": "unchanged-input"}}
+        row = campaign.probe_union_rows(ledger, [log], "x/y", "Probe", patch=str(patch))[0]
+        self.assertAlmostEqual(32.0, row["impact_pct"])
+        self.assertTrue(row["qualifies"])
+        # Saturated: a no-op-mutation site's finding is the whole function; a
+        # notification-fanout site's is nothing.
+        log = log_with(applicable=100, repeated=0)
+        ledger.data["site_hypothesis_classes"] = {"x/y": {"class": "no-op-mutation"}}
+        row = campaign.probe_union_rows(ledger, [log], "x/y", "Probe", patch=str(patch))[0]
+        self.assertAlmostEqual(40.0, row["impact_pct"]); self.assertTrue(row["qualifies"])
+        ledger.data["site_hypothesis_classes"] = {"x/y": {"class": "notification-fanout"}}
+        row = campaign.probe_union_rows(ledger, [log], "x/y", "Probe", patch=str(patch))[0]
+        self.assertAlmostEqual(0.0, row["impact_pct"]); self.assertFalse(row["qualifies"])
+        self.assertIn("separated nothing", row["not_sized"])
 
     def test_a_decomposition_without_a_count_is_open_work(self):
         ledger = campaign.Ledger(self.dir).load()
@@ -1338,9 +1399,29 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         with self.assertRaisesRegex(ValueError, "unknown hypothesis class"):
             redundancy_evidence.build_packet([log], "net/fetch", STORY, hypothesis_class="magic")
         (self.dir / "evidence" / "cls.json").write_text(_json.dumps(pk))
+        # The packet's label is the operator's word; the class the audit
+        # counts is the site's registered one, and the label must agree.
         probed, root = campaign.story_probed_classes(self.dir, STORY)
+        self.assertNotIn("resource-loading", probed)
+        issues = campaign.site_registry_issues(self.dir, campaign.site_class_registry_from_dir(self.dir))
+        self.assertEqual({"net/fetch"}, set(issues)); self.assertIsNone(issues["net/fetch"]["registered"])
+        self.assertIn("register-site", campaign.site_registry_issue_text("net/fetch", issues["net/fetch"]))
+        registry = dict(campaign.SITE_HYPOTHESIS_CLASS, **{"net/fetch": "unchanged-input"})
+        probed, root = campaign.story_probed_classes(self.dir, STORY, registry)
+        self.assertNotIn("resource-loading", probed)  # label cache-hit-path disagrees with the registry
+        self.assertEqual(["cache-hit-path"], campaign.site_registry_issues(self.dir, registry)["net/fetch"]["label"])
+        registry["net/fetch"] = "cache-hit-path"
+        self.assertEqual({}, campaign.site_registry_issues(self.dir, registry))
+        probed, root = campaign.story_probed_classes(self.dir, STORY, registry)
         self.assertIn("cache-hit-path", probed["resource-loading"])
         self.assertFalse(root)
+        # register-site writes the registry the audit reads.
+        rc = campaign.main(["--dir", str(self.dir), "register-site", "--site", "net/fetch", "--class", "cache-hit-path",
+                            "--note", "key: fetcher and URL; applicable: the memory cache held the resource at entry"])
+        self.assertEqual(0, rc)
+        self.assertEqual("cache-hit-path", campaign.site_class_registry_from_dir(self.dir)["net/fetch"])
+        probed, root = campaign.story_probed_classes(self.dir, STORY)
+        self.assertIn("cache-hit-path", probed["resource-loading"])
         open_classes, excluded = campaign.open_hypotheses("resource-loading", probed, root, [], STORY)
         self.assertEqual(["unchanged-input"], open_classes)
         exclusions = [{"story": "*", "phase": "resource-loading", "class": "unchanged-input"}]

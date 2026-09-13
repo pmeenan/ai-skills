@@ -5204,6 +5204,42 @@ def enforce_large_mandatory_rows(paths, story_shares, profile, story, campaign_d
             )
 
 
+SATURATION_SIZES_CLASSES = ("no-op-mutation", "unchanged-input", "cache-hit-path")
+
+
+def union_claim_bound(packet, cls, campaign_dir, app, rep_):
+    """What a story's candidate on this site may be sized at, by the site's
+    registered class: the predicate's time fraction for every class, the
+    key-repeat fraction only for an `unchanged-input` site (its key names
+    the input; any other class's key is an identity that repeats on every
+    call: round 32, a paint fragment keyed without its phase read 79-88%
+    "repeats"). A predicate that held on every call sizes a no-op-mutation,
+    unchanged-input or cache-hit-path site at the whole function (the r28
+    finding) and nothing else (a fan-out or unconsumed-result predicate that
+    never varied separated nothing). Returns (bound, reason-when-unsized)."""
+    import redundancy_evidence
+    if not cls:
+        return 0.0, ("site class unregistered: the host records what its key and predicate test "
+                     "(campaign.py register-site) before the union sizes it")
+    saturated = float(packet.get("applicable_fraction") or 0.0) >= redundancy_evidence.APPLICABLE_SATURATED
+    if saturated and app is None:
+        if cls not in SATURATION_SIZES_CLASSES:
+            return 0.0, (f"the predicate held on every call of a {cls} site, so it separated nothing; "
+                         "probe with a predicate that varies, or the host excludes the class for the phase")
+        if not packet_applicable_literal(packet, campaign_dir):
+            if packet.get("time_weighted") and packet.get("applicable_time_fraction") is not None:
+                app = float(packet["applicable_time_fraction"])
+            else:
+                app = float(packet.get("applicable_fraction") or 0.0)
+    bounds = [app] if app is not None else []
+    if cls == "unchanged-input" and rep_ is not None:
+        bounds.append(rep_)
+    if not bounds:
+        return 0.0, (f"applicable is a literal on a {cls} site and the key-repeat sizes only an "
+                     "unchanged-input site")
+    return max(bounds), None
+
+
 def probe_union_rows(ledger, logs, site, symbol, patch=None, scope_symbol=None, reference_cache=None):
     """One probe run over many stories, sized per story: for every story in
     the logs, the packet, the probed function's profile share, the bounds
@@ -5227,6 +5263,7 @@ def probe_union_rows(ledger, logs, site, symbol, patch=None, scope_symbol=None, 
         )
     profile = ledger.data["profile_runs"][-1] if ledger.data.get("profile_runs") else {}
     cfg = ledger.data["config"]
+    site_class = site_class_registry(ledger).get(site)
     out = []
     for story in stories:
         try:
@@ -5242,7 +5279,7 @@ def probe_union_rows(ledger, logs, site, symbol, patch=None, scope_symbol=None, 
         floor = max(story_floor_pct(cfg, story)[0], float(cfg.get("share_floor_pct", 0.0)))
         app = redundancy_evidence.hypothesis_bound(packet, "applicable")
         rep_ = redundancy_evidence.hypothesis_bound(packet, "repeat")
-        best = max([b for b in (app, rep_) if b is not None] or [0.0])
+        best, class_reason = union_claim_bound(packet, site_class, ledger.dir, app, rep_)
         coverage, coverage_reference = union_packet_coverage(
             ledger, profile, story, packet, symbol, share, files, reference_cache=reference_cache)
         counted = 1.0
@@ -5256,11 +5293,13 @@ def probe_union_rows(ledger, logs, site, symbol, patch=None, scope_symbol=None, 
             "story": story, "symbol_share_pct": share, "floor_pct": floor,
             "calls_per_repetition": packet["calls_per_repetition_mean"],
             "applicable_bound": app, "repeat_bound": rep_,
+            "hypothesis_class": site_class,
             "scope_symbol": scope_symbol, "scope_counted_fraction": counted,
             "impact_pct": (share * best) if share is not None else None,
             "coverage": coverage, "coverage_reference": coverage_reference,
-            "qualifies": (share is not None and share * best >= floor and covered),
-            "not_sized": (None if covered else
+            "qualifies": (share is not None and best > 0.0 and share * best >= floor and covered
+                          and class_reason is None),
+            "not_sized": (class_reason if class_reason else None if covered else
                           f"scope times {coverage:.2f} of {symbol!r}; a packet sizes a "
                           "function only when it timed the whole of it"),
             "build_id": packet.get("build_id"), "timing": packet.get("timing"),
@@ -5472,6 +5511,20 @@ def bind_redundancy_evidence(path_item, story, fraction, campaign_dir, coverage=
             "recalc-style's fraction while the recalc rows beneath it carried 3.3%)."
         )
     hypothesis = path_item.get("packet_hypothesis") or "applicable"
+    site_class = site_class_registry_from_dir(campaign_dir).get(str(packet.get("site") or ""))
+    if not site_class:
+        raise CampaignError(
+            f"Path {path_item['anchor']!r} claims on packet {packet['site']!r}, a site with no "
+            "registered hypothesis class; the host records what its key and predicate test "
+            "(campaign.py register-site) before a row claims on it"
+        )
+    if hypothesis == "repeat" and site_class != "unchanged-input":
+        raise CampaignError(
+            f"Path {path_item['anchor']!r} claims the repeat hypothesis on packet {packet['site']!r}, "
+            f"a {site_class} site: only an unchanged-input site's key names the input whose repeat is "
+            "repeated work; claim the applicable hypothesis, or key a counter on the input and "
+            "register it as unchanged-input"
+        )
     if hypothesis not in PACKET_HYPOTHESES:
         raise CampaignError(
             f"Path {path_item['anchor']!r} packet_hypothesis must be one of "
@@ -10258,17 +10311,92 @@ def audit_phase(symbol):
     return "other"
 
 
-def packet_hypothesis_class(packet):
-    cls = packet.get("hypothesis_class")
-    if cls:
-        return cls
-    return SITE_HYPOTHESIS_CLASS.get(str(packet.get("site") or ""))
+_SITE_REGISTRY_CACHE = {}
 
 
-def story_probed_classes(campaign_dir, story):
-    """{phase: {class}} probed in the story by any packet under evidence/,
-    plus the classes a lifecycle-root redundant-trigger packet covers."""
+def site_class_registry(ledger):
+    """Site -> hypothesis class the audit and the union trust: the skill's
+    table for the pre-existing sites, then the host's `register-site`
+    entries on the ledger (a later entry replaces an earlier one). A
+    packet's own `hypothesis_class` label is the operator's word; the class
+    is the host's (round 32: the operator proposed re-reducing a site under
+    another label to close an audit pair)."""
+    registry = dict(SITE_HYPOTHESIS_CLASS)
+    for site, entry in (ledger.data.get("site_hypothesis_classes") or {}).items():
+        registry[site] = entry.get("class") if isinstance(entry, dict) else entry
+    return registry
+
+
+def site_class_registry_from_dir(campaign_dir):
+    """The registry read straight from ledger.json (for the gate's helpers
+    that carry a campaign_dir, not a ledger); cached per file version."""
+    path = pathlib.Path(campaign_dir) / "ledger.json"
+    try:
+        stat = path.stat()
+        key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        return dict(SITE_HYPOTHESIS_CLASS)
+    if key in _SITE_REGISTRY_CACHE:
+        return _SITE_REGISTRY_CACHE[key]
+    registry = dict(SITE_HYPOTHESIS_CLASS)
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        data = {}
+    for site, entry in (data.get("site_hypothesis_classes") or {}).items():
+        registry[site] = entry.get("class") if isinstance(entry, dict) else entry
+    _SITE_REGISTRY_CACHE[key] = registry
+    return registry
+
+
+def packet_hypothesis_class(packet, registry=None):
+    """The class a packet counts for: its site's registered class, and only
+    when the packet's own label (if any) agrees. An unregistered site or a
+    disagreeing label counts for no class."""
+    registry = SITE_HYPOTHESIS_CLASS if registry is None else registry
+    registered = registry.get(str(packet.get("site") or ""))
+    if not registered:
+        return None
+    label = packet.get("hypothesis_class")
+    if label and label != registered:
+        return None
+    return registered
+
+
+def site_registry_issues(campaign_dir, registry):
+    """Packets under evidence/ with calls whose site is unregistered or
+    whose label disagrees with the registry: {site: {label, registered,
+    packets}}. Their classes count for nothing until the host registers the
+    site (`campaign.py register-site`)."""
     import redundancy_evidence
+    issues = {}
+    for path in sorted(pathlib.Path(campaign_dir).glob("evidence/*.json")):
+        try:
+            packet = redundancy_evidence.load_packet(path)
+        except (ValueError, OSError):
+            continue
+        site = str(packet.get("site") or "")
+        if not site or float(packet.get("calls_per_repetition_mean") or 0.0) <= 0:
+            continue
+        registered = registry.get(site)
+        label = packet.get("hypothesis_class")
+        if registered and (not label or label == registered):
+            continue
+        entry = issues.setdefault(site, {"label": set(), "registered": registered, "packets": 0})
+        if label:
+            entry["label"].add(str(label))
+        entry["packets"] += 1
+    return {site: {"label": sorted(e["label"]), "registered": e["registered"], "packets": e["packets"]}
+            for site, e in sorted(issues.items())}
+
+
+def story_probed_classes(campaign_dir, story, registry=None):
+    """{phase: {class}} probed in the story by any packet under evidence/,
+    plus the classes a lifecycle-root redundant-trigger packet covers. A
+    packet counts for its site's registered class (`site_class_registry`)."""
+    import redundancy_evidence
+    if registry is None:
+        registry = site_class_registry_from_dir(campaign_dir)
     probed = collections.defaultdict(set)
     root_trigger = False
     for path in sorted(pathlib.Path(campaign_dir).glob("evidence/*.json")):
@@ -10280,7 +10408,7 @@ def story_probed_classes(campaign_dir, story):
             continue
         if float(packet.get("calls_per_repetition_mean") or 0.0) <= 0:
             continue
-        cls = packet_hypothesis_class(packet)
+        cls = packet_hypothesis_class(packet, registry)
         if not cls:
             continue
         phase = audit_phase(str(packet.get("scope_symbol") or packet.get("probe_symbol") or ""))
@@ -10318,6 +10446,7 @@ def depth_audit(ledger, story=None, profile=None):
     if latest is None:
         return []
     out = []
+    registry = site_class_registry(ledger)
     by_story = collections.defaultdict(list)
     for opp in ledger.data["opportunities"]:
         if opp.get("kind") != "discovery" or not opp.get("path_accounting"):
@@ -10369,7 +10498,7 @@ def depth_audit(ledger, story=None, profile=None):
         anchor_w, symbol_w, both_w = ({}, {}, {})
         if files:
             anchor_w, symbol_w, both_w = anchor_symbol_weights(files, anchors, symbols)
-        probed, root_trigger = story_probed_classes(ledger.dir, target)
+        probed, root_trigger = story_probed_classes(ledger.dir, target, registry)
         exclusions = hypothesis_exclusions(ledger)
         per_phase = collections.defaultdict(list)
         for opp_id, index, row, share, packet in rows:
@@ -10399,6 +10528,8 @@ def depth_audit_blockers(ledger):
     at/above the floor closed by an ancestor's count and a class no packet
     probed and no host exclusion covers."""
     blockers = []
+    for site, issue in site_registry_issues(ledger.dir, site_class_registry(ledger)).items():
+        blockers.append(site_registry_issue_text(site, issue))
     try:
         entries = depth_audit(ledger)
     except CampaignError as exc:
@@ -10413,10 +10544,22 @@ def depth_audit_blockers(ledger):
     return blockers
 
 
+def site_registry_issue_text(site, issue):
+    if issue.get("registered"):
+        return (f"site {site!r}: {issue['packets']} packet(s) labelled {issue['label']} but the site is "
+                f"registered as {issue['registered']!r}; they count for no class (reduce with the "
+                "registered class, or the host re-registers the site)")
+    return (f"site {site!r}: {issue['packets']} packet(s) labelled {issue['label'] or '(none)'} on an "
+            "unregistered site; they count for no class until the host records what its key and "
+            "predicate test (campaign.py register-site --site ... --class ... --note ...)")
+
+
 def cmd_depth_audit(args):
     """Rows at/above the floor closed by an ancestor's count, per story and
     phase, with the hypothesis classes never probed for that phase."""
     ledger = Ledger(args.dir or default_campaign_dir()).load()
+    for site, issue in site_registry_issues(ledger.dir, site_class_registry(ledger)).items():
+        print(site_registry_issue_text(site, issue))
     entries = depth_audit(ledger, story=args.story)
     if not entries:
         print("depth audit: no row at/above a floor closes on an ancestor's count")
@@ -10454,6 +10597,24 @@ def cmd_exclude_hypothesis(args):
                     "note": args.note.strip(), "recorded": datetime.datetime.now(datetime.timezone.utc).isoformat()})
     ledger.save()
     print(f"excluded {args.hypothesis_class} for {args.story} {args.phase}")
+    return 0
+
+
+def cmd_register_site(args):
+    """Host-recorded class of a probe site: the hypothesis its key and
+    predicate test. The audit and the union count a packet for its site's
+    registered class only; a packet's own label must agree."""
+    import redundancy_evidence
+    if args.hypothesis_class not in redundancy_evidence.HYPOTHESIS_CLASSES:
+        raise CampaignError(f"unknown class {args.hypothesis_class!r}; one of {redundancy_evidence.HYPOTHESIS_CLASSES}")
+    if len((args.note or "").strip()) < 20:
+        raise CampaignError("--note must say what the key and predicate test (20+ characters)")
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    entries = ledger.data.setdefault("site_hypothesis_classes", {})
+    entries[args.site] = {"class": args.hypothesis_class, "note": args.note.strip(),
+                          "recorded": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+    ledger.save()
+    print(f"registered {args.site} as {args.hypothesis_class}")
     return 0
 
 
@@ -11414,6 +11575,12 @@ def build_parser():
     p.add_argument("--class", dest="hypothesis_class", required=True)
     p.add_argument("--note", required=True)
     p.set_defaults(func=cmd_exclude_hypothesis)
+
+    p = sub.add_parser("register-site", help="Host: record the hypothesis class a probe site's key and predicate test")
+    p.add_argument("--site", required=True, help="site name as passed to RedundancyCounter")
+    p.add_argument("--class", dest="hypothesis_class", required=True)
+    p.add_argument("--note", required=True, help="what the key names and what `applicable` states")
+    p.set_defaults(func=cmd_register_site)
 
     return parser
 

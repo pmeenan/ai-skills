@@ -114,7 +114,19 @@ packet is closed for the ancestor's hypothesis only; `campaign.py depth-audit`
 lists, per story and phase, the rows above the floor in that position and the
 classes no packet has probed for that phase, and exhaustion is refused while
 it has open entries. Every packet records its class
-(`redundancy_evidence.py --hypothesis-class`).
+(`redundancy_evidence.py --hypothesis-class`); the class it counts for is
+the site's registered one (`campaign.py register-site`, host only), and a
+candidate's claim follows it: `packet_hypothesis: repeat` is accepted on an
+`unchanged-input` site only, and no claim is accepted on an unregistered
+site.
+
+One site is one counter in one function. A site declared by several
+counters (three overloads of one function under one name, round 32) flushes
+several rows per scored window; the reducer merges them per window by the
+patch's declaration count (`counters` in the packet), and refuses a row
+count that is not a multiple of it. Without the patch every row is a
+repetition and the packet reads a fraction of the function's time; the
+union's coverage column shows it.
 
 `decompose` refuses a `mandatory` or `no-qualifying-mechanism` row whose
 profiler story share reaches the story floor unless it binds a

@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import json
 import pathlib
+import re
 import statistics
 import sys
 
@@ -124,7 +125,62 @@ def story_of(group: str) -> str:
     return group.rsplit("|", 1)[1] if "|" in group else group
 
 
-def reduce_rows(rows: list[dict], site: str, target_story: str) -> dict:
+def count_counter_declarations(patch_text: str, site: str) -> int:
+    """How many RedundancyCounter declarations the probe patch makes for
+    `site`. One site normally means one counter in one function; a site
+    declared in several overloads flushes several rows per scored window,
+    and the reducer merges them into one row per window (round 32: three
+    HarfBuzzShaper::Shape overloads under one site name read a third of the
+    function's time because every row counted as a repetition)."""
+    pattern = re.compile(
+        r'RedundancyCounter(?:\s+[A-Za-z_]\w*)?\s*\(\s*(?:[+ ]\s*)?"' + re.escape(site) + '"')
+    return len(pattern.findall(patch_text or ""))
+
+
+MERGED_ROW_FIELDS = ("calls", "applicable_calls", "distinct_inputs", "repeated_inputs",
+                     "timed_calls", "total_ns", "applicable_ns", "repeated_ns",
+                     "nested_calls", "thread_affinity_violations")
+
+
+def merge_counter_rows(selected: list[dict], site: str, target_story: str, counters: int) -> list[dict]:
+    """Rows of a site declared by `counters` counters, merged per flush: the
+    counters flush back to back, so in emission order every `counters`
+    consecutive rows are one scored window's."""
+    if len(selected) % counters:
+        raise RedundancyError(
+            f"site {site!r} is declared by {counters} counters in the patch but "
+            f"{target_story!r} logged {len(selected)} rows, not a multiple of {counters}; "
+            "every counter of a site must flush every window (declare each overload "
+            "under its own site name if they do not)"
+        )
+    ordered = sorted(enumerate(selected), key=lambda pair: (int(pair[1].get("emitted_monotonic_raw_ns") or 0), pair[0]))
+    merged = []
+    for start in range(0, len(ordered), counters):
+        chunk = [row for _, row in ordered[start:start + counters]]
+        out = dict(chunk[0])
+        for field in MERGED_ROW_FIELDS:
+            if any(field in row for row in chunk):
+                out[field] = sum(int(row.get(field, 0)) for row in chunk)
+        out["overflow"] = int(any(int(row.get("overflow", 0)) for row in chunk))
+        if any(row.get("timing") for row in chunk):
+            out["timing"] = "exclusive" if all(row.get("timing") == "exclusive" for row in chunk) else None
+        builds = {row.get("build_id") for row in chunk if row.get("build_id")}
+        if len(builds) > 1:
+            raise RedundancyError(
+                f"site {site!r} in {target_story!r} was logged by more than one build "
+                f"({sorted(builds)}); reduce one build's log at a time"
+            )
+        groups = {row.get("group") for row in chunk}
+        if len(groups) > 1:
+            raise RedundancyError(
+                f"site {site!r}: rows of one flush name {sorted(groups)}; the {counters} "
+                "counters of the site did not flush together"
+            )
+        merged.append(out)
+    return merged
+
+
+def reduce_rows(rows: list[dict], site: str, target_story: str, counters: int = 1) -> dict:
     selected = [
         row for row in rows
         if row["site"] == site and story_of(row["group"]) == target_story
@@ -137,6 +193,8 @@ def reduce_rows(rows: list[dict], site: str, target_story: str) -> dict:
     violations = sum(int(row.get("thread_affinity_violations", 0)) for row in selected)
     if violations:
         raise RedundancyError("redundancy counter was touched from another thread")
+    if counters > 1:
+        selected = merge_counter_rows(selected, site, target_story, counters)
     calls = [int(row["calls"]) for row in selected]
     timed = [int(row.get("timed_calls", 0)) for row in selected]
     total_ns = [int(row.get("total_ns", 0)) for row in selected]
@@ -170,6 +228,7 @@ def reduce_rows(rows: list[dict], site: str, target_story: str) -> dict:
         "site": site,
         "target_story": target_story,
         "repetitions": len(selected),
+        "counters": counters,
         "build_id": build_id,
         "timing": timing,
         "nested_calls_fraction": (sum(nested) / total_calls) if len(nested) == len(selected) else None,
@@ -210,7 +269,12 @@ def build_packet(logs: list[pathlib.Path], site: str, target_story: str,
             raise RedundancyError(f"browser log not found: {path}")
         rows.extend(parse_rows(path))
         sources.append({"path": str(path.resolve()), "sha256": sha256_file(path)})
-    summary = reduce_rows(rows, site, target_story)
+    counters = 1
+    if patch is not None:
+        if not patch.is_file():
+            raise RedundancyError(f"probe patch not found: {patch}")
+        counters = max(1, count_counter_declarations(patch.read_text(errors="replace"), site))
+    summary = reduce_rows(rows, site, target_story, counters=counters)
     packet = {
         "schema_version": SCHEMA_VERSION,
         "kind": "redundancy-evidence",

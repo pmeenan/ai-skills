@@ -117,6 +117,38 @@ class RedundancyEvidenceTest(unittest.TestCase):
         self.assertAlmostEqual(0.10, re_.supported_avoidable_fraction(packet))
         self.assertIsNone(packet["measured_avoidable_fraction_upper"])
 
+    def test_a_site_declared_by_several_counters_is_merged_per_flush(self):
+        """Three overloads under one site name flush three rows per window;
+        the reducer merges them by the patch's declaration count (round 32:
+        HarfBuzzShaper::Shape read a third of its time when every row was a
+        repetition)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            log = pathlib.Path(tmp) / "browser.chromium.log"
+            lines = []
+            for flush in (1, 2):
+                for k, (calls, ns) in enumerate(((10, 100), (30, 300), (60, 600))):
+                    line = row(site="fonts/shape", group="1|TodoMVC-React", calls=calls, applicable=calls // 10,
+                               distinct=calls, repeated=calls // 10, ns_per_call=ns // calls * 10)
+                    line = line.replace('"emitted_monotonic_raw_ns": 5', f'"emitted_monotonic_raw_ns": {flush * 1000 + k}')
+                    lines.append(line)
+            log.write_text("".join(lines))
+            patch = pathlib.Path(tmp) / "probes.patch"
+            patch.write_text('+  static thread_local auto* a = new RedundancyCounter("fonts/shape");\n'
+                             '+  static thread_local auto* b = new RedundancyCounter("fonts/shape");\n'
+                             '+  static thread_local auto* c = new RedundancyCounter("fonts/shape");\n')
+            packet = re_.build_packet([log], "fonts/shape", "TodoMVC-React", probe_symbol="blink::Shape", patch=patch)
+            self.assertEqual(3, packet["counters"])
+            self.assertEqual(2, packet["repetitions"])
+            self.assertEqual(100.0, packet["calls_per_repetition_mean"])
+            self.assertAlmostEqual(0.1, packet["applicable_fraction"])
+            # Without the patch every row is a repetition (the old reading).
+            packet = re_.build_packet([log], "fonts/shape", "TodoMVC-React", probe_symbol="blink::Shape")
+            self.assertEqual(6, packet["repetitions"])
+            # A count that is not a multiple of the declarations is refused.
+            log.write_text("".join(lines[:5]))
+            with self.assertRaisesRegex(re_.RedundancyError, "not a multiple of 3"):
+                re_.build_packet([log], "fonts/shape", "TodoMVC-React", probe_symbol="blink::Shape", patch=patch)
+
     def test_load_packet_rejects_other_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "x.json"
