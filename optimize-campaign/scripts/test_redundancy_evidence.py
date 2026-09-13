@@ -129,7 +129,7 @@ class RedundancyEvidenceTest(unittest.TestCase):
                 for k, (calls, ns) in enumerate(((10, 100), (30, 300), (60, 600))):
                     line = row(site="fonts/shape", group="1|TodoMVC-React", calls=calls, applicable=calls // 10,
                                distinct=calls, repeated=calls // 10, ns_per_call=ns // calls * 10)
-                    line = line.replace('"emitted_monotonic_raw_ns": 5', f'"emitted_monotonic_raw_ns": {flush * 1000 + k}')
+                    line = line.replace('"emitted_monotonic_raw_ns": 5', f'"emitted_monotonic_raw_ns": {flush * 100_000_000 + k}')
                     lines.append(line)
             log.write_text("".join(lines))
             patch = pathlib.Path(tmp) / "probes.patch"
@@ -144,9 +144,13 @@ class RedundancyEvidenceTest(unittest.TestCase):
             # Without the patch every row is a repetition (the old reading).
             packet = re_.build_packet([log], "fonts/shape", "TodoMVC-React", probe_symbol="blink::Shape")
             self.assertEqual(6, packet["repetitions"])
-            # A count that is not a multiple of the declarations is refused.
+            # A counter with no calls in a window emits no row: five rows are
+            # still two windows. More rows than counters in one flush is refused.
             log.write_text("".join(lines[:5]))
-            with self.assertRaisesRegex(re_.RedundancyError, "not a multiple of 3"):
+            packet = re_.build_packet([log], "fonts/shape", "TodoMVC-React", probe_symbol="blink::Shape", patch=patch)
+            self.assertEqual((2, 70.0), (packet["repetitions"], packet["calls_per_repetition_mean"]))
+            log.write_text("".join(lines + [lines[0]]))
+            with self.assertRaisesRegex(re_.RedundancyError, "one flush emitted 4 rows"):
                 re_.build_packet([log], "fonts/shape", "TodoMVC-React", probe_symbol="blink::Shape", patch=patch)
 
     def test_load_packet_rejects_other_json(self):

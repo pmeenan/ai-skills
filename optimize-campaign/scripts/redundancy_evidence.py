@@ -142,21 +142,33 @@ MERGED_ROW_FIELDS = ("calls", "applicable_calls", "distinct_inputs", "repeated_i
                      "nested_calls", "thread_affinity_violations")
 
 
+FLUSH_GAP_NS = 10_000_000  # rows of one flush are microseconds apart; flushes are a test step apart (>= 43 ms in round 32)
+
+
 def merge_counter_rows(selected: list[dict], site: str, target_story: str, counters: int) -> list[dict]:
     """Rows of a site declared by `counters` counters, merged per flush: the
-    counters flush back to back, so in emission order every `counters`
-    consecutive rows are one scored window's."""
-    if len(selected) % counters:
-        raise RedundancyError(
-            f"site {site!r} is declared by {counters} counters in the patch but "
-            f"{target_story!r} logged {len(selected)} rows, not a multiple of {counters}; "
-            "every counter of a site must flush every window (declare each overload "
-            "under its own site name if they do not)"
-        )
-    ordered = sorted(enumerate(selected), key=lambda pair: (int(pair[1].get("emitted_monotonic_raw_ns") or 0), pair[0]))
+    counters flush back to back on one thread, so the site's rows closer
+    than FLUSH_GAP_NS in emission order are one scored window's. A counter
+    with no calls in a window emits no row, so a window may hold fewer rows
+    than counters, never more."""
+    ordered = sorted(enumerate(selected), key=lambda pair: (
+        pair[1].get("pid"), pair[1].get("tid"), int(pair[1].get("emitted_monotonic_raw_ns") or 0), pair[0]))
+    groups = []
+    last = None
+    for _, row in ordered:
+        key = (row.get("pid"), row.get("tid"))
+        stamp = int(row.get("emitted_monotonic_raw_ns") or 0)
+        if last is None or key != last[0] or stamp - last[1] > FLUSH_GAP_NS:
+            groups.append([])
+        groups[-1].append(row)
+        last = (key, stamp)
     merged = []
-    for start in range(0, len(ordered), counters):
-        chunk = [row for _, row in ordered[start:start + counters]]
+    for chunk in groups:
+        if len(chunk) > counters:
+            raise RedundancyError(
+                f"site {site!r} in {target_story!r}: one flush emitted {len(chunk)} rows for a site "
+                f"declared by {counters} counter(s) in the patch; the patch and the log disagree"
+            )
         out = dict(chunk[0])
         for field in MERGED_ROW_FIELDS:
             if any(field in row for row in chunk):
@@ -169,12 +181,6 @@ def merge_counter_rows(selected: list[dict], site: str, target_story: str, count
             raise RedundancyError(
                 f"site {site!r} in {target_story!r} was logged by more than one build "
                 f"({sorted(builds)}); reduce one build's log at a time"
-            )
-        groups = {row.get("group") for row in chunk}
-        if len(groups) > 1:
-            raise RedundancyError(
-                f"site {site!r}: rows of one flush name {sorted(groups)}; the {counters} "
-                "counters of the site did not flush together"
             )
         merged.append(out)
     return merged

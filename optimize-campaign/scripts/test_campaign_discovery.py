@@ -1041,7 +1041,7 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
                     "applicable_calls": 1, "distinct_inputs": 10, "repeated_inputs": 0, "overflow": 0,
                     "timed_calls": 10, "total_ns": 10000, "applicable_ns": 1000, "repeated_ns": 0,
                     "build_id": "b" * 40, "timing": "exclusive", "nested_calls": 0,
-                    "emitted_monotonic_raw_ns": flush * 1000 + k}))
+                    "emitted_monotonic_raw_ns": flush * 100_000_000 + k}))
         log.write_text("".join(f"[SP3_REDUNDANCY_ROW] {r}\n" for r in rows))
         patch = self.dir / "evidence" / "multi.patch"
         patch.write_text("".join(f'+  static thread_local auto* c{k} = new RedundancyCounter("m/three");\n' for k in range(3)))
