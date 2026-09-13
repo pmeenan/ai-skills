@@ -1195,7 +1195,6 @@ class Ledger:
             and opp.get("profile_id") == latest["id"]
         ]
         blockers = []
-        blockers.extend(depth_audit_blockers(self))
         expected = latest.get("area_count")
         if expected is not None and len(latest_discoveries) != expected:
             blockers.append(
@@ -8589,6 +8588,13 @@ def cmd_exhaust(args):
             f"Discovery #{discovery['id']:03d} is {discovery['status']}; "
             "record the complete path-accounting decomposition before exhaustion"
         )
+    open_pairs = [e for e in depth_audit(ledger, story=discovery.get("target_story")) if e["open"]]
+    if open_pairs and not test_bypass_active():
+        raise CampaignError(
+            f"Discovery #{discovery['id']:03d} cannot be exhausted: the depth audit for "
+            f"{discovery.get('target_story')!r} has open hypothesis classes "
+            f"{[(e['phase'], e['open']) for e in open_pairs][:6]} (campaign.py depth-audit --story)"
+        )
     unresolved = [
         child for child in ledger.children(discovery["id"])
         if child["status"] not in MECHANISM_TERMINAL
@@ -10454,6 +10460,9 @@ def cmd_exclude_hypothesis(args):
 def cmd_audit_exhaustion(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     blockers = ledger.exhaustion_blockers()
+    # The hypothesis depth audit scans every story's stacks (minutes), so it
+    # runs here and in `exhaust`, never on a ledger save.
+    blockers.extend(depth_audit_blockers(ledger))
     if ledger.data.get("profile_runs"):
         blockers.extend(checkout_exhaustion_blockers(
             ledger,
