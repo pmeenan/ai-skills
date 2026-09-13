@@ -2801,9 +2801,19 @@ def verify_packet_provenance(packet, packet_path, campaign_dir):
         logs.append(log_path)
     if not logs:
         raise CampaignError(f"Packet {packet_path} records no browser log sources")
+    # Re-derive with the packet's own patch when it resolves: the reducer
+    # merges a site declared by several counters per flush by the patch's
+    # declaration count (the patch itself is checked below).
+    patch_for_reduction = None
+    if packet.get("patch"):
+        candidate = pathlib.Path(str(packet["patch"]))
+        if not candidate.is_absolute():
+            candidate = pathlib.Path(campaign_dir) / candidate
+        if candidate.is_file():
+            patch_for_reduction = candidate
     try:
         rebuilt = redundancy_evidence.build_packet(
-            logs, packet["site"], packet["target_story"])
+            logs, packet["site"], packet["target_story"], patch=patch_for_reduction)
     except ValueError as exc:
         raise CampaignError(
             f"Packet {packet_path} does not re-derive from its sources: {exc}"

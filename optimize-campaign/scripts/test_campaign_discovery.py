@@ -1029,6 +1029,32 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         campaign.enforce_evidence_provenance(self.dir, "b" * 40)
         # Another build's packets are not this request's evidence.
         campaign.enforce_evidence_provenance(self.dir, "c" * 40)
+        # A site declared by three counters re-derives with its patch (rows
+        # merged per flush); reduced without the patch it does not.
+        import redundancy_evidence
+        log = self.dir / "logs" / "multi.log"
+        rows = []
+        for flush in (1, 2):
+            for k in range(3):
+                rows.append(json.dumps({
+                    "schema_version": 1, "site": "m/three", "group": f"run|{STORY}", "calls": 10,
+                    "applicable_calls": 1, "distinct_inputs": 10, "repeated_inputs": 0, "overflow": 0,
+                    "timed_calls": 10, "total_ns": 10000, "applicable_ns": 1000, "repeated_ns": 0,
+                    "build_id": "b" * 40, "timing": "exclusive", "nested_calls": 0,
+                    "emitted_monotonic_raw_ns": flush * 1000 + k}))
+        log.write_text("".join(f"[SP3_REDUNDANCY_ROW] {r}\n" for r in rows))
+        patch = self.dir / "evidence" / "multi.patch"
+        patch.write_text("".join(f'+  static thread_local auto* c{k} = new RedundancyCounter("m/three");\n' for k in range(3)))
+        pk = redundancy_evidence.build_packet([log], "m/three", STORY, probe_symbol="Three", patch=patch)
+        self.assertEqual((3, 2), (pk["counters"], pk["repetitions"]))
+        (self.dir / "evidence" / "multi.json").write_text(json.dumps(pk))
+        campaign.enforce_evidence_provenance(self.dir, "b" * 40)
+        pk = redundancy_evidence.build_packet([log], "m/three", STORY, probe_symbol="Three")
+        pk["patch"] = str(patch); pk["patch_sha256"] = redundancy_evidence.sha256_file(patch)
+        (self.dir / "evidence" / "multi.json").write_text(json.dumps(pk))
+        with self.assertRaisesRegex(campaign.CampaignError, "(?s)do not re-derive.*repetitions is 6"):
+            campaign.enforce_evidence_provenance(self.dir, "b" * 40)
+        (self.dir / "evidence" / "multi.json").unlink()
 
     def test_an_anchor_is_the_function_its_work_refs_name(self):
         ref = lambda key: {"accounting": "primary", "capture_id": "c1", "entry_key": "e", "hotspot_key": key}
