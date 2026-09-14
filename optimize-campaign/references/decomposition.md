@@ -120,6 +120,21 @@ candidate's claim follows it: `packet_hypothesis: repeat` is accepted on an
 `unchanged-input` site only, and no claim is accepted on an unregistered
 site.
 
+A request binds packets from several builds (old rows keep their
+packets); there is no "request build". Builds are ordered by the browser
+logs their packets cite. A site's function and its readings are its
+newest build's: a row on a function that any site's newest counter sits
+in binds that site's newest packet for the story, and closes as
+`mandatory` only if every such site's bound is below the floor (round 33:
+a row on `InlineNode::ShapeText` closed on a round-32 counter reading
+zero while a round-33 counter on the same function read 50%). An older
+placement of a site name (a probe moved between builds) is superseded,
+readings included. The sites-named rule checks the newest build the
+request binds. A predicate that held on every call of a
+notification-fanout, unconsumed-result, redundant-trigger or copy-churn
+site bounds nothing but its key-repeat for closing: it separated nothing
+(hypotheses.md).
+
 One site is one counter in one function. A site declared by several
 counters (three overloads of one function under one name, round 32) flushes
 several rows per scored window; the reducer merges them per window by the
