@@ -71,8 +71,7 @@ def _guard_import():
     if _os.environ.get("OPTIMIZE_CAMPAIGN_ALLOW_IMPORT"):
         return
     argv0 = _sys.argv[0] if _sys.argv else ""
-    name = _pathlib.Path(argv0).name
-    if "unittest" in argv0 or "pytest" in argv0 or name.startswith("test_"):
+    if "unittest" in argv0 or "pytest" in argv0:
         return
     if argv0 and argv0 not in ("-c", "-m", "-"):
         try:
@@ -80,6 +79,9 @@ def _guard_import():
         except OSError:
             entry = None
         root = _pathlib.Path(__file__).resolve().parent.parent.parent
+        # The skill's own scripts and tests import freely; a scratch script
+        # named test_*.py outside the tree is a scratch script (round 33:
+        # ninety-three of them).
         if entry and root in entry.parents:
             return
     raise ImportError(
@@ -2961,6 +2963,16 @@ def packet_supported(packet, campaign_dir):
     supported = redundancy_evidence.supported_avoidable_fraction(packet)
     if (float(packet.get("applicable_fraction") or 0.0) >= redundancy_evidence.APPLICABLE_SATURATED
             and not packet_applicable_literal(packet, campaign_dir)):
+        cls = site_class_registry_from_dir(campaign_dir).get(str(packet.get("site") or ""))
+        if cls and cls not in SATURATION_SIZES_CLASSES:
+            # A fan-out, unconsumed-result or trigger predicate that held on
+            # every call separated nothing (round 32: no observer in any
+            # story); only its key-repeat bounds, when the key names an input.
+            if not redundancy_evidence.repeat_key_names_an_input(packet):
+                return 0.0
+            if packet.get("time_weighted") and packet.get("repeat_time_fraction") is not None:
+                return float(packet["repeat_time_fraction"])
+            return float(packet.get("repeat_fraction") or 0.0)
         if packet.get("time_weighted") and packet.get("applicable_time_fraction") is not None:
             return max(supported or 0.0, float(packet["applicable_time_fraction"]))
         return max(supported or 0.0, float(packet.get("applicable_fraction") or 0.0))
@@ -4653,7 +4665,8 @@ def build_site_symbols(campaign_dir, build_id):
 
 def story_site_packets(campaign_dir, story, build_id):
     """site -> [(packet, relative path)] for every time-weighted packet under
-    evidence/ that measured this story on this build."""
+    evidence/ that measured this story on this build, or on any build with
+    a build id when `build_id` is None."""
     import redundancy_evidence
     out = {}
     root = pathlib.Path(campaign_dir)
@@ -4662,12 +4675,44 @@ def story_site_packets(campaign_dir, story, build_id):
             packet = redundancy_evidence.load_packet(path)
         except (ValueError, OSError):
             continue
-        if packet.get("build_id") != build_id or not packet.get("time_weighted"):
+        if not packet.get("time_weighted") or not packet.get("build_id"):
+            continue
+        if build_id is not None and packet.get("build_id") != build_id:
             continue
         if packet.get("target_story") != story or not packet.get("site"):
             continue
         out.setdefault(packet["site"], []).append((packet, str(path.relative_to(root))))
     return out
+
+
+def all_site_symbols(campaign_dir):
+    """site -> {probed function} over every time-weighted packet with a build
+    id, whatever the build: the functions a site has sat in. A request binds
+    packets from several builds (old rows keep their packets), so the rules
+    about a row's own function look at every build, not at "the request's
+    build" (round 33: with two builds bound, the own-counter, sites-named
+    and nearest-packet rules skipped themselves, and a row on a function
+    a new counter reads at 50% closed on an older counter's zero)."""
+    import redundancy_evidence
+    symbols = {}
+    for path in sorted(pathlib.Path(campaign_dir, "evidence").glob("*.json")):
+        try:
+            packet = redundancy_evidence.load_packet(path)
+        except (ValueError, OSError):
+            continue
+        if not packet.get("build_id") or not packet.get("time_weighted"):
+            continue
+        symbol = str(packet.get("probe_symbol") or "").strip()
+        site = packet.get("site")
+        if symbol and site:
+            symbols.setdefault(site, set()).add(symbol)
+    return symbols
+
+
+def request_builds(paths, bound_rows, campaign_dir):
+    """Every build the request's bound packets came from."""
+    packets = bound_packets(paths, bound_rows, campaign_dir)
+    return sorted({pk.get("build_id") for pk, _ in packets.values()} - {None, ""})
 
 
 def request_build_and_logs(paths, bound_rows, campaign_dir):
@@ -4694,9 +4739,25 @@ def enforce_sites_named(paths, bound_rows, story, campaign_dir):
     can tell when a row's own function is counted. A site that ran and was
     never reduced is a count nobody looked at."""
     import redundancy_evidence
-    build, logs = request_build_and_logs(paths, bound_rows, campaign_dir)
-    if not build or not logs:
-        return {}
+    packets = bound_packets(paths, bound_rows, campaign_dir)
+    logs_by_build = {}
+    for pk, _ in packets.values():
+        build_id = pk.get("build_id")
+        if not build_id:
+            continue
+        for source in pk.get("sources") or []:
+            path = pathlib.Path(str(source.get("path", "")))
+            if not path.is_absolute():
+                path = pathlib.Path(campaign_dir) / path
+            logs_by_build.setdefault(build_id, set()).add(path)
+    merged = {}
+    for build in sorted(logs_by_build):
+        merged.update(_enforce_sites_named_on_build(build, sorted(logs_by_build[build]), story, campaign_dir))
+    return merged
+
+
+def _enforce_sites_named_on_build(build, logs, story, campaign_dir):
+    import redundancy_evidence
     symbols = build_site_symbols(campaign_dir, build)
     ran = set()
     for log in logs:
@@ -4752,14 +4813,14 @@ def enforce_own_counters(paths, story_shares, config, base_floor, story, campaig
     wrapper of the row beneath it.
     """
     import redundancy_evidence
-    build, _ = request_build_and_logs(paths, bound_rows, campaign_dir)
-    if not build:
+    if not request_builds(paths, bound_rows, campaign_dir):
         return
-    if site_symbols is None:
-        site_symbols = build_site_symbols(campaign_dir, build)
-    if not site_symbols:
+    symbols_all = all_site_symbols(campaign_dir)
+    for site, symbol in (site_symbols or {}).items():
+        symbols_all.setdefault(site, set()).update({symbol} if isinstance(symbol, str) else set(symbol))
+    if not symbols_all:
         return
-    story_packets = story_site_packets(campaign_dir, story, build)
+    story_packets = story_site_packets(campaign_dir, story, None)
     floor = max(story_floor_pct(config, story)[0], float(base_floor))
     for index, item in enumerate(paths, 1):
         disposition = item.get("disposition")
@@ -4768,8 +4829,8 @@ def enforce_own_counters(paths, story_shares, config, base_floor, story, campaig
         share = story_shares.get(index)
         if share is None or share < floor:
             continue
-        own_sites = sorted(site for site, symbol in site_symbols.items()
-                           if symbol_matches(item.get("anchor", ""), symbol))
+        own_sites = sorted(site for site, symbols in symbols_all.items()
+                           if any(symbol_matches(item.get("anchor", ""), symbol) for symbol in symbols))
         if not own_sites:
             continue
         if item.get("wrapper_of") is not None:
@@ -4784,8 +4845,8 @@ def enforce_own_counters(paths, story_shares, config, base_floor, story, campaig
         if unreduced:
             raise CampaignError(
                 f"Path {index} ({item['anchor'][:80]!r}) is itself a probed function "
-                f"(site(s) {unreduced}), but no packet for {story!r} on build "
-                f"{build[:12]} exists for it under evidence/. Reduce it for this story "
+                f"(site(s) {unreduced}), but no packet for {story!r} on any build "
+                "exists for it under evidence/. Reduce it for this story "
                 "and bind it: a row binds the count on its own function."
             )
         own_paths = {rel for site in own_sites for _, rel in story_packets[site]}
@@ -4810,9 +4871,9 @@ def enforce_own_counters(paths, story_shares, config, base_floor, story, campaig
                             f"on {bound!r}, but site {site!r} on the same function ({rel}) "
                             f"bounds the avoidable work at {supported:.3f} of {share:.3f}% = "
                             f"{upper:.3f}%, not below the {floor:.3f}% floor. Every counter "
-                            "on the function speaks: the row is novel or known at that "
-                            "site's fraction, or covered-by the mechanism row whose probe "
-                            "sits above it."
+                            "on the function speaks, on every build: the row is novel or "
+                            "known at that site's fraction, or covered-by the mechanism row "
+                            "whose probe sits above it."
                         )
         item["own_counters"] = own_sites
 
@@ -4864,10 +4925,9 @@ def enforce_nearest_packet(paths, story_shares, config, base_floor, story, campa
     """
     import math
     import redundancy_evidence
-    build, _ = request_build_and_logs(paths, bound_rows, campaign_dir)
-    if not build:
+    if not request_builds(paths, bound_rows, campaign_dir):
         return
-    story_packets = story_site_packets(campaign_dir, story, build)
+    story_packets = story_site_packets(campaign_dir, story, None)
     by_symbol = {}
     for site, entries in story_packets.items():
         for packet, rel in entries:
