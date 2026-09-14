@@ -4665,11 +4665,12 @@ def build_site_symbols(campaign_dir, build_id):
 
 def story_site_packets(campaign_dir, story, build_id):
     """site -> [(packet, relative path)] for every time-weighted packet under
-    evidence/ that measured this story on this build, or on any build with
-    a build id when `build_id` is None."""
+    evidence/ that measured this story on this build, or, when `build_id` is
+    None, on each site's newest build (`site_newest_build`)."""
     import redundancy_evidence
     out = {}
     root = pathlib.Path(campaign_dir)
+    newest = site_newest_build(campaign_dir) if build_id is None else None
     for path in sorted((root / "evidence").glob("*.json")):
         try:
             packet = redundancy_evidence.load_packet(path)
@@ -4679,33 +4680,92 @@ def story_site_packets(campaign_dir, story, build_id):
             continue
         if build_id is not None and packet.get("build_id") != build_id:
             continue
+        if build_id is None and packet.get("build_id") != newest.get(packet.get("site")):
+            continue
         if packet.get("target_story") != story or not packet.get("site"):
             continue
         out.setdefault(packet["site"], []).append((packet, str(path.relative_to(root))))
     return out
 
 
-def all_site_symbols(campaign_dir):
-    """site -> {probed function} over every time-weighted packet with a build
-    id, whatever the build: the functions a site has sat in. A request binds
-    packets from several builds (old rows keep their packets), so the rules
-    about a row's own function look at every build, not at "the request's
-    build" (round 33: with two builds bound, the own-counter, sites-named
-    and nearest-packet rules skipped themselves, and a row on a function
-    a new counter reads at 50% closed on an older counter's zero)."""
+_BUILD_ORDER_CACHE = {}
+
+
+def _evidence_packets(campaign_dir):
+    """(path, packet) for every time-weighted packet with a build id under
+    evidence/, read once per evidence-directory version."""
     import redundancy_evidence
-    symbols = {}
-    for path in sorted(pathlib.Path(campaign_dir, "evidence").glob("*.json")):
+    root = pathlib.Path(campaign_dir)
+    files = sorted((root / "evidence").glob("*.json"))
+    try:
+        key = (str(root.resolve()), len(files), max((f.stat().st_mtime_ns for f in files), default=0))
+    except OSError:
+        key = None
+    if key is not None and key in _BUILD_ORDER_CACHE:
+        return _BUILD_ORDER_CACHE[key]
+    out = []
+    for path in files:
         try:
             packet = redundancy_evidence.load_packet(path)
         except (ValueError, OSError):
             continue
-        if not packet.get("build_id") or not packet.get("time_weighted"):
+        if packet.get("build_id") and packet.get("time_weighted") and packet.get("site"):
+            out.append((path, packet))
+    if key is not None:
+        _BUILD_ORDER_CACHE.clear()
+        _BUILD_ORDER_CACHE[key] = out
+    return out
+
+
+def build_order(campaign_dir):
+    """build id -> the newest modification time of the browser logs its
+    packets cite: the order the builds were run in. Logs are written by the
+    run and never rewritten; packets are re-reduced now and then."""
+    root = pathlib.Path(campaign_dir)
+    order = {}
+    for path, packet in _evidence_packets(campaign_dir):
+        build = packet["build_id"]
+        order.setdefault(build, 0.0)
+        for source in packet.get("sources") or []:
+            log = pathlib.Path(str(source.get("path", "")))
+            if not log.is_absolute():
+                log = root / log
+            try:
+                order[build] = max(order[build], log.stat().st_mtime)
+            except OSError:
+                continue
+    return order
+
+
+def site_newest_build(campaign_dir):
+    """site -> the newest build that carries a packet for it. A counter's
+    function is where its newest build put it; an older placement of the
+    same site name (round 17's flex probe sat in ConstructAndAppendFlexItems,
+    round 22's in ComputeMinMaxSizes) is superseded, and so are its readings."""
+    order = build_order(campaign_dir)
+    newest = {}
+    for _, packet in _evidence_packets(campaign_dir):
+        site, build = packet["site"], packet["build_id"]
+        if site not in newest or order.get(build, 0.0) >= order.get(newest[site], 0.0):
+            newest[site] = build
+    return newest
+
+
+def all_site_symbols(campaign_dir):
+    """site -> {probed function} on the site's newest build. A request binds
+    packets from several builds (old rows keep their packets), so the rules
+    about a row's own function look at every site's newest counter, not at
+    "the request's build" (round 33: with two builds bound, the own-counter,
+    sites-named and nearest-packet rules skipped themselves, and a row on a
+    function a new counter reads at 50% closed on an older counter's zero)."""
+    newest = site_newest_build(campaign_dir)
+    symbols = {}
+    for _, packet in _evidence_packets(campaign_dir):
+        if packet["build_id"] != newest.get(packet["site"]):
             continue
         symbol = str(packet.get("probe_symbol") or "").strip()
-        site = packet.get("site")
-        if symbol and site:
-            symbols.setdefault(site, set()).add(symbol)
+        if symbol:
+            symbols.setdefault(packet["site"], set()).add(symbol)
     return symbols
 
 
@@ -4750,10 +4810,13 @@ def enforce_sites_named(paths, bound_rows, story, campaign_dir):
             if not path.is_absolute():
                 path = pathlib.Path(campaign_dir) / path
             logs_by_build.setdefault(build_id, set()).add(path)
-    merged = {}
-    for build in sorted(logs_by_build):
-        merged.update(_enforce_sites_named_on_build(build, sorted(logs_by_build[build]), story, campaign_dir))
-    return merged
+    if not logs_by_build:
+        return {}
+    # The newest bound build is the request's evidence base; older builds'
+    # packets are superseded wherever the newest build has the site.
+    order = build_order(campaign_dir)
+    build = max(logs_by_build, key=lambda b: order.get(b, 0.0))
+    return _enforce_sites_named_on_build(build, sorted(logs_by_build[build]), story, campaign_dir)
 
 
 def _enforce_sites_named_on_build(build, logs, story, campaign_dir):
@@ -4855,9 +4918,9 @@ def enforce_own_counters(paths, story_shares, config, base_floor, story, campaig
             raise CampaignError(
                 f"Path {index} ({item['anchor'][:80]!r}) is itself a probed function "
                 f"(site(s) {own_sites}), but binds {bound!r}, a packet from another "
-                f"probe. A row binds the count on its own function: one of "
-                f"{sorted(own_paths)}. An ancestor's count says nothing about the "
-                "repeats beneath it."
+                f"probe or from a superseded build. A row binds the count on its own "
+                f"function on the site's newest build: one of {sorted(own_paths)}. An "
+                "ancestor's count says nothing about the repeats beneath it."
             )
         if disposition in MEASURED_DISPOSITIONS:
             for site in own_sites:

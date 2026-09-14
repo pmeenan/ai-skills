@@ -1380,6 +1380,14 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         pk = _json.loads((self.dir / "evidence" / "expr.json").read_text())
         self.assertAlmostEqual(0.0, __import__("redundancy_evidence").supported_avoidable_fraction(pk))
         self.assertAlmostEqual(1.0, campaign.packet_supported(pk, self.dir))
+        # Registered as notification-fanout (round 32: "no observer" held on
+        # every call) the same packet bounds nothing but its key-repeat.
+        campaign.main(["--dir", str(self.dir), "register-site", "--site", "dom/set-attr", "--class", "notification-fanout",
+                       "--note", "applicable: the document has no mutation observer at entry"])
+        self.assertAlmostEqual(0.0, campaign.packet_supported(pk, self.dir))
+        campaign.main(["--dir", str(self.dir), "register-site", "--site", "dom/set-attr", "--class", "no-op-mutation",
+                       "--note", "applicable: the attribute already has the value being set"])
+        self.assertAlmostEqual(1.0, campaign.packet_supported(pk, self.dir))
         config = {"share_floor_pct": 0.1, "calibration": {"story_mde_pct": {STORY: 0.5}}}
         rows = [{"anchor": "blink::Element::SetAttr(int)", "disposition": "mandatory", "redundancy_evidence": expr}]
         with self.assertRaisesRegex(campaign.CampaignError, "cannot close as mandatory"):
@@ -1396,6 +1404,10 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         r = subprocess.run([sys.executable, "-c", "import campaign"], capture_output=True, text=True, env=env)
         self.assertNotEqual(0, r.returncode); self.assertIn("not a library", r.stderr)
         script = self.dir / "private.py"; script.write_text("import redundancy_evidence\n")
+        r = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, env=env)
+        self.assertNotEqual(0, r.returncode); self.assertIn("not a library", r.stderr)
+        # A scratch script named test_*.py outside the skill tree is a scratch script (round 33).
+        script = self.dir / "test_private.py"; script.write_text("import campaign\n")
         r = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, env=env)
         self.assertNotEqual(0, r.returncode); self.assertIn("not a library", r.stderr)
         env["OPTIMIZE_CAMPAIGN_ALLOW_IMPORT"] = "1"
@@ -1534,6 +1546,38 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
                         "redundancy_evidence": ref(style_b)})
         campaign.enforce_own_counters(rows, {1: 30.0}, cfg, 1.0, STORY, self.dir, [(1, rows[0])])
         self.assertEqual(["style/across", "style/within"], rows[0]["own_counters"])
+        # Two builds (round 33): the request binds old and new packets. A site
+        # that moved function between builds counts where its newest build put
+        # it; a row on a function a newer site reads at 0.5 cannot close on an
+        # older packet reading zero; a row on a probed function binds the
+        # site's newest packet, not a superseded build's.
+        import os as _os, time as _time
+        old_shape = self.write_packet("shape-old", applicable=0.0, repeat=0.0, site="fonts/shape", symbol="Shape",
+                                      build_id="o" * 40)
+        old_flex = self.write_packet("flex-old", applicable=0.0, repeat=0.0, site="flex/minmax", symbol="FlexItems",
+                                     build_id="o" * 40)
+        for name in ("shape-old", "flex-old"):
+            _os.utime(self.dir / "logs" / f"{name}.log", (_time.time() - 86400, _time.time() - 86400))
+        new_overlap = self.write_packet("overlap-new", applicable=0.5, repeat=0.0, site="fonts/overlap", symbol="Shape",
+                                        build_id="n" * 40)
+        new_flex = self.write_packet("flex-new", applicable=0.0, repeat=0.0, site="flex/minmax", symbol="MinMax",
+                                     build_id="n" * 40)
+        self.assertEqual({"fonts/shape": {"Shape"}, "fonts/overlap": {"Shape"}, "flex/minmax": {"MinMax"}},
+                         {k: v for k, v in campaign.all_site_symbols(self.dir).items() if k in ("fonts/shape", "fonts/overlap", "flex/minmax")})
+        rows = [{"anchor": "Shape", "disposition": "mandatory", "redundancy_evidence": ref(old_shape)},
+                {"anchor": "FlexItems", "disposition": "mandatory", "redundancy_evidence": ref(root)}]
+        with self.assertRaisesRegex(campaign.CampaignError, "site 'fonts/overlap' on the same function"):
+            campaign.enforce_own_counters(rows, {1: 30.0, 2: 5.0}, cfg, 1.0, STORY, self.dir,
+                                          [(1, rows[0]), (2, rows[1])])
+        rows[0].update({"disposition": "known", "mechanism_key": "fonts/reuse", "estimated_avoidable_fraction": 0.5,
+                        "redundancy_evidence": ref(new_overlap)})
+        campaign.enforce_own_counters(rows, {1: 30.0, 2: 5.0}, cfg, 1.0, STORY, self.dir,
+                                      [(1, rows[0]), (2, rows[1])])  # FlexItems is no longer a probed function
+        rows = [{"anchor": "MinMax", "disposition": "mandatory", "redundancy_evidence": ref(old_flex)}]
+        with self.assertRaisesRegex(campaign.CampaignError, "superseded build"):
+            campaign.enforce_own_counters(rows, {1: 5.0}, cfg, 1.0, STORY, self.dir, [(1, rows[0])])
+        rows[0]["redundancy_evidence"] = ref(new_flex)
+        campaign.enforce_own_counters(rows, {1: 5.0}, cfg, 1.0, STORY, self.dir, [(1, rows[0])])
         # A site that ran in the story but was never reduced with a symbol.
         log = self.dir / "logs" / "root.log"
         log.write_text(log.read_text() + "[SP3_REDUNDANCY_ROW] " + json.dumps({
