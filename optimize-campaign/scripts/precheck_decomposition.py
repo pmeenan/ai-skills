@@ -13,10 +13,46 @@ This file lives in the skill tree, which the campaign binds by digest; a
 copy edited elsewhere is not the pre-check. Nothing in it may replace a
 rule or a reducer function: `decompose` runs the same code and is the
 authority."""
-import json, pathlib, sys
+import json, pathlib, re, sys
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 import campaign, redundancy_evidence
+
+SKIPPED = "skipped-by-precheck"
+PATH_RE = re.compile(r"Path (\d+)")
+
+
+def run_all(problems, rule, paths, *args, limit=60, **kwargs):
+    """Run a row-loop rule until it stops refusing. A rule raises at its first
+    violating row; here that row is neutralized for the next pass (its
+    disposition replaced by a value every rule skips) so every violating row
+    surfaces in one pre-check instead of one per staging round (round 34: 37
+    revisions of one file). Mechanism rows are not neutralized: rows covered
+    by them would refuse for that reason alone."""
+    work = list(paths)
+    seen = set()
+    for _ in range(limit):
+        try:
+            return rule(work, *args, **kwargs)
+        except campaign.CampaignError as exc:
+            message = str(exc)
+            problems.append(message)
+            match = PATH_RE.search(message)
+            if not match:
+                return None
+            index = int(match.group(1))
+            if index in seen or not 1 <= index <= len(work):
+                return None
+            row = work[index - 1]
+            if row.get("disposition") in ("novel", "known", "algorithmic"):
+                return None
+            seen.add(index)
+            neutral = dict(row)
+            neutral["disposition"] = SKIPPED
+            neutral.pop("wrapper_of", None)
+            neutral.pop("redundancy_evidence", None)
+            work[index - 1] = neutral
+    return None
 
 
 def main(campaign_dir, opp_id, children):
@@ -61,20 +97,11 @@ def main(campaign_dir, opp_id, children):
     # Relevance first: it records the callers' union for split rows, which the
     # measured rule closes part by part. Wrapper packets cover a remainder;
     # wrapper descent judges them.
-    try:
-        campaign.enforce_packet_relevance(
-            result["paths"],
-            [(i, p) for i, p in enumerate(result["paths"], 1)
-             if p.get("redundancy_evidence") and p.get("wrapper_of") is None],
-            profile, story, campaign_dir)
-    except campaign.CampaignError as e: problems.append(str(e))
-    bound = set()
-    try:
-        bound = campaign.enforce_measured_dispositions(result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, coverage=coverage_map)
-    except campaign.CampaignError as e: problems.append(str(e))
-    try:
-        campaign.enforce_wrapper_descent(result["paths"], shares, profile, story, campaign_dir, ledger.data["config"], floor)
-    except campaign.CampaignError as e: problems.append(str(e))
+    run_all(problems, lambda w: campaign.enforce_packet_relevance(
+        w, [(i, p) for i, p in enumerate(w, 1) if p.get("redundancy_evidence") and p.get("wrapper_of") is None],
+        profile, story, campaign_dir), result["paths"])
+    bound = run_all(problems, campaign.enforce_measured_dispositions, result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, coverage=coverage_map) or set()
+    run_all(problems, campaign.enforce_wrapper_descent, result["paths"], shares, profile, story, campaign_dir, ledger.data["config"], floor)
     unbound = [i for i, p in enumerate(result["paths"], 1)
                if p["disposition"] in ("mandatory", "no-qualifying-mechanism")
                and shares.get(i, 0.0) >= story_floor
@@ -102,14 +129,16 @@ def main(campaign_dir, opp_id, children):
     try:
         site_symbols = campaign.enforce_sites_named(result["paths"], relevance_rows, story, campaign_dir)
     except campaign.CampaignError as e: problems.append(str(e))
-    try:
-        campaign.enforce_own_counters(result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, relevance_rows, site_symbols, coverage=coverage_map)
-        own = [(i, p["own_counters"]) for i, p in enumerate(result["paths"], 1) if p.get("own_counters")]
-        if own: print("\nrows closed on their own counters:", own[:20])
-    except campaign.CampaignError as e: problems.append(str(e))
-    try:
-        campaign.enforce_nearest_packet(result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, relevance_rows, profile, coverage=coverage_map)
-    except campaign.CampaignError as e: problems.append(str(e))
+    run_all(problems, lambda w: campaign.enforce_own_counters(
+        w, shares, ledger.data["config"], floor, story, campaign_dir,
+        [(i, p) for i, p in relevance_rows if w[i - 1].get("disposition") != SKIPPED], site_symbols, coverage=coverage_map),
+        result["paths"])
+    own = [(i, p["own_counters"]) for i, p in enumerate(result["paths"], 1) if p.get("own_counters")]
+    if own: print("\nrows closed on their own counters:", own[:20])
+    run_all(problems, lambda w: campaign.enforce_nearest_packet(
+        w, shares, ledger.data["config"], floor, story, campaign_dir,
+        [(i, p) for i, p in relevance_rows if w[i - 1].get("disposition") != SKIPPED], profile, coverage=coverage_map),
+        result["paths"])
     try:
         rows_cov, reference = campaign.packet_time_coverage(result["paths"], relevance_rows, profile, story, campaign_dir)
         if rows_cov:
@@ -117,15 +146,13 @@ def main(campaign_dir, opp_id, children):
             print(campaign.format_time_coverage(rows_cov, reference))
         campaign.enforce_packet_time_coverage(result["paths"], relevance_rows, profile, story, campaign_dir)
     except campaign.CampaignError as e: problems.append(str(e))
-    try:
-        campaign.enforce_row_text_numbers(result["paths"], relevance_rows, shares, ledger.data["config"], floor, story, campaign_dir)
-    except campaign.CampaignError as e: problems.append(str(e))
+    run_all(problems, lambda w: campaign.enforce_row_text_numbers(
+        w, [(i, p) for i, p in relevance_rows if w[i - 1].get("disposition") != SKIPPED], shares, ledger.data["config"], floor, story, campaign_dir),
+        result["paths"])
     measured_rows = {i for i, p in enumerate(result["paths"], 1)
                      if p["disposition"] in ("mandatory", "no-qualifying-mechanism")
                      and shares.get(i, 0.0) >= story_floor and p.get("redundancy_evidence")}
-    try:
-        campaign.enforce_mandatory_invariants(result["paths"], measured_rows)
-    except campaign.CampaignError as e: problems.append(str(e))
+    run_all(problems, lambda w: campaign.enforce_mandatory_invariants(w, {i for i in measured_rows if w[i - 1].get("disposition") != SKIPPED}), result["paths"])
     try:
         campaign.enforce_row_text_distinct(result["paths"])
     except campaign.CampaignError as e: problems.append(str(e))

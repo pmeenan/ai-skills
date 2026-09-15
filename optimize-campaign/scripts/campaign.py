@@ -2960,10 +2960,20 @@ def packet_supported(packet, campaign_dir):
     repeat fraction alone when a literal `applicable` saturated), except that
     an expression predicate that held on every call is the whole function."""
     import redundancy_evidence
+    cls = site_class_registry_from_dir(campaign_dir).get(str(packet.get("site") or ""))
+    if cls and cls != "unchanged-input":
+        # For any class other than unchanged-input (unconsumed-result, fan-out,
+        # trigger, etc.), the key is an iteration or identity, not an input key:
+        # only the predicate (applicable) bounds avoidable work.
+        if float(packet.get("applicable_fraction") or 0.0) >= redundancy_evidence.APPLICABLE_SATURATED:
+            if cls not in SATURATION_SIZES_CLASSES or packet_applicable_literal(packet, campaign_dir):
+                return 0.0
+        if packet.get("time_weighted") and packet.get("applicable_time_fraction") is not None:
+            return float(packet["applicable_time_fraction"])
+        return float(packet.get("applicable_fraction") or 0.0)
     supported = redundancy_evidence.supported_avoidable_fraction(packet)
     if (float(packet.get("applicable_fraction") or 0.0) >= redundancy_evidence.APPLICABLE_SATURATED
             and not packet_applicable_literal(packet, campaign_dir)):
-        cls = site_class_registry_from_dir(campaign_dir).get(str(packet.get("site") or ""))
         if cls and cls not in SATURATION_SIZES_CLASSES:
             # A fan-out, unconsumed-result or trigger predicate that held on
             # every call separated nothing (round 32: no observer in any
@@ -4670,7 +4680,30 @@ def story_site_packets(campaign_dir, story, build_id):
     import redundancy_evidence
     out = {}
     root = pathlib.Path(campaign_dir)
-    newest = site_newest_build(campaign_dir) if build_id is None else None
+    admitted = None
+    if build_id is None:
+        # Per site: the newest build. When that build's packets for the story
+        # all carry a scope_symbol (a scope in an inlined callee timing part
+        # of the function), the newest build whose packet times the whole
+        # function is admitted too: a function's row closes on a whole-
+        # function count, and the partial scope's reading refines it (round
+        # 34: OutOfFlowLayoutPart::Run in Nuxt, 11% timed by the r34 scope,
+        # 100% by the r16 counter in Run itself).
+        newest = site_newest_build(campaign_dir)
+        order = build_order(campaign_dir)
+        by_site = {}
+        for _, packet in _evidence_packets(campaign_dir):
+            if packet.get("target_story") == story:
+                by_site.setdefault(packet["site"], []).append(packet)
+        admitted = {}
+        for site, packets in by_site.items():
+            builds = {newest.get(site)}
+            on_newest = [pk for pk in packets if pk["build_id"] == newest.get(site)]
+            if on_newest and all(pk.get("scope_symbol") for pk in on_newest):
+                whole = [pk["build_id"] for pk in packets if not pk.get("scope_symbol")]
+                if whole:
+                    builds.add(max(whole, key=lambda b: order.get(b, 0.0)))
+            admitted[site] = builds
     for path in sorted((root / "evidence").glob("*.json")):
         try:
             packet = redundancy_evidence.load_packet(path)
@@ -4680,7 +4713,7 @@ def story_site_packets(campaign_dir, story, build_id):
             continue
         if build_id is not None and packet.get("build_id") != build_id:
             continue
-        if build_id is None and packet.get("build_id") != newest.get(packet.get("site")):
+        if admitted is not None and packet.get("build_id") not in admitted.get(packet.get("site"), set()):
             continue
         if packet.get("target_story") != story or not packet.get("site"):
             continue
