@@ -105,6 +105,8 @@ def review(oid, rev):
     for i in cands:
         p = paths[i - 1]; d = pk[p['redundancy_evidence']['path']]
         b = redundancy_evidence.hypothesis_bound(d, p.get('packet_hypothesis') or 'applicable')
+        if b is None:  # a saturated expression predicate: the whole function (campaign.packet_supported)
+            b = campaign.packet_supported(d, str(C))
         cand_lines.append(f"row {i} {p['disposition']} {campaign.anchor_function(p['anchor'])}: share {shares[i]:.2f}% x fraction {p['estimated_avoidable_fraction']:.4f} = {shares[i]*p['estimated_avoidable_fraction']:.2f}% (hypothesis {p.get('packet_hypothesis')}, packet bound {b:.4f}, floor {floor:.3f}%)")
     key_lines = []
     for ref, d in pk.items():
