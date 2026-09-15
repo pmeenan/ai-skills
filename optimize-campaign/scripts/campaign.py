@@ -5125,8 +5125,8 @@ def enforce_own_counters(paths, story_shares, config, base_floor, story, campaig
 def anchor_symbol_weights(collapsed_files, anchors, symbols, with_nearest=False):
     """One pass over the story's stacks: sample weight carrying each row
     anchor, each probed function, and each (anchor, function) pair. With
-    `with_nearest`, also the weight for which each function is the nearest
-    probe at or above the anchor's outermost frame: nearness is a stack
+    `with_nearest`, also the weight for which each function is the probe
+    nearest the anchor's outermost frame, above or below it: nearness is a stack
     position, not a weight ratio (round 34: min-max sizing, called from
     both forced-layout roots, outweighed the root above it and the ratio
     called the root "nearer" while the covered-by rule saw min-max between
@@ -5143,16 +5143,23 @@ def anchor_symbol_weights(collapsed_files, anchors, symbols, with_nearest=False)
                 for sym in present_symbols:
                     symbol_w[sym] += weight
                 present_anchors = set(frames) & anchors
+                probe_positions = None
                 for a in present_anchors:
                     anchor_w[a] += weight
                     for sym in present_symbols:
                         both_w[(a, sym)] = both_w.get((a, sym), 0.0) + weight
                     if with_nearest and present_symbols:
-                        # from the row's own outermost frame upward: a row on a
-                        # probed function is nearest to itself
-                        near = matcher.first(reversed(frames[:frames.index(a) + 1]))
+                        # The probe fewest frames from the row's outermost frame,
+                        # above or below it; a tie goes to the one below (it
+                        # measures the row's work); a row on a probed function
+                        # is nearest to itself.
+                        if probe_positions is None:
+                            probe_positions = [(i, hit[0]) for i, fr in enumerate(frames)
+                                               for hit in (matcher.of(fr),) if hit]
+                        ia = frames.index(a)
+                        near = min(probe_positions, key=lambda ps: (abs(ps[0] - ia), ps[0] < ia), default=None)
                         if near:
-                            nearest_w[(a, near)] = nearest_w.get((a, near), 0.0) + weight
+                            nearest_w[(a, near[1])] = nearest_w.get((a, near[1]), 0.0) + weight
     if with_nearest:
         return anchor_w, symbol_w, both_w, nearest_w
     return anchor_w, symbol_w, both_w
@@ -5217,30 +5224,39 @@ def enforce_nearest_packet(paths, story_shares, config, base_floor, story, campa
             row_w = anchor_w.get(anchor, 0.0)
             if row_w <= 0 or bound_symbol not in by_symbol:
                 continue
-            relevant = {}
+            distances = {}
             for symbol, weight in symbol_w.items():
                 shared = both_w.get((anchor, symbol), 0.0)
                 if weight <= 0:
                     continue
-                if max(shared / row_w, shared / weight) >= PACKET_RELEVANCE:
-                    relevant[symbol] = weight
-            if bound_symbol not in relevant:
+                relevance = max(shared / row_w, shared / weight)
+                if relevance >= PACKET_RELEVANCE:
+                    distances[symbol] = abs(math.log(weight / row_w))
+            if bound_symbol not in distances:
                 continue  # enforce_packet_relevance refuses it
-            # The nearest probed caller, sample by sample: the function that
-            # is the first probe above the row in most of its samples.
-            callers = {sym: nearest_w.get((anchor, sym), 0.0) for sym in symbol_w}
-            near = max(callers, key=callers.get) if callers else None
-            if (near and near != bound_symbol and near in relevant
-                    and callers[near] >= COVERED_BY_SAMPLE_IDENTITY * row_w):
+            best = min(distances.values())
+            nearest = {sym for sym, d in distances.items() if d <= best + math.log(PACKET_NEAREST_TOLERANCE)}
+            # By stack position, sample by sample: a probe that is the nearest
+            # frame to the row in most of its samples is nearest whatever the
+            # weight ratio says (round 34: min-max sizing, called from both
+            # forced-layout roots, outweighed the root above it; the ratio
+            # called the root nearer while the covered-by rule saw min-max
+            # between in every sample, and a row could satisfy neither).
+            by_position = {sym: nearest_w.get((anchor, sym), 0.0) for sym in symbol_w}
+            positional = max(by_position, key=by_position.get) if by_position else None
+            positional_ok = (positional == bound_symbol
+                             and by_position[positional] >= COVERED_BY_SAMPLE_IDENTITY * row_w)
+            if bound_symbol not in nearest and not positional_ok:
+                near = min(nearest, key=lambda sym: distances[sym])
                 near_sites = sorted({site for site, _, _ in by_symbol[near]})
                 raise CampaignError(
                     f"Path {index} ({anchor[:80]!r}) binds {packet.get('site')!r} on "
-                    f"{bound_symbol!r}, the nearest probe above the row in "
-                    f"{callers.get(bound_symbol, 0.0) / row_w:.0%} of its samples, but "
-                    f"{near!r} (site(s) {near_sites}) is the nearest in "
-                    f"{callers[near] / row_w:.0%}. A row binds the nearest probe: the packet "
-                    "from the function closest to the row on its stack, not the farther one "
-                    "that reads lowest."
+                    f"{bound_symbol!r} ({symbol_w[bound_symbol] / row_w:.2f}x the row's samples, "
+                    f"the nearest frame in {by_position.get(bound_symbol, 0.0) / row_w:.0%} of them), "
+                    f"but {near!r} (site(s) {near_sites}, {symbol_w[near] / row_w:.2f}x) is the "
+                    "nearer probed function on the row's stack. A row binds the nearest "
+                    "probe: the packet from the function closest to the row, not the "
+                    "farther one that reads lowest."
                 )
             # Nearer probed callers between the row and the bound function that
             # together carry the row close it on their union (round 25: an
@@ -11235,15 +11251,17 @@ def explain_row(args, index):
         row_side = shared / row_w if row_w else 0.0
         probe_side = shared / weight if weight else 0.0
         relevant = max(row_side, probe_side) >= PACKET_RELEVANCE
-        distance = -(nearest_w.get((anchor, symbol), 0.0) / row_w) if row_w > 0 else 0.0  # -fraction of samples this probe is nearest in
+        distance = abs(math.log(weight / row_w)) if weight > 0 and row_w > 0 else float("inf")
         for site, packet, rel in entries:
             supported = packet_supported(packet, ledger.dir) or 0.0
             counted = scope_counted_fraction(packet, anchor, coverage, rel)
             candidates.append((symbol, site, rel, row_side, probe_side, weight / row_w if row_w else 0.0,
                                coverage.get(rel), supported * counted, relevant, distance, packet))
     relevant = [c for c in candidates if c[8]]
-    best = min((c[9] for c in relevant), default=None)  # the most-often-nearest probe
-    nearest = {c[1] for c in relevant if best is not None and best < 0 and c[9] <= best * 0.8}
+    best = min((c[9] for c in relevant), default=None)
+    nearest = {c[1] for c in relevant if best is not None and c[9] <= best + math.log(PACKET_NEAREST_TOLERANCE)}
+    # a probe that is the nearest frame in >= 80% of the row's samples is nearest too
+    nearest |= {c[1] for c in relevant if row_w > 0 and nearest_w.get((anchor, c[0]), 0.0) >= COVERED_BY_SAMPLE_IDENTITY * row_w}
     for symbol, site, rel, rs, ps, ratio, cov, bound, ok, distance, packet in sorted(candidates, key=lambda c: c[9]):
         verdict = []
         if not ok:
