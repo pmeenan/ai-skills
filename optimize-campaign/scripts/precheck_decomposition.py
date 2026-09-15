@@ -157,7 +157,8 @@ def main(campaign_dir, opp_id, children):
         campaign.enforce_row_text_distinct(result["paths"])
     except campaign.CampaignError as e: problems.append(str(e))
     try:
-        campaign.enforce_row_text_symbols(result["paths"], relevance_rows, profile.get("repository_root"))
+        campaign.enforce_row_text_symbols(result["paths"], relevance_rows, profile.get("repository_root"),
+                                          frames=campaign.distinct_frames(campaign.collapsed_stack_files(profile, story)))
     except campaign.CampaignError as e: problems.append(str(e))
     # decompose judges below-floor against every capture's share (any >= floor refuses)
     max_shares = {}

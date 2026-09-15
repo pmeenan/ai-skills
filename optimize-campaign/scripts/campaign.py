@@ -3637,7 +3637,48 @@ def iter_stacks(collapsed_files):
                     stacks.append((frames, weight))
             if key is not None:
                 _STACKS_CACHE[key] = stacks
+                _FRAMES_CACHE[key] = frozenset(intern)
         yield from stacks
+
+
+_FRAMES_CACHE = {}
+
+
+def distinct_frames(collapsed_files):
+    """Every distinct frame in the story's profiles (~8,000 for 18 million
+    frames): the functions the profiler saw, which therefore exist in the
+    tree the profile was captured from."""
+    out = set()
+    for path in collapsed_files:
+        path = pathlib.Path(path)
+        try:
+            stat = path.stat()
+            key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            continue
+        if key not in _FRAMES_CACHE:
+            for _ in iter_stacks([path]):
+                break
+        out.update(_FRAMES_CACHE.get(key, ()))
+    return out
+
+
+def wrapper_coverage_each(files, wrapper_anchor, target_anchors):
+    """`wrapper_coverage` for every target at once: of the samples carrying
+    the wrapper's anchor, the fraction that carry each target beneath it.
+    One pass instead of one per row (round 34: `explain` made 189 passes)."""
+    targets = set(target_anchors)
+    wrapper_w = 0.0
+    per_target = {t: 0.0 for t in targets}
+    for frames, weight in iter_stacks(files):
+        if wrapper_anchor not in frames:
+            continue
+        wrapper_w += weight
+        for t in targets & set(frames[frames.index(wrapper_anchor) + 1:]):
+            per_target[t] += weight
+    if wrapper_w <= 0:
+        return {t: 0.0 for t in targets}
+    return {t: w / wrapper_w for t, w in per_target.items()}
 
 
 class FrameMatcher:
@@ -4504,13 +4545,74 @@ def enforce_mandatory_invariants(paths, bound):
 _SYMBOL_EXISTS_CACHE = {}
 
 
-def symbols_in_tree(symbols, repository_root):
+def _symbol_cache_path(root):
+    """The on-disk memory of symbols found in the tree at its current commit:
+    symbol -> file the symbol was found in. A lookup, not a verdict: on load
+    each entry is checked against that file, so an entry that was never
+    found cannot be planted without planting the symbol in the tree too."""
+    try:
+        commit = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True,
+                                text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None, None
+    cache_dir = pathlib.Path.home() / ".cache" / "optimize-campaign"
+    return cache_dir / f"symbols-{commit[:16]}.json", commit
+
+
+def _load_symbol_cache(root, symbols):
+    """Symbols the on-disk memory places in the tree, verified in their file."""
+    path, _ = _symbol_cache_path(root)
+    if not path or not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    verified = {}
+    for sym in symbols:
+        rel = data.get(sym)
+        if not isinstance(rel, str):
+            continue
+        try:
+            text = pathlib.Path(root, rel).read_text(errors="replace")
+        except OSError:
+            continue
+        if sym in text or sym.rsplit("::", 1)[-1] + "(" in text:
+            verified[sym] = rel
+    return verified
+
+
+def _save_symbol_cache(root, found_in):
+    path, _ = _symbol_cache_path(root)
+    if not path or not found_in:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = json.loads(path.read_text()) if path.is_file() else {}
+        data.update(found_in)
+        path.write_text(json.dumps(data, indent=0, sort_keys=True))
+    except (OSError, ValueError):
+        pass
+
+
+def symbols_in_tree(symbols, repository_root, frames=None):
     """Which of the `Class::Method` symbols are defined in the repository:
     the qualified name appears in the tree, or the method is declared in a
-    file that declares the class. One batched `git grep` for the qualified
-    names, then one per remaining symbol."""
+    file that declares the class. A symbol the profiler saw as a frame
+    (`frames`, the story's distinct frames) exists by construction; the rest
+    are looked up in the on-disk memory for this tree commit (verified in
+    the file it names), then by one batched `git grep` for the qualified
+    names and one per remaining symbol."""
     root = str(repository_root or "")
     wanted = {sym for sym in symbols if (root, sym) not in _SYMBOL_EXISTS_CACHE}
+    if wanted and frames:
+        matcher = FrameMatcher(wanted)
+        seen = set()
+        for frame in frames:
+            seen.update(matcher.of(frame))
+        for sym in seen:
+            _SYMBOL_EXISTS_CACHE[(root, sym)] = True
+        wanted -= seen
     if wanted:
         if not root or not pathlib.Path(root, ".git").exists():
             raise CampaignError(
@@ -4518,13 +4620,22 @@ def symbols_in_tree(symbols, repository_root):
                 f"repository_root {root!r} is not a git checkout on this host; "
                 "the gate cannot check the code the rows name"
             )
-        args = ["git", "-C", root, "grep", "-h", "-o", "-F"]
+        remembered = _load_symbol_cache(root, wanted)
+        for sym in remembered:
+            _SYMBOL_EXISTS_CACHE[(root, sym)] = True
+        wanted -= set(remembered)
+    if wanted:
+        args = ["git", "-C", root, "grep", "-o", "-F"]
         for sym in sorted(wanted):
             args += ["-e", sym]
-        found = set()
+        found = {}
         result = subprocess.run(args, capture_output=True, text=True)
         if result.returncode in (0, 1):
-            found = set(result.stdout.split())
+            for line in result.stdout.splitlines():
+                rel, _, match = line.partition(":")
+                if match in wanted and match not in found:
+                    found[match] = rel
+        found_in = dict(found)
         for sym in wanted:
             present = sym in found
             if not present:
@@ -4540,11 +4651,14 @@ def symbols_in_tree(symbols, repository_root):
                          "--"] + files[:400],
                         capture_output=True, text=True).stdout.strip()
                     present = bool(hit)
+                    if present:
+                        found_in[sym] = hit.splitlines()[0]
             _SYMBOL_EXISTS_CACHE[(root, sym)] = present
+        _save_symbol_cache(root, found_in)
     return {sym: _SYMBOL_EXISTS_CACHE[(root, sym)] for sym in symbols}
 
 
-def enforce_row_text_symbols(paths, rows, repository_root):
+def enforce_row_text_symbols(paths, rows, repository_root, frames=None):
     """The code a row names exists.
 
     Every `Class::Method` in a row's `existing_mechanism` or `invariant` is
@@ -4565,7 +4679,7 @@ def enforce_row_text_symbols(paths, rows, repository_root):
     if not per_row:
         return
     every = set().union(*(symbols for _, symbols in per_row.values()))
-    present = symbols_in_tree(every, repository_root)
+    present = symbols_in_tree(every, repository_root, frames=frames)
     for index, (item, symbols) in sorted(per_row.items()):
         missing = sorted(sym for sym in symbols if not present.get(sym))
         if missing:
@@ -8575,7 +8689,8 @@ def cmd_decompose(args):
         enforce_mandatory_invariants(result["paths"], bound)
         enforce_row_text_distinct(result["paths"])
         enforce_row_text_symbols(
-            result["paths"], relevance_rows, source_profile.get("repository_root"))
+            result["paths"], relevance_rows, source_profile.get("repository_root"),
+            frames=distinct_frames(collapsed_stack_files(source_profile, parent.get("target_story"))))
         enforce_out_of_scope_anchors(result["paths"], ledger.data["config"])
         enforce_mandatory_packets(result["paths"])
         enforce_large_mandatory_rows(
@@ -11190,10 +11305,11 @@ def explain_row(args, index):
     others = {p["anchor"] for i, p in enumerate(paths, 1) if i != index and p["anchor"] != anchor}
     if others:
         beneath = []
-        for i, p in enumerate(paths, 1):
-            if i == index or p["anchor"] == anchor or not shares.get(i):
-                continue
-            under, _ = wrapper_coverage(files, anchor, {p["anchor"]})
+        rows_beneath = [(i, p) for i, p in enumerate(paths, 1)
+                        if i != index and p["anchor"] != anchor and shares.get(i)]
+        under_each = wrapper_coverage_each(files, anchor, {p["anchor"] for _, p in rows_beneath})
+        for i, p in rows_beneath:
+            under = under_each.get(p["anchor"], 0.0)
             if under >= 0.05:
                 beneath.append((shares[i], i, p, under))
         beneath.sort(reverse=True)
