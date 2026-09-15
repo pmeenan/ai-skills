@@ -985,7 +985,7 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
 
         # The box row bound to the root's packet: its own function is nearer.
         rows = [{"anchor": "Box", "disposition": "mandatory", "redundancy_evidence": ref(root)}]
-        with self.assertRaisesRegex(campaign.CampaignError, "nearer probed function"):
+        with self.assertRaisesRegex(campaign.CampaignError, "is the nearest in"):
             run(rows, {1: 40.0})
         # The phase, 80% of the update: the root's count is its count.
         rows = [{"anchor": "Phase", "disposition": "mandatory", "redundancy_evidence": ref(root)}]
