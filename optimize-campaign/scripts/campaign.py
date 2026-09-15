@@ -6884,13 +6884,13 @@ def frontier_exclusive_shares(collapsed_file, frontier, foreign=FOREIGN_NAMESPAC
         positions = [(i, f) for i, f in enumerate(frames) if f in frontier]
         if not positions:
             continue
-        first_foreign = next((i for i, f in enumerate(frames) if f.startswith(prefixes)), len(frames))
+        last_foreign = max((i for i, f in enumerate(frames) if f.startswith(prefixes)), default=-1)
         seen = set()
         for i, f in positions:
             if f in seen:
                 continue
             seen.add(f)
-            if i > first_foreign or any(g != f for j, g in positions if j > i):
+            if last_foreign > i or any(g != f for j, g in positions if j > i):
                 continue
             excl[f] = excl.get(f, 0.0) + weight
     if total <= 0:
