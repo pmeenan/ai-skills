@@ -72,12 +72,28 @@ class RedundancyError(ValueError):
     pass
 
 
+_SHA256_CACHE: dict = {}
+
+
 def sha256_file(path: pathlib.Path) -> str:
+    """Digest of a file, cached by (path, size, mtime): the gate re-derives
+    hundreds of packets from one 115 MB log per pre-check (round 34)."""
+    path = pathlib.Path(path)
+    try:
+        stat = path.stat()
+        key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        key = None
+    if key is not None and key in _SHA256_CACHE:
+        return _SHA256_CACHE[key]
     digest = hashlib.sha256()
     with path.open("rb") as source:
         for chunk in iter(lambda: source.read(1 << 20), b""):
             digest.update(chunk)
-    return digest.hexdigest()
+    result = digest.hexdigest()
+    if key is not None:
+        _SHA256_CACHE[key] = result
+    return result
 
 
 _ROWS_CACHE: dict = {}
@@ -186,11 +202,27 @@ def merge_counter_rows(selected: list[dict], site: str, target_story: str, count
     return merged
 
 
+_ROWS_INDEX: dict = {}
+
+
+def rows_for(rows: list[dict], site: str, target_story: str) -> list[dict]:
+    """The rows of one site in one story, from an index built once per rows
+    list (the parsed log): the gate reduces hundreds of packets from one log
+    per pre-check, and filtering 240k rows per packet was the cost."""
+    key = id(rows)
+    entry = _ROWS_INDEX.get(key)
+    if entry is None or entry[0] is not rows:
+        index = {}
+        for row in rows:
+            index.setdefault((row.get("site"), story_of(row.get("group", ""))), []).append(row)
+        entry = (rows, index)
+        _ROWS_INDEX.clear()
+        _ROWS_INDEX[key] = entry
+    return entry[1].get((site, target_story), [])
+
+
 def reduce_rows(rows: list[dict], site: str, target_story: str, counters: int = 1) -> dict:
-    selected = [
-        row for row in rows
-        if row["site"] == site and story_of(row["group"]) == target_story
-    ]
+    selected = rows_for(rows, site, target_story)
     if not selected:
         raise RedundancyError(
             f"no rows for site {site!r} in story {target_story!r}; the probe "
@@ -273,7 +305,8 @@ def build_packet(logs: list[pathlib.Path], site: str, target_story: str,
     for path in logs:
         if not path.is_file():
             raise RedundancyError(f"browser log not found: {path}")
-        rows.extend(parse_rows(path))
+        parsed = parse_rows(path)
+        rows = parsed if not rows and len(logs) == 1 else rows + parsed
         sources.append({"path": str(path.resolve()), "sha256": sha256_file(path)})
     counters = 1
     if patch is not None:

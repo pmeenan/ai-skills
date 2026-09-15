@@ -3235,15 +3235,9 @@ def wrapper_coverage(files, wrapper_anchor, target_anchors, packet_symbol=None):
     packet_matcher = FrameMatcher([packet_symbol] if packet_symbol else [])
     packet_w = 0.0
     targets = set(target_anchors)
-    for path in files:
-        with open(path, errors="replace") as handle:
-            for line in handle:
-                stack, _, weight = line.rstrip("\n").rpartition(" ")
-                try:
-                    weight = float(weight)
-                except ValueError:
-                    continue
-                frames = stack.split(";")
+    for frames, weight in iter_stacks(files):
+        if True:  # stacks parsed once per process (iter_stacks)
+            if True:
                 if wrapper_anchor not in frames:
                     continue
                 wrapper_w += weight
@@ -3574,15 +3568,10 @@ def sample_identity(collapsed_files, pairs):
     row_anchor and the part of it that also carries owner_anchor."""
     totals = {pair: [0.0, 0.0] for pair in pairs}
     anchors = {anchor for pair in pairs for anchor in pair}
-    for path in collapsed_files:
-        with open(path, errors="replace") as handle:
-            for line in handle:
-                stack, _, weight = line.rstrip("\n").rpartition(" ")
-                try:
-                    weight = float(weight)
-                except ValueError:
-                    continue
-                frames = set(stack.split(";"))
+    for frames, weight in iter_stacks(collapsed_files):
+        if True:  # stacks parsed once per process (iter_stacks)
+            if True:
+                frames = set(frames)
                 present = frames & anchors
                 if not present:
                     continue
@@ -3616,6 +3605,39 @@ def symbol_matches(frame, symbol):
     `LayoutView::HitTestNoLifecycleUpdate`, which has no probe)."""
     symbol = symbol.rstrip("(").rstrip()
     return frame == symbol or frame.startswith(symbol + "(")
+
+
+_STACKS_CACHE = {}
+
+
+def iter_stacks(collapsed_files):
+    """(frames, weight) for every stack in the story's profile.collapsed
+    files, parsed once per process and file version: a pre-check scans a
+    story's stacks a dozen times (each rule, each split row), and reading
+    and splitting 1.5 GB costs 3 s a time where matching now costs less."""
+    for path in collapsed_files:
+        path = pathlib.Path(path)
+        try:
+            stat = path.stat()
+            key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            key = None
+        stacks = _STACKS_CACHE.get(key) if key is not None else None
+        if stacks is None:
+            stacks = []
+            intern = {}
+            with open(path, errors="replace") as handle:
+                for line in handle:
+                    stack, _, weight = line.rstrip("\n").rpartition(" ")
+                    try:
+                        weight = float(weight)
+                    except ValueError:
+                        continue
+                    frames = tuple(intern.setdefault(fr, fr) for fr in stack.split(";"))
+                    stacks.append((frames, weight))
+            if key is not None:
+                _STACKS_CACHE[key] = stacks
+        yield from stacks
 
 
 class FrameMatcher:
@@ -3668,16 +3690,11 @@ def symbol_inclusive_shares(collapsed_files, symbols):
     total = 0.0
     inclusive = {symbol: 0.0 for symbol in symbols}
     matcher = FrameMatcher(symbols)
-    for path in collapsed_files:
-        with open(path, errors="replace") as handle:
-            for line in handle:
-                stack, _, weight = line.rstrip("\n").rpartition(" ")
-                try:
-                    weight = float(weight)
-                except ValueError:
-                    continue
+    for frames, weight in iter_stacks(collapsed_files):
+        if True:  # stacks parsed once per process (iter_stacks)
+            if True:
                 total += weight
-                for symbol in matcher.present(stack.split(";")):
+                for symbol in matcher.present(frames):
                     inclusive[symbol] += weight
     return total, inclusive
 
@@ -3692,15 +3709,9 @@ def symbol_identity(collapsed_files, pairs):
     prefix_w = {pf: 0.0 for pf in prefixes}
     both_w = {pair: 0.0 for pair in pairs}
     prefix_matcher = FrameMatcher(prefixes)
-    for path in collapsed_files:
-        with open(path, errors="replace") as handle:
-            for line in handle:
-                stack, _, weight = line.rstrip("\n").rpartition(" ")
-                try:
-                    weight = float(weight)
-                except ValueError:
-                    continue
-                frames = stack.split(";")
+    for frames, weight in iter_stacks(collapsed_files):
+        if True:  # stacks parsed once per process (iter_stacks)
+            if True:
                 present_anchors = set(frames) & anchors
                 present_prefixes = prefix_matcher.present(frames)
                 for a in present_anchors:
@@ -3817,15 +3828,9 @@ def split_row_union(item, index, bound_symbol, files, story, campaign_dir, bound
     any_w = 0.0
     caller_matcher = FrameMatcher(by_symbol)
     per_symbol = {sym: 0.0 for sym in by_symbol}
-    for path in files:
-        with open(path, errors="replace") as handle:
-            for line in handle:
-                stack, _, weight = line.rstrip("\n").rpartition(" ")
-                try:
-                    weight = float(weight)
-                except ValueError:
-                    continue
-                frames = stack.split(";")
+    for frames, weight in iter_stacks(files):
+        if True:  # stacks parsed once per process (iter_stacks)
+            if True:
                 if anchor not in frames:
                     continue
                 row_w += weight
@@ -3991,15 +3996,9 @@ def enforce_covered_by_nearest_probe(paths, owner_symbols, probe_symbols, profil
     between = {index: {} for index, _, _, _ in rows}
     all_symbols = set(probe_symbols) | {o for _, _, o, _ in rows}
     all_matcher = FrameMatcher(all_symbols)
-    for path in files:
-        with open(path, errors="replace") as handle:
-            for line in handle:
-                stack, _, weight = line.rstrip("\n").rpartition(" ")
-                try:
-                    weight = float(weight)
-                except ValueError:
-                    continue
-                frames = stack.split(";")
+    for frames, weight in iter_stacks(files):
+        if True:  # stacks parsed once per process (iter_stacks)
+            if True:
                 present = set(frames) & anchors
                 if not present:
                     continue
@@ -5016,15 +5015,9 @@ def anchor_symbol_weights(collapsed_files, anchors, symbols):
     symbol_w = {sym: 0.0 for sym in symbols}
     both_w = {}
     matcher = FrameMatcher(symbols)
-    for path in collapsed_files:
-        with open(path, errors="replace") as handle:
-            for line in handle:
-                stack, _, weight = line.rstrip("\n").rpartition(" ")
-                try:
-                    weight = float(weight)
-                except ValueError:
-                    continue
-                frames = stack.split(";")
+    for frames, weight in iter_stacks(collapsed_files):
+        if True:  # stacks parsed once per process (iter_stacks)
+            if True:
                 present_symbols = matcher.present(frames)
                 for sym in present_symbols:
                     symbol_w[sym] += weight
