@@ -6459,9 +6459,11 @@ def union_suite_summary(rows, config):
     total = sum(v for st, v in sized.items() if not stories or st in stories)
     floor, basis = suite_floor_pct(config)
     impact = total / n
+    errors = {r["story"]: r["error"] for r in rows if r.get("error")}
     return {
         "suite_impact_pct": round(impact, 4), "suite_floor_pct": floor, "suite_floor_basis": basis,
-        "stories_total": n, "stories_sized": len(sized),
+        "stories_total": n, "stories_sized": len(sized), "stories_errored": len(errors),
+        "errors": errors,
         "contributions": {st: round(v, 4) for st, v in sorted(sized.items(), key=lambda kv: -kv[1]) if v > 0},
         "qualifies_suite": bool(floor is not None and impact >= floor),
     }
@@ -6489,7 +6491,11 @@ def mechanism_suite_impact(ledger, site, symbol, scope_symbol=None):
                 path = pathlib.Path(ledger.dir) / path
             if path.is_file():
                 logs.add(str(path))
-        patch = patch or packet.get("patch")
+        if patch is None and packet.get("patch"):
+            candidate = pathlib.Path(str(packet["patch"]))
+            if not candidate.is_absolute():
+                candidate = pathlib.Path(ledger.dir) / candidate
+            patch = str(candidate)
     if not logs:
         _SUITE_IMPACT_CACHE[key] = None
         return None
@@ -11313,15 +11319,20 @@ def cmd_suite_impacts(args):
         row = rows_by_key.get(opp.get("mechanism_key"))
         summary = path_item_suite_impact(row, ledger) if row else None
         if summary is None:
-            rows.append((opp["id"], opp.get("mechanism_key"), None, opp.get("target_story")))
+            rows.append((opp["id"], opp.get("mechanism_key"), None, opp.get("target_story"), "no packet with logs"))
+            continue
+        if summary.get("stories_errored"):
+            first = next(iter(summary["errors"].values()))
+            rows.append((opp["id"], opp.get("mechanism_key"), None, opp.get("target_story"),
+                         f"{summary['stories_errored']} of {summary['stories_total']} stories errored: {first}"))
             continue
         if opp.get("estimated_suite_impact_pct") != summary["suite_impact_pct"]:
             opp["estimated_suite_impact_pct"] = summary["suite_impact_pct"]
             opp["suite_contributions"] = summary["contributions"]
             changed += 1
-        rows.append((opp["id"], opp.get("mechanism_key"), summary["suite_impact_pct"], opp.get("target_story")))
-    for oid, key, imp, story in sorted(rows, key=lambda r: -(r[2] or 0)):
-        print(f"  #{oid} {(('%.3f%%' % imp) if imp is not None else '   n/a '):>8} suite  {key}  ({story})")
+        rows.append((opp["id"], opp.get("mechanism_key"), summary["suite_impact_pct"], opp.get("target_story"), ""))
+    for oid, key, imp, story, note in sorted(rows, key=lambda r: -(r[2] or 0)):
+        print(f"  #{oid} {(('%.3f%%' % imp) if imp is not None else '   n/a '):>8} suite  {key}  ({story}){('  ' + note) if note else ''}")
     if changed and not args.dry_run:
         ledger.save()
         print(f"recorded suite impacts on {changed} mechanism(s)")

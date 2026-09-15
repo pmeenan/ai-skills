@@ -892,6 +892,7 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         self.assertAlmostEqual(0.425, summary["suite_impact_pct"])  # (0.8 + 0.9) / 4; the unsized story counts zero
         self.assertTrue(summary["qualifies_suite"]); self.assertEqual(2, summary["stories_sized"]); self.assertEqual(4, summary["stories_total"])
         self.assertEqual({"B": 0.9, "A": 0.8}, summary["contributions"])
+        self.assertEqual(1, summary["stories_errored"]); self.assertEqual({"D": "no rows"}, summary["errors"])
         rows[1]["impact_pct"] = 0.3
         self.assertFalse(campaign.union_suite_summary(rows, cfg)["qualifies_suite"])
 
