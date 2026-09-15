@@ -3338,7 +3338,7 @@ def enforce_wrapper_descent(paths, story_shares, profile, story, campaign_dir=No
 
 
 def enforce_measured_dispositions(
-    paths, story_shares, config, base_floor, default_story, campaign_dir, coverage=None
+    paths, story_shares, config, base_floor, default_story, campaign_dir, coverage=None, profile=None
 ):
     """Above the story floor, mandatory and no-qualifying rows close by count.
 
@@ -3423,14 +3423,33 @@ def enforce_measured_dispositions(
             )
         uncounted = share * (1.0 - counted)
         if counted < 1.0 and uncounted >= floor:
-            raise CampaignError(
-                f"{label}. Its packet {packet['site']!r} has its scope in "
-                f"{packet.get('scope_symbol')!r}, which times {counted:.2f} of "
-                f"{packet.get('probe_symbol')!r}; the other {uncounted:.3f}% of the story "
-                "in this row is uncounted and not below the floor. A count on the rest "
-                "of the function (or a counter on its dominant descendant, named with "
-                "wrapper_of) closes it; the callee's count does not."
-            )
+            # The rest of the function may be carried by the rows beneath it
+            # that account for themselves (a packet, a mechanism, a cover):
+            # round 34, OutOfFlowLayoutPart::Run's scope times LayoutOOFNode
+            # and the rest of Run is CalculateOffset, a row of its own.
+            carried = 0.0
+            files = collapsed_stack_files(profile, story) if profile else []
+            if files:
+                accounted = [
+                    other.get("anchor") for j, other in enumerate(paths, 1)
+                    if j != index and other.get("anchor") and (
+                        other.get("disposition") in ("novel", "known", "covered-by", "algorithmic")
+                        or (other.get("disposition") in MEASURED_DISPOSITIONS
+                            and (other.get("redundancy_evidence") or {}).get("path")))
+                ]
+                carried, _ = wrapper_coverage(files, item["anchor"], accounted)
+            if carried >= WRAPPER_DOMINANT_FRACTION or share * (1.0 - carried) < floor:
+                item["remainder_carried_by_rows"] = round(carried, 3)
+            else:
+                raise CampaignError(
+                    f"{label}. Its packet {packet['site']!r} has its scope in "
+                    f"{packet.get('scope_symbol')!r}, which times {counted:.2f} of "
+                    f"{packet.get('probe_symbol')!r}; the other {uncounted:.3f}% of the story "
+                    f"in this row is uncounted and not below the floor, and the rows beneath "
+                    f"that account for themselves carry {carried:.0%} of its samples. A count "
+                    "on the rest of the function, or rows beneath it bound to their packets "
+                    "or covered by a mechanism, closes it; the callee's count does not."
+                )
         item["measured_bound"] = {
             "site": packet["site"],
             "story_profile_share_pct": share,
@@ -3741,7 +3760,7 @@ def split_row_union(item, index, bound_symbol, files, story, campaign_dir, bound
     for site, entries in story_packets.items():
         for packet, rel in entries:
             symbol = str(packet.get("probe_symbol") or "").strip()
-            if symbol:
+            if symbol and not packet.get("scope_symbol"):
                 by_symbol.setdefault(symbol, []).append((site, packet))
     if not by_symbol:
         return None
@@ -3869,7 +3888,12 @@ def owner_probe_symbols(paths, ledger_owner_lookup, campaign_dir):
 
 def story_probe_symbols(campaign_dir, story):
     """probe_symbol of every time-weighted packet under evidence/ that
-    measured this story: the probed functions the decomposition may bind."""
+    measured this story with its scope in that function: the probed
+    functions that stand between an owner and the rows beneath them. A
+    packet whose scope is in an inlined callee (`scope_symbol`) measured that
+    callee, not the frame it is filed under; it stands nowhere on a stack
+    (round 34: OutOfFlowLayoutPart::Run's scope times LayoutOOFNode, and the
+    rows under Run are CalculateOffset's)."""
     import redundancy_evidence
     symbols = set()
     for path in sorted(pathlib.Path(campaign_dir, "evidence").glob("*.json")):
@@ -3878,6 +3902,8 @@ def story_probe_symbols(campaign_dir, story):
         except (ValueError, OSError):
             continue
         symbol = packet.get("probe_symbol")
+        if packet.get("scope_symbol"):
+            continue
         if packet.get("target_story") == story and packet.get("time_weighted") \
                 and isinstance(symbol, str) and symbol.strip():
             symbols.add(symbol.strip())
@@ -5028,7 +5054,7 @@ def enforce_nearest_packet(paths, story_shares, config, base_floor, story, campa
     for site, entries in story_packets.items():
         for packet, rel in entries:
             symbol = str(packet.get("probe_symbol") or "").strip()
-            if symbol:
+            if symbol and not packet.get("scope_symbol"):  # a partial scope stands on no frame
                 by_symbol.setdefault(symbol, []).append((site, packet, rel))
     if not by_symbol:
         return
@@ -8507,7 +8533,7 @@ def cmd_decompose(args):
         )
         bound = enforce_measured_dispositions(
             result["paths"], story_shares, ledger.data["config"], floor,
-            parent.get("target_story"), ledger.dir, coverage=coverage_map,
+            parent.get("target_story"), ledger.dir, coverage=coverage_map, profile=source_profile,
         )
         enforce_wrapper_descent(result["paths"], story_shares, source_profile,
                                 parent.get("target_story"), ledger.dir, ledger.data["config"], floor)

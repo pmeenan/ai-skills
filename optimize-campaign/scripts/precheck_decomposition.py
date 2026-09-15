@@ -100,7 +100,7 @@ def main(campaign_dir, opp_id, children):
     run_all(problems, lambda w: campaign.enforce_packet_relevance(
         w, [(i, p) for i, p in enumerate(w, 1) if p.get("redundancy_evidence") and p.get("wrapper_of") is None],
         profile, story, campaign_dir), result["paths"])
-    bound = run_all(problems, campaign.enforce_measured_dispositions, result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, coverage=coverage_map) or set()
+    bound = run_all(problems, campaign.enforce_measured_dispositions, result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, coverage=coverage_map, profile=profile) or set()
     run_all(problems, campaign.enforce_wrapper_descent, result["paths"], shares, profile, story, campaign_dir, ledger.data["config"], floor)
     unbound = [i for i, p in enumerate(result["paths"], 1)
                if p["disposition"] in ("mandatory", "no-qualifying-mechanism")
