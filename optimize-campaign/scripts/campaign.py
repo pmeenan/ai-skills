@@ -3894,18 +3894,15 @@ def story_probe_symbols(campaign_dir, story):
     callee, not the frame it is filed under; it stands nowhere on a stack
     (round 34: OutOfFlowLayoutPart::Run's scope times LayoutOOFNode, and the
     rows under Run are CalculateOffset's)."""
-    import redundancy_evidence
+    newest = site_newest_build(campaign_dir)
     symbols = set()
-    for path in sorted(pathlib.Path(campaign_dir, "evidence").glob("*.json")):
-        try:
-            packet = redundancy_evidence.load_packet(path)
-        except (ValueError, OSError):
+    for _, packet in _evidence_packets(campaign_dir):
+        if packet.get("target_story") != story or packet.get("scope_symbol"):
             continue
+        if packet["build_id"] != newest.get(packet["site"]):
+            continue  # a site's older packets are superseded, their scope with them
         symbol = packet.get("probe_symbol")
-        if packet.get("scope_symbol"):
-            continue
-        if packet.get("target_story") == story and packet.get("time_weighted") \
-                and isinstance(symbol, str) and symbol.strip():
+        if isinstance(symbol, str) and symbol.strip():
             symbols.add(symbol.strip())
     return symbols
 
@@ -4702,34 +4699,14 @@ def build_site_symbols(campaign_dir, build_id):
 def story_site_packets(campaign_dir, story, build_id):
     """site -> [(packet, relative path)] for every time-weighted packet under
     evidence/ that measured this story on this build, or, when `build_id` is
-    None, on each site's newest build (`site_newest_build`)."""
+    None, on each site's newest build (`site_newest_build`). Older packets of
+    a site are superseded outright: a packet reduced before `scope_symbol`
+    existed may describe a partial scope as the whole function (round 34,
+    the round-16 to round-18 out-of-flow packets at a tenth of Run)."""
     import redundancy_evidence
     out = {}
     root = pathlib.Path(campaign_dir)
-    admitted = None
-    if build_id is None:
-        # Per site: the newest build. When that build's packets for the story
-        # all carry a scope_symbol (a scope in an inlined callee timing part
-        # of the function), the newest build whose packet times the whole
-        # function is admitted too: a function's row closes on a whole-
-        # function count, and the partial scope's reading refines it (round
-        # 34: OutOfFlowLayoutPart::Run in Nuxt, 11% timed by the r34 scope,
-        # 100% by the r16 counter in Run itself).
-        newest = site_newest_build(campaign_dir)
-        order = build_order(campaign_dir)
-        by_site = {}
-        for _, packet in _evidence_packets(campaign_dir):
-            if packet.get("target_story") == story:
-                by_site.setdefault(packet["site"], []).append(packet)
-        admitted = {}
-        for site, packets in by_site.items():
-            builds = {newest.get(site)}
-            on_newest = [pk for pk in packets if pk["build_id"] == newest.get(site)]
-            if on_newest and all(pk.get("scope_symbol") for pk in on_newest):
-                whole = [pk["build_id"] for pk in packets if not pk.get("scope_symbol")]
-                if whole:
-                    builds.add(max(whole, key=lambda b: order.get(b, 0.0)))
-            admitted[site] = builds
+    newest = site_newest_build(campaign_dir) if build_id is None else None
     for path in sorted((root / "evidence").glob("*.json")):
         try:
             packet = redundancy_evidence.load_packet(path)
@@ -4739,7 +4716,7 @@ def story_site_packets(campaign_dir, story, build_id):
             continue
         if build_id is not None and packet.get("build_id") != build_id:
             continue
-        if admitted is not None and packet.get("build_id") not in admitted.get(packet.get("site"), set()):
+        if build_id is None and packet.get("build_id") != newest.get(packet.get("site")):
             continue
         if packet.get("target_story") != story or not packet.get("site"):
             continue
