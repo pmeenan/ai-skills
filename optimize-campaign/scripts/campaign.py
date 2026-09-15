@@ -3712,26 +3712,32 @@ def enforce_packet_relevance(paths, bound_rows, profile, story, campaign_dir):
             f"analyzer artifacts of profile {profile.get('id')!r} for {story!r}"
         )
     anchor_w, prefix_w, both_w = symbol_identity(files, set(pairs))
+    _problems = []  # every violating row in one pass (the scan above is the cost)
     for pair, (index, item, packet_path) in pairs.items():
-        row_side = both_w[pair] / anchor_w[pair[0]] if anchor_w[pair[0]] else 0.0
-        probe_side = both_w[pair] / prefix_w[pair[1]] if prefix_w[pair[1]] else 0.0
-        relevance = max(row_side, probe_side)
-        if relevance < PACKET_RELEVANCE and campaign_dir:
-            union = split_row_union(item, index, pair[1], files, story, campaign_dir, row_side)
-            if union is not None:
-                item["packet_relevance"] = round(relevance, 4)
-                item["ancestor_union"] = union
-                continue
-        if relevance < PACKET_RELEVANCE:
-            raise CampaignError(
-                f"Path {index} ({item['anchor'][:80]!r}) binds packet "
-                f"{packet_path!r} whose probe {pair[1]!r} shares "
-                f"{relevance:.0%} of its samples with this row in the {story!r} "
-                "stacks; a packet closes only the work it measured. Bind a "
-                "packet from a probe on this row's work, or name a counted "
-                "descendant with wrapper_of."
-            )
-        item["packet_relevance"] = round(relevance, 4)
+        try:
+            row_side = both_w[pair] / anchor_w[pair[0]] if anchor_w[pair[0]] else 0.0
+            probe_side = both_w[pair] / prefix_w[pair[1]] if prefix_w[pair[1]] else 0.0
+            relevance = max(row_side, probe_side)
+            if relevance < PACKET_RELEVANCE and campaign_dir:
+                union = split_row_union(item, index, pair[1], files, story, campaign_dir, row_side)
+                if union is not None:
+                    item["packet_relevance"] = round(relevance, 4)
+                    item["ancestor_union"] = union
+                    continue
+            if relevance < PACKET_RELEVANCE:
+                raise CampaignError(
+                    f"Path {index} ({item['anchor'][:80]!r}) binds packet "
+                    f"{packet_path!r} whose probe {pair[1]!r} shares "
+                    f"{relevance:.0%} of its samples with this row in the {story!r} "
+                    "stacks; a packet closes only the work it measured. Bind a "
+                    "packet from a probe on this row's work, or name a counted "
+                    "descendant with wrapper_of."
+                )
+            item["packet_relevance"] = round(relevance, 4)
+        except CampaignError as exc:
+            _problems.append(str(exc))
+    if _problems:
+        raise CampaignError("\n - ".join(_problems))
 
 
 def split_row_union(item, index, bound_symbol, files, story, campaign_dir, bound_row_side, build=None):
@@ -4673,14 +4679,9 @@ def build_site_symbols(campaign_dir, build_id):
     """site -> probed function, from every time-weighted packet under
     evidence/ reduced from the given build (any story). A site reduced twice
     with two different symbols is refused."""
-    import redundancy_evidence
     symbols = {}
-    for path in sorted(pathlib.Path(campaign_dir, "evidence").glob("*.json")):
-        try:
-            packet = redundancy_evidence.load_packet(path)
-        except (ValueError, OSError):
-            continue
-        if packet.get("build_id") != build_id or not packet.get("time_weighted"):
+    for path, packet in _evidence_packets(campaign_dir):
+        if packet.get("build_id") != build_id:
             continue
         symbol = str(packet.get("probe_symbol") or "").strip()
         site = packet.get("site")
@@ -4703,17 +4704,10 @@ def story_site_packets(campaign_dir, story, build_id):
     a site are superseded outright: a packet reduced before `scope_symbol`
     existed may describe a partial scope as the whole function (round 34,
     the round-16 to round-18 out-of-flow packets at a tenth of Run)."""
-    import redundancy_evidence
     out = {}
     root = pathlib.Path(campaign_dir)
     newest = site_newest_build(campaign_dir) if build_id is None else None
-    for path in sorted((root / "evidence").glob("*.json")):
-        try:
-            packet = redundancy_evidence.load_packet(path)
-        except (ValueError, OSError):
-            continue
-        if not packet.get("time_weighted") or not packet.get("build_id"):
-            continue
+    for path, packet in _evidence_packets(campaign_dir):
         if build_id is not None and packet.get("build_id") != build_id:
             continue
         if build_id is None and packet.get("build_id") != newest.get(packet.get("site")):
@@ -5056,103 +5050,109 @@ def enforce_nearest_packet(paths, story_shares, config, base_floor, story, campa
         )
     anchors = {item["anchor"] for _, item, _, _ in rows}
     anchor_w, symbol_w, both_w = anchor_symbol_weights(files, anchors, set(by_symbol))
+    _problems = []  # every violating row in one pass (the scan above is the cost)
     for index, item, share, packet in rows:
-        anchor = item["anchor"]
-        bound_symbol = str(packet.get("probe_symbol") or "").strip()
-        row_w = anchor_w.get(anchor, 0.0)
-        if row_w <= 0 or bound_symbol not in by_symbol:
-            continue
-        distances = {}
-        for symbol, weight in symbol_w.items():
-            shared = both_w.get((anchor, symbol), 0.0)
-            if weight <= 0:
+        try:
+            anchor = item["anchor"]
+            bound_symbol = str(packet.get("probe_symbol") or "").strip()
+            row_w = anchor_w.get(anchor, 0.0)
+            if row_w <= 0 or bound_symbol not in by_symbol:
                 continue
-            relevance = max(shared / row_w, shared / weight)
-            if relevance >= PACKET_RELEVANCE:
-                distances[symbol] = abs(math.log(weight / row_w))
-        if bound_symbol not in distances:
-            continue  # enforce_packet_relevance refuses it
-        best = min(distances.values())
-        nearest = {sym for sym, d in distances.items() if d <= best + math.log(PACKET_NEAREST_TOLERANCE)}
-        if bound_symbol not in nearest:
-            near = min(nearest, key=lambda sym: distances[sym])
-            near_sites = sorted({site for site, _, _ in by_symbol[near]})
-            raise CampaignError(
-                f"Path {index} ({anchor[:80]!r}) binds {packet.get('site')!r} on "
-                f"{bound_symbol!r} ({symbol_w[bound_symbol] / row_w:.2f}x the row's samples), "
-                f"but {near!r} (site(s) {near_sites}, {symbol_w[near] / row_w:.2f}x) is the "
-                "nearer probed function on the row's stack. A row binds the nearest "
-                "probe: the packet from the function closest to the row, not the "
-                "farther one that reads lowest."
-            )
-        # Nearer probed callers between the row and the bound function that
-        # together carry the row close it on their union (round 25: an
-        # AttributeChanged row 2% of the event dispatch, 60% under importNode
-        # and 30% under SetAttributeHinted, binds importNode, not dispatch).
-        nearer = {
-            sym: both_w.get((anchor, sym), 0.0) / row_w
-            for sym, weight in symbol_w.items()
-            if sym != bound_symbol and row_w < weight < symbol_w[bound_symbol]
-            and both_w.get((anchor, sym), 0.0) >= 0.05 * row_w
-            and both_w.get((anchor, sym), 0.0) / row_w < PACKET_RELEVANCE
-        }
-        if nearer:
-            largest = max(nearer, key=nearer.get)
-            union = split_row_union(item, index, largest, files, story, campaign_dir, nearer[largest])
-            if union is not None:
-                sites = sorted({site for site, _, _ in by_symbol[largest]})
+            distances = {}
+            for symbol, weight in symbol_w.items():
+                shared = both_w.get((anchor, symbol), 0.0)
+                if weight <= 0:
+                    continue
+                relevance = max(shared / row_w, shared / weight)
+                if relevance >= PACKET_RELEVANCE:
+                    distances[symbol] = abs(math.log(weight / row_w))
+            if bound_symbol not in distances:
+                continue  # enforce_packet_relevance refuses it
+            best = min(distances.values())
+            nearest = {sym for sym, d in distances.items() if d <= best + math.log(PACKET_NEAREST_TOLERANCE)}
+            if bound_symbol not in nearest:
+                near = min(nearest, key=lambda sym: distances[sym])
+                near_sites = sorted({site for site, _, _ in by_symbol[near]})
                 raise CampaignError(
-                    f"Path {index} ({anchor[:80]!r}, {share:.2f}%) binds {packet.get('site')!r} on "
-                    f"{bound_symbol!r} ({symbol_w[bound_symbol] / row_w:.1f}x the row), above the "
-                    f"probed callers that carry it: {union['parts']}. Bind the largest "
-                    f"({sites}) and the row closes on their union, each part by its caller's bound."
+                    f"Path {index} ({anchor[:80]!r}) binds {packet.get('site')!r} on "
+                    f"{bound_symbol!r} ({symbol_w[bound_symbol] / row_w:.2f}x the row's samples), "
+                    f"but {near!r} (site(s) {near_sites}, {symbol_w[near] / row_w:.2f}x) is the "
+                    "nearer probed function on the row's stack. A row binds the nearest "
+                    "probe: the packet from the function closest to the row, not the "
+                    "farther one that reads lowest."
                 )
-        calls = float(packet.get("calls_per_repetition_mean") or 0.0)
-        ratio = row_w / symbol_w[bound_symbol] if symbol_w[bound_symbol] else 1.0
-        beneath = sorted(
-            sym for sym, weight in symbol_w.items()
-            if sym != bound_symbol and weight < row_w
-            and both_w.get((anchor, sym), 0.0) >= PACKET_BENEATH_FRACTION * row_w)
-        far = symbol_w[bound_symbol] > row_w and ratio < UPDATE_UNIT_MIN_FRACTION
-        if far and calls <= UPDATE_UNIT_MAX_CALLS:
-            raise CampaignError(
-                f"Path {index} ({anchor[:80]!r}, {share:.2f}%) is {ratio:.0%} of what "
-                f"{packet.get('site')!r} counts: {bound_symbol!r} fires "
-                f"{calls:.0f} times per repetition, so its unit of count is the update, "
-                "not the element, box or fragment this row is made of. A count on the "
-                "row's own function or its dominant descendant closes it (name that "
-                "descendant with wrapper_of, or add a counter nearer to the row)."
-            )
-        if far and share >= ALGORITHMIC_ATTENTION_PCT and not beneath:
-            raise CampaignError(
-                f"Path {index} ({anchor[:80]!r}) is {share:.2f}% of {story!r}, "
-                f"{ratio:.0%} of what {packet.get('site')!r} counts on "
-                f"{bound_symbol!r}, and no probed function sits beneath it. An "
-                "ancestor's count says nothing about the repeats beneath it; a row "
-                "this large closes on a counter on its own function or its dominant "
-                "descendant. Add that counter (say so in the report: the function, "
-                "the key, the applicable predicate) before staging the area again."
-            )
-        supported = max(packet_supported(pk, campaign_dir)
-                        * scope_counted_fraction(pk, anchor, coverage, rel)
-                        for _, pk, rel in by_symbol[bound_symbol])
-        upper = share * supported
-        if upper >= floor:
-            reading = sorted((site, round(packet_supported(pk, campaign_dir), 3))
-                             for site, pk, _ in by_symbol[bound_symbol])
-            raise CampaignError(
-                f"Path {index} ({anchor[:80]!r}) closes as {item.get('disposition')} on "
-                f"{packet.get('site')!r}, but the sites on {bound_symbol!r} read {reading}, "
-                f"and the largest bounds the avoidable work at {supported:.3f} of "
-                f"{share:.3f}% = {upper:.3f}%, not below the {floor:.3f}% floor. Every "
-                "counter on the function speaks: the row is a candidate at that fraction "
-                "or covered-by the mechanism row on that function."
-            )
-        item["nearest_packet"] = {
-            "probe_symbol": bound_symbol,
-            "row_weight_over_probe_weight": round(ratio, 4),
-            "supported_avoidable_fraction_max": round(supported, 6),
-        }
+            # Nearer probed callers between the row and the bound function that
+            # together carry the row close it on their union (round 25: an
+            # AttributeChanged row 2% of the event dispatch, 60% under importNode
+            # and 30% under SetAttributeHinted, binds importNode, not dispatch).
+            nearer = {
+                sym: both_w.get((anchor, sym), 0.0) / row_w
+                for sym, weight in symbol_w.items()
+                if sym != bound_symbol and row_w < weight < symbol_w[bound_symbol]
+                and both_w.get((anchor, sym), 0.0) >= 0.05 * row_w
+                and both_w.get((anchor, sym), 0.0) / row_w < PACKET_RELEVANCE
+            }
+            if nearer:
+                largest = max(nearer, key=nearer.get)
+                union = split_row_union(item, index, largest, files, story, campaign_dir, nearer[largest])
+                if union is not None:
+                    sites = sorted({site for site, _, _ in by_symbol[largest]})
+                    raise CampaignError(
+                        f"Path {index} ({anchor[:80]!r}, {share:.2f}%) binds {packet.get('site')!r} on "
+                        f"{bound_symbol!r} ({symbol_w[bound_symbol] / row_w:.1f}x the row), above the "
+                        f"probed callers that carry it: {union['parts']}. Bind the largest "
+                        f"({sites}) and the row closes on their union, each part by its caller's bound."
+                    )
+            calls = float(packet.get("calls_per_repetition_mean") or 0.0)
+            ratio = row_w / symbol_w[bound_symbol] if symbol_w[bound_symbol] else 1.0
+            beneath = sorted(
+                sym for sym, weight in symbol_w.items()
+                if sym != bound_symbol and weight < row_w
+                and both_w.get((anchor, sym), 0.0) >= PACKET_BENEATH_FRACTION * row_w)
+            far = symbol_w[bound_symbol] > row_w and ratio < UPDATE_UNIT_MIN_FRACTION
+            if far and calls <= UPDATE_UNIT_MAX_CALLS:
+                raise CampaignError(
+                    f"Path {index} ({anchor[:80]!r}, {share:.2f}%) is {ratio:.0%} of what "
+                    f"{packet.get('site')!r} counts: {bound_symbol!r} fires "
+                    f"{calls:.0f} times per repetition, so its unit of count is the update, "
+                    "not the element, box or fragment this row is made of. A count on the "
+                    "row's own function or its dominant descendant closes it (name that "
+                    "descendant with wrapper_of, or add a counter nearer to the row)."
+                )
+            if far and share >= ALGORITHMIC_ATTENTION_PCT and not beneath:
+                raise CampaignError(
+                    f"Path {index} ({anchor[:80]!r}) is {share:.2f}% of {story!r}, "
+                    f"{ratio:.0%} of what {packet.get('site')!r} counts on "
+                    f"{bound_symbol!r}, and no probed function sits beneath it. An "
+                    "ancestor's count says nothing about the repeats beneath it; a row "
+                    "this large closes on a counter on its own function or its dominant "
+                    "descendant. Add that counter (say so in the report: the function, "
+                    "the key, the applicable predicate) before staging the area again."
+                )
+            supported = max(packet_supported(pk, campaign_dir)
+                            * scope_counted_fraction(pk, anchor, coverage, rel)
+                            for _, pk, rel in by_symbol[bound_symbol])
+            upper = share * supported
+            if upper >= floor:
+                reading = sorted((site, round(packet_supported(pk, campaign_dir), 3))
+                                 for site, pk, _ in by_symbol[bound_symbol])
+                raise CampaignError(
+                    f"Path {index} ({anchor[:80]!r}) closes as {item.get('disposition')} on "
+                    f"{packet.get('site')!r}, but the sites on {bound_symbol!r} read {reading}, "
+                    f"and the largest bounds the avoidable work at {supported:.3f} of "
+                    f"{share:.3f}% = {upper:.3f}%, not below the {floor:.3f}% floor. Every "
+                    "counter on the function speaks: the row is a candidate at that fraction "
+                    "or covered-by the mechanism row on that function."
+                )
+            item["nearest_packet"] = {
+                "probe_symbol": bound_symbol,
+                "row_weight_over_probe_weight": round(ratio, 4),
+                "supported_avoidable_fraction_max": round(supported, 6),
+            }
+        except CampaignError as exc:
+            _problems.append(str(exc))
+    if _problems:
+        raise CampaignError("\n - ".join(_problems))
 
 
 def mechanism_function_impact(path_item, fraction, profile, story, campaign_dir):
