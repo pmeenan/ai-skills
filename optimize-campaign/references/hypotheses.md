@@ -1,5 +1,9 @@
 # Redundancy hypothesis classes
 
+(The classes below are the redundancy phase's. The efficiency phase asks a
+different question of the counted work, a cheaper algorithm, Layer 3/4;
+its rows and evidence are in decomposition.md, "The efficiency phase".)
+
 A counter tests one hypothesis about one function. A row closed by that
 count is closed for that hypothesis only. This catalogue names the classes
 of hypothesis the campaign considers for each phase of work, so that a

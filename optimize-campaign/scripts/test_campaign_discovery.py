@@ -935,6 +935,145 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         ledger = campaign.Ledger(self.dir).load()
         self.assertEqual(len(opened), len([o for o in ledger.data["opportunities"] if o.get("scope") == "suite"]))
 
+    def _two_story_profile(self, stacks_by_story, suite_mde=1.0, story_mde=2.5, share_floor=5.0):
+        story_dir = self.dir / "results" / "analysis" / "stories"
+        profile = {"id": "p", "capture_provenance": [{"capture_id": "c1", "story_frontiers": []}]}
+        for story, text in stacks_by_story.items():
+            d = story_dir / story; d.mkdir(parents=True)
+            (d / "candidate_frontier.json").write_text("{}")
+            (d / "profile.collapsed").write_text(text)
+            profile["capture_provenance"][0]["story_frontiers"].append({"story": story, "artifact": str(d / "candidate_frontier.json")})
+        ledger = campaign.Ledger(self.dir).load()
+        ledger.data["profile_runs"] = [profile]
+        ledger.data["config"]["calibration"] = {"suite_mde_pct": suite_mde, "story_mde_pct": {st: story_mde for st in stacks_by_story}}
+        ledger.data["config"]["share_floor_pct"] = share_floor
+        ledger.save()
+        campaign._SUITE_SHARES_CACHE.clear()
+        return story_dir, profile
+
+    def test_phases_open_in_order_once_the_current_search_is_exhausted(self):
+        """redundancy -> suite -> efficiency, each opened by the host once
+        the previous search is exhausted: no area undecomposed, no depth
+        audit class open, no suite-frontier function OPEN."""
+        ledger = campaign.Ledger(self.dir).load()
+        self.assertEqual("redundancy", campaign.discovery_phase(ledger))
+        self.assertEqual(1, campaign.main(["--dir", str(self.dir), "open-phase", "--phase", "efficiency", "--note", "host: skipping ahead"]))
+        self.assertEqual(1, campaign.main(["--dir", str(self.dir), "open-phase", "--phase", "suite", "--note", "host: no profile yet"]))
+        self._two_story_profile({
+            "A": "main;blink::Big();blink::Small();blink::Leaf() 3\nmain;blink::Big();blink::Other() 57\nmain;v8::Run() 40\n",
+            "B": "main;blink::Big();blink::Small();blink::Leaf() 2\nmain;blink::Big();blink::Other() 58\nmain;v8::Run() 40\n"})
+        self.assertEqual(0, campaign.main(["--dir", str(self.dir), "open-phase", "--phase", "suite", "--note", "host: redundancy audit clean"]))
+        ledger = campaign.Ledger(self.dir).load()
+        self.assertEqual("suite", campaign.discovery_phase(ledger))
+        self.assertEqual("redundancy", ledger.data["discovery_phase"]["log"][0]["from"])
+        self.assertEqual(1, campaign.main(["--dir", str(self.dir), "open-phase", "--phase", "suite", "--note", "host: again"]))
+        self.assertIn("efficiency search", campaign.phase_blockers(ledger)[0])
+        # Small is OPEN on the suite frontier: efficiency cannot open.
+        blockers = campaign.phase_open_blockers(ledger, "efficiency")
+        self.assertTrue(any("suite-frontier" in b for b in blockers), blockers)
+        self.assertEqual(0, campaign.main(["--dir", str(self.dir), "suite-frontier", "--open"]))
+        ledger = campaign.Ledger(self.dir).load()
+        areas = [o for o in ledger.data["opportunities"] if o.get("scope") == "suite"]
+        blockers = campaign.phase_open_blockers(ledger, "efficiency")
+        self.assertTrue(any(f"#{areas[0]['id']:03d}" in b and "candidate" in b for b in blockers), blockers)
+        # Decomposed by count: the suite search is exhausted, efficiency opens.
+        for area in areas:
+            fn = area["anchor"].split("/", 1)[1]
+            area["status"] = "decomposed"
+            area["path_accounting"] = [{"anchor": fn, "disposition": "mandatory", "share_pct": 3.0,
+                                        "story_profile_share_pct": 3.0, "redundancy_evidence": {"path": "evidence/small.json"}}]
+        ledger.save()
+        self.assertEqual([], campaign.phase_open_blockers(campaign.Ledger(self.dir).load(), "efficiency"))
+        self.assertEqual(0, campaign.main(["--dir", str(self.dir), "open-phase", "--phase", "efficiency", "--note", "host: suite frontier closed"]))
+        self.assertEqual("efficiency", campaign.discovery_phase(campaign.Ledger(self.dir).load()))
+
+    def test_efficiency_frontier_ranks_counted_work_by_its_own_time(self):
+        """The counted functions above the suite floor, ranked by the share
+        they carry outside every other counted function; areas open only in
+        the efficiency phase; an algorithmic row's suite impact is share x
+        fraction per story, a ranking the cost packet bounds."""
+        story_dir, profile = self._two_story_profile({
+            "A": "main;blink::Big();blink::Leaf() 50\nmain;blink::Big();blink::Own() 10\nmain;other 40\n",
+            "B": "main;blink::Big();blink::Leaf() 30\nmain;blink::Big();blink::Own() 5\nmain;other 65\n"})
+        ledger = campaign.Ledger(self.dir).load()
+        disc = campaign.new_opportunity(ledger, kind="discovery", anchor="A/blink::Big()", area_key="a-big", profile_id="p", share=60.0)
+        disc["target_story"] = "A"; disc["status"] = "decomposed"
+        disc["path_accounting"] = [
+            {"anchor": "blink::Big()", "disposition": "mandatory", "share_pct": 60.0, "story_profile_share_pct": 60.0, "wrapper_of": 2},
+            {"anchor": "blink::Leaf()", "disposition": "mandatory", "share_pct": 50.0, "story_profile_share_pct": 50.0, "redundancy_evidence": {"path": "evidence/leaf.json"}},
+            {"anchor": "blink::Own()", "disposition": "mandatory", "share_pct": 10.0, "story_profile_share_pct": 10.0}]
+        ledger.save()
+        counted = campaign.counted_functions(ledger)
+        self.assertEqual({"blink::Big()", "blink::Leaf()"}, set(counted))  # Own binds no count
+        excl = campaign.frontier_exclusive_shares(story_dir / "A" / "profile.collapsed", {"blink::Big()", "blink::Leaf()"})
+        self.assertAlmostEqual(10.0, excl["blink::Big()"]); self.assertAlmostEqual(50.0, excl["blink::Leaf()"])
+        rows = campaign.efficiency_frontier_rows(ledger)["rows"]
+        self.assertEqual(["blink::Leaf()", "blink::Big()"], [r["frame"] for r in rows])
+        self.assertAlmostEqual(7.5, rows[1]["exclusive_pct"]); self.assertAlmostEqual(47.5, rows[1]["suite_share_pct"])
+        self.assertEqual(["OPEN", "OPEN"], [r["status"] for r in rows])
+        self.assertEqual([(disc["id"], 2, "A")], [tuple(c) for c in rows[0]["closings"]])
+        # Not before the efficiency phase.
+        self.assertEqual(0, campaign.main(["--dir", str(self.dir), "efficiency-frontier"]))
+        self.assertEqual(1, campaign.main(["--dir", str(self.dir), "efficiency-frontier", "--open"]))
+        ledger = campaign.Ledger(self.dir).load()
+        self.assertFalse([o for o in ledger.data["opportunities"] if o.get("scope") == "efficiency"])
+        ledger.data["discovery_phase"] = {"phase": "efficiency", "log": []}
+        ledger.save()
+        self.assertEqual(0, campaign.main(["--dir", str(self.dir), "efficiency-frontier", "--open"]))
+        ledger = campaign.Ledger(self.dir).load()
+        opened = {o["area_key"]: o for o in ledger.data["opportunities"] if o.get("scope") == "efficiency"}
+        self.assertEqual({"eff-a-blink-leaf", "eff-a-blink-big"}, set(opened))
+        big = opened["eff-a-blink-big"]
+        self.assertEqual("A", big["target_story"]); self.assertEqual([{"discovery": disc["id"], "row": 1, "story": "A"}], big["redundancy_closings"])
+        self.assertEqual(["@root"], [r["hotspot_key"] for r in big["expected_work_refs"]])
+        self.assertAlmostEqual(60.0, big["expected_work_refs"][0]["measured_share_pct"])
+        self.assertAlmostEqual(2.0, campaign.story_floor_pct(campaign.area_config(ledger.data["config"], big), "A")[0])
+        self.assertEqual(["opened", "opened"], [r["status"] for r in campaign.efficiency_frontier_rows(ledger)["rows"]])
+        # A wrapper whose time sits in counted callees is carried by their areas.
+        campaign._SUITE_SHARES_CACHE.clear()
+        (story_dir / "A" / "profile.collapsed").write_text("main;blink::Big();blink::Leaf() 59\nmain;blink::Big();blink::Own() 1\nmain;other 40\n")
+        (story_dir / "B" / "profile.collapsed").write_text("main;blink::Big();blink::Leaf() 34\nmain;blink::Big();blink::Own() 1\nmain;other 65\n")
+        for o in list(ledger.data["opportunities"]):
+            if o.get("scope") == "efficiency":
+                ledger.data["opportunities"].remove(o)
+        self.assertEqual({"blink::Leaf()": "OPEN", "blink::Big()": "carried"},
+                         {r["frame"]: r["status"] for r in campaign.efficiency_frontier_rows(ledger)["rows"]})
+        # The suite impact of a cheaper Leaf: share x fraction per story, averaged.
+        suite = campaign.algorithmic_suite_impact(ledger, "blink::Leaf()", 0.5)
+        self.assertAlmostEqual((59 * 0.5 + 34 * 0.5) / 2, suite["suite_impact_pct"])
+        self.assertTrue(suite["qualifies_suite"]); self.assertEqual(campaign.ALGORITHMIC_IMPACT_BASIS, suite["impact_basis"])
+        self.assertAlmostEqual(0.1, campaign.algorithmic_suite_impact(ledger, "blink::Own()", 0.1)["suite_impact_pct"])
+
+    def test_efficiency_rows_say_algorithmic_or_investigated(self):
+        """An algorithmic row is refused before the efficiency phase; in an
+        efficiency area a row is algorithmic or no-qualifying-mechanism, and
+        the latter carries an investigation quoting the row's cost packet."""
+        import cost_evidence
+        alg = {"anchor": "blink::Big()", "disposition": "algorithmic"}
+        with self.assertRaisesRegex(campaign.CampaignError, "algorithmic in the redundancy phase"):
+            campaign.enforce_phase_dispositions([alg], "redundancy")
+        campaign.enforce_phase_dispositions([alg], "efficiency")
+        area = {"scope": "efficiency"}
+        with self.assertRaisesRegex(campaign.CampaignError, "mandatory in an efficiency area"):
+            campaign.enforce_phase_dispositions([{"anchor": "blink::Big()", "disposition": "mandatory"}], "efficiency", area)
+        campaign.enforce_phase_dispositions([alg, {"anchor": "blink::Own()", "disposition": "no-qualifying-mechanism"}], "efficiency", area)
+        story_dir, _ = self._two_story_profile({"A": "main;blink::Big();blink::Leaf() 50\nmain;blink::Big();blink::Own() 10\nmain;other 40\n"})
+        row = {"anchor": "blink::Big()", "disposition": "no-qualifying-mechanism"}
+        with self.assertRaisesRegex(campaign.CampaignError, "without a bounded investigation"):
+            campaign.enforce_efficiency_rows([row], {1: 60.0}, "A", self.dir)
+        row["investigation"] = {"hypotheses": ["single-pass Leaf"], "falsifications": ["Leaf is 83.3% of the row; a single pass saves 1% of it"], "stop_reason": "below floors"}
+        with self.assertRaisesRegex(campaign.CampaignError, "no cost_evidence"):
+            campaign.enforce_efficiency_rows([row], {1: 60.0}, "A", self.dir)
+        packet = cost_evidence.build_cost_packet([story_dir / "A" / "profile.collapsed"], "blink::Big()", "A", "p")
+        path = self.dir / "evidence" / "cost_big.json"; path.parent.mkdir(exist_ok=True)
+        path.write_text(json.dumps(packet))
+        row["cost_evidence"] = {"path": "evidence/cost_big.json", "sha256": campaign.sha256_file(path)}
+        campaign.enforce_efficiency_rows([row], {1: 60.0}, "A", self.dir)
+        self.assertEqual("blink::Leaf()", row["cost_summary"]["children"][0][0])
+        row["investigation"]["falsifications"] = ["the closing count read 0.2% repeats"]
+        with self.assertRaisesRegex(campaign.CampaignError, "does not say where the time goes"):
+            campaign.enforce_efficiency_rows([row], {1: 60.0}, "A", self.dir)
+
     def test_probe_union_sizes_by_the_site_class(self):
         """A key-repeat sizes only an unchanged-input site (a fragment keyed
         without its paint phase read 79-88% repeats in round 32); a predicate

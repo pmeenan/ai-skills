@@ -163,6 +163,73 @@ union like every other. Functions the campaign has already judged (an anchor
 of a row at or above its area's floor) or already probes are listed as such
 and not reopened.
 
+## Discovery phases
+
+Discovery is three searches in a fixed order, each opened by the host
+(`campaign.py open-phase --phase <suite|efficiency> --note "..."`) once the
+previous one is exhausted; the ledger records the phase
+(`discovery_phase`), the pre-check prints it, and `audit-exhaustion` is
+not established until the last has run.
+
+1. **redundancy** (the default): the story frontiers, every row at or above
+   its story floor closed by count or claimed with a packet. Exhausted when
+   every area is decomposed by count and `depth-audit` has no open class.
+2. **suite**: `suite-frontier --open` for the functions below every story
+   floor whose suite mean clears the suite floor; each suite area
+   decomposes by count at the suite floor. Exhausted when no function on the
+   suite frontier is OPEN and every suite area is decomposed.
+3. **efficiency**: cheaper algorithms for the necessary work. An
+   `algorithmic` row is refused before this phase, so the search for the
+   large redundancies is never traded for micro-optimizations.
+
+### The efficiency phase
+
+The necessary work is what the counts closed: the `mandatory` and
+`no-qualifying-mechanism` rows bound to a packet, a measured bound or a
+`wrapper_of` (`counted_functions`). `efficiency-frontier` lists the counted
+functions whose mean inclusive share across the suite clears the suite
+floor, ranked by the share each carries outside every other counted
+function (`frontier_exclusive_shares`: its own body and its small helpers).
+A wrapper whose time sits in counted callees is `carried` by their areas
+and gets none of its own. With `--open` (efficiency phase only) every OPEN
+function becomes an efficiency area in its home story (where that
+exclusive share is largest): one work ref, the function itself, the suite
+floor as its floor, and `redundancy_closings` naming the rows that counted
+it.
+
+An efficiency area's one row says one of two things, and nothing else
+(`enforce_phase_dispositions`):
+
+- `algorithmic`: a Layer 3/4 change that computes the same result with less
+  work. It binds a cost packet for the row in the home story
+  (`cost-packet --opp <id> --children <file> --path 1`, cited as
+  `cost_evidence: {path, sha256}`), names the `avoided_frames` the cheaper
+  algorithm would not run, claims an `estimated_avoidable_fraction` the
+  packet bounds (the avoided frames' summed fraction of the row), and states
+  the `algorithm_hypothesis` (what the code computes, what the cheaper
+  algorithm computes instead and why the result is the same, the packet's
+  fraction). Its story impact is share x fraction; its suite impact is that
+  product in every story averaged over the suite
+  (`algorithmic_suite_impact`), a **ranking** the home story's packet bounds
+  and the other stories assume (`impact_basis`); sizing proves it. A row
+  below the story floor and the suite floor is refused: a saving the
+  measurement cannot read is not a candidate, and the row closes as the
+  other kind with that algorithm as a falsified hypothesis.
+- `no-qualifying-mechanism`: the investigation that found none. Its
+  `investigation` names the Layer 3/4 hypotheses tried, a falsification per
+  hypothesis quoting the cost packet's child or leaf fraction (the best
+  cheaper algorithm found and what it would save), the stop reason and the
+  budget used; it binds the same `cost_evidence`.
+
+A redundancy found while investigating efficiency belongs to the
+function's row in its story or suite area (a `novel` row with a packet),
+not to the efficiency area. An avoided frame that is another counted
+function's is that function's own area's question; name the frames whose
+time the row carries itself. `suite-impacts` records the ranking on
+algorithmic candidates beside the union's on redundancy candidates, and the
+export ranks them together by suite impact with `candidate_type` and
+`impact_basis` telling them apart.
+
 One site is one counter in one function. A site declared by several
 counters (three overloads of one function under one name, round 32) flushes
 several rows per scored window; the reducer merges them per window by the

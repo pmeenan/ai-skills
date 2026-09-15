@@ -61,6 +61,8 @@ def main(campaign_dir, opp_id, children):
     ledger.data["config"] = campaign.area_config(ledger.data["config"], parent)  # a suite area's floor is the suite floor
     result = campaign.load_decomposition(children)
     profile = ledger.profile(parent["profile_id"])
+    phase = campaign.discovery_phase(ledger)
+    print(f"discovery phase: {phase}; area scope: {parent.get('scope') or 'story'}")
     measured = {tuple(r[k] for k in ("capture_id", "entry_key", "hotspot_key")): r.get("measured_share_pct", 0.0)
                 for r in parent["expected_work_refs"]}
     shares = {}
@@ -72,6 +74,10 @@ def main(campaign_dir, opp_id, children):
     floor = ledger.data["config"]["share_floor_pct"]
     problems = []
     story_floor = max(campaign.story_floor_pct(ledger.data["config"], story)[0], floor)
+    try: campaign.enforce_phase_dispositions(result["paths"], phase, parent)
+    except campaign.CampaignError as e: problems.append(str(e))
+    if parent.get("scope") == "efficiency":
+        return efficiency_precheck(ledger, parent, result, shares, story, story_floor, campaign_dir, problems, opp_id, children)
     coverage_map = campaign.packet_coverage_map(result["paths"], profile, story, campaign_dir)
     try: campaign.enforce_anchor_names_its_work(result["paths"])
     except campaign.CampaignError as e: problems.append(str(e))
@@ -223,6 +229,39 @@ def main(campaign_dir, opp_id, children):
               f"--opp {opp_id} --children {children} --path <row>  (every packet's relevance, coverage and bound, "
               "the rows beneath, and what the gate would accept)")
     return 1 if problems else 0
+
+def efficiency_precheck(ledger, parent, result, shares, story, story_floor, campaign_dir, problems, opp_id, children):
+    """An efficiency area's rules: the row is algorithmic (cost packet,
+    avoided frames, fraction, suite impact) or no-qualifying-mechanism (an
+    investigation quoting the cost packet)."""
+    try: campaign.enforce_anchor_names_its_work(result["paths"])
+    except campaign.CampaignError as e: problems.append(str(e))
+    for i, p in enumerate(result["paths"], 1):
+        if p["disposition"] != "algorithmic":
+            continue
+        try: campaign.require_algorithmic_fields(p, i)
+        except campaign.CampaignError as e: problems.append(str(e)); continue
+        try: campaign.require_existing_mechanism(p, i)
+        except campaign.CampaignError as e: problems.append(str(e))
+        try:
+            frac = float(p.get("estimated_avoidable_fraction"))
+            campaign.bind_cost_evidence(p, story, frac, campaign_dir)
+            cs = p["cost_summary"]
+            impact = shares.get(i, 0.0) * frac
+            suite = campaign.algorithmic_suite_impact(ledger, p["anchor"], frac)
+            print(f"row {i} algorithmic {p['anchor'][:60]} share={shares.get(i,0):.2f} frac={frac} avoided={cs['avoided_fraction_of_row']:.4f} of row via {cs['avoided_frames']}; "
+                  f"story impact {impact:.3f}% (floor {story_floor:.3f}%), suite impact {suite['suite_impact_pct']:.3f}% (floor {suite['suite_floor_pct']:.3f}%) [{suite['impact_basis']}]")
+            if impact < story_floor and not suite["qualifies_suite"]:
+                problems.append(f"Path {i} ({p['anchor'][:60]!r}) saves {impact:.3f}% of {story} and {suite['suite_impact_pct']:.3f}% of the suite, below both floors; decompose refuses it as a candidate. Close it as no-qualifying-mechanism with this algorithm as a falsified hypothesis quoting the cost packet's fraction.")
+        except (campaign.CampaignError, TypeError, ValueError) as e: problems.append(str(e))
+    try: campaign.enforce_efficiency_rows(result["paths"], shares, story, campaign_dir)
+    except campaign.CampaignError as e: problems.append(str(e))
+    try: campaign.enforce_row_text_distinct(result["paths"])
+    except campaign.CampaignError as e: problems.append(str(e))
+    print("\nPROBLEMS:" if problems else "\nno gate problems")
+    for x in problems: print(" -", x)
+    return 1 if problems else 0
+
 
 if __name__ == "__main__":
     sys.exit(main(*sys.argv[1:4]))

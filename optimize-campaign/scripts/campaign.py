@@ -5526,36 +5526,11 @@ def enforce_large_mandatory_rows(paths, story_shares, profile, story, campaign_d
             continue
         if anchor_function(item.get("anchor")) in algorithmic:
             continue
-        investigation = item.get("investigation")
-        ok = (isinstance(investigation, dict) and investigation.get("hypotheses")
-              and investigation.get("falsifications") and investigation.get("stop_reason")
-              and any(re.search(r"\d", str(f)) for f in investigation["falsifications"]))
+        ok = investigation_is_bounded(item)
         if ok:
             if campaign_dir is None:
                 continue
-            if not (item.get("cost_evidence") or {}).get("path"):
-                raise CampaignError(
-                    f"Path {index} ({item['anchor'][:80]!r}) closes by count at "
-                    f"{story_shares.get(index, 0.0):.2f}% of {story} and carries an "
-                    "investigation, but no cost_evidence. Where the time goes is the "
-                    "row's cost packet: `campaign.py cost-packet --opp <id> --children "
-                    "<file> --path <row>`, bound as cost_evidence: {path, sha256}; each "
-                    "falsification then quotes a child or leaf frame's fraction from it."
-                )
-            packet, _ = load_bound_cost_packet(item, story, campaign_dir)
-            problems = investigation_problems(item, packet)
-            if problems:
-                raise CampaignError(
-                    f"Path {index} ({item['anchor'][:80]!r}) investigation does not say "
-                    "where the time goes: " + "; ".join(problems) + ". The closing count's "
-                    "repeat fraction is not a falsification of a Layer 3/4 hypothesis; "
-                    "the cost packet's frames and their fractions are."
-                )
-            item["cost_summary"] = {
-                "row_share_pct": packet.get("row_share_pct"),
-                "children": [(e["frame"], round(float(e["fraction_of_row"]), 4))
-                             for e in (packet.get("children") or [])[:6]],
-            }
+            require_cost_investigation(index, item, story_shares.get(index, 0.0), story, campaign_dir)
             continue
         if not ok:
             raise CampaignError(
@@ -5635,6 +5610,13 @@ def probe_union_rows(ledger, logs, site, symbol, patch=None, scope_symbol=None, 
         try:
             packet = redundancy_evidence.build_packet([pathlib.Path(p) for p in logs], site, story, probe_symbol=symbol, patch=pathlib.Path(patch) if patch else None, scope_symbol=scope_symbol)
         except ValueError as exc:
+            if "never ran inside" in str(exc):
+                # The site logged in this story but its counter never fired
+                # in the scored window: the mechanism has nothing to remove
+                # here. Zero impact, not an error.
+                out.append({"story": story, "impact_pct": 0.0, "share_pct": 0.0, "not_sized": None,
+                            "never_ran": True, "note": str(exc)})
+                continue
             out.append({"story": story, "error": str(exc)})
             continue
         files = collapsed_stack_files(profile, story)
@@ -6247,7 +6229,7 @@ EXPORT_OPP_FIELDS = (
     "redundancy_summary", "redundancy_evidence", "opportunity_budget",
     "parent", "children", "profile_id", "evidence", "reason", "notes",
     "platform_sensitivity", "candidate_type", "algorithm_hypothesis",
-    "avoided_frames", "cost_summary", "cost_evidence",
+    "avoided_frames", "cost_summary", "cost_evidence", "impact_basis",
 )
 
 
@@ -6515,7 +6497,7 @@ def area_config(config, opp):
     share across the suite clears the suite floor), the floor in its home
     story is the suite floor; every rule that computes a story floor from
     the config sees it without knowing the area."""
-    if not opp or opp.get("scope") != "suite":
+    if not opp or opp.get("scope") not in ("suite", "efficiency"):
         return config
     floor, _ = suite_floor_pct(config)
     story = opp.get("target_story")
@@ -6603,40 +6585,180 @@ def slug_key(text):
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", text.lower())).strip("-")
 
 
-def cmd_suite_frontier(args):
-    """Functions below every story floor whose mean inclusive share across
-    the suite clears the suite floor: the small things that add up. Lists
-    them; with --open, opens each as a suite-scoped discovery area in its
-    home story (the story where it is largest), with the suite floor as the
-    area's floor and a row inventory from that story's stacks."""
+DISCOVERY_PHASES = ("redundancy", "suite", "efficiency")
+ALGORITHMIC_IMPACT_BASIS = "cost-packet bound x inclusive share per story: a ranking, proven only by sizing"
+_INCLUSIVE_CACHE_DIR = pathlib.Path.home() / ".cache" / "optimize-campaign"
+_SUITE_SHARES_CACHE = {}
+
+
+def discovery_phase(ledger):
+    """The search the campaign is in. `redundancy`: the story frontiers,
+    closed by count. `suite`: functions below every story floor whose mean
+    share across the suite clears the suite floor (the small things that add
+    up). `efficiency`: cheaper algorithms for the counted, necessary work.
+    Each opens when the host records the previous one exhausted
+    (`open-phase`); an `algorithmic` row is refused before the efficiency
+    phase, so the search for the big redundancies is never traded for
+    micro-optimizations."""
+    return (ledger.data.get("discovery_phase") or {}).get("phase") or DISCOVERY_PHASES[0]
+
+
+def undecomposed_areas(ledger):
+    return [o for o in ledger.data["opportunities"]
+            if o.get("kind") == "discovery"
+            and (o.get("status") not in ("decomposed", "exhausted") or ledger.decomposed_by_prose(o))]
+
+
+def phase_open_blockers(ledger, phase):
+    """Why `phase` cannot open: it is not the next one, or the current
+    search is not exhausted (an area undecomposed, a depth-audit class open,
+    a suite-frontier function OPEN)."""
+    if phase not in DISCOVERY_PHASES:
+        raise CampaignError(f"unknown phase {phase!r}; the phases are {', '.join(DISCOVERY_PHASES)}")
+    current = discovery_phase(ledger)
+    if DISCOVERY_PHASES.index(phase) != DISCOVERY_PHASES.index(current) + 1:
+        return [f"the campaign is in the {current} phase; {phase} "
+                + ("is already open" if phase == current else "does not follow it")]
+    if not ledger.data.get("profile_runs"):
+        return ["no reconciled profile is recorded"]
+    blockers = []
+    for o in undecomposed_areas(ledger):
+        prose = " (decomposed by prose: no row binds a count)" if ledger.decomposed_by_prose(o) else ""
+        blockers.append(f"discovery #{o['id']:03d} ({o['area_key']}) is {o['status']}{prose}; "
+                        f"the {current} search is not exhausted")
+    if phase == "suite":
+        blockers.extend(depth_audit_blockers(ledger))
+    if phase == "efficiency":
+        try:
+            open_rows = [r for r in suite_frontier_rows(ledger)["rows"] if r["status"] == "OPEN"]
+        except CampaignError as exc:
+            return blockers + [f"suite frontier could not run: {exc}"]
+        if open_rows:
+            blockers.append(f"{len(open_rows)} suite-frontier function(s) are OPEN "
+                            "(campaign.py suite-frontier --open, then decompose each)")
+    return blockers
+
+
+def cmd_open_phase(args):
+    """Host: open the next discovery phase once the current one is exhausted."""
     ledger = Ledger(args.dir or default_campaign_dir()).load()
+    note = (args.note or "").strip()
+    if len(note) < 8:
+        raise CampaignError("--note says who opens the phase and on what audit (8+ characters)")
+    blockers = phase_open_blockers(ledger, args.phase)
+    if blockers:
+        print(f"the {args.phase} phase cannot open:")
+        for blocker in blockers:
+            print(f"- {blocker}")
+        return 1
+    state = ledger.data.setdefault("discovery_phase", {"phase": DISCOVERY_PHASES[0], "log": []})
+    state.setdefault("log", []).append({"ts": utc_now(), "from": state.get("phase"), "phase": args.phase, "note": note})
+    state["phase"] = args.phase
+    ledger.save()
+    print(f"discovery phase: {args.phase} ({note})")
+    return 0
+
+
+def phase_blockers(ledger):
+    """Exhaustion blockers from the phases: the campaign is exhausted only
+    once every search ran (nothing to say without a calibrated suite floor)."""
+    if suite_floor_pct(ledger.data["config"])[0] is None:
+        return []
+    phase = discovery_phase(ledger)
+    if phase != DISCOVERY_PHASES[-1]:
+        remaining = DISCOVERY_PHASES[DISCOVERY_PHASES.index(phase) + 1:]
+        return [f"discovery phase is {phase}: the {' and '.join(remaining)} search(es) have not run "
+                "(campaign.py open-phase --phase ... --note ...)"]
+    out = []
+    try:
+        table = suite_inclusive_shares(ledger)
+        open_suite = [r for r in suite_frontier_rows(ledger, table)["rows"] if r["status"] == "OPEN"]
+        open_eff = [r for r in efficiency_frontier_rows(ledger, table)["rows"] if r["status"] == "OPEN"]
+    except CampaignError as exc:
+        return [f"suite/efficiency frontier could not run: {exc}"]
+    if open_suite:
+        out.append(f"{len(open_suite)} suite-frontier function(s) are OPEN (campaign.py suite-frontier --open)")
+    if open_eff:
+        out.append(f"{len(open_eff)} efficiency-frontier function(s) are OPEN (campaign.py efficiency-frontier --open)")
+    return out
+
+
+def frame_inclusive_shares_cached(collapsed_file, namespaces):
+    """`frame_inclusive_shares`, memoized on disk per capture file: the
+    table for one story takes minutes and never changes once the profile is
+    reconciled. Keyed by the file's path, size and mtime."""
+    path = pathlib.Path(collapsed_file)
+    try:
+        st = path.stat()
+    except OSError:
+        return frame_inclusive_shares(path, namespaces)
+    key = hashlib.sha256(json.dumps([str(path.resolve()), st.st_size, st.st_mtime_ns, list(namespaces)]).encode()).hexdigest()[:24]
+    cache = _INCLUSIVE_CACHE_DIR / f"inclusive-{key}.json"
+    if cache.is_file():
+        try:
+            return json.loads(cache.read_text())
+        except (OSError, ValueError):
+            pass
+    shares = frame_inclusive_shares(path, namespaces)
+    try:
+        _INCLUSIVE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = cache.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(shares))
+        tmp.replace(cache)
+    except OSError:
+        pass
+    return shares
+
+
+def suite_inclusive_shares(ledger):
+    """The table every suite-level question reads: per story, the mean over
+    its captures of every in-scope frame's inclusive share; the mean of
+    those over the suite's stories; the capture files; the suite floor."""
     cfg = ledger.data["config"]
-    floor, basis = suite_floor_pct(cfg)
-    if floor is None:
-        raise CampaignError("no calibrated suite MDE: the suite frontier needs the A/A calibration")
     profiles = ledger.data.get("profile_runs") or []
     if not profiles:
-        raise CampaignError("no profile recorded")
+        raise CampaignError("no reconciled profile is recorded")
     profile = profiles[-1]
-    stories = suite_stories(cfg)
+    key = (str(ledger.dir), profile.get("id"))
+    if key in _SUITE_SHARES_CACHE:
+        return _SUITE_SHARES_CACHE[key]
+    floor, basis = suite_floor_pct(cfg)
+    if floor is None:
+        raise CampaignError(f"suite floor: {basis}; record the A/A calibration first (campaign.py calibrate)")
     namespaces = tuple(cfg.get("in_scope_namespaces") or IN_SCOPE_NAMESPACES)
-    per_story = {}
-    captures_by_story = {}
+    stories = suite_stories(cfg)
+    per_story, captures = {}, {}
     for story in stories:
         files = story_capture_files(profile, story)
-        captures_by_story[story] = files
+        captures[story] = files
         if not files:
             continue
         acc = {}
         for _, path in files:
-            for frame, share in frame_inclusive_shares(path, namespaces).items():
+            for frame, share in frame_inclusive_shares_cached(path, namespaces).items():
                 acc[frame] = acc.get(frame, 0.0) + share / len(files)
         per_story[story] = acc
     n = len(stories)
     means = {}
-    for story, shares in per_story.items():
+    for shares in per_story.values():
         for frame, share in shares.items():
             means[frame] = means.get(frame, 0.0) + share / n
+    table = {"profile": profile, "namespaces": namespaces, "stories": stories, "per_story": per_story,
+             "means": means, "captures": captures, "floor": floor, "basis": basis}
+    _SUITE_SHARES_CACHE[key] = table
+    return table
+
+
+def suite_frontier_rows(ledger, table=None):
+    """Functions at or above the suite floor by mean inclusive share, with
+    where the campaign stands on each: `judged` (an anchor of a row at or
+    above its area's floor), `probed` (a newest-build probe sits in it),
+    `story-floor` (above a story floor somewhere: the story frontier's),
+    `opened` (a suite area exists), or OPEN."""
+    table = table or suite_inclusive_shares(ledger)
+    cfg = ledger.data["config"]
+    floor = table["floor"]
+    per_story = table["per_story"]
     accounted = accounted_functions(ledger)
     probed = set()
     newest = site_newest_build(ledger.dir)
@@ -6647,43 +6769,56 @@ def cmd_suite_frontier(args):
                 probed.add(sym)
     existing_keys = {o.get("area_key") for o in ledger.data["opportunities"]}
     rows = []
-    for frame, mean in sorted(means.items(), key=lambda kv: -kv[1]):
+    for frame, mean in sorted(table["means"].items(), key=lambda kv: -kv[1]):
         if mean < floor:
             break
         shares = {st: per_story[st].get(frame, 0.0) for st in per_story}
         home = max(shares, key=shares.get)
         above_story_floor = [st for st, sh in shares.items()
                              if sh >= max(story_floor_pct(cfg, st)[0], float(cfg.get("share_floor_pct") or 0.0))]
-        judged = frame in accounted
-        is_probe = any(symbol_matches(frame, sym) for sym in probed)
+        area_key = f"suite-{slug_key(home)}-{slug_key(anchor_function(frame))}"
+        # A function above a story floor somewhere belongs to the profile's
+        # own frontier (a story area), not to the suite frontier.
+        status = ("judged" if frame in accounted
+                  else "probed" if any(symbol_matches(frame, sym) for sym in probed)
+                  else "story-floor" if above_story_floor else "OPEN")
+        if area_key in existing_keys:
+            status = "opened"
         rows.append({"frame": frame, "suite_share_pct": round(mean, 4), "home_story": home,
                      "stories": {st: round(sh, 3) for st, sh in sorted(shares.items(), key=lambda kv: -kv[1]) if sh > 0},
-                     "above_story_floor_in": above_story_floor, "judged": judged, "probed": is_probe,
-                     "area_key": f"suite-{slug_key(home)}-{slug_key(anchor_function(frame))}"})
-    print(f"suite floor {floor:.3f}% ({basis}); {len(rows)} function(s) at or above it across {n} stories")
+                     "above_story_floor_in": above_story_floor, "status": status, "area_key": area_key})
+    return {"rows": rows, "table": table}
+
+
+def cmd_suite_frontier(args):
+    """Functions below every story floor whose mean inclusive share across
+    the suite clears the suite floor: the small things that add up. Lists
+    them; with --open, opens each as a suite-scoped discovery area in its
+    home story (the story where it is largest), with the suite floor as the
+    area's floor and a row inventory from that story's stacks."""
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    found = suite_frontier_rows(ledger)
+    table = found["table"]
+    floor, basis, namespaces, profile = table["floor"], table["basis"], table["namespaces"], table["profile"]
+    rows = found["rows"]
+    print(f"suite floor {floor:.3f}% ({basis}); {len(rows)} function(s) at or above it across {len(table['stories'])} stories")
     print(f"{'suite%':>7} {'home':26} {'home%':>6} {'stories':>7} status  function")
     to_open = []
     for r in rows:
-        # A function above a story floor somewhere belongs to the profile's
-        # own frontier (a story area), not to the suite frontier.
-        status = ("judged" if r["judged"] else "probed" if r["probed"]
-                  else "story-floor" if r["above_story_floor_in"] else "OPEN")
-        if r["area_key"] in existing_keys:
-            status = "opened"
         print(f"{r['suite_share_pct']:6.2f}% {r['home_story'][:26]:26} {r['stories'].get(r['home_story'], 0):5.2f}% "
-              f"{len(r['stories']):7d} {status:7} {r['frame'][:90]}")
-        if status == "OPEN":
+              f"{len(r['stories']):7d} {r['status']:7} {r['frame'][:90]}")
+        if r["status"] == "OPEN":
             to_open.append(r)
     if not args.open:
         return 0
     opened = 0
     for r in to_open:
         home = r["home_story"]
-        files = captures_by_story.get(home) or []
+        files = table["captures"].get(home) or []
         refs = []
         sources = []
         for capture_id, path in files:
-            share = frame_inclusive_shares(path, namespaces).get(r["frame"], 0.0)
+            share = frame_inclusive_shares_cached(path, namespaces).get(r["frame"], 0.0)
             entry = f"story:{home}/function:{r['frame']}"
             refs.append({"capture_id": capture_id, "entry_key": entry, "hotspot_key": "@root",
                          "semantic_key": f"symbol:{r['frame']}", "measured_share_pct": share})
@@ -6710,6 +6845,266 @@ def cmd_suite_frontier(args):
         ledger.save()
     print(f"opened {opened} suite area(s)")
     return 0
+
+
+def counted_functions(ledger):
+    """anchor -> [(discovery id, row index, story)]: the rows the redundancy
+    search closed by count (mandatory or no-qualifying-mechanism with a
+    bound packet, a measured bound or a wrapper_of) on the latest profile.
+    The necessary work: what the efficiency phase asks a cheaper algorithm
+    of."""
+    profiles = ledger.data.get("profile_runs") or []
+    latest = profiles[-1]["id"] if profiles else None
+    out = {}
+    for opp in ledger.data["opportunities"]:
+        if opp.get("kind") != "discovery" or opp.get("profile_id") != latest:
+            continue
+        for index, row in enumerate(opp.get("path_accounting") or [], 1):
+            if row.get("disposition") not in ("mandatory", "no-qualifying-mechanism"):
+                continue
+            if not ((row.get("redundancy_evidence") or {}).get("path") or row.get("measured_bound")
+                    or row.get("wrapper_of") is not None):
+                continue
+            out.setdefault(str(row.get("anchor") or ""), []).append((opp["id"], index, opp.get("target_story")))
+    return out
+
+
+def frontier_exclusive_shares(collapsed_file, frontier):
+    """For every frontier frame, the share (%) of the capture's samples that
+    pass through it and through no other frontier frame beneath it: the
+    time in the function's own body and its small helpers, not in another
+    function of the frontier (which answers for its own time)."""
+    total = 0.0
+    excl = {}
+    for frames, weight in iter_stacks([collapsed_file]):
+        total += weight
+        positions = [(i, f) for i, f in enumerate(frames) if f in frontier]
+        if not positions:
+            continue
+        seen = set()
+        for i, f in positions:
+            if f in seen:
+                continue
+            seen.add(f)
+            if any(g != f for j, g in positions if j > i):
+                continue
+            excl[f] = excl.get(f, 0.0) + weight
+    if total <= 0:
+        return {}
+    return {f: 100.0 * w / total for f, w in excl.items()}
+
+
+def efficiency_frontier_rows(ledger, table=None):
+    """The counted functions whose mean inclusive share across the suite
+    clears the suite floor, ranked by the share they carry outside every
+    other frontier function (a wrapper whose time sits in counted callees
+    is `carried` by their areas). Status: `candidate` (an algorithmic
+    mechanism exists), `investigated` (its area closed with no qualifying
+    mechanism), `opened`, `carried`, or OPEN."""
+    table = table or suite_inclusive_shares(ledger)
+    floor = table["floor"]
+    counted = counted_functions(ledger)
+    frontier = {f for f in counted if table["means"].get(f, 0.0) >= floor}
+    per_story_excl = {}
+    for story, files in table["captures"].items():
+        if not files:
+            continue
+        acc = {}
+        for _, path in files:
+            for f, sh in frontier_exclusive_shares(path, frontier).items():
+                acc[f] = acc.get(f, 0.0) + sh / len(files)
+        per_story_excl[story] = acc
+    n = len(table["stories"]) or 1
+    excl_mean = {}
+    for shares in per_story_excl.values():
+        for f, sh in shares.items():
+            excl_mean[f] = excl_mean.get(f, 0.0) + sh / n
+    areas = {o.get("area_key"): o for o in ledger.data["opportunities"] if o.get("kind") == "discovery"}
+    rows = []
+    for f in sorted(frontier, key=lambda x: (-excl_mean.get(x, 0.0), x)):
+        shares = {st: table["per_story"][st].get(f, 0.0) for st in table["per_story"]}
+        excl = {st: per_story_excl.get(st, {}).get(f, 0.0) for st in table["per_story"]}
+        home = max(excl, key=lambda st: (excl[st], shares[st]))
+        area_key = f"eff-{slug_key(home)}-{slug_key(anchor_function(f))}"
+        area = areas.get(area_key)
+        if area is not None and area.get("path_accounting"):
+            status = ("candidate" if any(r.get("disposition") == "algorithmic" for r in area["path_accounting"])
+                      else "investigated")
+        elif area is not None:
+            status = "opened"
+        elif excl_mean.get(f, 0.0) < floor:
+            status = "carried"
+        else:
+            status = "OPEN"
+        rows.append({"frame": f, "suite_share_pct": round(table["means"].get(f, 0.0), 4),
+                     "exclusive_pct": round(excl_mean.get(f, 0.0), 4), "home_story": home,
+                     "stories": {st: round(sh, 3) for st, sh in sorted(shares.items(), key=lambda kv: -kv[1]) if sh > 0},
+                     "exclusive_stories": {st: round(sh, 3) for st, sh in sorted(excl.items(), key=lambda kv: -kv[1]) if sh > 0},
+                     "closings": counted.get(f, []), "status": status, "area_key": area_key})
+    return {"rows": rows, "table": table, "frontier": frontier}
+
+
+def cmd_efficiency_frontier(args):
+    """The counted, necessary work ranked by the time it carries itself;
+    with --open (efficiency phase only), an efficiency area per OPEN
+    function in its home story, whose one row says `algorithmic` (a cheaper
+    algorithm with its cost packet) or `no-qualifying-mechanism` (the
+    investigation that found none)."""
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    phase = discovery_phase(ledger)
+    if args.open and phase != "efficiency":
+        raise CampaignError(
+            f"the campaign is in the {phase} phase; the host opens the efficiency phase "
+            "(campaign.py open-phase --phase efficiency) once the redundancy and suite searches are exhausted"
+        )
+    found = efficiency_frontier_rows(ledger)
+    table = found["table"]
+    rows = found["rows"]
+    print(f"suite floor {table['floor']:.3f}% ({table['basis']}); {len(rows)} counted function(s) at or above it "
+          f"across {len(table['stories'])} stories; phase {phase}")
+    print(f"{'excl%':>7} {'suite%':>7} {'home':26} {'home%':>6} {'stories':>7} status        function")
+    to_open = []
+    for r in rows:
+        print(f"{r['exclusive_pct']:6.2f}% {r['suite_share_pct']:6.2f}% {r['home_story'][:26]:26} "
+              f"{r['stories'].get(r['home_story'], 0):5.2f}% {len(r['stories']):7d} {r['status']:13} {r['frame'][:90]}")
+        if r["status"] == "OPEN":
+            to_open.append(r)
+    if not args.open:
+        return 0
+    opened = 0
+    for r in to_open:
+        home = r["home_story"]
+        refs, sources = [], []
+        for capture_id, path in table["captures"].get(home) or []:
+            share = frame_inclusive_shares_cached(path, table["namespaces"]).get(r["frame"], 0.0)
+            entry = f"story:{home}/function:{r['frame']}"
+            refs.append({"capture_id": capture_id, "entry_key": entry, "hotspot_key": "@root",
+                         "semantic_key": f"symbol:{r['frame']}", "measured_share_pct": share})
+            sources.append({"capture_id": capture_id, "entry_key": entry})
+        opp = new_opportunity(ledger, kind="discovery", anchor=f"{home}/{r['frame']}", area_key=r["area_key"],
+                              profile_id=table["profile"].get("id"), share=r["stories"].get(home, 0.0),
+                              notes=(f"efficiency frontier: {r['suite_share_pct']:.3f}% of the score across "
+                                     f"{len(r['stories'])} stories, {r['exclusive_pct']:.3f}% outside every other "
+                                     "counted function; closed by count in the redundancy phase"))
+        opp["target_story"] = home
+        opp["scope"] = "efficiency"
+        opp["suite_share_pct"] = r["suite_share_pct"]
+        opp["efficiency_exclusive_pct"] = r["exclusive_pct"]
+        opp["suite_stories"] = r["stories"]
+        opp["redundancy_closings"] = [{"discovery": d, "row": i, "story": st} for d, i, st in r["closings"]]
+        opp["expected_work_refs"] = refs
+        opp["source_refs"] = sources
+        opp["measured_priority_pct"] = r["stories"].get(home, 0.0)
+        opened += 1
+        print(f"opened #{opp['id']} {r['area_key']} in {home}")
+    if opened:
+        ledger.save()
+    print(f"opened {opened} efficiency area(s)")
+    return 0
+
+
+def algorithmic_suite_impact(ledger, frame, fraction):
+    """The suite impact of a cheaper algorithm on one function: in every
+    story its inclusive share x the fraction the cost packet bounds,
+    averaged over the suite. The packet bounds the fraction in the home
+    story and the other stories assume it, so this ranks; sizing proves."""
+    table = suite_inclusive_shares(ledger)
+    fn = anchor_function(frame)
+    sized = {}
+    for story, shares in table["per_story"].items():
+        share = shares.get(frame)
+        if share is None:
+            share = max((v for f, v in shares.items() if anchor_function(f) == fn), default=0.0)
+        sized[story] = share * float(fraction)
+    n = len(table["stories"]) or 1
+    impact = sum(sized.values()) / n
+    return {"suite_impact_pct": round(impact, 4), "suite_floor_pct": table["floor"], "suite_floor_basis": table["basis"],
+            "stories_total": n, "stories_sized": len([v for v in sized.values() if v > 0]),
+            "stories_errored": 0, "errors": {},
+            "contributions": {st: round(v, 4) for st, v in sorted(sized.items(), key=lambda kv: -kv[1]) if v > 0},
+            "qualifies_suite": impact >= table["floor"], "impact_basis": ALGORITHMIC_IMPACT_BASIS}
+
+
+def enforce_phase_dispositions(paths, phase, parent=None):
+    """What a row may say depends on the search the campaign is in. An
+    `algorithmic` row opens in the efficiency phase, never before: the
+    search for the big redundancies is not traded for micro-optimizations.
+    In an efficiency area the function was counted already (its closings
+    are on the area); its row is `algorithmic` or `no-qualifying-mechanism`."""
+    scope = (parent or {}).get("scope")
+    for index, item in enumerate(paths, 1):
+        disposition = item.get("disposition")
+        anchor = str(item.get("anchor") or "")[:80]
+        if disposition == "algorithmic" and phase != "efficiency":
+            raise CampaignError(
+                f"Path {index} ({anchor!r}) is algorithmic in the {phase} phase. A cheaper "
+                "algorithm for necessary work is the efficiency phase's question, which the host "
+                "opens once the redundancy and suite searches are exhausted; in this phase the row "
+                "closes by count (mandatory, with its packet and invariant) or claims redundancy "
+                "(novel/known with its packet)."
+            )
+        if scope == "efficiency" and disposition not in ("algorithmic", "no-qualifying-mechanism"):
+            raise CampaignError(
+                f"Path {index} ({anchor!r}) is {disposition} in an efficiency area. The function was "
+                "counted in the redundancy phase (redundancy_closings on the area); here the row says "
+                "one of two things: `algorithmic` (a cheaper algorithm: cost_evidence, avoided_frames, "
+                "algorithm_hypothesis, estimated_avoidable_fraction, investigation_layer 3 or 4) or "
+                "`no-qualifying-mechanism` (the investigation that found none: hypotheses, "
+                "falsifications quoting the cost packet, stop_reason, with cost_evidence)."
+            )
+
+
+def require_cost_investigation(index, item, share, story, campaign_dir):
+    """A closed row's investigation says where the time goes: a cost packet
+    for the row, and falsifications quoting its child or leaf fractions."""
+    if not (item.get("cost_evidence") or {}).get("path"):
+        raise CampaignError(
+            f"Path {index} ({item['anchor'][:80]!r}) closes by count at "
+            f"{share:.2f}% of {story} and carries an "
+            "investigation, but no cost_evidence. Where the time goes is the "
+            "row's cost packet: `campaign.py cost-packet --opp <id> --children "
+            "<file> --path <row>`, bound as cost_evidence: {path, sha256}; each "
+            "falsification then quotes a child or leaf frame's fraction from it."
+        )
+    packet, _ = load_bound_cost_packet(item, story, campaign_dir)
+    problems = investigation_problems(item, packet)
+    if problems:
+        raise CampaignError(
+            f"Path {index} ({item['anchor'][:80]!r}) investigation does not say "
+            "where the time goes: " + "; ".join(problems) + ". The closing count's "
+            "repeat fraction is not a falsification of a Layer 3/4 hypothesis; "
+            "the cost packet's frames and their fractions are."
+        )
+    item["cost_summary"] = {
+        "row_share_pct": packet.get("row_share_pct"),
+        "children": [(e["frame"], round(float(e["fraction_of_row"]), 4))
+                     for e in (packet.get("children") or [])[:6]],
+    }
+
+
+def investigation_is_bounded(item):
+    investigation = item.get("investigation")
+    return bool(isinstance(investigation, dict) and investigation.get("hypotheses")
+                and investigation.get("falsifications") and investigation.get("stop_reason")
+                and any(re.search(r"\d", str(f)) for f in investigation["falsifications"]))
+
+
+def enforce_efficiency_rows(paths, story_shares, story, campaign_dir):
+    """In an efficiency area a `no-qualifying-mechanism` row is the
+    investigation that found no cheaper algorithm, whatever its share: the
+    Layer 3/4 hypotheses tried, the cost-packet number that falsified each
+    (the best cheaper algorithm found and what it saves), the stop reason."""
+    for index, item in enumerate(paths, 1):
+        if item.get("disposition") != "no-qualifying-mechanism":
+            continue
+        if not investigation_is_bounded(item):
+            raise CampaignError(
+                f"Path {index} ({item['anchor'][:80]!r}) is no-qualifying-mechanism in an efficiency "
+                "area without a bounded investigation: name the Layer 3/4 hypotheses tried, the "
+                "cost-packet number that falsified each (what the best cheaper algorithm found would "
+                "save, and that it is below the floors), and the stop reason."
+            )
+        require_cost_investigation(index, item, story_shares.get(index, 0.0), story, campaign_dir)
 
 
 def cmd_calibrate(args):
@@ -7079,6 +7474,9 @@ def record_mechanism_observation(opp, discovery, path, *, update_sizing=True):
     opp["estimated_local_story_impact_pct"] = observation[
         "estimated_local_story_impact_pct"
     ]
+    for field in ("estimated_suite_impact_pct", "suite_contributions", "qualification_scope"):
+        if observation.get(field) is not None:
+            opp[field] = observation[field]
     if measured_priority is not None:
         opp["measured_priority_pct"] = measured_priority
 
@@ -8819,6 +9217,7 @@ def cmd_decompose(args):
         campaign_dir=ledger.dir,
     )
     result = load_decomposition(args.children)
+    enforce_phase_dispositions(result["paths"], discovery_phase(ledger), parent)
     source_profile = ledger.profile(parent.get("profile_id"))
     decomposition_challenges = validate_gate_challenges(
         args,
@@ -8960,8 +9359,12 @@ def cmd_decompose(args):
                         if function_impact[1] >= path_floor:
                             budget_qualifies = True
                 suite = None
-                if not test_bypass_active() and path_item["disposition"] != "algorithmic":
-                    suite = path_item_suite_impact(path_item, ledger)
+                if not test_bypass_active():
+                    if path_item["disposition"] == "algorithmic":
+                        suite = algorithmic_suite_impact(ledger, path_item["anchor"], fraction)
+                        path_item["impact_basis"] = ALGORITHMIC_IMPACT_BASIS
+                    else:
+                        suite = path_item_suite_impact(path_item, ledger)
                     if suite is not None:
                         path_item["estimated_suite_impact_pct"] = suite["suite_impact_pct"]
                         path_item["suite_floor_pct"] = suite["suite_floor_pct"]
@@ -8976,6 +9379,14 @@ def cmd_decompose(args):
                         suite_note = (f" Across the suite the site reads {suite['suite_impact_pct']:.3f}% of the "
                                       f"score against the suite floor {suite['suite_floor_pct']:.3f}%." if suite and
                                       suite.get("suite_floor_pct") is not None else "")
+                        if path_item["disposition"] == "algorithmic":
+                            raise CampaignError(
+                                f"Path {path_item['anchor']!r} is a cheaper algorithm worth "
+                                f"{impact:.4f}% of {story_name} (floor {path_floor:.3f}%){suite_note} "
+                                "A saving below both floors is not measurable and not a candidate: "
+                                "close the row as no-qualifying-mechanism, with this algorithm as a "
+                                "falsified hypothesis quoting the cost packet's fraction it would avoid."
+                            )
                         raise CampaignError(
                             f"Path {path_item['anchor']!r} estimated target-story "
                             f"impact {impact:.4f}% is below the qualification floor "
@@ -9011,7 +9422,11 @@ def cmd_decompose(args):
             "Every profiler root/hotspot requires exactly one primary path "
             f"accounting reference: {preview}"
         )
-    if not test_bypass_active():
+    if not test_bypass_active() and parent.get("scope") == "efficiency":
+        enforce_anchor_names_its_work(result["paths"])
+        enforce_efficiency_rows(result["paths"], story_shares, parent.get("target_story"), ledger.dir)
+        enforce_row_text_distinct(result["paths"])
+    elif not test_bypass_active():
         enforce_anchor_names_its_work(result["paths"])
         # Relevance first: it records the callers' union for a row whose
         # samples split between probed functions, which the measured rule
@@ -9157,6 +9572,7 @@ def cmd_decompose(args):
             opp["avoided_frames"] = list(path_item.get("avoided_frames") or [])
             opp["cost_summary"] = path_item.get("cost_summary")
             opp["cost_evidence"] = path_item.get("cost_evidence")
+            opp["impact_basis"] = path_item.get("impact_basis")
         record_mechanism_observation(opp, parent, path_item)
         created.append(opp)
     for opp, path_item in known:
@@ -11313,11 +11729,16 @@ def cmd_suite_impacts(args):
             if key and row.get("disposition") in ("novel", "known") and (row.get("redundancy_evidence") or {}).get("path"):
                 if key not in rows_by_key or row.get("disposition") == "novel":
                     rows_by_key[key] = row
+            if key and row.get("disposition") == "algorithmic" and (row.get("cost_evidence") or {}).get("path"):
+                rows_by_key.setdefault(key, row)
     for opp in ledger.data["opportunities"]:
         if opp.get("kind") != "mechanism" or opp.get("status") in MECHANISM_TERMINAL:
             continue
         row = rows_by_key.get(opp.get("mechanism_key"))
-        summary = path_item_suite_impact(row, ledger) if row else None
+        if row is not None and row.get("disposition") == "algorithmic":
+            summary = algorithmic_suite_impact(ledger, row["anchor"], float(row.get("estimated_avoidable_fraction") or 0.0))
+        else:
+            summary = path_item_suite_impact(row, ledger) if row else None
         if summary is None:
             rows.append((opp["id"], opp.get("mechanism_key"), None, opp.get("target_story"), "no packet with logs"))
             continue
@@ -11363,6 +11784,7 @@ def cmd_audit_exhaustion(args):
     # The hypothesis depth audit scans every story's stacks (minutes), so it
     # runs here and in `exhaust`, never on a ledger save.
     blockers.extend(depth_audit_blockers(ledger))
+    blockers.extend(phase_blockers(ledger))
     if ledger.data.get("profile_runs"):
         blockers.extend(checkout_exhaustion_blockers(
             ledger,
@@ -12326,6 +12748,15 @@ def build_parser():
     p = sub.add_parser("suite-impacts", help="Record every candidate mechanism's suite impact (mean of per-story impacts) and print the ranking")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_suite_impacts)
+
+    p = sub.add_parser("open-phase", help="Host: open the next discovery phase (redundancy -> suite -> efficiency) once the current one is exhausted")
+    p.add_argument("--phase", required=True, choices=DISCOVERY_PHASES[1:])
+    p.add_argument("--note", required=True)
+    p.set_defaults(func=cmd_open_phase)
+
+    p = sub.add_parser("efficiency-frontier", help="The counted, necessary work ranked by the time it carries outside every other counted function; --open (efficiency phase) makes each OPEN function an efficiency area in its home story")
+    p.add_argument("--open", action="store_true")
+    p.set_defaults(func=cmd_efficiency_frontier)
 
     p = sub.add_parser("register-site", help="Host: record the hypothesis class a probe site's key and predicate test")
     p.add_argument("--site", required=True, help="site name as passed to RedundancyCounter")
