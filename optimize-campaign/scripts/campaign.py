@@ -6503,6 +6503,209 @@ def mechanism_suite_impact(ledger, site, symbol, scope_symbol=None):
     return summary
 
 
+def area_config(config, opp):
+    """The config an area's rules read: for a suite-scoped area (opened by
+    `suite-frontier` for a function below every story floor whose mean
+    share across the suite clears the suite floor), the floor in its home
+    story is the suite floor; every rule that computes a story floor from
+    the config sees it without knowing the area."""
+    if not opp or opp.get("scope") != "suite":
+        return config
+    floor, _ = suite_floor_pct(config)
+    story = opp.get("target_story")
+    if floor is None or not story:
+        return config
+    cfg = dict(config)
+    calibration = dict(config.get("calibration") or {})
+    mde = dict(calibration.get("story_mde_pct") or {})
+    mde[story] = floor / MDE_FLOOR_MULTIPLIER
+    calibration["story_mde_pct"] = mde
+    cfg["calibration"] = calibration
+    cfg["share_floor_pct"] = 0.0
+    return cfg
+
+
+def story_capture_files(profile, story):
+    """[(capture_id, profile.collapsed)] for a story, one per capture."""
+    out = []
+    for capture in profile.get("capture_provenance", []) or []:
+        for item in capture.get("story_frontiers", []) or []:
+            if item.get("story") != story or not item.get("artifact"):
+                continue
+            candidate = pathlib.Path(item["artifact"]).parent / "profile.collapsed"
+            if candidate.is_file():
+                out.append((capture.get("capture_id"), candidate))
+    return out
+
+
+def frame_inclusive_shares(collapsed_file, namespaces):
+    """Inclusive share (%) of every frame in one capture's stacks, counted
+    once per sample, restricted to the campaign's namespaces."""
+    prefixes = tuple(f"{ns}::" for ns in namespaces)
+    total = 0.0
+    inclusive = {}
+    for frames, weight in iter_stacks([collapsed_file]):
+        total += weight
+        for frame in set(frames):
+            if frame.startswith(prefixes):
+                inclusive[frame] = inclusive.get(frame, 0.0) + weight
+    if total <= 0:
+        return {}
+    return {frame: 100.0 * w / total for frame, w in inclusive.items()}
+
+
+def descendant_shares(collapsed_file, root_frame):
+    """Inclusive share (%) of every frame beneath `root_frame`'s outermost
+    occurrence, counted once per sample, over the capture's samples."""
+    total = 0.0
+    inclusive = {}
+    for frames, weight in iter_stacks([collapsed_file]):
+        total += weight
+        if root_frame not in frames:
+            continue
+        for frame in set(frames[frames.index(root_frame) + 1:]):
+            inclusive[frame] = inclusive.get(frame, 0.0) + weight
+    if total <= 0:
+        return {}
+    return {frame: 100.0 * w / total for frame, w in inclusive.items()}
+
+
+def accounted_functions(ledger):
+    """Frames the campaign has already judged: anchors of decomposition rows
+    at or above their area's floor, and the probed functions of every
+    site's newest build."""
+    cfg = ledger.data["config"]
+    out = set()
+    for opp in ledger.data["opportunities"]:
+        if opp.get("kind") != "discovery":
+            continue
+        story = opp.get("target_story")
+        floor = max(story_floor_pct(area_config(cfg, opp), story)[0], float(area_config(cfg, opp).get("share_floor_pct") or 0.0))
+        for row in opp.get("path_accounting") or []:
+            share = row.get("story_profile_share_pct")
+            if share is None:
+                share = row.get("share_pct")
+            try:
+                if float(share) >= floor:
+                    out.add(str(row.get("anchor") or ""))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def slug_key(text):
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", text.lower())).strip("-")
+
+
+def cmd_suite_frontier(args):
+    """Functions below every story floor whose mean inclusive share across
+    the suite clears the suite floor: the small things that add up. Lists
+    them; with --open, opens each as a suite-scoped discovery area in its
+    home story (the story where it is largest), with the suite floor as the
+    area's floor and a row inventory from that story's stacks."""
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    cfg = ledger.data["config"]
+    floor, basis = suite_floor_pct(cfg)
+    if floor is None:
+        raise CampaignError("no calibrated suite MDE: the suite frontier needs the A/A calibration")
+    profiles = ledger.data.get("profile_runs") or []
+    if not profiles:
+        raise CampaignError("no profile recorded")
+    profile = profiles[-1]
+    stories = suite_stories(cfg)
+    namespaces = tuple(cfg.get("in_scope_namespaces") or IN_SCOPE_NAMESPACES)
+    per_story = {}
+    captures_by_story = {}
+    for story in stories:
+        files = story_capture_files(profile, story)
+        captures_by_story[story] = files
+        if not files:
+            continue
+        acc = {}
+        for _, path in files:
+            for frame, share in frame_inclusive_shares(path, namespaces).items():
+                acc[frame] = acc.get(frame, 0.0) + share / len(files)
+        per_story[story] = acc
+    n = len(stories)
+    means = {}
+    for story, shares in per_story.items():
+        for frame, share in shares.items():
+            means[frame] = means.get(frame, 0.0) + share / n
+    accounted = accounted_functions(ledger)
+    probed = set()
+    newest = site_newest_build(ledger.dir)
+    for _, packet in _evidence_packets(ledger.dir):
+        if packet.get("build_id") == newest.get(packet.get("site")):
+            sym = str(packet.get("probe_symbol") or "").strip()
+            if sym:
+                probed.add(sym)
+    existing_keys = {o.get("area_key") for o in ledger.data["opportunities"]}
+    rows = []
+    for frame, mean in sorted(means.items(), key=lambda kv: -kv[1]):
+        if mean < floor:
+            break
+        shares = {st: per_story[st].get(frame, 0.0) for st in per_story}
+        home = max(shares, key=shares.get)
+        above_story_floor = [st for st, sh in shares.items()
+                             if sh >= max(story_floor_pct(cfg, st)[0], float(cfg.get("share_floor_pct") or 0.0))]
+        judged = frame in accounted
+        is_probe = any(symbol_matches(frame, sym) for sym in probed)
+        rows.append({"frame": frame, "suite_share_pct": round(mean, 4), "home_story": home,
+                     "stories": {st: round(sh, 3) for st, sh in sorted(shares.items(), key=lambda kv: -kv[1]) if sh > 0},
+                     "above_story_floor_in": above_story_floor, "judged": judged, "probed": is_probe,
+                     "area_key": f"suite-{slug_key(home)}-{slug_key(anchor_function(frame))}"})
+    print(f"suite floor {floor:.3f}% ({basis}); {len(rows)} function(s) at or above it across {n} stories")
+    print(f"{'suite%':>7} {'home':26} {'home%':>6} {'stories':>7} status  function")
+    to_open = []
+    for r in rows:
+        # A function above a story floor somewhere belongs to the profile's
+        # own frontier (a story area), not to the suite frontier.
+        status = ("judged" if r["judged"] else "probed" if r["probed"]
+                  else "story-floor" if r["above_story_floor_in"] else "OPEN")
+        if r["area_key"] in existing_keys:
+            status = "opened"
+        print(f"{r['suite_share_pct']:6.2f}% {r['home_story'][:26]:26} {r['stories'].get(r['home_story'], 0):5.2f}% "
+              f"{len(r['stories']):7d} {status:7} {r['frame'][:90]}")
+        if status == "OPEN":
+            to_open.append(r)
+    if not args.open:
+        return 0
+    opened = 0
+    for r in to_open:
+        home = r["home_story"]
+        files = captures_by_story.get(home) or []
+        refs = []
+        sources = []
+        for capture_id, path in files:
+            share = frame_inclusive_shares(path, namespaces).get(r["frame"], 0.0)
+            entry = f"story:{home}/function:{r['frame']}"
+            refs.append({"capture_id": capture_id, "entry_key": entry, "hotspot_key": "@root",
+                         "semantic_key": f"symbol:{r['frame']}", "measured_share_pct": share})
+            sources.append({"capture_id": capture_id, "entry_key": entry})
+            for frame, sub in sorted(descendant_shares(path, r["frame"]).items(), key=lambda kv: -kv[1]):
+                if sub < floor:
+                    break
+                refs.append({"capture_id": capture_id, "entry_key": entry,
+                             "hotspot_key": f"alternative:story:{home}/function:{frame}",
+                             "semantic_key": f"symbol:{frame}", "measured_share_pct": sub})
+        opp = new_opportunity(ledger, kind="discovery", anchor=f"{home}/{r['frame']}", area_key=r["area_key"],
+                              profile_id=profile.get("id"), share=r["stories"].get(home, 0.0),
+                              notes=f"suite frontier: {r['suite_share_pct']:.3f}% of the score across {len(r['stories'])} stories, below every story floor")
+        opp["target_story"] = home
+        opp["scope"] = "suite"
+        opp["suite_share_pct"] = r["suite_share_pct"]
+        opp["suite_stories"] = r["stories"]
+        opp["expected_work_refs"] = refs
+        opp["source_refs"] = sources
+        opp["measured_priority_pct"] = r["stories"].get(home, 0.0)
+        opened += 1
+        print(f"opened #{opp['id']} {r['area_key']} in {home} ({len(refs)} work refs)")
+    if opened:
+        ledger.save()
+    print(f"opened {opened} suite area(s)")
+    return 0
+
+
 def cmd_calibrate(args):
     """Record the host's A/A null calibration and per-story MDEs in the ledger."""
     import statistics_policy
@@ -8577,6 +8780,10 @@ def cmd_decompose(args):
         raise CampaignError(
             f"#{parent['id']:03d} is a mechanism; only discoveries decompose"
         )
+    # A suite-scoped area's rules read the suite floor; the ledger's own
+    # config is restored before it is saved.
+    _saved_config = ledger.data["config"]
+    ledger.data["config"] = area_config(_saved_config, parent)
     skeptic_verdict = (
         parent.get("reviews", {}).get("skeptic", {}).get("verdict")
     )
@@ -9090,6 +9297,7 @@ def cmd_decompose(args):
         subject=f"opportunity-{parent['id']}-revision-{parent['decomposition_revision']}",
         reports=decomposition_challenges,
     )
+    ledger.data["config"] = _saved_config
     ledger.save()
     print(f"Discovery #{parent['id']:03d} {detail}")
     for opp in created:
@@ -10939,6 +11147,8 @@ def depth_audit(ledger, story=None, profile=None):
         rows = []
         packets = {}
         for opp in opps:
+            opp_cfg = area_config(cfg, opp)
+            opp_floor = max(story_floor_pct(opp_cfg, target)[0], float(opp_cfg.get("share_floor_pct") or 0.0))
             for index, row in enumerate(opp["path_accounting"], 1):
                 if row.get("disposition") not in MEASURED_DISPOSITIONS:
                     continue
@@ -10949,7 +11159,7 @@ def depth_audit(ledger, story=None, profile=None):
                     share = float(share)
                 except (TypeError, ValueError):
                     continue
-                if share < floor:
+                if share < opp_floor:
                     continue
                 ref = (row.get("redundancy_evidence") or {}).get("path")
                 if not ref:
@@ -11086,10 +11296,22 @@ def cmd_suite_impacts(args):
     print(f"suite floor: {('%.3f%%' % floor) if floor is not None else 'none'} ({basis})")
     changed = 0
     rows = []
+    # The packet lives on the discovery rows that name the mechanism (novel
+    # first); the mechanism record carries the summary.
+    rows_by_key = {}
+    for disc in ledger.data["opportunities"]:
+        if disc.get("kind") != "discovery":
+            continue
+        for row in disc.get("path_accounting") or []:
+            key = row.get("mechanism_key")
+            if key and row.get("disposition") in ("novel", "known") and (row.get("redundancy_evidence") or {}).get("path"):
+                if key not in rows_by_key or row.get("disposition") == "novel":
+                    rows_by_key[key] = row
     for opp in ledger.data["opportunities"]:
         if opp.get("kind") != "mechanism" or opp.get("status") in MECHANISM_TERMINAL:
             continue
-        summary = path_item_suite_impact(opp, ledger)
+        row = rows_by_key.get(opp.get("mechanism_key"))
+        summary = path_item_suite_impact(row, ledger) if row else None
         if summary is None:
             rows.append((opp["id"], opp.get("mechanism_key"), None, opp.get("target_story")))
             continue
@@ -11354,7 +11576,8 @@ def explain_row(args, index):
     paths = result["paths"]
     item = paths[index - 1]
     share = shares.get(index)
-    floor = max(story_floor_pct(ledger.data["config"], story)[0], ledger.data["config"]["share_floor_pct"])
+    _cfg = area_config(ledger.data["config"], parent)
+    floor = max(story_floor_pct(_cfg, story)[0], _cfg["share_floor_pct"])
     anchor = item["anchor"]
     print(f"Path {index}: {anchor}")
     print(f"  share {share if share is None else round(share, 3)}% of {story}; floor {floor:.3f}%; "
@@ -12084,6 +12307,10 @@ def build_parser():
     p.add_argument("--class", dest="hypothesis_class", required=True)
     p.add_argument("--note", required=True)
     p.set_defaults(func=cmd_exclude_hypothesis)
+
+    p = sub.add_parser("suite-frontier", help="Functions below every story floor whose mean share across the suite clears the suite floor; --open makes each a suite-scoped area in its home story")
+    p.add_argument("--open", action="store_true")
+    p.set_defaults(func=cmd_suite_frontier)
 
     p = sub.add_parser("suite-impacts", help="Record every candidate mechanism's suite impact (mean of per-story impacts) and print the ranking")
     p.add_argument("--dry-run", action="store_true")

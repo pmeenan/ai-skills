@@ -58,6 +58,7 @@ def run_all(problems, rule, paths, *args, limit=60, **kwargs):
 def main(campaign_dir, opp_id, children):
     ledger = campaign.Ledger(campaign_dir).load()
     parent = ledger.opp(int(opp_id))
+    ledger.data["config"] = campaign.area_config(ledger.data["config"], parent)  # a suite area's floor is the suite floor
     result = campaign.load_decomposition(children)
     profile = ledger.profile(parent["profile_id"])
     measured = {tuple(r[k] for k in ("capture_id", "entry_key", "hotspot_key")): r.get("measured_share_pct", 0.0)

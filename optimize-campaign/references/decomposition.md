@@ -151,6 +151,18 @@ the number on every candidate mechanism, and the export ranks candidates
 by it: the small things that add up across stories rank by their sum, and
 a large single-story item ranks by its share of the suite.
 
+`suite-frontier` lists every in-scope function whose mean inclusive share
+across the suite clears the suite floor although no story floor admitted it
+(the profile's own frontier holds the ones a story floor did); with
+`--open` each becomes a suite-scoped discovery area in its home story (the
+story where it is largest), its rows the frames beneath it in that story's
+stacks at or above the suite floor. A suite area decomposes like any other;
+its floor is the suite floor (`area_config`), so its rows close by count or
+qualify at that floor, and its mechanisms are sized across the suite by the
+union like every other. Functions the campaign has already judged (an anchor
+of a row at or above its area's floor) or already probes are listed as such
+and not reopened.
+
 One site is one counter in one function. A site declared by several
 counters (three overloads of one function under one name, round 32) flushes
 several rows per scored window; the reducer merges them per window by the

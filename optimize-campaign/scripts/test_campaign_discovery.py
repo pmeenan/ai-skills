@@ -895,6 +895,45 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         rows[1]["impact_pct"] = 0.3
         self.assertFalse(campaign.union_suite_summary(rows, cfg)["qualifies_suite"])
 
+    def test_suite_frontier_opens_areas_below_every_story_floor(self):
+        """A function below every story floor whose mean share across the
+        suite clears the suite floor becomes a suite-scoped area in its home
+        story, with the suite floor as its floor (area_config)."""
+        story_dir = self.dir / "results" / "analysis" / "stories"
+        profile = {"id": "p", "capture_provenance": [{"capture_id": "c1", "story_frontiers": []}]}
+        for story, small in (("A", 3), ("B", 2)):
+            d = story_dir / story; d.mkdir(parents=True)
+            (d / "candidate_frontier.json").write_text("{}")
+            (d / "profile.collapsed").write_text(
+                f"main;blink::Big();blink::Small();blink::Leaf() {small}\nmain;blink::Big();blink::Other() {60 - small}\nmain;v8::Run() 40\n")
+            profile["capture_provenance"][0]["story_frontiers"].append({"story": story, "artifact": str(d / "candidate_frontier.json")})
+        ledger = campaign.Ledger(self.dir).load()
+        ledger.data["profile_runs"] = [profile]
+        ledger.data["config"]["calibration"] = {"suite_mde_pct": 1.0, "story_mde_pct": {"A": 2.5, "B": 2.5}}
+        ledger.data["config"]["share_floor_pct"] = 5.0
+        ledger.save()
+        shares = campaign.frame_inclusive_shares(story_dir / "A" / "profile.collapsed", ("blink",))
+        self.assertAlmostEqual(60.0, shares["blink::Big()"]); self.assertAlmostEqual(3.0, shares["blink::Small()"])
+        self.assertNotIn("v8::Run()", shares)
+        self.assertAlmostEqual(3.0, campaign.descendant_shares(story_dir / "A" / "profile.collapsed", "blink::Big()")["blink::Small()"])
+        # Small: 3% and 2% under floors of 5%, mean 2.5% over the suite floor of 2%.
+        rc = campaign.main(["--dir", str(self.dir), "suite-frontier", "--open"])
+        self.assertEqual(0, rc)
+        ledger = campaign.Ledger(self.dir).load()
+        opened = [o for o in ledger.data["opportunities"] if o.get("scope") == "suite"]
+        self.assertEqual(["blink::Small()", "blink::Leaf()"][:1], [o["anchor"].split("/", 1)[1] for o in opened if "Small" in o["anchor"]])
+        small = next(o for o in opened if "Small" in o["anchor"])
+        self.assertEqual("A", small["target_story"]); self.assertAlmostEqual(2.5, small["suite_share_pct"])
+        self.assertEqual({"@root", "alternative:story:A/function:blink::Leaf()"}, {r["hotspot_key"] for r in small["expected_work_refs"]})
+        cfg = campaign.area_config(ledger.data["config"], small)
+        self.assertAlmostEqual(2.0, campaign.story_floor_pct(cfg, "A")[0])  # the suite floor, not 5%
+        self.assertAlmostEqual(5.0, campaign.story_floor_pct(ledger.data["config"], "A")[0])
+        # Big is above the story floors: not a suite area. Reopening is idempotent.
+        self.assertFalse([o for o in opened if "Big" in o["anchor"]])
+        campaign.main(["--dir", str(self.dir), "suite-frontier", "--open"])
+        ledger = campaign.Ledger(self.dir).load()
+        self.assertEqual(len(opened), len([o for o in ledger.data["opportunities"] if o.get("scope") == "suite"]))
+
     def test_probe_union_sizes_by_the_site_class(self):
         """A key-repeat sizes only an unchanged-input site (a fragment keyed
         without its paint phase read 79-88% repeats in round 32); a predicate
