@@ -5332,6 +5332,26 @@ def enforce_nearest_packet(paths, story_shares, config, base_floor, story, campa
         raise CampaignError("\n - ".join(_problems))
 
 
+def path_item_suite_impact(path_item, ledger):
+    """The suite impact of the site the row binds (mechanism_suite_impact),
+    or None without a packet."""
+    import redundancy_evidence
+    ref = path_item.get("redundancy_evidence") or {}
+    if not ref.get("path"):
+        return None
+    packet_path = pathlib.Path(str(ref["path"]))
+    if not packet_path.is_absolute():
+        packet_path = pathlib.Path(ledger.dir) / packet_path
+    try:
+        packet = redundancy_evidence.load_packet(packet_path)
+    except (ValueError, OSError):
+        return None
+    symbol = str(packet.get("probe_symbol") or "").strip()
+    if not packet.get("site") or not symbol:
+        return None
+    return mechanism_suite_impact(ledger, packet["site"], symbol, scope_symbol=packet.get("scope_symbol"))
+
+
 def mechanism_function_impact(path_item, fraction, profile, story, campaign_dir):
     """(function share, function share x fraction) for a candidate row whose
     function appears in several rows of the profile (a recursive style
@@ -5707,13 +5727,17 @@ def cmd_probe_union(args):
         im = f"{r['impact_pct']:.2f}%" if r["impact_pct"] is not None else "n/a"
         print(f"{r['story']:34} {sh:>7} {r['floor_pct']:5.2f}% {r['calls_per_repetition']:8.1f} "
               f"{(r['applicable_bound'] or 0):6.3f} {(r['repeat_bound'] or 0):6.3f} {im:>7} {'yes' if r['qualifies'] else 'no'}")
+    suite = union_suite_summary(rows, ledger.data["config"])
+    print(f"suite: {suite['suite_impact_pct']:.3f}% of the score ({suite['stories_sized']} of {suite['stories_total']} "
+          f"stories sized) vs floor {suite['suite_floor_pct'] if suite['suite_floor_pct'] is None else '%.3f%%' % suite['suite_floor_pct']}"
+          f": {'qualifies' if suite['qualifies_suite'] else 'no'}")
     if args.out:
         pathlib.Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         pathlib.Path(args.out).write_text(json.dumps({
             "kind": "probe-union", "site": args.site, "probe_symbol": args.symbol,
             "logs": [str(p) for p in args.browser_log], "patch": args.patch,
             "build_id": next((r.get("build_id") for r in rows if r.get("build_id")), None), "rows": rows,
-            "generated_at": utc_now()}, indent=2) + "\n")
+            "suite": suite, "generated_at": utc_now()}, indent=2) + "\n")
         print(args.out)
     return 0
 
@@ -5752,11 +5776,12 @@ def cmd_probe_union_all(args):
         rows = probe_union_rows(ledger, [str(p) for p in logs], site, symbols[site], args.patch,
                                 scope_symbol=scopes.get(site), reference_cache=reference_cache)
         out = out_dir / ("union_" + site.replace("/", "_") + ".json")
+        suite = union_suite_summary(rows, ledger.data["config"])
         out.write_text(json.dumps({
             "kind": "probe-union", "site": site, "probe_symbol": symbols[site],
             "scope_symbol": scopes.get(site),
             "logs": [str(p) for p in logs], "patch": args.patch, "build_id": build,
-            "rows": rows, "generated_at": utc_now()}, indent=2) + "\n")
+            "rows": rows, "suite": suite, "generated_at": utc_now()}, indent=2) + "\n")
         ok = [r for r in rows if not r.get("error") and r.get("impact_pct") is not None]
         best = max(ok, key=lambda r: r["impact_pct"]) if ok else None
         qualifying = [r["story"] for r in ok if r.get("qualifies")]
@@ -5764,6 +5789,7 @@ def cmd_probe_union_all(args):
         print(f"{site:44} {symbols[site][:52]:52} "
               f"{(best['story'][:30] if best else '-'):30} "
               f"{(('%.2f%%' % best['impact_pct']) if best else 'n/a'):>7} "
+              f"suite {suite['suite_impact_pct']:.2f}%{'*' if suite['qualifies_suite'] else ' '} "
               f"{len(qualifying)}: {', '.join(qualifying)}"
               + (f"; not sized (scope coverage): {', '.join(unsized)}" if unsized else ""))
     return 0
@@ -6215,7 +6241,8 @@ EXPORT_OPP_FIELDS = (
     "target_story", "subsystem", "share_pct", "measured_priority_pct",
     "story_profile_share_pct", "estimated_avoidable_fraction",
     "estimated_local_story_impact_pct", "qualification_floor_pct",
-    "qualification_floor_basis", "investigation_layer", "win_shape",
+    "qualification_floor_basis", "estimated_suite_impact_pct", "suite_contributions",
+    "qualification_scope", "investigation_layer", "win_shape",
     "subtree_pruned", "invariant_description", "safety_and_spec_analysis",
     "redundancy_summary", "redundancy_evidence", "opportunity_budget",
     "parent", "children", "profile_id", "evidence", "reason", "notes",
@@ -6286,7 +6313,9 @@ def cmd_export_candidates(args):
         if story:
             row["story_floor_pct"], row["story_floor_basis"] = story_floor_pct(cfg, story)
         opps.append(row)
-    opps.sort(key=lambda r: (-(r.get("priority") or 0), r["id"]))
+    # Ranked by suite impact (the score is a geometric mean, so a mechanism
+    # counts by the mean of its per-story impacts), then by story priority.
+    opps.sort(key=lambda r: (-(r.get("estimated_suite_impact_pct") or 0), -(r.get("priority") or 0), r["id"]))
     overlaps = mechanism_overlaps(ledger, opps)
     for row in opps:
         if row["id"] in overlaps:
@@ -6394,6 +6423,84 @@ def story_floor_pct(config, story):
         return base, "campaign share floor (no calibrated MDE for this story)"
     floor = max(base, MDE_FLOOR_MULTIPLIER * float(mde))
     return floor, f"max(share floor {base}%, {MDE_FLOOR_MULTIPLIER:g} x calibrated MDE {float(mde):.3f}% of {story})"
+
+
+def suite_stories(config):
+    """The stories the suite score is the geometric mean of: the calibrated
+    ones."""
+    calibration = config.get("calibration") or {}
+    return sorted((calibration.get("story_mde_pct") or {}).keys())
+
+
+def suite_floor_pct(config):
+    """Qualification floor for the suite: twice the calibrated MDE of the
+    suite score (a geometric mean, so a mechanism's suite impact is the
+    mean of its per-story impacts). None until an A/A calibration recorded
+    a suite MDE. A mechanism below every story floor qualifies when its
+    suite impact clears this: the small things that add up across stories,
+    above what the fixed-plan measurement can read on the whole suite."""
+    calibration = config.get("calibration") or {}
+    mde = calibration.get("suite_mde_pct")
+    if mde is None:
+        return None, "no calibrated suite MDE"
+    floor = MDE_FLOOR_MULTIPLIER * float(mde)
+    return floor, (f"{MDE_FLOOR_MULTIPLIER:g} x calibrated suite MDE {float(mde):.3f}% "
+                   f"(geometric mean of {len(suite_stories(config))} stories)")
+
+
+def union_suite_summary(rows, config):
+    """A site's suite impact from its union rows: the mean over the suite's
+    stories of the per-story impact (a story with no sized reading counts
+    zero), against the suite floor."""
+    stories = suite_stories(config)
+    n = len(stories) or len([r for r in rows if not r.get("error")]) or 1
+    sized = {r["story"]: float(r["impact_pct"]) for r in rows
+             if not r.get("error") and r.get("impact_pct") is not None and not r.get("not_sized")}
+    total = sum(v for st, v in sized.items() if not stories or st in stories)
+    floor, basis = suite_floor_pct(config)
+    impact = total / n
+    return {
+        "suite_impact_pct": round(impact, 4), "suite_floor_pct": floor, "suite_floor_basis": basis,
+        "stories_total": n, "stories_sized": len(sized),
+        "contributions": {st: round(v, 4) for st, v in sorted(sized.items(), key=lambda kv: -kv[1]) if v > 0},
+        "qualifies_suite": bool(floor is not None and impact >= floor),
+    }
+
+
+_SUITE_IMPACT_CACHE = {}
+
+
+def mechanism_suite_impact(ledger, site, symbol, scope_symbol=None):
+    """The suite impact of a probe site from its newest packets: the union
+    over every story the site's newest build logged, summarized by
+    `union_suite_summary`. None when the site has no packet with logs."""
+    key = (str(ledger.dir), site, symbol, scope_symbol)
+    if key in _SUITE_IMPACT_CACHE:
+        return _SUITE_IMPACT_CACHE[key]
+    logs = set()
+    patch = None
+    newest = site_newest_build(ledger.dir)
+    for _, packet in _evidence_packets(ledger.dir):
+        if packet.get("site") != site or packet.get("build_id") != newest.get(site):
+            continue
+        for source in packet.get("sources") or []:
+            path = pathlib.Path(str(source.get("path", "")))
+            if not path.is_absolute():
+                path = pathlib.Path(ledger.dir) / path
+            if path.is_file():
+                logs.add(str(path))
+        patch = patch or packet.get("patch")
+    if not logs:
+        _SUITE_IMPACT_CACHE[key] = None
+        return None
+    try:
+        rows = probe_union_rows(ledger, sorted(logs), site, symbol, patch, scope_symbol=scope_symbol)
+    except CampaignError:
+        _SUITE_IMPACT_CACHE[key] = None
+        return None
+    summary = union_suite_summary(rows, ledger.data["config"])
+    _SUITE_IMPACT_CACHE[key] = summary
+    return summary
 
 
 def cmd_calibrate(args):
@@ -6713,6 +6820,9 @@ def record_mechanism_observation(opp, discovery, path, *, update_sizing=True):
         "estimated_local_story_impact_pct": path.get(
             "estimated_local_story_impact_pct"
         ),
+        "estimated_suite_impact_pct": path.get("estimated_suite_impact_pct"),
+        "suite_contributions": path.get("suite_contributions"),
+        "qualification_scope": path.get("qualification_scope"),
         "measured_priority_pct": measured_priority,
         "evidence": path.get("evidence"),
         "work_fingerprints": sorted({
@@ -8636,17 +8746,34 @@ def cmd_decompose(args):
                         path_item["mechanism_function_impact_pct"] = function_impact[1]
                         if function_impact[1] >= path_floor:
                             budget_qualifies = True
+                suite = None
+                if not test_bypass_active() and path_item["disposition"] != "algorithmic":
+                    suite = path_item_suite_impact(path_item, ledger)
+                    if suite is not None:
+                        path_item["estimated_suite_impact_pct"] = suite["suite_impact_pct"]
+                        path_item["suite_floor_pct"] = suite["suite_floor_pct"]
+                        path_item["suite_contributions"] = suite["contributions"]
                 if not test_bypass_active() and impact < path_floor and not budget_qualifies:
-                    raise CampaignError(
-                        f"Path {path_item['anchor']!r} estimated target-story "
-                        f"impact {impact:.4f}% is below the qualification floor "
-                        f"{path_floor:.3f}% ({floor_basis}). The fixed-plan "
-                        "measurement cannot read a smaller effect on this story, "
-                        "so implementing it would only spend host time; find a "
-                        "mechanism that removes more of the story's work."
-                    )
+                    if suite is not None and suite["qualifies_suite"]:
+                        # Below this story's floor, above the suite's: the small
+                        # things that add up across stories qualify by their sum.
+                        path_item["qualification_scope"] = "suite"
+                        budget_qualifies = True
+                    else:
+                        suite_note = (f" Across the suite the site reads {suite['suite_impact_pct']:.3f}% of the "
+                                      f"score against the suite floor {suite['suite_floor_pct']:.3f}%." if suite and
+                                      suite.get("suite_floor_pct") is not None else "")
+                        raise CampaignError(
+                            f"Path {path_item['anchor']!r} estimated target-story "
+                            f"impact {impact:.4f}% is below the qualification floor "
+                            f"{path_floor:.3f}% ({floor_basis}).{suite_note} The fixed-plan "
+                            "measurement cannot read a smaller effect on this story, "
+                            "so implementing it would only spend host time; find a "
+                            "mechanism that removes more of the story's work."
+                        )
                 path_item["qualification_floor_pct"] = path_floor
                 path_item["qualification_floor_basis"] = floor_basis
+                path_item.setdefault("qualification_scope", "story")
                 if path_item["disposition"] == "algorithmic":
                     bind_cost_evidence(path_item, story_name, fraction, ledger.dir)
                 else:
@@ -10951,6 +11078,34 @@ def cmd_exclude_hypothesis(args):
     return 0
 
 
+def cmd_suite_impacts(args):
+    """Record every candidate mechanism's suite impact from its site's newest
+    packets (the number the export ranks by), and print the ranking."""
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    floor, basis = suite_floor_pct(ledger.data["config"])
+    print(f"suite floor: {('%.3f%%' % floor) if floor is not None else 'none'} ({basis})")
+    changed = 0
+    rows = []
+    for opp in ledger.data["opportunities"]:
+        if opp.get("kind") != "mechanism" or opp.get("status") in MECHANISM_TERMINAL:
+            continue
+        summary = path_item_suite_impact(opp, ledger)
+        if summary is None:
+            rows.append((opp["id"], opp.get("mechanism_key"), None, opp.get("target_story")))
+            continue
+        if opp.get("estimated_suite_impact_pct") != summary["suite_impact_pct"]:
+            opp["estimated_suite_impact_pct"] = summary["suite_impact_pct"]
+            opp["suite_contributions"] = summary["contributions"]
+            changed += 1
+        rows.append((opp["id"], opp.get("mechanism_key"), summary["suite_impact_pct"], opp.get("target_story")))
+    for oid, key, imp, story in sorted(rows, key=lambda r: -(r[2] or 0)):
+        print(f"  #{oid} {(('%.3f%%' % imp) if imp is not None else '   n/a '):>8} suite  {key}  ({story})")
+    if changed and not args.dry_run:
+        ledger.save()
+        print(f"recorded suite impacts on {changed} mechanism(s)")
+    return 0
+
+
 def cmd_register_site(args):
     """Host-recorded class of a probe site: the hypothesis its key and
     predicate test. The audit and the union count a packet for its site's
@@ -11929,6 +12084,10 @@ def build_parser():
     p.add_argument("--class", dest="hypothesis_class", required=True)
     p.add_argument("--note", required=True)
     p.set_defaults(func=cmd_exclude_hypothesis)
+
+    p = sub.add_parser("suite-impacts", help="Record every candidate mechanism's suite impact (mean of per-story impacts) and print the ranking")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_suite_impacts)
 
     p = sub.add_parser("register-site", help="Host: record the hypothesis class a probe site's key and predicate test")
     p.add_argument("--site", required=True, help="site name as passed to RedundancyCounter")

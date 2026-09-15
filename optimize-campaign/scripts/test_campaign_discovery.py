@@ -842,6 +842,11 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         out = campaign.probe_union_rows(ledger, [str(log)], "x/y", "Probe")
         by = {r["story"]: r for r in out}
         self.assertEqual("no-op-mutation", by["A"]["hypothesis_class"])
+        ledger.data["config"]["calibration"]["suite_mde_pct"] = 5.0
+        suite = campaign.union_suite_summary(out, ledger.data["config"])
+        self.assertAlmostEqual(11.25, suite["suite_impact_pct"])  # (20 + 2.5) / 2 stories
+        self.assertTrue(suite["qualifies_suite"])  # floor 10
+        self.assertIsNone(campaign.mechanism_suite_impact(ledger, "x/y", "Probe"))  # no packet cites the log
         self.assertAlmostEqual(40.0, by["A"]["symbol_share_pct"])
         self.assertAlmostEqual(20.0, by["A"]["impact_pct"])
         self.assertTrue(by["A"]["qualifies"])
@@ -871,6 +876,24 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             "applicable_ns": 0, "repeated_ns": 0, "build_id": "c" * 40, "timing": "exclusive", "nested_calls": 0}) + "\n")
         with self.assertRaisesRegex(campaign.CampaignError, "One union, one build"):
             campaign.probe_union_rows(ledger, [str(log), str(other)], "x/y", "Probe")
+
+    def test_suite_floor_and_union_suite_summary(self):
+        """The suite score is a geometric mean: a site's suite impact is the
+        mean of its per-story impacts, against twice the calibrated suite
+        MDE; a mechanism below every story floor qualifies by its sum."""
+        cfg = {"share_floor_pct": 1.0, "calibration": {"suite_mde_pct": 0.2,
+               "story_mde_pct": {"A": 0.5, "B": 0.5, "C": 0.5, "D": 0.5}}}
+        floor, basis = campaign.suite_floor_pct(cfg)
+        self.assertAlmostEqual(0.4, floor); self.assertIn("geometric mean of 4", basis)
+        self.assertEqual((None, "no calibrated suite MDE"), campaign.suite_floor_pct({"calibration": {}}))
+        rows = [{"story": "A", "impact_pct": 0.8, "not_sized": None}, {"story": "B", "impact_pct": 0.9, "not_sized": None},
+                {"story": "C", "impact_pct": 5.0, "not_sized": "scope times 0.2"}, {"story": "D", "error": "no rows"}]
+        summary = campaign.union_suite_summary(rows, cfg)
+        self.assertAlmostEqual(0.425, summary["suite_impact_pct"])  # (0.8 + 0.9) / 4; the unsized story counts zero
+        self.assertTrue(summary["qualifies_suite"]); self.assertEqual(2, summary["stories_sized"]); self.assertEqual(4, summary["stories_total"])
+        self.assertEqual({"B": 0.9, "A": 0.8}, summary["contributions"])
+        rows[1]["impact_pct"] = 0.3
+        self.assertFalse(campaign.union_suite_summary(rows, cfg)["qualifies_suite"])
 
     def test_probe_union_sizes_by_the_site_class(self):
         """A key-repeat sizes only an unchanged-input site (a fragment keyed

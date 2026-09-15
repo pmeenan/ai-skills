@@ -135,6 +135,22 @@ notification-fanout, unconsumed-result, redundant-trigger or copy-churn
 site bounds nothing but its key-repeat for closing: it separated nothing
 (hypotheses.md).
 
+## Suite-level qualification
+
+The suite score is a geometric mean of the stories, so a mechanism's
+suite impact is the mean of its per-story impacts (a story it does not
+reach counts zero). The A/A calibration records a suite MDE beside the
+story MDEs; the suite floor is twice it (`suite_floor_pct`). Every union
+carries a `suite` summary (`suite_impact_pct`, `contributions`,
+`qualifies_suite`), `probe-union-all` prints it (a `*` marks a site that
+clears the suite floor), and `decompose` accepts a `novel`/`known` row whose
+story impact is below the story floor when the site's suite impact clears
+the suite floor: the row records `qualification_scope: suite` and the
+mechanism carries `estimated_suite_impact_pct`. `suite-impacts` records
+the number on every candidate mechanism, and the export ranks candidates
+by it: the small things that add up across stories rank by their sum, and
+a large single-story item ranks by its share of the suite.
+
 One site is one counter in one function. A site declared by several
 counters (three overloads of one function under one name, round 32) flushes
 several rows per scored window; the reducer merges them per window by the
