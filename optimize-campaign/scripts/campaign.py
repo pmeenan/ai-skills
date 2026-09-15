@@ -3232,6 +3232,7 @@ def wrapper_coverage(files, wrapper_anchor, target_anchors, packet_symbol=None):
     (nested recursion contexts of one function) count once."""
     wrapper_w = 0.0
     covered_w = 0.0
+    packet_matcher = FrameMatcher([packet_symbol] if packet_symbol else [])
     packet_w = 0.0
     targets = set(target_anchors)
     for path in files:
@@ -3249,7 +3250,7 @@ def wrapper_coverage(files, wrapper_anchor, target_anchors, packet_symbol=None):
                 below = frames[frames.index(wrapper_anchor) + 1:]
                 if targets & set(below):
                     covered_w += weight
-                elif packet_symbol and any(symbol_matches(fr, packet_symbol) for fr in below):
+                elif packet_symbol and packet_matcher.first(below):
                     covered_w += weight
                     packet_w += weight
     if wrapper_w <= 0:
@@ -3617,12 +3618,56 @@ def symbol_matches(frame, symbol):
     return frame == symbol or frame.startswith(symbol + "(")
 
 
+class FrameMatcher:
+    """`symbol_matches` memoized per distinct frame for one set of symbols.
+    A story's two profiles carry ~18 million frames but ~8,000 distinct
+    ones (round 34): matching every frame against every symbol cost 117 s a
+    scan; reading the files costs 3 s."""
+
+    def __init__(self, symbols):
+        self.symbols = tuple(sorted(set(symbols)))
+        self.cache = {}
+
+    def of(self, frame):
+        """The symbols this frame is (a tuple, usually empty or one)."""
+        try:
+            return self.cache[frame]
+        except KeyError:
+            hit = tuple(sym for sym in self.symbols if symbol_matches(frame, sym))
+            self.cache[frame] = hit
+            return hit
+
+    def present(self, frames):
+        """The symbols present anywhere in the stack."""
+        out = set()
+        cache = self.cache
+        for frame in frames:
+            hit = cache.get(frame)
+            if hit is None:
+                hit = self.of(frame)
+            if hit:
+                out.update(hit)
+        return out
+
+    def first(self, frames):
+        """The first frame's symbol along `frames`, or None."""
+        cache = self.cache
+        for frame in frames:
+            hit = cache.get(frame)
+            if hit is None:
+                hit = self.of(frame)
+            if hit:
+                return hit[0]
+        return None
+
+
 def symbol_inclusive_shares(collapsed_files, symbols):
     """Total sample weight of the stacks and, per symbol, the weight of the
     samples carrying a frame that is that function."""
     symbols = set(symbols)
     total = 0.0
     inclusive = {symbol: 0.0 for symbol in symbols}
+    matcher = FrameMatcher(symbols)
     for path in collapsed_files:
         with open(path, errors="replace") as handle:
             for line in handle:
@@ -3632,10 +3677,8 @@ def symbol_inclusive_shares(collapsed_files, symbols):
                 except ValueError:
                     continue
                 total += weight
-                frames = stack.split(";")
-                for symbol in symbols:
-                    if any(symbol_matches(frame, symbol) for frame in frames):
-                        inclusive[symbol] += weight
+                for symbol in matcher.present(stack.split(";")):
+                    inclusive[symbol] += weight
     return total, inclusive
 
 
@@ -3648,6 +3691,7 @@ def symbol_identity(collapsed_files, pairs):
     anchor_w = {a: 0.0 for a in anchors}
     prefix_w = {pf: 0.0 for pf in prefixes}
     both_w = {pair: 0.0 for pair in pairs}
+    prefix_matcher = FrameMatcher(prefixes)
     for path in collapsed_files:
         with open(path, errors="replace") as handle:
             for line in handle:
@@ -3658,9 +3702,7 @@ def symbol_identity(collapsed_files, pairs):
                     continue
                 frames = stack.split(";")
                 present_anchors = set(frames) & anchors
-                present_prefixes = {
-                    pf for pf in prefixes if any(symbol_matches(fr, pf) for fr in frames)
-                }
+                present_prefixes = prefix_matcher.present(frames)
                 for a in present_anchors:
                     anchor_w[a] += weight
                 for pf in present_prefixes:
@@ -3773,6 +3815,7 @@ def split_row_union(item, index, bound_symbol, files, story, campaign_dir, bound
     anchor = item["anchor"]
     row_w = 0.0
     any_w = 0.0
+    caller_matcher = FrameMatcher(by_symbol)
     per_symbol = {sym: 0.0 for sym in by_symbol}
     for path in files:
         with open(path, errors="replace") as handle:
@@ -3789,12 +3832,7 @@ def split_row_union(item, index, bound_symbol, files, story, campaign_dir, bound
                 # The nearest probed caller above the row's outermost frame:
                 # a root probe (the frame update) sits above every caller and
                 # is not the caller that splits the row.
-                nearest = None
-                for frame in reversed(frames[:frames.index(anchor)]):
-                    hit = next((sym for sym in by_symbol if symbol_matches(frame, sym)), None)
-                    if hit:
-                        nearest = hit
-                        break
+                nearest = caller_matcher.first(reversed(frames[:frames.index(anchor)]))
                 if nearest:
                     any_w += weight
                     per_symbol[nearest] += weight
@@ -3952,6 +3990,7 @@ def enforce_covered_by_nearest_probe(paths, owner_symbols, probe_symbols, profil
     row_weight = {a: 0.0 for a in anchors}
     between = {index: {} for index, _, _, _ in rows}
     all_symbols = set(probe_symbols) | {o for _, _, o, _ in rows}
+    all_matcher = FrameMatcher(all_symbols)
     for path in files:
         with open(path, errors="replace") as handle:
             for line in handle:
@@ -3966,9 +4005,8 @@ def enforce_covered_by_nearest_probe(paths, owner_symbols, probe_symbols, profil
                     continue
                 positions = {}
                 for i, frame in enumerate(frames):
-                    for symbol in all_symbols:
-                        if symbol_matches(frame, symbol):
-                            positions.setdefault(symbol, []).append(i)
+                    for symbol in all_matcher.of(frame):
+                        positions.setdefault(symbol, []).append(i)
                 for anchor in present:
                     row_weight[anchor] += weight
                     ia = len(frames) - 1 - frames[::-1].index(anchor)
@@ -4977,6 +5015,7 @@ def anchor_symbol_weights(collapsed_files, anchors, symbols):
     anchor_w = {a: 0.0 for a in anchors}
     symbol_w = {sym: 0.0 for sym in symbols}
     both_w = {}
+    matcher = FrameMatcher(symbols)
     for path in collapsed_files:
         with open(path, errors="replace") as handle:
             for line in handle:
@@ -4986,9 +5025,7 @@ def anchor_symbol_weights(collapsed_files, anchors, symbols):
                 except ValueError:
                     continue
                 frames = stack.split(";")
-                present_symbols = {
-                    sym for sym in symbols if any(symbol_matches(fr, sym) for fr in frames)
-                }
+                present_symbols = matcher.present(frames)
                 for sym in present_symbols:
                     symbol_w[sym] += weight
                 present_anchors = set(frames) & anchors
