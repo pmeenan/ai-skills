@@ -161,7 +161,7 @@ def review(oid, rev):
         t += ['', '## Candidates', ''] + ([f"- {l}" for l in cand_lines] if cand_lines else ['- none: every row at/above the floor is closed by count.'])
         if cands:
             t += ['', '## Existing mechanism named by each candidate, looked up in the tree', '']
-            for i in cands: t.append(f"- row {i}: {paths[i-1]['existing_mechanism']}")
+            for i in cands: t.append(f"- row {i}: {paths[i-1].get('existing_mechanism') or paths[i-1].get('evidence') or ''}")
             for s in sorted(syms): t.append(f"- {s}: {'present' if present.get(s) else 'MISSING'}; {hits[s]}")
         t += ['', '## Packet time coverage (from the pre-check on this children file)', '', '```', cov, '```', '',
               '## Re-derivation of one packet from its log', '',
