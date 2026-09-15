@@ -1007,6 +1007,9 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         self.assertEqual({"blink::Big()", "blink::Leaf()"}, set(counted))  # Own binds no count
         excl = campaign.frontier_exclusive_shares(story_dir / "A" / "profile.collapsed", {"blink::Big()", "blink::Leaf()"})
         self.assertAlmostEqual(10.0, excl["blink::Big()"]); self.assertAlmostEqual(50.0, excl["blink::Leaf()"])
+        # Script a dispatcher calls is not the dispatcher's own work.
+        (story_dir / "A" / "js.collapsed").write_text("main;blink::Dispatch();v8::Function::Call();Builtins_Load 80\nmain;blink::Dispatch();blink::Helper() 20\n")
+        self.assertAlmostEqual(20.0, campaign.frontier_exclusive_shares(story_dir / "A" / "js.collapsed", {"blink::Dispatch()"})["blink::Dispatch()"])
         rows = campaign.efficiency_frontier_rows(ledger)["rows"]
         self.assertEqual(["blink::Leaf()", "blink::Big()"], [r["frame"] for r in rows])
         self.assertAlmostEqual(7.5, rows[1]["exclusive_pct"]); self.assertAlmostEqual(47.5, rows[1]["suite_share_pct"])

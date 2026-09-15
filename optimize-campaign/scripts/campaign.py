@@ -6586,6 +6586,7 @@ def slug_key(text):
 
 
 DISCOVERY_PHASES = ("redundancy", "suite", "efficiency")
+FOREIGN_NAMESPACES = ("v8",)  # callees whose time is never the caller's own work
 ALGORITHMIC_IMPACT_BASIS = "cost-packet bound x inclusive share per story: a ranking, proven only by sizing"
 _INCLUSIVE_CACHE_DIR = pathlib.Path.home() / ".cache" / "optimize-campaign"
 _SUITE_SHARES_CACHE = {}
@@ -6869,11 +6870,13 @@ def counted_functions(ledger):
     return out
 
 
-def frontier_exclusive_shares(collapsed_file, frontier):
+def frontier_exclusive_shares(collapsed_file, frontier, foreign=FOREIGN_NAMESPACES):
     """For every frontier frame, the share (%) of the capture's samples that
-    pass through it and through no other frontier frame beneath it: the
-    time in the function's own body and its small helpers, not in another
-    function of the frontier (which answers for its own time)."""
+    pass through it and, beneath it, through no other frontier frame and no
+    foreign namespace (V8: script a dispatcher calls is not the
+    dispatcher's work): the time in the function's own body and its small
+    helpers, not in another function that answers for its own time."""
+    prefixes = tuple(f"{ns}::" for ns in foreign)
     total = 0.0
     excl = {}
     for frames, weight in iter_stacks([collapsed_file]):
@@ -6881,12 +6884,13 @@ def frontier_exclusive_shares(collapsed_file, frontier):
         positions = [(i, f) for i, f in enumerate(frames) if f in frontier]
         if not positions:
             continue
+        first_foreign = next((i for i, f in enumerate(frames) if f.startswith(prefixes)), len(frames))
         seen = set()
         for i, f in positions:
             if f in seen:
                 continue
             seen.add(f)
-            if any(g != f for j, g in positions if j > i):
+            if i > first_foreign or any(g != f for j, g in positions if j > i):
                 continue
             excl[f] = excl.get(f, 0.0) + weight
     if total <= 0:
@@ -6905,13 +6909,14 @@ def efficiency_frontier_rows(ledger, table=None):
     floor = table["floor"]
     counted = counted_functions(ledger)
     frontier = {f for f in counted if table["means"].get(f, 0.0) >= floor}
+    foreign = tuple(ledger.data["config"].get("foreign_namespaces") or FOREIGN_NAMESPACES)
     per_story_excl = {}
     for story, files in table["captures"].items():
         if not files:
             continue
         acc = {}
         for _, path in files:
-            for f, sh in frontier_exclusive_shares(path, frontier).items():
+            for f, sh in frontier_exclusive_shares(path, frontier, foreign).items():
                 acc[f] = acc.get(f, 0.0) + sh / len(files)
         per_story_excl[story] = acc
     n = len(table["stories"]) or 1
