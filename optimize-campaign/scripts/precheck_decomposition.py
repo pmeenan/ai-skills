@@ -257,10 +257,12 @@ def efficiency_precheck(ledger, parent, result, shares, story, story_floor, camp
             campaign.bind_cost_evidence(p, story, frac, campaign_dir)
             cs = p["cost_summary"]
             impact = shares.get(i, 0.0) * frac
+            qual_floor = max(campaign.qualification_floor_pct(ledger.data["config"], story)[0], ledger.data["config"]["share_floor_pct"])
             suite = campaign.algorithmic_suite_impact(ledger, p["anchor"], frac)
             print(f"row {i} algorithmic {p['anchor'][:60]} share={shares.get(i,0):.2f} frac={frac} avoided={cs['avoided_fraction_of_row']:.4f} of row via {cs['avoided_frames']}; "
-                  f"story impact {impact:.3f}% (floor {story_floor:.3f}%), suite impact {suite['suite_impact_pct']:.3f}% (floor {suite['suite_floor_pct']:.3f}%) [{suite['impact_basis']}]")
-            if impact < story_floor and not suite["qualifies_suite"]:
+                  f"story impact {impact:.3f}% (qualification floor {qual_floor:.3f}%), suite impact {suite['suite_impact_pct']:.3f}% (floor {suite['suite_floor_pct']:.3f}%) [{suite['impact_basis']}]"
+                  + ("; qualifies in the story" if impact >= qual_floor else "; qualifies across the suite" if suite["qualifies_suite"] else ""))
+            if impact < qual_floor and not suite["qualifies_suite"]:
                 problems.append(f"Path {i} ({p['anchor'][:60]!r}) saves {impact:.3f}% of {story} and {suite['suite_impact_pct']:.3f}% of the suite, below both floors; decompose refuses it as a candidate. Close it as no-qualifying-mechanism with this algorithm as a falsified hypothesis quoting the cost packet's fraction.")
         except (campaign.CampaignError, TypeError, ValueError) as e: problems.append(str(e))
     try: campaign.enforce_efficiency_rows(result["paths"], shares, story, campaign_dir, config=ledger.data["config"], ledger=ledger, repository_root=profile.get("repository_root"))

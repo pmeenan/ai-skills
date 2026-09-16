@@ -7323,7 +7323,8 @@ def require_efficiency_investigation(index, item, packet, share, story, config, 
             raise CampaignError(
                 f"{label} hypothesis {n}: `change` says what {own.split('::')[-1]} computes today, what "
                 "the cheaper algorithm computes instead and why the result is the same, naming the "
-                f"code it changes (a symbol or file other than the row's own function; {EFFICIENCY_CHANGE_MIN_CHARS}+ characters)."
+                f"code it changes: a `Namespace::Function` symbol or a file name (foo.cc) other than the "
+                f"row's own function; {EFFICIENCY_CHANGE_MIN_CHARS}+ characters."
             )
         if not isinstance(frames, list) or not frames or not all(isinstance(f, str) and f.strip() for f in frames):
             raise CampaignError(f"{label} hypothesis {n}: `avoided_frames` names the packet frames the change would not run")
