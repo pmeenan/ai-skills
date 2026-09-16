@@ -77,7 +77,7 @@ def main(campaign_dir, opp_id, children):
     try: campaign.enforce_phase_dispositions(result["paths"], phase, parent)
     except campaign.CampaignError as e: problems.append(str(e))
     if parent.get("scope") == "efficiency":
-        return efficiency_precheck(ledger, parent, result, shares, story, story_floor, campaign_dir, problems, opp_id, children)
+        return efficiency_precheck(ledger, parent, result, shares, story, story_floor, campaign_dir, problems, opp_id, children, profile)
     coverage_map = campaign.packet_coverage_map(result["paths"], profile, story, campaign_dir)
     try: campaign.enforce_anchor_names_its_work(result["paths"])
     except campaign.CampaignError as e: problems.append(str(e))
@@ -239,7 +239,7 @@ def main(campaign_dir, opp_id, children):
               "the rows beneath, and what the gate would accept)")
     return 1 if problems else 0
 
-def efficiency_precheck(ledger, parent, result, shares, story, story_floor, campaign_dir, problems, opp_id, children):
+def efficiency_precheck(ledger, parent, result, shares, story, story_floor, campaign_dir, problems, opp_id, children, profile):
     """An efficiency area's rules: the row is algorithmic (cost packet,
     avoided frames, fraction, suite impact) or no-qualifying-mechanism (an
     investigation quoting the cost packet)."""
