@@ -7318,7 +7318,7 @@ def require_efficiency_investigation(index, item, packet, share, story, config, 
         outcome = h.get("outcome")
         read = verify_reading(h.get("read"), repository_root, f"{label} hypothesis {n}")
         read_all |= read
-        if (len(change) < EFFICIENCY_CHANGE_MIN_CHARS or not ROW_TEXT_SYMBOL_RE.search(change)
+        if (len(change) < EFFICIENCY_CHANGE_MIN_CHARS or not EXISTING_MECHANISM_SYMBOL_RE.search(change)
                 or not names_other_code(change, own)):
             raise CampaignError(
                 f"{label} hypothesis {n}: `change` says what {own.split('::')[-1]} computes today, what "
