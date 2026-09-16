@@ -5184,6 +5184,8 @@ def enforce_own_counters(paths, story_shares, config, base_floor, story, campaig
                     supported = packet_supported(packet, campaign_dir)
                     supported *= scope_counted_fraction(packet, item.get("anchor"), coverage, rel)
                     upper = share * supported
+                    if upper >= floor and item.get("unmeasurable_bound") and upper < float(item["unmeasurable_bound"]["story_floor_pct"]):
+                        continue  # closed as unmeasurable by the measured rule, on the same bound
                     if upper >= floor:
                         raise CampaignError(
                             f"Path {index} ({item['anchor'][:80]!r}) closes as {disposition} "
@@ -5385,6 +5387,9 @@ def enforce_nearest_packet(paths, story_shares, config, base_floor, story, campa
                             * scope_counted_fraction(pk, anchor, coverage, rel)
                             for _, pk, rel in by_symbol[bound_symbol])
             upper = share * supported
+            unmeasurable = item.get("unmeasurable_bound")
+            if upper >= floor and unmeasurable and upper < float(unmeasurable["story_floor_pct"]):
+                upper = -1.0  # closed as unmeasurable by the measured rule, on the same bound
             if upper >= floor:
                 reading = sorted((site, round(packet_supported(pk, campaign_dir), 3))
                                  for site, pk, _ in by_symbol[bound_symbol])
