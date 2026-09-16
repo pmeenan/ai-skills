@@ -1072,7 +1072,10 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         campaign.enforce_phase_dispositions([alg, {"anchor": "blink::Own()", "disposition": "no-qualifying-mechanism"}], "efficiency", area)
         story_dir, _ = self._two_story_profile({"A": "main;blink::Big();blink::Leaf() 50\nmain;blink::Big();blink::Own() 10\nmain;other 40\n"})
         ledger = campaign.Ledger(self.dir).load(); cfg = ledger.data["config"]
-        run = lambda row: campaign.enforce_efficiency_rows([row], {1: 60.0}, "A", self.dir, config=cfg, ledger=ledger)
+        repo = self.dir / "repo"; (repo / "core").mkdir(parents=True)
+        (repo / "core" / "big.cc").write_text("// header\n" * 10 + "void Big() {\n  Leaf();\n  Own();\n}\n" + "//\n" * 5 + "void Leaf() {}\n" + "//\n" * 3 + "void Own() {}\n")
+        cite = lambda sym, lines: {"file": "core/big.cc", "lines": lines, "symbol": sym}
+        run = lambda row: campaign.enforce_efficiency_rows([row], {1: 60.0}, "A", self.dir, config=cfg, ledger=ledger, repository_root=str(repo))
         row = {"anchor": "blink::Big()", "disposition": "no-qualifying-mechanism"}
         with self.assertRaisesRegex(campaign.CampaignError, "without a bounded investigation"):
             run(row)
@@ -1091,8 +1094,22 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         leaf = {"change": "blink::Big() lays every child out twice, a min-content pass and the final pass, both in blink::Leaf(); "
                           "one pass in leaf_layout.cc that records min-content while laying out returns the same fragments.",
                 "avoided_frames": ["blink::Leaf()"], "outcome": "saves-less", "saved_fraction": 0.01,
-                "reason": "LeafLayoutAlgorithm::Layout already caches the first pass in layout_result_cache.cc; the second pass is 1% of the row"}
+                "reason": "LeafLayoutAlgorithm::Layout already caches the first pass in layout_result_cache.cc; the second pass is 1% of the row",
+                "read": [cite("blink::Big()", "11-14"), cite("blink::Leaf()", "20-20")]}
         row["investigation"]["hypotheses"] = [leaf]; row["investigation"].pop("falsifications")
+        run(row)
+        self.assertEqual("core/big.cc", row["cost_summary"]["hypotheses"][0]["read"][0]["file"])
+        # The reading is verified: the file, the range, the symbol in it, the frames avoided.
+        for bad, msg in ((dict(leaf, read=[]), "`read` lists what was read"),
+                         (dict(leaf, read=[cite("blink::Big()", "11-14"), cite("blink::Leaf()", "1-5")]), "does not occur in"),
+                         (dict(leaf, read=[cite("blink::Big()", "11-14"), {"file": "core/nope.cc", "lines": "1-2", "symbol": "blink::Leaf()"}]), "does not exist"),
+                         (dict(leaf, read=[cite("blink::Big()", "1-900"), cite("blink::Leaf()", "20-20")]), "not a reading"),
+                         (dict(leaf, read=[cite("blink::Big()", "11-14")]), "without a `read` citation"),
+                         (dict(leaf, read=[cite("blink::Leaf()", "20-20")]), "no hypothesis cites a reading of Big")):
+            row["investigation"]["hypotheses"] = [bad]
+            with self.assertRaisesRegex(campaign.CampaignError, msg):
+                run(row)
+        row["investigation"]["hypotheses"] = [leaf]
         run(row)
         self.assertEqual([0.833333], [h["ceiling_fraction"] for h in row["cost_summary"]["hypotheses"]])
         # A saving that clears a floor is the algorithmic row, not saves-less.
@@ -1108,12 +1125,14 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         own = {"change": "blink::Big() walks blink::Own() for every child to find the containing block; a parent pointer kept in "
                          "layout_box.h answers it in one step with the same result.",
                "avoided_frames": ["blink::Own()"], "outcome": "already-done",
-               "reason": "LayoutBox::ContainingBlock in layout_box.cc already returns the cached parent; Own() is the fallback path"}
+               "reason": "LayoutBox::ContainingBlock in layout_box.cc already returns the cached parent; Own() is the fallback path",
+               "read": [cite("blink::Big()", "11-14"), cite("blink::Own()", "24-24")]}
         row["investigation"]["hypotheses"] = [own]
         with self.assertRaisesRegex(campaign.CampaignError, "does not consider 'blink::Leaf\\(\\)'"):
             run(row)
         # Two hypotheses from one template are refused.
-        row["investigation"]["hypotheses"] = [leaf, dict(leaf, avoided_frames=["blink::Own()"], change=leaf["change"].replace("Leaf", "Own"))]
+        row["investigation"]["hypotheses"] = [leaf, dict(leaf, avoided_frames=["blink::Own()"], change=leaf["change"].replace("Leaf", "Own"),
+                                                        read=[cite("blink::Big()", "11-14"), cite("blink::Own()", "24-24")])]
         with self.assertRaisesRegex(campaign.CampaignError, "same template"):
             run(row)
         row["investigation"]["hypotheses"] = [leaf, own]

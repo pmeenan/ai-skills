@@ -7206,6 +7206,59 @@ EFFICIENCY_REASON_MIN_CHARS = 60
 _IDENTIFIER_RE = re.compile(r"\b[A-Za-z]\w*(?:[A-Z_]\w*)+\b")
 
 
+EFFICIENCY_READ_MAX_LINES = 600
+_TEMPLATE_ARGS_RE = re.compile(r"<[^<>]*>")
+
+
+def frame_short_name(frame):
+    """The bare function name of a profile frame: return type, namespaces,
+    template arguments and parameters stripped."""
+    text = str(frame or "").replace("(anonymous namespace)", "ANON")
+    text = text.split("(")[0]
+    while _TEMPLATE_ARGS_RE.search(text):
+        text = _TEMPLATE_ARGS_RE.sub("", text)
+    text = text.split("::")[-1]
+    return text.strip(" *&").split()[-1] if text.strip(" *&") else ""
+
+
+def verify_reading(citations, repository_root, label):
+    """The artifact of reading: each citation {file, lines "a-b", symbol}
+    names a file in the checkout, a range of at most EFFICIENCY_READ_MAX_LINES
+    lines, and a symbol whose name occurs inside that range. Returns the
+    names read. A script that has not opened the files cannot write these."""
+    if not isinstance(citations, list) or not citations or not all(isinstance(c, dict) for c in citations):
+        raise CampaignError(
+            f"{label}: `read` lists what was read for this hypothesis: [{{file, lines \"a-b\", symbol}}], "
+            "the function itself and every frame the hypothesis avoids."
+        )
+    if not repository_root:
+        raise CampaignError(f"{label}: the profile records no repository_root; readings cannot be verified")
+    root = pathlib.Path(repository_root)
+    names = set()
+    for c in citations:
+        file, lines, symbol = str(c.get("file") or ""), str(c.get("lines") or ""), str(c.get("symbol") or "")
+        m = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", lines)
+        if not file or not m or not symbol:
+            raise CampaignError(f"{label}: a citation is {{file, lines \"a-b\", symbol}}; got {c!r}"[:300])
+        a, b = int(m.group(1)), int(m.group(2))
+        if a < 1 or b < a or b - a + 1 > EFFICIENCY_READ_MAX_LINES:
+            raise CampaignError(f"{label}: lines {lines!r} of {file} is not a reading (1 to {EFFICIENCY_READ_MAX_LINES} lines, a <= b)")
+        path = pathlib.Path(file)
+        if not path.is_absolute():
+            path = root / path
+        if not path.is_file():
+            raise CampaignError(f"{label}: cited file {file!r} does not exist under {root}")
+        text = path.read_text(errors="replace").splitlines()
+        if a > len(text):
+            raise CampaignError(f"{label}: {file} has {len(text)} lines; lines {lines!r} do not exist")
+        chunk = "\n".join(text[a - 1:b])
+        short = frame_short_name(symbol)
+        if not short or short not in chunk:
+            raise CampaignError(f"{label}: {symbol!r} does not occur in {file} lines {lines}; cite where it is defined")
+        names.add(short)
+    return names
+
+
 def investigation_text_shape(text):
     """A hypothesis with its numbers, symbols, paths and identifiers blanked:
     the template it was written from (round 37: twelve areas, one template)."""
@@ -7228,7 +7281,8 @@ def ledger_investigation_shapes(ledger):
     return shapes
 
 
-def require_efficiency_investigation(index, item, packet, share, story, config, ledger, prior_shapes=None):
+def require_efficiency_investigation(index, item, packet, share, story, config, ledger, prior_shapes=None,
+                                     repository_root=None):
     """An efficiency investigation is one structured hypothesis per place the
     row's time goes. Each names the change (what the code computes today and
     what the cheaper algorithm computes instead, naming the code it changes),
@@ -7256,11 +7310,14 @@ def require_efficiency_investigation(index, item, packet, share, story, config, 
     shapes = dict(prior_shapes or {})
     covered = set()
     ceilings = []
+    read_all = set()
     for n, h in enumerate(hypotheses, 1):
         change = " ".join(str(h.get("change") or "").split())
         reason = " ".join(str(h.get("reason") or "").split())
         frames = h.get("avoided_frames")
         outcome = h.get("outcome")
+        read = verify_reading(h.get("read"), repository_root, f"{label} hypothesis {n}")
+        read_all |= read
         if (len(change) < EFFICIENCY_CHANGE_MIN_CHARS or not ROW_TEXT_SYMBOL_RE.search(change)
                 or not names_other_code(change, own)):
             raise CampaignError(
@@ -7273,6 +7330,12 @@ def require_efficiency_investigation(index, item, packet, share, story, config, 
         ceiling, unmatched = cost_evidence.avoided_fraction(packet, frames)
         if unmatched:
             raise CampaignError(f"{label} hypothesis {n}: avoided_frames {unmatched[:4]} are not in the cost packet's child or leaf tables")
+        unread = [f for f in frames if not f.startswith(("(", "[")) and frame_short_name(f) not in read]
+        if unread:
+            raise CampaignError(
+                f"{label} hypothesis {n}: avoids {unread[:3]} without a `read` citation of "
+                f"{[frame_short_name(f) for f in unread[:3]]}; a hypothesis about a frame is written after reading it"
+            )
         if outcome not in EFFICIENCY_OUTCOMES:
             raise CampaignError(f"{label} hypothesis {n}: `outcome` is one of {', '.join(EFFICIENCY_OUTCOMES)}")
         if (len(reason) < EFFICIENCY_REASON_MIN_CHARS or not EXISTING_MECHANISM_SYMBOL_RE.search(reason)):
@@ -7316,7 +7379,12 @@ def require_efficiency_investigation(index, item, packet, share, story, config, 
         for f in frames:
             covered.add(f.rstrip("(").rstrip())
         ceilings.append({"avoided_frames": list(frames), "ceiling_fraction": round(ceiling, 6), "outcome": outcome,
-                         "saved_fraction": saved})
+                         "saved_fraction": saved, "read": [dict(c) for c in h.get("read")]})
+    if frame_short_name(own) not in read_all:
+        raise CampaignError(
+            f"{label}: no hypothesis cites a reading of {own.split('::')[-1]} itself (`read`: its file and the lines "
+            "of its definition); the investigation starts with the function."
+        )
     large = [e for e in (packet.get("children") or []) if float(e.get("fraction_of_row", 0.0)) >= EFFICIENCY_ATTENTION_FRACTION]
     for e in large:
         if not any(cost_evidence.frame_matches(e["frame"], c) for c in covered):
@@ -7333,7 +7401,7 @@ def require_efficiency_investigation(index, item, packet, share, story, config, 
     }
 
 
-def enforce_efficiency_rows(paths, story_shares, story, campaign_dir, config=None, ledger=None):
+def enforce_efficiency_rows(paths, story_shares, story, campaign_dir, config=None, ledger=None, repository_root=None):
     """In an efficiency area a `no-qualifying-mechanism` row is the
     investigation that found no cheaper algorithm, whatever its share
     (`require_efficiency_investigation`): a structured hypothesis per place
@@ -7356,7 +7424,8 @@ def enforce_efficiency_rows(paths, story_shares, story, campaign_dir, config=Non
                 "`campaign.py cost-packet --opp <id> --children <file> --path 1`, bound as cost_evidence: {path, sha256}."
             )
         packet, _ = load_bound_cost_packet(item, story, campaign_dir)
-        require_efficiency_investigation(index, item, packet, story_shares.get(index, 0.0), story, config, ledger, prior)
+        require_efficiency_investigation(index, item, packet, story_shares.get(index, 0.0), story, config, ledger, prior,
+                                         repository_root=repository_root)
 
 
 def cmd_calibrate(args):
@@ -9678,7 +9747,8 @@ def cmd_decompose(args):
     if not test_bypass_active() and parent.get("scope") == "efficiency":
         enforce_anchor_names_its_work(result["paths"])
         enforce_efficiency_rows(result["paths"], story_shares, parent.get("target_story"), ledger.dir,
-                                config=ledger.data["config"], ledger=ledger)
+                                config=ledger.data["config"], ledger=ledger,
+                                repository_root=source_profile.get("repository_root"))
         enforce_row_text_distinct(result["paths"])
     elif not test_bypass_active():
         enforce_anchor_names_its_work(result["paths"])

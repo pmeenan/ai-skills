@@ -226,8 +226,12 @@ An efficiency area's one row says one of two things, and nothing else
   actually saves, below the story's qualification floor and the suite floor,
   or the row is `algorithmic`; `not-equivalent`, why the result would differ
   and the code that observes it; `already-done`, the code that already does
-  it) and `reason` (60+ characters naming a symbol or file). Every child at
-  or above 20% of the row, `(self)` included, has a hypothesis. A change or
+  it), `reason` (60+ characters naming a symbol or file) and `read`, the
+  artifact of reading: `[{file, lines "a-b", symbol}]` for the function
+  itself and every frame the hypothesis avoids, which the gate verifies
+  against the checkout (the file exists, the range is at most 600 lines,
+  the symbol's name occurs in it; `verify_reading`). Every child at or
+  above 20% of the row, `(self)` included, has a hypothesis. A change or
   reason written from another hypothesis's template, on this row or on any
   efficiency row on the ledger, is refused (round 37: twelve areas, one
   sentence). `stop_reason`, `budget_used` and `source_revision` stay on the
