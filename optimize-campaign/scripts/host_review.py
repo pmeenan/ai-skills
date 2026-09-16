@@ -163,6 +163,26 @@ def review(oid, rev):
             t += ['', '## Existing mechanism named by each candidate, looked up in the tree', '']
             for i in cands: t.append(f"- row {i}: {paths[i-1].get('existing_mechanism') or paths[i-1].get('evidence') or ''}")
             for s in sorted(syms): t.append(f"- {s}: {'present' if present.get(s) else 'MISSING'}; {hits[s]}")
+        eff = [(i, p) for i, p in enumerate(paths, 1) if (p.get('cost_evidence') or {}).get('path')]
+        if eff:
+            t += ['', '## Efficiency rows: cost packet, hypotheses and readings', '']
+            for i, p in eff:
+                cpath = C / p['cost_evidence']['path']
+                cp = json.loads(cpath.read_text())
+                t.append(f"- row {i} {p['disposition']} {p['anchor'][:110]}: cost packet {p['cost_evidence']['path']} sha256 {sha(cpath)[:12]}, row share {cp['row_share_pct']:.3f}% of {cp['target_story']}; children: " + ', '.join(f"{e['frame'][:70]} {float(e['fraction_of_row']):.3f}" for e in cp['children'][:6]))
+                if p['disposition'] == 'algorithmic':
+                    t.append(f"    avoided {p.get('avoided_frames')}, claimed fraction {p.get('estimated_avoidable_fraction')}, layer {p.get('investigation_layer')}, mechanism {p.get('mechanism_key')}")
+                    t.append(f"    hypothesis: {p.get('algorithm_hypothesis')}")
+                    t.append(f"    existing mechanism: {p.get('existing_mechanism')}")
+                inv = p.get('investigation') or {}
+                for n, h in enumerate(inv.get('hypotheses') or [], 1):
+                    if isinstance(h, dict):
+                        t.append(f"    hypothesis {n} [{h.get('outcome')}] avoids {h.get('avoided_frames')} saved_fraction {h.get('saved_fraction')}: {h.get('change')}")
+                        t.append(f"      reason: {h.get('reason')}")
+                        t.append("      read: " + '; '.join(f"{c.get('file')}:{c.get('lines')} {c.get('symbol')}" for c in (h.get('read') or [])))
+                if inv:
+                    t.append(f"    stop_reason: {inv.get('stop_reason')}; budget_used: {inv.get('budget_used')}; source_revision: {inv.get('source_revision')}")
+            t.append("- Every `read` citation was opened by the pre-check (verify_reading: file, range, symbol in the checkout); the host read the central claim of each row against the cited source before this verdict, and the verdict file names what was checked.")
         t += ['', '## Packet time coverage (from the pre-check on this children file)', '', '```', cov, '```', '',
               '## Re-derivation of one packet from its log', '',
               (f"{pathlib.Path(ref0).name} rebuilt with redundancy_evidence.build_packet({[str(l) for l in logs]}, {d0['site']!r}, {story!r}):" if bound_by_pkt else "no packet to re-derive: every row is below the floor and closes as below-floor.")]
