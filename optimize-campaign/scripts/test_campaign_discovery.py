@@ -1128,6 +1128,18 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
                 with self.assertRaisesRegex(campaign.CampaignError, "not below the floor"):
                     campaign.enforce_measured_dispositions(rows, {1: 19.0}, cfg, 0.1, STORY, self.dir, ledger=ledger)
 
+    def test_a_row_covered_by_a_verified_ledger_owner_is_not_prose(self):
+        """A decomposition whose only row is covered by a ledger mechanism
+        with the probe identity verified over it binds that mechanism's
+        count (round 36: #248 blocked the efficiency phase as prose)."""
+        ledger = campaign.Ledger(self.dir).load()
+        opp = {"kind": "discovery", "status": "decomposed",
+               "path_accounting": [{"disposition": "covered-by", "covered_by": "css/x"}]}
+        with mock.patch.object(campaign, "test_bypass_active", return_value=False):
+            self.assertTrue(ledger.decomposed_by_prose(opp))
+            opp["path_accounting"][0]["covered_by_probe_identity"] = 1.0
+            self.assertFalse(ledger.decomposed_by_prose(opp))
+
     def test_probe_union_sizes_by_the_site_class(self):
         """A key-repeat sizes only an unchanged-input site (a fragment keyed
         without its paint phase read 79-88% repeats in round 32); a predicate

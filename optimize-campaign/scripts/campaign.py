@@ -1166,6 +1166,10 @@ class Ledger:
             (row.get("redundancy_evidence") or {}).get("path")
             or (row.get("cost_evidence") or {}).get("path")
             or row.get("disposition") == "below-floor"
+            # A row covered by a ledger mechanism whose probe the gate
+            # verified over it (a suite area's one row, round 36) is counted
+            # by that mechanism's packet.
+            or (row.get("disposition") == "covered-by" and row.get("covered_by_probe_identity") is not None)
             for row in rows
         )
 
