@@ -215,11 +215,23 @@ An efficiency area's one row says one of two things, and nothing else
   below the story floor and the suite floor is refused: a saving the
   measurement cannot read is not a candidate, and the row closes as the
   other kind with that algorithm as a falsified hypothesis.
-- `no-qualifying-mechanism`: the investigation that found none. Its
-  `investigation` names the Layer 3/4 hypotheses tried, a falsification per
-  hypothesis quoting the cost packet's child or leaf fraction (the best
-  cheaper algorithm found and what it would save), the stop reason and the
-  budget used; it binds the same `cost_evidence`.
+- `no-qualifying-mechanism`: the investigation that found none, one
+  structured hypothesis per place the row's time goes
+  (`require_efficiency_investigation`). Each hypothesis is an object:
+  `change` (what the function computes today, what the cheaper algorithm
+  computes instead and why the result is the same, naming the code it
+  changes: a symbol or file other than the row's own function, 80+
+  characters), `avoided_frames` (the packet frames it would not run: its
+  ceiling), `outcome` (`saves-less` with `saved_fraction`, what the change
+  actually saves, below the story's qualification floor and the suite floor,
+  or the row is `algorithmic`; `not-equivalent`, why the result would differ
+  and the code that observes it; `already-done`, the code that already does
+  it) and `reason` (60+ characters naming a symbol or file). Every child at
+  or above 20% of the row, `(self)` included, has a hypothesis. A change or
+  reason written from another hypothesis's template, on this row or on any
+  efficiency row on the ledger, is refused (round 37: twelve areas, one
+  sentence). `stop_reason`, `budget_used` and `source_revision` stay on the
+  investigation; it binds the same `cost_evidence`.
 
 A redundancy found while investigating efficiency belongs to the
 function's row in its story or suite area (a `novel` row with a packet),

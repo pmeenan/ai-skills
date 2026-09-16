@@ -7190,27 +7190,173 @@ def require_cost_investigation(index, item, share, story, campaign_dir):
 
 def investigation_is_bounded(item):
     investigation = item.get("investigation")
-    return bool(isinstance(investigation, dict) and investigation.get("hypotheses")
-                and investigation.get("falsifications") and investigation.get("stop_reason")
+    if not isinstance(investigation, dict) or not investigation.get("hypotheses") or not investigation.get("stop_reason"):
+        return False
+    hypotheses = investigation["hypotheses"]
+    if all(isinstance(h, dict) for h in hypotheses):
+        return all(h.get("outcome") and h.get("reason") for h in hypotheses)
+    return bool(investigation.get("falsifications")
                 and any(re.search(r"\d", str(f)) for f in investigation["falsifications"]))
 
 
-def enforce_efficiency_rows(paths, story_shares, story, campaign_dir):
+EFFICIENCY_OUTCOMES = ("saves-less", "not-equivalent", "already-done")
+EFFICIENCY_ATTENTION_FRACTION = 0.2
+EFFICIENCY_CHANGE_MIN_CHARS = 80
+EFFICIENCY_REASON_MIN_CHARS = 60
+_IDENTIFIER_RE = re.compile(r"\b[A-Za-z]\w*(?:[A-Z_]\w*)+\b")
+
+
+def investigation_text_shape(text):
+    """A hypothesis with its numbers, symbols, paths and identifiers blanked:
+    the template it was written from (round 37: twelve areas, one template)."""
+    return " ".join(_IDENTIFIER_RE.sub("#", ROW_TEXT_TEMPLATE_RE.sub("#", str(text or ""))).split()).lower()
+
+
+def ledger_investigation_shapes(ledger):
+    """The shapes of every efficiency investigation already on the ledger."""
+    shapes = {}
+    if ledger is None:
+        return shapes
+    for opp in ledger.data["opportunities"]:
+        if opp.get("kind") != "discovery" or opp.get("scope") != "efficiency":
+            continue
+        for row in opp.get("path_accounting") or []:
+            for h in ((row.get("investigation") or {}).get("hypotheses") or []):
+                if isinstance(h, dict):
+                    for field in ("change", "reason"):
+                        shapes.setdefault(investigation_text_shape(h.get(field)), f"#{opp['id']:03d}")
+    return shapes
+
+
+def require_efficiency_investigation(index, item, packet, share, story, config, ledger, prior_shapes=None):
+    """An efficiency investigation is one structured hypothesis per place the
+    row's time goes. Each names the change (what the code computes today and
+    what the cheaper algorithm computes instead, naming the code it changes),
+    the packet frames it would avoid (its ceiling), its outcome and the
+    reason: `saves-less` with the fraction it actually saves (below the
+    story's floor and the suite's, or the row is algorithmic),
+    `not-equivalent` (why the result would differ, and the code that
+    observes it), or `already-done` (the code that already does it). Every
+    child carrying EFFICIENCY_ATTENTION_FRACTION of the row, self time
+    included, has a hypothesis; a change or reason written from another
+    hypothesis's template is refused."""
+    import cost_evidence
+    investigation = item.get("investigation") or {}
+    hypotheses = investigation.get("hypotheses") or []
+    label = f"Path {index} ({str(item.get('anchor') or '')[:80]!r})"
+    own = anchor_function(item.get("anchor"))
+    if not hypotheses or not all(isinstance(h, dict) for h in hypotheses):
+        raise CampaignError(
+            f"{label}: an efficiency investigation's hypotheses are objects, one per place the "
+            "time goes: {change, avoided_frames, outcome (saves-less | not-equivalent | "
+            "already-done), saved_fraction (saves-less), reason}. A sentence per hypothesis "
+            "with a packet number in it is a template, not an investigation."
+        )
+    qual_floor = max(qualification_floor_pct(config, story)[0], float(config.get("share_floor_pct") or 0.0))
+    shapes = dict(prior_shapes or {})
+    covered = set()
+    ceilings = []
+    for n, h in enumerate(hypotheses, 1):
+        change = " ".join(str(h.get("change") or "").split())
+        reason = " ".join(str(h.get("reason") or "").split())
+        frames = h.get("avoided_frames")
+        outcome = h.get("outcome")
+        if (len(change) < EFFICIENCY_CHANGE_MIN_CHARS or not ROW_TEXT_SYMBOL_RE.search(change)
+                or not names_other_code(change, own)):
+            raise CampaignError(
+                f"{label} hypothesis {n}: `change` says what {own.split('::')[-1]} computes today, what "
+                "the cheaper algorithm computes instead and why the result is the same, naming the "
+                f"code it changes (a symbol or file other than the row's own function; {EFFICIENCY_CHANGE_MIN_CHARS}+ characters)."
+            )
+        if not isinstance(frames, list) or not frames or not all(isinstance(f, str) and f.strip() for f in frames):
+            raise CampaignError(f"{label} hypothesis {n}: `avoided_frames` names the packet frames the change would not run")
+        ceiling, unmatched = cost_evidence.avoided_fraction(packet, frames)
+        if unmatched:
+            raise CampaignError(f"{label} hypothesis {n}: avoided_frames {unmatched[:4]} are not in the cost packet's child or leaf tables")
+        if outcome not in EFFICIENCY_OUTCOMES:
+            raise CampaignError(f"{label} hypothesis {n}: `outcome` is one of {', '.join(EFFICIENCY_OUTCOMES)}")
+        if (len(reason) < EFFICIENCY_REASON_MIN_CHARS or not EXISTING_MECHANISM_SYMBOL_RE.search(reason)):
+            raise CampaignError(
+                f"{label} hypothesis {n}: `reason` says why the outcome holds, naming a symbol or file "
+                f"({EFFICIENCY_REASON_MIN_CHARS}+ characters): what the cheaper algorithm would actually save and why, "
+                "why the result would differ and the code that observes it, or the code that already does it."
+            )
+        saved = None
+        if outcome == "saves-less":
+            saved = h.get("saved_fraction")
+            try:
+                saved = float(saved)
+            except (TypeError, ValueError):
+                raise CampaignError(f"{label} hypothesis {n}: saves-less carries `saved_fraction`, the fraction of the row the change actually saves")
+            if saved <= 0 or saved > ceiling + 1e-9:
+                raise CampaignError(
+                    f"{label} hypothesis {n}: saved_fraction {saved:.4f} is not within (0, {ceiling:.4f}], the "
+                    "avoided frames' fraction of the row"
+                )
+            story_impact = share * saved
+            suite = algorithmic_suite_impact(ledger, item.get("anchor"), saved) if ledger is not None else None
+            if story_impact >= qual_floor or (suite is not None and suite.get("qualifies_suite")):
+                raise CampaignError(
+                    f"{label} hypothesis {n}: a change saving {saved:.4f} of the row is {story_impact:.3f}% of "
+                    f"{story} (floor {qual_floor:.3f}%)" + (f" and {suite['suite_impact_pct']:.3f}% of the suite (floor {suite['suite_floor_pct']:.3f}%)" if suite else "") +
+                    ": that is not saves-less, it is the algorithmic row. State it as the row's disposition."
+                )
+            # A ceiling is not a falsification: "at most N% of the row" says
+            # nothing about what the change saves.
+            if abs(saved - ceiling) < 1e-9 and share * ceiling >= qual_floor:
+                raise CampaignError(f"{label} hypothesis {n}: saved_fraction equals the ceiling; say what the change saves")
+        for field, text in (("change", change), ("reason", reason)):
+            shape = investigation_text_shape(text)
+            if shape in shapes:
+                raise CampaignError(
+                    f"{label} hypothesis {n}: its `{field}` is written from the same template as {shapes[shape]} "
+                    "(numbers, symbols and identifiers aside). Each hypothesis is its own reading of the code."
+                )
+            shapes[shape] = f"hypothesis {n} of this row"
+        for f in frames:
+            covered.add(f.rstrip("(").rstrip())
+        ceilings.append({"avoided_frames": list(frames), "ceiling_fraction": round(ceiling, 6), "outcome": outcome,
+                         "saved_fraction": saved})
+    large = [e for e in (packet.get("children") or []) if float(e.get("fraction_of_row", 0.0)) >= EFFICIENCY_ATTENTION_FRACTION]
+    for e in large:
+        if not any(cost_evidence.frame_matches(e["frame"], c) for c in covered):
+            raise CampaignError(
+                f"{label}: the investigation does not consider {e['frame'][:80]!r}, which carries "
+                f"{100 * float(e['fraction_of_row']):.1f}% of the row ({float(e.get('share_pct', 0)):.2f}% of {story}). "
+                "Every child at or above "
+                f"{100 * EFFICIENCY_ATTENTION_FRACTION:.0f}% of the row, (self) included, has a hypothesis."
+            )
+    item["cost_summary"] = {
+        "row_share_pct": packet.get("row_share_pct"),
+        "children": [(e["frame"], round(float(e["fraction_of_row"]), 4)) for e in (packet.get("children") or [])[:6]],
+        "hypotheses": ceilings,
+    }
+
+
+def enforce_efficiency_rows(paths, story_shares, story, campaign_dir, config=None, ledger=None):
     """In an efficiency area a `no-qualifying-mechanism` row is the
-    investigation that found no cheaper algorithm, whatever its share: the
-    Layer 3/4 hypotheses tried, the cost-packet number that falsified each
-    (the best cheaper algorithm found and what it saves), the stop reason."""
+    investigation that found no cheaper algorithm, whatever its share
+    (`require_efficiency_investigation`): a structured hypothesis per place
+    the row's time goes, each with its ceiling from the cost packet, its
+    outcome and its reason; the stop reason and budget on the packet."""
+    config = config if config is not None else (ledger.data["config"] if ledger is not None else {})
+    prior = ledger_investigation_shapes(ledger)
     for index, item in enumerate(paths, 1):
         if item.get("disposition") != "no-qualifying-mechanism":
             continue
         if not investigation_is_bounded(item):
             raise CampaignError(
                 f"Path {index} ({item['anchor'][:80]!r}) is no-qualifying-mechanism in an efficiency "
-                "area without a bounded investigation: name the Layer 3/4 hypotheses tried, the "
-                "cost-packet number that falsified each (what the best cheaper algorithm found would "
-                "save, and that it is below the floors), and the stop reason."
+                "area without a bounded investigation: hypotheses (objects: change, avoided_frames, "
+                "outcome, saved_fraction, reason), stop_reason, budget_used, source_revision, and cost_evidence."
             )
-        require_cost_investigation(index, item, story_shares.get(index, 0.0), story, campaign_dir)
+        if not (item.get("cost_evidence") or {}).get("path"):
+            raise CampaignError(
+                f"Path {index} ({item['anchor'][:80]!r}) is no-qualifying-mechanism without cost_evidence: "
+                "`campaign.py cost-packet --opp <id> --children <file> --path 1`, bound as cost_evidence: {path, sha256}."
+            )
+        packet, _ = load_bound_cost_packet(item, story, campaign_dir)
+        require_efficiency_investigation(index, item, packet, story_shares.get(index, 0.0), story, config, ledger, prior)
 
 
 def cmd_calibrate(args):
@@ -9086,10 +9232,11 @@ def load_decomposition(path):
             require_algorithmic_fields(path_item, index)
         if disposition == "no-qualifying-mechanism":
             packet = path_item.get("investigation")
+            structured = isinstance(packet, dict) and packet.get("hypotheses") and all(isinstance(h, dict) for h in packet["hypotheses"])
             if (not isinstance(packet, dict) or not packet.get("source_revision")
-                    or not packet.get("hypotheses") or not packet.get("falsifications")
+                    or not packet.get("hypotheses") or not (packet.get("falsifications") or structured)
                     or not packet.get("stop_reason") or not packet.get("budget_used")):
-                raise CampaignError("no-qualifying-mechanism requires a bounded investigation packet with revision, hypotheses, falsifications, budget_used and stop_reason")
+                raise CampaignError("no-qualifying-mechanism requires a bounded investigation packet with revision, hypotheses, falsifications (or structured hypotheses with outcomes), budget_used and stop_reason")
         missing = []
         if not isinstance(path_item.get("anchor"), str) or not path_item["anchor"].strip():
             missing.append("anchor")
@@ -9530,7 +9677,8 @@ def cmd_decompose(args):
         )
     if not test_bypass_active() and parent.get("scope") == "efficiency":
         enforce_anchor_names_its_work(result["paths"])
-        enforce_efficiency_rows(result["paths"], story_shares, parent.get("target_story"), ledger.dir)
+        enforce_efficiency_rows(result["paths"], story_shares, parent.get("target_story"), ledger.dir,
+                                config=ledger.data["config"], ledger=ledger)
         enforce_row_text_distinct(result["paths"])
     elif not test_bypass_active():
         enforce_anchor_names_its_work(result["paths"])

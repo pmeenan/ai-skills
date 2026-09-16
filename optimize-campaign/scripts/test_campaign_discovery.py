@@ -1071,21 +1071,53 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             campaign.enforce_phase_dispositions([{"anchor": "blink::Big()", "disposition": "mandatory"}], "efficiency", area)
         campaign.enforce_phase_dispositions([alg, {"anchor": "blink::Own()", "disposition": "no-qualifying-mechanism"}], "efficiency", area)
         story_dir, _ = self._two_story_profile({"A": "main;blink::Big();blink::Leaf() 50\nmain;blink::Big();blink::Own() 10\nmain;other 40\n"})
+        ledger = campaign.Ledger(self.dir).load(); cfg = ledger.data["config"]
+        run = lambda row: campaign.enforce_efficiency_rows([row], {1: 60.0}, "A", self.dir, config=cfg, ledger=ledger)
         row = {"anchor": "blink::Big()", "disposition": "no-qualifying-mechanism"}
         with self.assertRaisesRegex(campaign.CampaignError, "without a bounded investigation"):
-            campaign.enforce_efficiency_rows([row], {1: 60.0}, "A", self.dir)
-        row["investigation"] = {"hypotheses": ["single-pass Leaf"], "falsifications": ["Leaf is 83.3% of the row; a single pass saves 1% of it"], "stop_reason": "below floors"}
-        with self.assertRaisesRegex(campaign.CampaignError, "no cost_evidence"):
-            campaign.enforce_efficiency_rows([row], {1: 60.0}, "A", self.dir)
+            run(row)
+        # A sentence per hypothesis with a packet number in it (round 37's
+        # template) is not an investigation.
+        row["investigation"] = {"hypotheses": ["single-pass Leaf"], "falsifications": ["Leaf is 83.3% of the row; a single pass saves 1% of it"],
+                                "stop_reason": "below floors", "budget_used": "1h", "source_revision": "x"}
+        with self.assertRaisesRegex(campaign.CampaignError, "without cost_evidence"):
+            run(row)
         packet = cost_evidence.build_cost_packet([story_dir / "A" / "profile.collapsed"], "blink::Big()", "A", "p")
         path = self.dir / "evidence" / "cost_big.json"; path.parent.mkdir(exist_ok=True)
         path.write_text(json.dumps(packet))
         row["cost_evidence"] = {"path": "evidence/cost_big.json", "sha256": campaign.sha256_file(path)}
-        campaign.enforce_efficiency_rows([row], {1: 60.0}, "A", self.dir)
-        self.assertEqual("blink::Leaf()", row["cost_summary"]["children"][0][0])
-        row["investigation"]["falsifications"] = ["the closing count read 0.2% repeats"]
-        with self.assertRaisesRegex(campaign.CampaignError, "does not say where the time goes"):
-            campaign.enforce_efficiency_rows([row], {1: 60.0}, "A", self.dir)
+        with self.assertRaisesRegex(campaign.CampaignError, "hypotheses are objects"):
+            run(row)
+        leaf = {"change": "blink::Big() lays every child out twice, a min-content pass and the final pass, both in blink::Leaf(); "
+                          "one pass in leaf_layout.cc that records min-content while laying out returns the same fragments.",
+                "avoided_frames": ["blink::Leaf()"], "outcome": "saves-less", "saved_fraction": 0.01,
+                "reason": "LeafLayoutAlgorithm::Layout already caches the first pass in layout_result_cache.cc; the second pass is 1% of the row"}
+        row["investigation"]["hypotheses"] = [leaf]; row["investigation"].pop("falsifications")
+        run(row)
+        self.assertEqual([0.833333], [h["ceiling_fraction"] for h in row["cost_summary"]["hypotheses"]])
+        # A saving that clears a floor is the algorithmic row, not saves-less.
+        big = dict(leaf, saved_fraction=0.5)
+        row["investigation"]["hypotheses"] = [big]
+        with self.assertRaisesRegex(campaign.CampaignError, "it is the algorithmic row"):
+            run(row)
+        # A ceiling is not a falsification; a frame not in the packet is refused.
+        row["investigation"]["hypotheses"] = [dict(leaf, avoided_frames=["blink::Nowhere()"])]
+        with self.assertRaisesRegex(campaign.CampaignError, "not in the cost packet"):
+            run(row)
+        # Every child at or above 20% of the row has a hypothesis.
+        own = {"change": "blink::Big() walks blink::Own() for every child to find the containing block; a parent pointer kept in "
+                         "layout_box.h answers it in one step with the same result.",
+               "avoided_frames": ["blink::Own()"], "outcome": "already-done",
+               "reason": "LayoutBox::ContainingBlock in layout_box.cc already returns the cached parent; Own() is the fallback path"}
+        row["investigation"]["hypotheses"] = [own]
+        with self.assertRaisesRegex(campaign.CampaignError, "does not consider 'blink::Leaf\\(\\)'"):
+            run(row)
+        # Two hypotheses from one template are refused.
+        row["investigation"]["hypotheses"] = [leaf, dict(leaf, avoided_frames=["blink::Own()"], change=leaf["change"].replace("Leaf", "Own"))]
+        with self.assertRaisesRegex(campaign.CampaignError, "same template"):
+            run(row)
+        row["investigation"]["hypotheses"] = [leaf, own]
+        run(row)
 
     def test_suite_area_rows_qualify_by_the_real_floors(self):
         """A suite area's floor (the suite floor) says which rows bind a

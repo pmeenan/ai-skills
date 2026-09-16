@@ -263,7 +263,7 @@ def efficiency_precheck(ledger, parent, result, shares, story, story_floor, camp
             if impact < story_floor and not suite["qualifies_suite"]:
                 problems.append(f"Path {i} ({p['anchor'][:60]!r}) saves {impact:.3f}% of {story} and {suite['suite_impact_pct']:.3f}% of the suite, below both floors; decompose refuses it as a candidate. Close it as no-qualifying-mechanism with this algorithm as a falsified hypothesis quoting the cost packet's fraction.")
         except (campaign.CampaignError, TypeError, ValueError) as e: problems.append(str(e))
-    try: campaign.enforce_efficiency_rows(result["paths"], shares, story, campaign_dir)
+    try: campaign.enforce_efficiency_rows(result["paths"], shares, story, campaign_dir, config=ledger.data["config"], ledger=ledger)
     except campaign.CampaignError as e: problems.append(str(e))
     try: campaign.enforce_row_text_distinct(result["paths"])
     except campaign.CampaignError as e: problems.append(str(e))
