@@ -777,6 +777,16 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         symbols = campaign.owner_probe_symbols(rows, lambda key: ledger_owner, self.dir)
         self.assertEqual({"layout/oof": "OutOfFlow"}, symbols)
         campaign.enforce_covered_by_probe_identity(rows, symbols, profile, STORY)
+        # A ledger-held owner with no summary (round 35: #234 covering a suite
+        # area's row) contributes the probe of its newest discovery row's packet.
+        ref = self.write_packet("owner", applicable=0.3, repeat=0.0, symbol="OutOfFlow")
+        ledger = campaign.Ledger(self.dir).load()
+        disc = campaign.new_opportunity(ledger, kind="discovery", anchor="A/x", area_key="a-x", profile_id="p")
+        disc["path_accounting"] = [{"anchor": "OutOfFlow", "disposition": "known", "mechanism_key": "layout/oof",
+                                    "redundancy_evidence": ref}]
+        self.assertEqual({"layout/oof": "OutOfFlow"},
+                         campaign.owner_probe_symbols(rows, lambda key: {"mechanism_key": key}, self.dir, ledger=ledger))
+        self.assertEqual({}, campaign.owner_probe_symbols(rows, lambda key: {"mechanism_key": key}, self.dir))
 
     def test_packets_are_tied_to_their_build_and_timed_exclusively(self):
         with mock.patch.object(campaign, "test_bypass_active", return_value=False):

@@ -3943,9 +3943,42 @@ def enforce_covered_by_sample_identity(paths, owner_anchors, profile, story):
         item["covered_by_sample_identity"] = round(fraction, 4)
 
 
-def owner_probe_symbols(paths, ledger_owner_lookup, campaign_dir):
+def mechanism_probe_symbol(ledger, key, campaign_dir):
+    """The probed function of a ledger mechanism, from the packet its
+    newest-build discovery row binds (the mechanism record itself carries
+    no packet: a suite area covering a row by #234 has no in-file owner)."""
+    import redundancy_evidence
+    order = build_order(campaign_dir)
+    best = None
+    for disc in ledger.data["opportunities"]:
+        if disc.get("kind") != "discovery":
+            continue
+        for row in disc.get("path_accounting") or []:
+            if row.get("mechanism_key") != key or row.get("disposition") not in ("novel", "known"):
+                continue
+            rel = (row.get("redundancy_evidence") or {}).get("path")
+            if not rel:
+                continue
+            path = pathlib.Path(rel)
+            if not path.is_absolute():
+                path = pathlib.Path(campaign_dir) / path
+            try:
+                packet = redundancy_evidence.load_packet(path)
+            except (ValueError, OSError):
+                continue
+            symbol = str(packet.get("probe_symbol") or "").strip()
+            if not symbol:
+                continue
+            rank = order.get(packet.get("build_id"), 0.0)
+            if best is None or rank > best[0]:
+                best = (rank, symbol)
+    return best[1] if best else None
+
+
+def owner_probe_symbols(paths, ledger_owner_lookup, campaign_dir, ledger=None):
     """mechanism_key -> probe_symbol of the packet bound by the owning row (in
-    this decomposition) or recorded on the ledger mechanism."""
+    this decomposition), recorded on the ledger mechanism, or bound by the
+    mechanism's newest discovery row (`ledger` given)."""
     import redundancy_evidence
     symbols = {}
     for item in paths:
@@ -3973,6 +4006,10 @@ def owner_probe_symbols(paths, ledger_owner_lookup, campaign_dir):
         symbol = summary.get("probe_symbol")
         if isinstance(symbol, str) and symbol.strip():
             symbols[key] = symbol.strip()
+        elif owner is not None and ledger is not None:
+            symbol = mechanism_probe_symbol(ledger, key, campaign_dir)
+            if symbol:
+                symbols[key] = symbol
     return symbols
 
 
@@ -9685,7 +9722,7 @@ def cmd_decompose(args):
         owner_symbols = owner_probe_symbols(
             result["paths"],
             lambda key: ledger.mechanism(parent["area_key"], key),
-            ledger.dir,
+            ledger.dir, ledger=ledger,
         )
         enforce_covered_by_probe_identity(
             result["paths"], owner_symbols, source_profile,

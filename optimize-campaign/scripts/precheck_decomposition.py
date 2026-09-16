@@ -196,11 +196,11 @@ def main(campaign_dir, opp_id, children):
         campaign.enforce_covered_by_sample_identity(result["paths"], owners, profile, story)
     except campaign.CampaignError as e: problems.append(str(e))
     try:
-        symbols = campaign.owner_probe_symbols(result["paths"], lookup, campaign_dir)
+        symbols = campaign.owner_probe_symbols(result["paths"], lookup, campaign_dir, ledger=ledger)
         campaign.enforce_covered_by_probe_identity(result["paths"], symbols, profile, story)
     except campaign.CampaignError as e: problems.append(str(e))
     try:
-        symbols = campaign.owner_probe_symbols(result["paths"], lookup, campaign_dir)
+        symbols = campaign.owner_probe_symbols(result["paths"], lookup, campaign_dir, ledger=ledger)
         campaign.enforce_covered_by_nearest_probe(result["paths"], symbols,
             campaign.story_probe_symbols(campaign_dir, story), profile, story)
     except campaign.CampaignError as e: problems.append(str(e))
