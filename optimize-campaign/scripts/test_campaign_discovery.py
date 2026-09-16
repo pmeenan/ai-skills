@@ -1133,6 +1133,7 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         with the probe identity verified over it binds that mechanism's
         count (round 36: #248 blocked the efficiency phase as prose)."""
         ledger = campaign.Ledger(self.dir).load()
+        ledger.data.pop("test_only_taint", None)
         opp = {"kind": "discovery", "status": "decomposed",
                "path_accounting": [{"disposition": "covered-by", "covered_by": "css/x"}]}
         with mock.patch.object(campaign, "test_bypass_active", return_value=False):
