@@ -107,7 +107,11 @@ def main(campaign_dir, opp_id, children):
     run_all(problems, lambda w: campaign.enforce_packet_relevance(
         w, [(i, p) for i, p in enumerate(w, 1) if p.get("redundancy_evidence") and p.get("wrapper_of") is None],
         profile, story, campaign_dir), result["paths"])
-    bound = run_all(problems, campaign.enforce_measured_dispositions, result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, coverage=coverage_map, profile=profile) or set()
+    bound = run_all(problems, campaign.enforce_measured_dispositions, result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, coverage=coverage_map, profile=profile, ledger=ledger) or set()
+    for i, p in enumerate(result["paths"], 1):
+        if p.get("unmeasurable_bound"):
+            ub = p["unmeasurable_bound"]
+            print(f"row {i} {p['disposition']} {p['anchor'][:60]} closes unmeasurable: bound {ub['story_bound_pct']:.3f}% < story floor {ub['story_floor_pct']:.3f}%, suite {ub.get('suite_impact_pct')}% < {ub.get('suite_floor_pct')}%")
     run_all(problems, campaign.enforce_wrapper_descent, result["paths"], shares, profile, story, campaign_dir, ledger.data["config"], floor)
     unbound = [i for i, p in enumerate(result["paths"], 1)
                if p["disposition"] in ("mandatory", "no-qualifying-mechanism")
@@ -214,12 +218,17 @@ def main(campaign_dir, opp_id, children):
                 existing = next((o for o in ledger.data["opportunities"] if o.get("kind") == "mechanism" and o.get("mechanism_key") == p["mechanism_key"]), None)
                 if existing:
                     problems.append(f"Path {i} ({p['anchor'][:60]!r}) is novel for mechanism_key {p['mechanism_key']!r}, which already exists as #{existing['id']}; mark it known.")
-            if frac is not None and shares[i] * float(frac) < story_floor:
+            qual_floor = max(campaign.qualification_floor_pct(ledger.data["config"], story)[0], floor)
+            if frac is not None and shares[i] * float(frac) < qual_floor:
                 fi = campaign.mechanism_function_impact(p, float(frac), profile, story, campaign_dir)
-                if fi is not None and fi[1] >= story_floor:
+                suite = campaign.path_item_suite_impact(p, ledger)
+                if fi is not None and fi[1] >= qual_floor:
                     print(f"row {i} {p['disposition']} qualifies by its function's share: {fi[0]:.2f}% x {float(frac):.4f} = {fi[1]:.3f}% (row {shares[i]:.2f}%)")
+                elif suite is not None and suite.get("qualifies_suite"):
+                    print(f"row {i} {p['disposition']} qualifies across the suite: {suite['suite_impact_pct']:.3f}% >= {suite['suite_floor_pct']:.3f}% (story {shares[i]*float(frac):.3f}% < {qual_floor:.3f}%)")
                 else:
-                    problems.append(f"Path {i} ({p['anchor'][:60]!r}) is {p['disposition']} at {float(frac):.4f} of {shares[i]:.2f}% = {shares[i]*float(frac):.3f}%, below the {story_floor:.3f}% floor" + (f" (the function's share {fi[0]:.2f}% x {float(frac):.4f} = {fi[1]:.3f}% too)" if fi else "") + "; decompose refuses it as a candidate. Close it by count (mandatory / no-qualifying-mechanism) instead.")
+                    suite_note = f"; across the suite {suite['suite_impact_pct']:.3f}% < {suite['suite_floor_pct']:.3f}%" if suite and suite.get("suite_floor_pct") is not None else ""
+                    problems.append(f"Path {i} ({p['anchor'][:60]!r}) is {p['disposition']} at {float(frac):.4f} of {shares[i]:.2f}% = {shares[i]*float(frac):.3f}%, below the {qual_floor:.3f}% qualification floor" + (f" (the function's share {fi[0]:.2f}% x {float(frac):.4f} = {fi[1]:.3f}% too)" if fi else "") + suite_note + "; decompose refuses it as a candidate. Close it by count (mandatory / no-qualifying-mechanism) instead; a bound above the area floor but below these closes as unmeasurable.")
     rows = campaign.decomposition_rows_at_or_above_floor(parent, result, ledger.data["config"])
     print(f"\n{len(rows)} rows at/above floor; dispositions:", {d: sum(1 for r in rows if r['disposition'] == d) for d in set(r['disposition'] for r in rows)})
     print("\nPROBLEMS:" if problems else "\nno gate problems")

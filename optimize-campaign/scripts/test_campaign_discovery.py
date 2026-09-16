@@ -1087,6 +1087,47 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         with self.assertRaisesRegex(campaign.CampaignError, "does not say where the time goes"):
             campaign.enforce_efficiency_rows([row], {1: 60.0}, "A", self.dir)
 
+    def test_suite_area_rows_qualify_by_the_real_floors(self):
+        """A suite area's floor (the suite floor) says which rows bind a
+        count; a candidate still qualifies by the story's calibrated floor or
+        the suite floor. A counted row between the two, on a site below the
+        suite floor, closes as unmeasurable instead of being trapped; one on
+        a site that clears the suite floor is promoted (round 36)."""
+        cfg = {"share_floor_pct": 0.1, "calibration": {"suite_mde_pct": 0.2, "story_mde_pct": {STORY: 2.5}}}
+        ac = campaign.area_config(cfg, {"scope": "suite", "target_story": STORY})
+        self.assertAlmostEqual(0.4, campaign.story_floor_pct(ac, STORY)[0])
+        self.assertAlmostEqual(5.0, campaign.qualification_floor_pct(ac, STORY)[0])
+        self.assertAlmostEqual(5.0, campaign.qualification_floor_pct(cfg, STORY)[0])
+        with mock.patch.object(campaign, "test_bypass_active", return_value=False):
+            packet = self.write_packet("layer", applicable=0.39, repeat=0.39, symbol="Root")
+            ledger = campaign.Ledger(self.dir).load()
+            below = {"suite_impact_pct": 0.1, "suite_floor_pct": 0.4, "qualifies_suite": False}
+            above = {"suite_impact_pct": 0.5, "suite_floor_pct": 0.4, "qualifies_suite": True}
+            rows = [{"anchor": "Root", "disposition": "mandatory", "redundancy_evidence": packet}]
+            # 1.9% x 0.39 = 0.74%: above the area floor, below the story's 5% and the suite's.
+            with mock.patch.object(campaign, "mechanism_suite_impact", return_value=below):
+                with self.assertRaisesRegex(campaign.CampaignError, "not below the floor"):
+                    campaign.enforce_measured_dispositions(rows, {1: 1.9}, ac, 0.1, STORY, self.dir)
+                self.assertEqual({1}, campaign.enforce_measured_dispositions(rows, {1: 1.9}, ac, 0.1, STORY, self.dir, ledger=ledger))
+                self.assertAlmostEqual(0.741, rows[0]["unmeasurable_bound"]["story_bound_pct"], places=3)
+                self.assertAlmostEqual(5.0, rows[0]["unmeasurable_bound"]["story_floor_pct"])
+            with mock.patch.object(campaign, "mechanism_suite_impact", return_value=above):
+                rows = [{"anchor": "Root", "disposition": "mandatory", "redundancy_evidence": packet}]
+                with self.assertRaisesRegex(campaign.CampaignError, "not below the floor"):
+                    campaign.enforce_measured_dispositions(rows, {1: 1.9}, ac, 0.1, STORY, self.dir, ledger=ledger)
+                # Closed in this story, qualifying across the suite: a candidate.
+                rows = [{"anchor": "Root", "disposition": "mandatory", "redundancy_evidence": packet}]
+                with self.assertRaisesRegex(campaign.CampaignError, "across the suite the site reads 0.500%"):
+                    campaign.enforce_measured_dispositions(rows, {1: 0.5}, ac, 0.1, STORY, self.dir, ledger=ledger)
+                # A row bound to an ancestor's packet is not the site's own claim.
+                rows = [{"anchor": "Leaf", "disposition": "mandatory", "redundancy_evidence": packet}]
+                self.assertEqual({1}, campaign.enforce_measured_dispositions(rows, {1: 0.5}, ac, 0.1, STORY, self.dir, ledger=ledger))
+            # In a story area the area floor is the qualification floor: no escape.
+            rows = [{"anchor": "Root", "disposition": "mandatory", "redundancy_evidence": packet}]
+            with mock.patch.object(campaign, "mechanism_suite_impact", return_value=below):
+                with self.assertRaisesRegex(campaign.CampaignError, "not below the floor"):
+                    campaign.enforce_measured_dispositions(rows, {1: 19.0}, cfg, 0.1, STORY, self.dir, ledger=ledger)
+
     def test_probe_union_sizes_by_the_site_class(self):
         """A key-repeat sizes only an unchanged-input site (a fragment keyed
         without its paint phase read 79-88% repeats in round 32); a predicate

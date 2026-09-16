@@ -3332,8 +3332,29 @@ def enforce_wrapper_descent(paths, story_shares, profile, story, campaign_dir=No
                 )
 
 
+def unmeasurable_closing(item, packet, upper, story, config, ledger):
+    """A counted row whose bound clears the area floor but not the story's
+    qualification floor, on a site that does not clear the suite floor: a
+    redundancy the measurement cannot read (round 36: 39% of composited
+    layer updates in Svelte, 0.73% of the story against a 2.13% floor, 0.1%
+    of the suite). It closes with the numbers on it instead of being
+    trapped between "not mandatory" and "not a candidate"."""
+    if ledger is None:
+        return None
+    qual_floor = max(qualification_floor_pct(config, story)[0], float(config.get("share_floor_pct") or 0.0))
+    if upper >= qual_floor:
+        return None
+    suite = mechanism_suite_impact(ledger, packet.get("site"), packet.get("probe_symbol"), packet.get("scope_symbol"))
+    if suite is not None and suite.get("qualifies_suite"):
+        return None
+    return {"story_bound_pct": round(upper, 4), "story_floor_pct": round(qual_floor, 4),
+            "suite_impact_pct": (suite or {}).get("suite_impact_pct"),
+            "suite_floor_pct": (suite or {}).get("suite_floor_pct"),
+            "basis": "redundancy counted, below the story's qualification floor and the suite floor: not measurable"}
+
+
 def enforce_measured_dispositions(
-    paths, story_shares, config, base_floor, default_story, campaign_dir, coverage=None, profile=None
+    paths, story_shares, config, base_floor, default_story, campaign_dir, coverage=None, profile=None, ledger=None
 ):
     """Above the story floor, mandatory and no-qualifying rows close by count.
 
@@ -3406,16 +3427,33 @@ def enforce_measured_dispositions(
             bound.add(index)
             continue
         if upper >= floor:
-            raise CampaignError(
-                f"{label}. Its packet {packet['site']!r} bounds the avoidable "
-                f"work at {supported:.3f} of {share:.3f}% = {upper:.3f}%, which "
-                f"is not below the floor. This row cannot close as "
-                f"{item['disposition']}: promote it to novel with "
-                f"estimated_avoidable_fraction <= {supported:.3f}, or re-key "
-                "the probe so its `applicable` predicate states what would "
-                "make the work skippable (a pointer-only key or applicable="
-                "true bounds nothing)."
-            )
+            escape = unmeasurable_closing(item, packet, upper, story, config, ledger)
+            if escape is None:
+                raise CampaignError(
+                    f"{label}. Its packet {packet['site']!r} bounds the avoidable "
+                    f"work at {supported:.3f} of {share:.3f}% = {upper:.3f}%, which "
+                    f"is not below the floor. This row cannot close as "
+                    f"{item['disposition']}: promote it to novel with "
+                    f"estimated_avoidable_fraction <= {supported:.3f}, or re-key "
+                    "the probe so its `applicable` predicate states what would "
+                    "make the work skippable (a pointer-only key or applicable="
+                    "true bounds nothing)."
+                )
+            item["unmeasurable_bound"] = escape
+        elif (ledger is not None and supported > 0
+              and symbol_matches(str(item.get("anchor") or ""), str(packet.get("probe_symbol") or ""))):
+            # Closed in this story; the small things that add up across the
+            # suite are still a candidate when the site clears the suite floor.
+            suite = mechanism_suite_impact(ledger, packet.get("site"), packet.get("probe_symbol"), packet.get("scope_symbol"))
+            if suite is not None and suite.get("qualifies_suite"):
+                raise CampaignError(
+                    f"{label}. Its packet {packet['site']!r} closes it in this story "
+                    f"({upper:.3f}% < {floor:.3f}%), but across the suite the site reads "
+                    f"{suite['suite_impact_pct']:.3f}% of the score, at/above the suite floor "
+                    f"{suite['suite_floor_pct']:.3f}%: the small things that add up are a "
+                    f"candidate. Promote it to novel with estimated_avoidable_fraction <= "
+                    f"{supported:.3f}; it qualifies at qualification_scope suite."
+                )
         uncounted = share * (1.0 - counted)
         if counted < 1.0 and uncounted >= floor:
             # The rest of the function may be carried by the rows beneath it
@@ -6444,6 +6482,19 @@ def story_floor_pct(config, story):
     return floor, f"max(share floor {base}%, {MDE_FLOOR_MULTIPLIER:g} x calibrated MDE {float(mde):.3f}% of {story})"
 
 
+def qualification_floor_pct(config, story):
+    """The floor a candidate in `story` must clear: the story's calibrated
+    one, whatever the area's floor is (a suite area lowers its area floor
+    to the suite floor so its rows bind counts; a claim worth 0.7% of
+    Svelte is still not measurable on Svelte, round 36)."""
+    if "qualification_calibration" not in config:
+        return story_floor_pct(config, story)
+    real = dict(config)
+    real["calibration"] = config["qualification_calibration"]
+    real.pop("qualification_calibration", None)
+    return story_floor_pct(real, story)
+
+
 def suite_stories(config):
     """The stories the suite score is the geometric mean of: the calibrated
     ones."""
@@ -6541,6 +6592,10 @@ def area_config(config, opp):
     if floor is None or not story:
         return config
     cfg = dict(config)
+    # The area floor says which rows must bind a count; a candidate still
+    # qualifies by the story's real floor or the suite floor.
+    cfg["qualification_calibration"] = config.get("calibration") or {}
+    cfg["area_scope"] = opp.get("scope")
     calibration = dict(config.get("calibration") or {})
     mde = dict(calibration.get("story_mde_pct") or {})
     mde[story] = floor / MDE_FLOOR_MULTIPLIER
@@ -9389,7 +9444,7 @@ def cmd_decompose(args):
                     from opportunity_budget import rank
                     budget_qualifies = rank(path_item["opportunity_budget"])["viable_with_budget"]
                 story_name = path_item.get("target_story") or parent.get("target_story")
-                path_floor, floor_basis = story_floor_pct(ledger.data["config"], story_name)
+                path_floor, floor_basis = qualification_floor_pct(ledger.data["config"], story_name)
                 path_floor = max(path_floor, floor)
                 function_impact = None
                 if not test_bypass_active() and impact < path_floor:
@@ -9485,6 +9540,7 @@ def cmd_decompose(args):
         bound = enforce_measured_dispositions(
             result["paths"], story_shares, ledger.data["config"], floor,
             parent.get("target_story"), ledger.dir, coverage=coverage_map, profile=source_profile,
+            ledger=ledger,
         )
         enforce_wrapper_descent(result["paths"], story_shares, source_profile,
                                 parent.get("target_story"), ledger.dir, ledger.data["config"], floor)
