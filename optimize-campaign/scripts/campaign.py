@@ -1202,10 +1202,13 @@ class Ledger:
         ]
         blockers = []
         expected = latest.get("area_count")
-        if expected is not None and len(latest_discoveries) != expected:
+        # Suite and efficiency areas are opened by the host from the same
+        # profile; the profile's own area count is of its story frontier.
+        frontier_discoveries = [d for d in latest_discoveries if not d.get("scope")]
+        if expected is not None and len(frontier_discoveries) != expected:
             blockers.append(
                 f"latest profile {latest['id']} declares {expected} area(s) "
-                f"but the ledger has {len(latest_discoveries)} discovery record(s)"
+                f"but the ledger has {len(frontier_discoveries)} story-frontier discovery record(s)"
             )
         for discovery in latest_discoveries:
             if discovery["status"] != "exhausted":
