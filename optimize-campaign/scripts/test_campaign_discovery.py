@@ -1150,6 +1150,11 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         alg_row["investigation"]["hypotheses"] = [dict(leaf, outcome="qualifies"), own]
         with self.assertRaisesRegex(campaign.CampaignError, "or `algorithmic` for the hypothesis"):
             run(alg_row)
+        alg_row["investigation"]["hypotheses"] = [leaf, own]
+        with self.assertRaisesRegex(campaign.CampaignError, "own claim is one of its hypotheses"):
+            run(alg_row)
+        # A frame from an anonymous namespace with a return type has a name.
+        self.assertEqual("ParseElement", campaign.frame_short_name("blink::Element* blink::(anonymous namespace)::HTMLFastPathParser<char16_t>::ParseElement<true>()"))
         alg_row.pop("investigation")
         with self.assertRaisesRegex(campaign.CampaignError, "algorithmic in an efficiency area without a bounded investigation"):
             run(alg_row)

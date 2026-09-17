@@ -7300,6 +7300,7 @@ def require_efficiency_investigation(index, item, packet, share, story, config, 
     hypotheses = investigation.get("hypotheses") or []
     label = f"Path {index} ({str(item.get('anchor') or '')[:80]!r})"
     own = anchor_function(item.get("anchor"))
+    own_name = frame_short_name(item.get("anchor")) or own
     if not hypotheses or not all(isinstance(h, dict) for h in hypotheses):
         raise CampaignError(
             f"{label}: an efficiency investigation's hypotheses are objects, one per place the "
@@ -7322,7 +7323,7 @@ def require_efficiency_investigation(index, item, packet, share, story, config, 
         if (len(change) < EFFICIENCY_CHANGE_MIN_CHARS or not EXISTING_MECHANISM_SYMBOL_RE.search(change)
                 or not names_other_code(change, own)):
             raise CampaignError(
-                f"{label} hypothesis {n}: `change` says what {own.split('::')[-1]} computes today, what "
+                f"{label} hypothesis {n}: `change` says what {own_name} computes today, what "
                 "the cheaper algorithm computes instead and why the result is the same, naming the "
                 f"code it changes: a `Namespace::Function` symbol or a file name (foo.cc) other than the "
                 f"row's own function; {EFFICIENCY_CHANGE_MIN_CHARS}+ characters."
@@ -7392,10 +7393,15 @@ def require_efficiency_investigation(index, item, packet, share, story, config, 
             covered.add(f.rstrip("(").rstrip())
         ceilings.append({"avoided_frames": list(frames), "ceiling_fraction": round(ceiling, 6), "outcome": outcome,
                          "saved_fraction": saved, "read": [dict(c) for c in h.get("read")]})
-    if frame_short_name(own) not in read_all:
+    if own_name not in read_all:
         raise CampaignError(
-            f"{label}: no hypothesis cites a reading of {own.split('::')[-1]} itself (`read`: its file and the lines "
+            f"{label}: no hypothesis cites a reading of {own_name} itself (`read`: its file and the lines "
             "of its definition); the investigation starts with the function."
+        )
+    if item.get("disposition") == "algorithmic" and not any(h.get("outcome") == EFFICIENCY_ROW_OUTCOME for h in hypotheses):
+        raise CampaignError(
+            f"{label}: an algorithmic row's own claim is one of its hypotheses, with outcome "
+            f"`{EFFICIENCY_ROW_OUTCOME}` on the row's avoided frames; none has it."
         )
     large = [e for e in (packet.get("children") or []) if float(e.get("fraction_of_row", 0.0)) >= EFFICIENCY_ATTENTION_FRACTION]
     for e in large:
