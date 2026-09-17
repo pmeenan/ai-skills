@@ -237,6 +237,12 @@ An efficiency area's one row says one of two things, and nothing else
   sentence). `stop_reason`, `budget_used` and `source_revision` stay on the
   investigation; it binds the same `cost_evidence`.
 
+An `algorithmic` row whose `mechanism_key` already names an algorithmic
+mechanism on the ledger is the same cheaper algorithm on another function or
+story (round 40: the two template instantiations of the fast-path parser);
+it reconciles as a known mechanism, and `suite-impacts` sums the mechanism's
+distinct functions (the same function takes its largest claimed fraction).
+
 An `algorithmic` row carries the same investigation: its own claim is the
 hypothesis with outcome `algorithmic` (on the row's avoided frames), the
 other children at or above 20% of the row have theirs, and every reading is

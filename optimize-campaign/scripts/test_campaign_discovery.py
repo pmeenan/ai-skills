@@ -1056,6 +1056,10 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         self.assertAlmostEqual((59 * 0.5 + 34 * 0.5) / 2, suite["suite_impact_pct"])
         self.assertTrue(suite["qualifies_suite"]); self.assertEqual(campaign.ALGORITHMIC_IMPACT_BASIS, suite["impact_basis"])
         self.assertAlmostEqual(0.1, campaign.algorithmic_suite_impact(ledger, "blink::Own()", 0.1)["suite_impact_pct"])
+        # One algorithm on two functions adds; the same function takes its largest claim.
+        multi = campaign.algorithmic_suite_impact_multi(ledger, {"blink::Leaf()": 0.5, "blink::Own()": 0.1})
+        self.assertAlmostEqual(suite["suite_impact_pct"] + 0.1, multi["suite_impact_pct"])
+        self.assertEqual({"blink::Leaf()": 0.5, "blink::Own()": 0.1}, multi["anchors"])
 
     def test_efficiency_rows_say_algorithmic_or_investigated(self):
         """An algorithmic row is refused before the efficiency phase; in an

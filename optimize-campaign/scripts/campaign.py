@@ -7109,6 +7109,30 @@ def cmd_efficiency_frontier(args):
     return 0
 
 
+def algorithmic_suite_impact_multi(ledger, fractions_by_anchor):
+    """The suite impact of one cheaper algorithm claimed on several
+    functions (distinct anchors add; the same anchor takes its largest
+    claimed fraction): per story the sum of inclusive share x fraction,
+    averaged over the suite."""
+    table = suite_inclusive_shares(ledger)
+    sized = {}
+    for anchor, fraction in fractions_by_anchor.items():
+        fn = anchor_function(anchor)
+        for story, shares in table["per_story"].items():
+            share = shares.get(anchor)
+            if share is None:
+                share = max((v for f, v in shares.items() if anchor_function(f) == fn), default=0.0)
+            sized[story] = sized.get(story, 0.0) + share * float(fraction)
+    n = len(table["stories"]) or 1
+    impact = sum(sized.values()) / n
+    return {"suite_impact_pct": round(impact, 4), "suite_floor_pct": table["floor"], "suite_floor_basis": table["basis"],
+            "stories_total": n, "stories_sized": len([v for v in sized.values() if v > 0]),
+            "stories_errored": 0, "errors": {},
+            "contributions": {st: round(v, 4) for st, v in sorted(sized.items(), key=lambda kv: -kv[1]) if v > 0},
+            "qualifies_suite": impact >= table["floor"], "impact_basis": ALGORITHMIC_IMPACT_BASIS,
+            "anchors": {a: float(f) for a, f in fractions_by_anchor.items()}}
+
+
 def algorithmic_suite_impact(ledger, frame, fraction):
     """The suite impact of a cheaper algorithm on one function: in every
     story its inclusive share x the fraction the cost packet bounds,
@@ -9877,7 +9901,11 @@ def cmd_decompose(args):
             continue
         area_key = path_item.get("area_key") or parent["area_key"]
         existing = ledger.mechanism(area_key, path_item["mechanism_key"])
-        if path_item["disposition"] in ("novel", "algorithmic"):
+        if path_item["disposition"] == "algorithmic" and existing and existing.get("candidate_type") == "algorithmic":
+            # The same cheaper algorithm on another function or story (round
+            # 40: the two template instantiations of the fast-path parser).
+            known.append((existing, path_item))
+        elif path_item["disposition"] in ("novel", "algorithmic"):
             if existing:
                 raise CampaignError(
                     f"Path {path_item['mechanism_key']} is marked novel but "
@@ -12066,6 +12094,7 @@ def cmd_suite_impacts(args):
     # The packet lives on the discovery rows that name the mechanism (novel
     # first); the mechanism record carries the summary.
     rows_by_key = {}
+    alg_anchors = {}
     for disc in ledger.data["opportunities"]:
         if disc.get("kind") != "discovery":
             continue
@@ -12076,12 +12105,15 @@ def cmd_suite_impacts(args):
                     rows_by_key[key] = row
             if key and row.get("disposition") == "algorithmic" and (row.get("cost_evidence") or {}).get("path"):
                 rows_by_key.setdefault(key, row)
+                frac = float(row.get("estimated_avoidable_fraction") or 0.0)
+                by_anchor = alg_anchors.setdefault(key, {})
+                by_anchor[row["anchor"]] = max(by_anchor.get(row["anchor"], 0.0), frac)
     for opp in ledger.data["opportunities"]:
         if opp.get("kind") != "mechanism" or opp.get("status") in MECHANISM_TERMINAL:
             continue
         row = rows_by_key.get(opp.get("mechanism_key"))
         if row is not None and row.get("disposition") == "algorithmic":
-            summary = algorithmic_suite_impact(ledger, row["anchor"], float(row.get("estimated_avoidable_fraction") or 0.0))
+            summary = algorithmic_suite_impact_multi(ledger, alg_anchors[opp.get("mechanism_key")])
         else:
             summary = path_item_suite_impact(row, ledger) if row else None
         if summary is None:
