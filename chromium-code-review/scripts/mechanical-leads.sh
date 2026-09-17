@@ -99,7 +99,7 @@ if (( ${#PATHS[@]} == 0 )); then
 else
   diff_to_file "$ADDED_ALL" "${PATHS[@]}"
 fi
-awk -F: '$1 ~ /\.(cc|h|mm)$/ { print }' "$ADDED_ALL" > "$ADDED_CC"
+awk -F: '$1 ~ /\.(cc|cpp|h|mm)$/ { print }' "$ADDED_ALL" > "$ADDED_CC"
 
 section() { printf '\n## %s\n\n' "$1"; }
 
@@ -221,6 +221,11 @@ echo "For each: name the object that owns the callback target and the line guara
 echo
 optional_scan grep -E 'PostTask|PostDelayedTask|BindOnce|BindRepeating|base::Unretained|OneShotTimer|RepeatingTimer|RetainingOneShotTimer|DeadlineTimer' "$ADDED_CC"
 
+section "V8/Skia/Shell high-signal hazard tokens in added lines"
+echo "For each: verify write barrier safety (SKIP_WRITE_BARRIER), GC-disallowed scope invariants (DisallowGarbageCollection), Torque UnsafeCast type proof, SkSpan bounds, or POSIX/macOS shell portability."
+echo
+optional_scan grep -E 'SKIP_WRITE_BARRIER|DisallowGarbageCollection|AllowGarbageCollection|UnsafeCast<|SkSpan<|sed[[:space:]]+-i([^[:space:]]|$)|grep[[:space:]]+-[A-Za-z]*P|readlink[[:space:]]+-f' "$ADDED_ALL"
+
 section "Named sentinels in added lines (definitions listed side by side)"
 status=0
 grep -oE 'k(Unlimited|Invalid|No[A-Z]|None|Null|Max|Min|Infinite)[A-Za-z0-9_]*' "$ADDED_CC" > "$TMP_SCAN/sentinels-raw" 2> "$SCAN_ERR" || status=$?
@@ -234,14 +239,14 @@ else
   echo "Two modules encoding the same concept with different values is a candidate by default."
   while IFS= read -r sentinel; do
     printf '\n### `%s`\n\n' "$sentinel"
-    optional_scan G grep -n -w "$sentinel" -- '*.cc' '*.h'
+    optional_scan G grep -n -w "$sentinel" -- '*.cc' '*.cpp' '*.h' '*.mm'
   done < "$TMP_SCAN/sentinels"
 fi
 
 section "Preprocessor gates in added lines (verify polarity vs feature name and default build)"
 optional_scan grep -E '^[^:]*:[0-9]+:[[:space:]]*#[[:space:]]*(if|ifdef|ifndef|elif)' "$ADDED_ALL"
 
-section "Feature flags referenced in added lines (grep every gate site; check polarity and default agreement)"
+section "Feature flags, FeatureParams, and fieldtrial_testing_config.json drift"
 python3 - "$ADDED_CC" > "$TMP_SCAN/features" <<'PYEOF'
 import re
 import sys
@@ -257,9 +262,23 @@ if [[ ! -s "$TMP_SCAN/features" ]]; then
 else
   while IFS= read -r feature; do
     printf '\n### `%s`\n\n' "$feature"
-    optional_scan G grep -n -w "$feature" -- '*.cc' '*.h' '*.mm' '*.gn' '*.gni'
+    optional_scan G grep -n -w "$feature" -- '*.cc' '*.cpp' '*.h' '*.mm' '*.gn' '*.gni'
+    trial_name="${feature#k}"
+    if [[ -n "$trial_name" ]]; then
+      printf '\n#### `fieldtrial_testing_config.json` & `InitAndDisableFeature` check for `%s`\n\n' "$trial_name"
+      optional_scan G grep -n -F "$trial_name" -- 'testing/variations/fieldtrial_testing_config.json' '*test*'
+    fi
   done < "$TMP_SCAN/features"
 fi
+echo
+echo "#### Added `FeatureParam` / `GetFieldTrialParam` reads (verify guard when parent `BASE_FEATURE` is disabled)"
+echo
+optional_scan grep -E 'FeatureParam|GetFieldTrialParam' "$ADDED_CC"
+
+section "KeyedService Shutdown (DependsOn), Incognito ProfileSelections, MPArch Frame-Tree Hooks & Rollback Persistence"
+echo "For each hit: (1) KeyedService factories must declare DependsOn() for every service accessed during Shutdown/destruction and set explicit Incognito ProfileSelections; (2) WebContentsObserver/NavigationThrottle hooks must gate on IsInPrimaryMainFrame() / HasCommitted() before mutating tab-level state; (3) persisted prefs/SQLite/IndexedDB version changes must remain safe when a Finch rollback disables the feature."
+echo
+optional_scan grep -E 'BrowserContextKeyedServiceFactory|ProfileKeyedServiceFactory|DependsOn\(|ProfileSelections|BuildRedirectedInIncognito|GetForProfile\(|GetForBrowserContext\(|DidStartNavigation|ReadyToCommitNavigation|DidFinishNavigation|RenderFrameDeleted|RenderFrameCreated|RenderFrameHostChanged|DocumentOnLoadCompleted|WillStartRequest|WillRedirectRequest|WillProcessResponse|Register(Boolean|Integer|Double|String|FilePath|List|Dictionary|Time|Int64|Uint64)Pref|kCurrentVersionNumber|kCompatibleVersionNumber|MigrateVersion' "$ADDED_ALL"
 
 section "Changed-function inventory (reference counts; visit non-test callers manually)"
 echo "Changed semantics with unchanged callers is a classic miss. Counts are tree-wide git-grep line counts."
@@ -295,7 +314,7 @@ if [[ ! -s "$TMP_SCAN/functions" ]]; then
 else
   while IFS= read -r function_name; do
     status=0
-    G grep -n -E "(^|[^A-Za-z0-9_])${function_name}\\(" -- '*.cc' '*.h' '*.mm' > "$SCAN_OUT" 2> "$SCAN_ERR" || status=$?
+    G grep -n -E "(^|[^A-Za-z0-9_])${function_name}\\(" -- '*.cc' '*.cpp' '*.h' '*.mm' > "$SCAN_OUT" 2> "$SCAN_ERR" || status=$?
     if (( status > 1 )); then
       printf -- '- `%s` — SCANNER ERROR (git grep exit %d): %s\n' "$function_name" "$status" "$(tr '\n' ' ' < "$SCAN_ERR")"
       SCANNER_ERRORS=$((SCANNER_ERRORS + 1))

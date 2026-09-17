@@ -252,6 +252,32 @@ class ProfileReviewTest(unittest.TestCase):
                 }
                 self.assertTrue({"PLS", "BAG"}.issubset(prefixes))
 
+    def test_v8_skia_and_shell_specialists_are_routed(self) -> None:
+        temporary, review = self.make_review(
+            {
+                "v8/src/builtins/array.tq": "macro Foo(): void {}\n",
+                "v8/src/heap/heap.cc": "void Bar() {}\n",
+                "skia/src/gpu/ganesh/Effect.sksl": "half4 main() { return half4(0); }\n",
+                "v8/test/mjsunit/mjsunit.status": "['arch == arm64', {}]\n",
+                "tools/dev/run.sh": "#!/bin/sh\necho ok\n",
+            },
+            {
+                "v8/src/builtins/array.tq": "macro Foo(): void { UnsafeCast<Smi>(x); }\n",
+                "v8/src/heap/heap.cc": "void Bar() { HandleScope scope(isolate); DirectHandle<HeapObject> h; }\n",
+                "skia/src/gpu/ganesh/Effect.sksl": "half4 main() { SkSafeMath safe; return half4(1); }\n",
+                "v8/test/mjsunit/mjsunit.status": "['arch == arm64', { 'foo': [SKIP] }]\n",
+                "tools/dev/run.sh": "#!/bin/sh\nsed -i '' 's/a/b/' file\n",
+            },
+        )
+        self.addCleanup(temporary.cleanup)
+        profile = json.loads(
+            run("python3", str(PROFILE), str(review), "--stdout").stdout
+        )
+        prefixes = {
+            item["prefix"] for item in profile["specialist_triggers"]
+        }
+        self.assertTrue({"OBL", "PLS", "PRS", "FTS"}.issubset(prefixes), prefixes)
+
     def test_executable_file_under_docs_is_not_micro(self) -> None:
         temporary, review = self.make_review(
             {"docs/README.py": "print('old')\n"},
@@ -1538,5 +1564,96 @@ class RefreshDeliveryGateTest(unittest.TestCase):
         self.assertEqual(before, (root / "reconciliation.md").read_text(encoding="utf-8"))
 
 
+class InitialPlanAndCallerDossierTest(unittest.TestCase):
+    def test_caller_dossier_and_deterministic_initial_plan(self) -> None:
+        temporary, review = ProfileReviewTest().make_review(
+            {
+                "components/foo/widget_loader.h": (
+                    "class WidgetLoader {\n"
+                    " public:\n"
+                    "  ~WidgetLoader();\n"
+                    "  void ApplyConfig();\n"
+                    " private:\n"
+                    "  base::WeakPtrFactory<WidgetLoader> weak_factory_{this};\n"
+                    "  raw_ptr<Delegate> delegate_;\n"
+                    "};\n"
+                ),
+                "components/foo/widget_loader.cc": (
+                    "void WidgetLoader::ApplyConfig() {\n"
+                    "  delegate_->ComputeValue();\n"
+                    "}\n"
+                ),
+            },
+            {
+                "components/foo/widget_loader.h": (
+                    "class WidgetLoader {\n"
+                    " public:\n"
+                    "  ~WidgetLoader();\n"
+                    "  void ApplyConfig();\n"
+                    " private:\n"
+                    "  base::WeakPtrFactory<WidgetLoader> weak_factory_{this};\n"
+                    "  raw_ptr<Delegate> delegate_;\n"
+                    "};\n"
+                ),
+                "components/foo/widget_loader.cc": (
+                    "void WidgetLoader::ApplyConfig() {\n"
+                    "  if (delegate_) {\n"
+                    "    delegate_->ComputeValue();\n"
+                    "  }\n"
+                    "}\n"
+                ),
+            },
+        )
+        self.addCleanup(temporary.cleanup)
+        run("python3", str(PROFILE), str(review))
+        profile = json.loads((review / "profile.json").read_text(encoding="utf-8"))
+        self.assertTrue(profile["small_low_risk_eligibility"]["eligible"])
+        self.assertTrue(profile["initial_plan_fast_path_eligible"])
+        self.assertTrue(profile["compact_generalist_fast_path_eligible"])
+
+        write(
+            review / "indexes" / "inventory.tsv",
+            "kind\tid\tsubject\tscope\ttags\tcitations\tsource\n"
+            "surface\tS0001\tWidgetLoader::ApplyConfig\tcomponents/foo/widget_loader.cc:1-5\t"
+            "triggers=-;root-cause-required=no;graph-scope=graph:E-STATE-1\t"
+            "components/foo/widget_loader.cc:1-5\tinventory.md\n",
+        )
+        write(
+            review / "indexes" / "topology.tsv",
+            "edge\tkind\tsource_node\ttarget_node\tstatus\teffective_source\tobservations\tcandidate\tsource\n"
+            "E-STATE-1\tstate\tWidgetLoader::ApplyConfig\tdelegate_\topen\tinventory.md\t-\t-\tinventory.md\n",
+        )
+        write(
+            review / "inventory.md",
+            "# Inventory\n\n"
+            "## Trigger inventory\n\n"
+            "| scope id | surface | discovery triggers | root-cause trigger | graph scope | evidence |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+            "| T0001 | WidgetLoader::ApplyConfig | OBL absent | no — local null guard | graph:E-STATE-1 | components/foo/widget_loader.cc:2 |\n",
+        )
+
+        caller_script = SCRIPTS / "build-caller-index.py"
+        worktree = Path(profile["pin"]["worktree"])
+        revision = profile["pin"]["revision_sha"]
+        run("python3", str(caller_script), str(review), "--worktree", str(worktree), "--revision", revision)
+        dossier_path = review / "callers" / "dossiers" / "WidgetLoader.md"
+        self.assertTrue(dossier_path.is_file())
+        dossier_text = dossier_path.read_text(encoding="utf-8")
+        self.assertIn("declares `WeakPtrFactory` BEFORE subsequent member(s)", dossier_text)
+        self.assertIn("raw_ptr<Delegate> delegate_;", dossier_text)
+
+        initial_plan_script = SCRIPTS / "build-initial-plan.py"
+        plan_out = run("python3", str(initial_plan_script), str(review), "--worktree", str(worktree)).stdout
+        self.assertIn("compact-dual-generalist", plan_out)
+        self.assertTrue((review / "plan.md").is_file())
+        self.assertTrue((review / "packets" / "GSS-code.md").is_file())
+        self.assertTrue((review / "packets" / "GAI-code.md").is_file())
+        self.assertTrue((review / "briefs" / "GSS.md").is_file())
+        self.assertTrue((review / "briefs" / "GAI.md").is_file())
+        gai_brief = (review / "briefs" / "GAI.md").read_text(encoding="utf-8")
+        self.assertIn("WidgetLoader.md", gai_brief)
+
+
 if __name__ == "__main__":
     unittest.main()
+

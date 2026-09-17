@@ -12,9 +12,9 @@ preamble, so its rules travel with every section.
 | --- | --- | --- |
 | Row IDs | row-ids.md | 59 |
 | The Review Directory | the-review-directory.md | 138 |
-| pin.md | pin-md.md | 27 |
+| pin.md | pin-md.md | 32 |
 | profile.json, profile.md, And Context Budgets | profile-json-profile-md-and-context-budgets.md | 53 |
-| directives.md, progress.md, And orchestration.tsv | directives-md-progress-md-and-orchestration-tsv.md | 61 |
+| directives.md, progress.md, And orchestration.tsv | directives-md-progress-md-and-orchestration-tsv.md | 62 |
 | Per-Worker Input Manifests | per-worker-input-manifests.md | 83 |
 | Scope-Packet Spec And Code Packets | scope-packet-spec-and-code-packets.md | 34 |
 | context.md | context-md.md | 41 |

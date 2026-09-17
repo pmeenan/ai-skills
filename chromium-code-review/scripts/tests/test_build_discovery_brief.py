@@ -86,6 +86,50 @@ class BuildDiscoveryBriefTests(unittest.TestCase):
         self.assertNotIn("⟨CL⟩", text)
         self.assertNotIn("⟨PS⟩", text)
 
+    def test_generalist_and_probe_briefs_include_required_tables(self) -> None:
+        res_gss = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                str(self.review_dir),
+                "--work-id",
+                "GSS1",
+                "--entry",
+                "Generalist Semantic And State Discovery — shard 1",
+                "--procedure",
+                "worker/discovery-checklists/state-persistence-and-cache.md",
+                "--pathspec",
+                "graph:E-STATE-1",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_gss.returncode, 0, msg=res_gss.stderr)
+        gss_text = (self.review_dir / "briefs" / "GSS1.md").read_text(encoding="utf-8")
+        self.assertIn("## Complexity graph delta", gss_text)
+        self.assertIn("## Specialist escalation assessments", gss_text)
+
+        res_probe = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                str(self.review_dir),
+                "--work-id",
+                "OBL",
+                "--entry",
+                "Ownership And Blink Lifecycle",
+                "--procedure",
+                "worker/chromium-specialist-checklists/ownership-and-blink-lifecycle-obl.md",
+                "--pathspec",
+                "specialist:probe; graph:E-ASYNC-1",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_probe.returncode, 0, msg=res_probe.stderr)
+        probe_text = (self.review_dir / "briefs" / "OBL.md").read_text(encoding="utf-8")
+        self.assertIn("## Specialist probe outcome", probe_text)
+
 
 if __name__ == "__main__":
     unittest.main()

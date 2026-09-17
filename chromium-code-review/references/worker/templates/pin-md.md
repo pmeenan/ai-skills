@@ -35,3 +35,8 @@ verdicts into a real review.
   - net/streams/delay_buffer.h
   - net/streams/delay_buffer_unittest.cc
 ```
+
+For local branch self-reviews (pinned with `scripts/pin-local.sh`), `pin.md` records:
+- `- Status: LOCAL`
+- `- Mode: local branch`
+- `- Ref: refs/heads/<branch>` (or `HEAD`)

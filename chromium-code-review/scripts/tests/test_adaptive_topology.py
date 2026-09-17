@@ -104,15 +104,20 @@ class AdaptiveTopologyPlanTests(unittest.TestCase):
             row("Generalist Semantic And State Discovery", "graph:all-inventory-edges"),
             row("Generalist Adversarial And Integration Discovery", "graph:all-inventory-edges"),
         ]
-        for status in ("candidate", "reopened candidate"):
-            with self.subTest(status=status):
-                (self.root / "indexes" / "candidates.tsv").write_text(
-                    f"id\tstatus\nEPW-1\t{status}\n", encoding="utf-8")
-                errors = self.validate(rows).errors
-                self.assertTrue(any(
-                    "omits candidate edge membership: EPW-1" in error
-                    for error in errors
-                ), errors)
+        for candidate_id in ("GSS-1", "GAI2-1"):
+            for status in ("candidate", "reopened candidate"):
+                with self.subTest(candidate_id=candidate_id, status=status):
+                    (self.root / "indexes" / "candidates.tsv").write_text(
+                        f"id\tstatus\n{candidate_id}\t{status}\n", encoding="utf-8")
+                    errors = self.validate(rows).errors
+                    self.assertTrue(any(
+                        f"omits candidate edge membership: {candidate_id}" in error
+                        for error in errors
+                    ), errors)
+        # Targeted discovery threads (e.g. EPW-1) do not emit topology deltas.
+        (self.root / "indexes" / "candidates.tsv").write_text(
+            "id\tstatus\nEPW-1\tcandidate\n", encoding="utf-8")
+        self.assertEqual([], self.validate(rows).errors)
 
     def test_amended_candidate_remains_a_legal_topology_reference(self) -> None:
         (self.root / "indexes" / "candidates.tsv").write_text(

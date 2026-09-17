@@ -42,6 +42,10 @@ timeline, `metric | site | population/frequency | value/unit | metadata`, and
   Preserve enum numbers, never reuse retired values, and cover emitted maxima.
 - Count UMA emissions per logical event across retries, duplicate observers,
   restore, success, and error paths.
+- For `KeyedService` `ProfileSelections` (`BuildRedirectedInIncognito`,
+  `BuildForRegularProfile`, `BuildSeparateInstanceInIncognito`) and
+  `GetOffTheRecordProfile`: verify that regular-profile state, history, caches,
+  or identifiers never leak into Incognito/OTR or Guest/System profiles.
 - For UKM, verify source/document identity freshness, consent/policy/incognito
   gates, profile isolation, cardinality, identifiability, and absence of PII.
 - Test non-emission when gated plus duplicate-callback, incognito, stale

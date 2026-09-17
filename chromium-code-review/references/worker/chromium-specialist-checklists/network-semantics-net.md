@@ -34,6 +34,12 @@ context ownership, and `NET-*` rows citing canonicalization/policy/isolation.
   download/navigation policy to internal, cached, and preloaded paths too.
 - Verify TLS/cert hostname/error/pinning/CT/downgrade/client-cert behavior and
   profile-bound exception storage.
+- For persisted prefs (`Register*Pref`), SQLite schema versions
+  (`kCurrentVersionNumber`, `kCompatibleVersionNumber`), IndexedDB, and disk
+  cache formats: verify Finch rollback/downgrade compatibility so that if a
+  feature flag is turned off after new-format data is persisted, the default-off
+  path gracefully tolerates or migrates the stored state without `CHECK`
+  crashes or profile corruption.
 - Use standard URL/header canonicalization. Reject CR/LF injection, conflicting
   lengths, forbidden headers, ambiguous IPs, and userinfo confusion.
 - Test redirects, auth/proxy, non-replayable body, credential/partition isolation,

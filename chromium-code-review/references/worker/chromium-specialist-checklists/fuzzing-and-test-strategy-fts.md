@@ -42,7 +42,18 @@ faithful level | test | negative case | configuration`, and `FTS-*` rows.
 - Require the test to fail against parent behavior for the intended reason.
   Mutation-probe changed conditions/state/callbacks/gates and assert externally
   meaningful behavior across positive/negative/boundary/error/teardown paths.
+  For V8 `test/mjsunit/` and compiler regression tests, verify optimization/tier
+  flags (`%PrepareFunctionForOptimization`, `%OptimizeFunctionOnNextCall`) and
+  ensure negative assertions or catch blocks do not mask dead execution branches.
+- When `testing/variations/fieldtrial_testing_config.json` enables a feature
+  whose C++ `BASE_FEATURE` default is `FEATURE_DISABLED_BY_DEFAULT`, require at
+  least one test that explicitly exercises `InitAndDisableFeature(kFeature)` (so
+  the production default-off path is not left untested on CQ), and verify
+  `base::FeatureParam` combinations across enabled/disabled dependent flags.
 - Keep tests hermetic and production-faithful. Do not mock away ordering,
   serialization, lifecycle, authorization, persistence, or process boundaries.
-- Inspect disabled/flaky/retry/expectation/skip changes. Require narrow reasons
+- Inspect disabled/flaky/retry/expectation/skip changes (including
+  `TestExpectations` and V8 `.status` files such as `mjsunit.status` /
+  `cctest.status`). Verify skips are placed in the designated architecture,
+  variant, or platform section with a tracking bug ID, require narrow reasons,
   and ensure the test runs in relevant CQ/CI shards with the feature activated.

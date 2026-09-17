@@ -11,12 +11,12 @@ preamble, so its rules travel with every section.
 | section | file | source lines |
 | --- | --- | --- |
 | Routing | routing.md | 12 |
-| Mechanical Leads | mechanical-leads.md | 87 |
+| Mechanical Leads | mechanical-leads.md | 93 |
 | Per-Surface Invariant Questions | per-surface-invariant-questions.md | 24 |
-| Async And Lifecycle | async-and-lifecycle.md | 83 |
-| State, Persistence, And Cache | state-persistence-and-cache.md | 67 |
-| Integration And Feature Control | integration-and-feature-control.md | 56 |
+| Async And Lifecycle | async-and-lifecycle.md | 118 |
+| State, Persistence, And Cache | state-persistence-and-cache.md | 70 |
+| Integration And Feature Control | integration-and-feature-control.md | 64 |
 | Security And Trust Boundaries | security-and-trust-boundaries.md | 38 |
-| Contracts And API Shape | contracts-and-api-shape.md | 51 |
+| Contracts And API Shape | contracts-and-api-shape.md | 63 |
 | Tests As Specifications | tests-as-specifications.md | 71 |
-| Changed-Lines Polish | changed-lines-polish.md | 86 |
+| Changed-Lines Polish | changed-lines-polish.md | 92 |

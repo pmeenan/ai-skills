@@ -99,6 +99,12 @@ manual thread work, and the script's output says which is which.
   `base::Unretained`, and new timers. For each, name the object that owns the
   callback target and the line that guarantees the callback cannot outlive
   it.
+- Scan added or modified lines for raw child pointers passed into asynchronous
+  helper methods or async starter factories:
+  `git diff --color=never --unified=0 <parent> <revision> -- '*.cc' '*.h' | rg -n '^[+][^+].*(CreateAndStart|StartAsync|GetBackend|PostTask)\(.*->.*\.get\(\)'`.
+  For each hit on an object whose lifetime is dynamically managed (e.g.,
+  transient sessions, profiles, workers), audit whether the completion closure
+  anchors the parent object's lifetime.
 - For each new symbol used in a changed file (`std::move`, `std::fill`,
   containers, base helpers, test utilities), confirm the file has the direct
   include. Do not rely on transitive includes for STL, base, or test helpers.

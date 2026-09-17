@@ -35,6 +35,14 @@ same P0 throughput collapse by adjudicating the design intended in-thread.
   concrete code whose behavior changes.
 - Does the disabled/default path still use the old behavior with minimal
   change? If the change sits on a shared path, identify that explicitly.
+- **`fieldtrial_testing_config.json` drift & `FeatureParam` safety:** When a
+  `BASE_FEATURE` is `FEATURE_DISABLED_BY_DEFAULT` in C++ but enabled in
+  `testing/variations/fieldtrial_testing_config.json`, CQ browser/unit tests
+  run with the flag **ON** by default—masking crashes in the production
+  default-OFF path. Verify that at least one test explicitly exercises
+  `InitAndDisableFeature(kFeature)`, and verify that `base::FeatureParam::Get()`
+  is never read on a path where `base::FeatureList::IsEnabled(kFeature)` is
+  false unless the default parameter fallback is explicitly safe.
 - Search for existing implementations of the same conceptual feature. Can the
   old and new paths both apply to the same operation?
 - If new production behavior has broad blast radius, is there a

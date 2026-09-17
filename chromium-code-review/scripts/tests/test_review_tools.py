@@ -3317,6 +3317,33 @@ Return partial with explicit remaining scope when needed.
         )
         self.assertEqual(complete.returncode, 0, complete.stdout + complete.stderr)
 
+        # Verify out-of-bounds Gerrit comment line anchor is rejected even when Suggested edit is omitted.
+        bad_anchor_bytes = b"a.cc:99\nCan this preserve the fixture invariant?\n"
+        gerrit_fragment.write_bytes(bad_anchor_bytes)
+        gerrit.write_bytes(original_gerrit + bad_anchor_bytes)
+        (self.review / "output-coverage.tsv").write_text(
+            "item\tkind\tdraft_path\tdraft_bytes\tdraft_sha256\t"
+            "gerrit_path\tgerrit_bytes\tgerrit_sha256\n"
+            f"F001\tfinding\tdraft-parts/F001.md\t"
+            f"{draft_fragment.stat().st_size}\t"
+            f"{hashlib.sha256(draft_fragment.read_bytes()).hexdigest()}\t"
+            f"gerrit-parts/F001.md\t{len(bad_anchor_bytes)}\t"
+            f"{hashlib.sha256(bad_anchor_bytes).hexdigest()}\n",
+            encoding="utf-8",
+        )
+        oob_anchor = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(oob_anchor.returncode, 1)
+        self.assertIn(
+            "outside the pinned file's 2 lines", oob_anchor.stdout
+        )
+        gerrit_fragment.write_bytes(
+            b"a.cc:1\nCan this preserve the fixture invariant?\n"
+        )
+        gerrit.write_bytes(original_gerrit + gerrit_fragment.read_bytes())
+
         old_draft_fragment = draft_fragment.read_bytes()
         old_gerrit_fragment = gerrit_fragment.read_bytes()
         missing_decision = old_draft_fragment.replace(

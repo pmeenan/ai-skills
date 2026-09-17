@@ -77,3 +77,15 @@ same P0 throughput collapse by adjudicating the design intended in-thread.
   `ERR_IO_PENDING` and completed with a positive count where `socket.h`
   requires `OK` — the contract was documented in the base header all along,
   and no thread opened it.)
+- **Simplification & Anti-Overengineering (Senior Maintainer Rubric):**
+  Explicitly identify and challenge unnecessary abstraction layers introduced by
+  the CL:
+  - Flag newly introduced `virtual` interfaces or abstract base classes that
+    have only a single production implementation and no concrete multi-backend,
+    IPC, or component-boundary dependency-inversion requirement.
+  - Flag premature pass-through wrapper classes or indirection helpers that
+    merely forward calls without owning state, enforcing invariants, or
+    decoupling compilation units.
+  - Flag test-only methods, hooks, or state leaking into production public
+    interfaces when `friend` declarations, `*ForTesting()` conventions, or
+    test-specific subclasses can isolate the test surface.

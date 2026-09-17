@@ -126,6 +126,208 @@ def reusable_hits(target: Path, scope: str, revision: str) -> int | None:
     return hits
 
 
+LIFETIME_MEMBER_RE = re.compile(
+    r"\b(raw_ptr|raw_ref|WeakPtrFactory|WeakPtr|Receiver|Remote|"
+    r"AssociatedReceiver|AssociatedRemote|ReceiverSet|RemoteSet|"
+    r"OneShotTimer|RepeatingTimer|RetainingOneShotTimer|DeadlineTimer|"
+    r"ScopedObservation|ObserverList|SequenceChecker|ThreadChecker|"
+    r"OnceCallback|RepeatingCallback|OnceClosure|RepeatingClosure|"
+    r"Member|WeakMember|HeapVector|HeapHashMap|Persistent)\b"
+)
+ASYNC_BIND_RE = re.compile(
+    r"\b(BindOnce|BindRepeating|PostTask|PostDelayedTask|"
+    r"PostTaskAndReply|PostTaskAndReplyWithResult|"
+    r"set_disconnect_handler|set_disconnect_with_reason_handler|"
+    r"Start\s*\()\b"
+)
+CALLBACK_RUN_RE = re.compile(
+    r"(std::move\s*\([^)]+\)\s*\.\s*Run\s*\(|\b[A-Za-z0-9_]+callback_[A-Za-z0-9_]*\s*\.\s*Run\s*\(|\bNotify\s*\()"
+)
+TEARDOWN_METHOD_RE = re.compile(
+    r"(~[A-Za-z_]\w*\s*\(|\b(Shutdown|Reset|Dispose|Teardown|OnDisconnect|Close|Destroy)\s*\()"
+)
+
+
+def extract_enclosing_classes(surfaces: list[dict[str, str]]) -> dict[str, list[str]]:
+    """Map enclosing ClassName -> list of changed method names from surface rows."""
+    classes: dict[str, list[str]] = {}
+    for row in surfaces:
+        subject = row.get("subject", "").strip()
+        if "::" not in subject or subject.lower().startswith("group:"):
+            continue
+        parts = [part.strip() for part in subject.split("::") if part.strip()]
+        if len(parts) < 2:
+            continue
+        class_match = IDENTIFIER.search(parts[-2])
+        method_match = IDENTIFIER.search(parts[-1])
+        if not class_match or not method_match:
+            continue
+        cls = class_match.group(0)
+        method = method_match.group(0)
+        if len(cls) < MIN_LENGTH or cls in {"std", "base", "blink", "content", "net", "mojo", "v8", "skia"}:
+            continue
+        methods = classes.setdefault(cls, [])
+        if method not in methods:
+            methods.append(method)
+    return classes
+
+
+def check_weak_factory_order(header_path: Path, class_name: str) -> list[str]:
+    """Check if WeakPtrFactory<class_name> is declared before non-factory members."""
+    if not header_path.is_file():
+        return []
+    try:
+        lines = header_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    in_class = False
+    brace_depth = 0
+    weak_factory_line: int | None = None
+    later_members: list[str] = []
+    class_decl = re.compile(rf"\b(class|struct)\s+(?:[A-Z0-9_]+\s+)?{re.escape(class_name)}\b")
+    for idx, line in enumerate(lines, start=1):
+        stripped = line.split("//", 1)[0].strip()
+        if not in_class:
+            if class_decl.search(stripped) and ";" not in stripped:
+                in_class = True
+                brace_depth = stripped.count("{") - stripped.count("}")
+            continue
+        brace_depth += stripped.count("{") - stripped.count("}")
+        if brace_depth <= 0 and "}" in stripped:
+            break
+        if brace_depth == 1:
+            if "WeakPtrFactory" in stripped and ";" in stripped:
+                weak_factory_line = idx
+            elif weak_factory_line is not None and stripped.endswith(";") and "(" not in stripped:
+                if not stripped.startswith(("using ", "typedef ", "static ", "friend ", "enum ", "struct ", "class ")):
+                    later_members.append(f"{header_path.name}:{idx}: `{stripped}`")
+    if weak_factory_line is not None and later_members:
+        return [
+            f"`{header_path.name}:{weak_factory_line}` declares `WeakPtrFactory` BEFORE "
+            f"subsequent member(s) ({', '.join(later_members[:3])}) — `WeakPtr`s may not "
+            "invalidate before those members are destroyed."
+        ]
+    return []
+
+
+def build_class_dossiers(
+    worktree: Path,
+    callers_dir: Path,
+    surfaces: list[dict[str, str]],
+    pathspecs: list[str],
+    revision: str,
+) -> int:
+    """Build 2-hop Class Lifetime & Async Hop Dossiers in callers/dossiers/<ClassName>.md."""
+    classes = extract_enclosing_classes(surfaces)
+    dossiers_dir = callers_dir / "dossiers"
+    dossiers_dir.mkdir(parents=True, exist_ok=True)
+    index_rows = [
+        "class\tfiles\tlifetime_members\tdestructor_sites\tasync_bind_sites\tcallback_run_sites\twarnings\tdossier"
+    ]
+    built = 0
+    for cls, methods in sorted(classes.items()):
+        cmd = ["git", "-C", str(worktree), "grep", "-I", "-l", "-w", cls]
+        if pathspecs:
+            cmd += ["--", *pathspecs]
+        res = subprocess.run(cmd, capture_output=True, text=True, errors="replace", check=False)
+        candidate_files = [
+            f.strip() for f in res.stdout.splitlines()
+            if f.strip().endswith((".h", ".cc", ".cpp", ".mm"))
+        ][:12]
+        if not candidate_files:
+            continue
+
+        lifetime_hits: list[str] = []
+        teardown_hits: list[str] = []
+        async_bind_hits: list[str] = []
+        callback_run_hits: list[str] = []
+        qualified_caller_hits: list[str] = []
+        warnings: list[str] = []
+
+        for rel_file in candidate_files:
+            abs_file = worktree / rel_file
+            if not abs_file.is_file():
+                continue
+            if rel_file.endswith(".h"):
+                warnings.extend(check_weak_factory_order(abs_file, cls))
+            try:
+                file_lines = abs_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            for lineno, text in enumerate(file_lines, start=1):
+                code = text.split("//", 1)[0]
+                loc = f"`{rel_file}:{lineno}`: `{text.strip()}`"
+                if rel_file.endswith(".h") and LIFETIME_MEMBER_RE.search(code):
+                    lifetime_hits.append(loc)
+                if TEARDOWN_METHOD_RE.search(code) and (cls in code or not rel_file.endswith(".h")):
+                    teardown_hits.append(loc)
+                if ASYNC_BIND_RE.search(code) and (f"&{cls}::" in code or "weak_factory_" in code or "Unretained" in code):
+                    context_window = " / ".join(
+                        file_lines[max(0, lineno - 1):min(len(file_lines), lineno + 2)]
+                    ).strip()
+                    async_bind_hits.append(f"`{rel_file}:{lineno}`: `{context_window}`")
+                if CALLBACK_RUN_RE.search(code):
+                    callback_run_hits.append(loc)
+                for method in methods:
+                    if re.search(rf"(?:\.|->|::)\b{re.escape(method)}\s*\(", code):
+                        qualified_caller_hits.append(f"`{rel_file}:{lineno}` (`{method}`): `{text.strip()}`")
+
+        dossier_path = dossiers_dir / f"{cls}.md"
+        md_lines = [
+            f"# Class Lifetime & 2-Hop Async Dossier — `{cls}` (revision {revision[:12]})",
+            "",
+            f"- **Changed methods on `{cls}`:** {', '.join(f'`{m}`' for m in methods)}",
+            f"- **Inspected class files:** {', '.join(f'`{f}`' for f in candidate_files)}",
+            "",
+        ]
+        if warnings:
+            md_lines.extend(["## Automatic Lifetime & Teardown Warnings", ""])
+            md_lines.extend(f"- **WARNING:** {w}" for w in warnings)
+            md_lines.append("")
+
+        md_lines.extend([
+            "## 1. Ownership, Lifetime & Concurrency Members (`.h`)",
+            "",
+            *(lifetime_hits[:40] if lifetime_hits else ["(none detected)"]),
+            "",
+            "## 2. Destructor, Reset & Disconnect Sites (Hop 0 Teardown)",
+            "",
+            *(teardown_hits[:30] if teardown_hits else ["(none detected)"]),
+            "",
+            "## 3. Hop 1 → Hop 2 Async Bindings & Task/Timer Registrations (`&ClassName::*`)",
+            "",
+            *(async_bind_hits[:40] if async_bind_hits else ["(none detected)"]),
+            "",
+            "## 4. Hop 2 Callback & Observer Invocations (`std::move(cb).Run` / `Notify`)",
+            "",
+            *(callback_run_hits[:30] if callback_run_hits else ["(none detected)"]),
+            "",
+            "## 5. Receiver-Qualified Call Sites of Changed Methods in Class Files",
+            "",
+            *(qualified_caller_hits[:40] if qualified_caller_hits else ["(none detected)"]),
+            "",
+        ])
+        tmp = dossier_path.with_name(dossier_path.name + ".tmp")
+        tmp.write_text("\n".join(md_lines), encoding="utf-8")
+        tmp.replace(dossier_path)
+        index_rows.append(
+            "\t".join([
+                cls,
+                ",".join(candidate_files[:4]),
+                str(len(lifetime_hits)),
+                str(len(teardown_hits)),
+                str(len(async_bind_hits)),
+                str(len(callback_run_hits)),
+                str(len(warnings)),
+                f"callers/dossiers/{cls}.md",
+            ])
+        )
+        built += 1
+
+    (dossiers_dir / "index.tsv").write_text("\n".join(index_rows) + "\n", encoding="utf-8")
+    return built
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("review_dir", type=Path)
@@ -204,10 +406,14 @@ def main() -> int:
     index_lines += ["\t".join(row) for row in index_rows]
     (callers / "index.tsv").write_text(
         "\n".join(index_lines) + "\n", encoding="utf-8")
+    dossiers_built = build_class_dossiers(
+        worktree, callers, surfaces, pathspecs, revision
+    )
     skipped = sum(1 for row in index_rows if row[2] == "-")
     print(f"{callers / 'index.tsv'}: {len(surfaces)} surfaces, "
           f"{len(searched)} symbols ({reused} reused), {skipped} skipped, "
-          f"{sum(searched.values())} total hits, scope: {scope}")
+          f"{sum(searched.values())} total hits, {dossiers_built} class dossiers, "
+          f"scope: {scope}")
     return 0
 
 

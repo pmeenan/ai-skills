@@ -91,15 +91,21 @@ dropping them from an otherwise-LGTM review.
   `base::SequenceCheckerImpl` directly, verify there is an intentional
   release-build `CHECK()` requirement before suggesting the macro; the macro
   compiles away outside DCHECK builds.
-- Look for artifacts of deleted blocks: double blank lines, orphaned
-  comments, redundant braces, now-empty sections, and stale TODO wording.
+- **Patchset Churn & Multi-Turn Leftover Hygiene:** Detect artifacts left
+  behind across iterative patchset revisions:
+  - Spurious `#include` directives or forward declarations added in earlier
+    patchset iterations whose symbols are no longer referenced in the final
+    file diff.
+  - Unreferenced local or intermediate variables, dead helper parameters,
+    stale test setup scaffolding, unnecessary lambda captures, or leftover
+    debugging/logging artifacts.
+  - Artifacts of deleted blocks: double blank lines, orphaned comments,
+    redundant braces, now-empty sections, and stale TODO wording.
 - Check vertical spacing in both directions: besides stray double blank
   lines, flag a *missing* blank line where one aids readability, for example
   above a comment that introduces a new logical block or member group.
   `clang-format` neither removes nor inserts these, so they survive a
   formatter check.
-- Check that removed statements or call sites did not leave unused locals,
-  stale test setup parameters, or unnecessary lambda captures.
 - Audit linkage and visibility constraints before suggesting test hooks or
   toggles. Helpers and feature flags inside anonymous namespaces have
   internal linkage and cannot be referenced directly from another translation

@@ -14,5 +14,5 @@ preamble, so its rules travel with every section.
 | Model Tiers | model-tiers.md | 71 |
 | Review Profile | review-profile.md | 33 |
 | Compact Indexes | compact-indexes.md | 99 |
-| Safe Fast Paths | safe-fast-paths.md | 23 |
+| Safe Fast Paths | safe-fast-paths.md | 34 |
 | Sharded Aggregation | sharded-aggregation.md | 23 |

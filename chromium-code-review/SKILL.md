@@ -203,12 +203,12 @@ Orchestrator-facing (the only skill files the orchestrator loads):
   delivery control flow. Load it only when Phase 7 becomes runnable.
 - `references/scaling-and-indexes.md`: effort profiling, agent input budgets,
   compact indexes, safe fast paths, and sharded aggregation.
-- `scripts/fetch-cl.sh`: leases, fetches, and pins a patchset — Gerrit REST metadata
-  (all revisions plus published comments), XSSI stripping, ref fetch, a
-  reusable detached worktree at the explicit SHA in the checkout-peer
-  `codereview/` cache, `rev-parse` verification, and inactive-cache cleanup —
-  and writes `pin.md`, `detail.json`, and `comments.json` into the review
-  directory. Use it instead of hand-running those steps.
+- `scripts/fetch-cl.sh` and `scripts/pin-local.sh`: lease, fetch/pin a Gerrit
+  patchset (`fetch-cl.sh`) or pin a local commit range (`pin-local.sh`) —
+  creating a reusable detached worktree at the explicit SHA in the checkout-peer
+  `codereview/` cache, verifying `rev-parse`, and writing `pin.md` (plus
+  `detail.json` and `comments.json` for Gerrit reviews) into the review
+  directory. Use them instead of hand-running those steps.
 - `scripts/worktree-lease.py`: atomically acquires, heartbeats, validates,
   releases, archives, and garbage-collects this review's one-hour holder lease
   log, and lists the pin's live holders. Use it for every lease mutation rather
@@ -216,6 +216,14 @@ Orchestrator-facing (the only skill files the orchestrator loads):
 - `scripts/snapshot-skill.py`: atomically creates and verifies the immutable
   per-review skill snapshot. Run it immediately after fetch and use the
   snapshot for every subsequent reference/helper path.
+- `scripts/build-phase-brief.py`, `scripts/build-discovery-brief.py`, and
+  `scripts/build-initial-plan.py`: deterministically extract, fill, and
+  materialize phase worker briefs (`INV`, `PLN`, `SYN`, `CHL`, `RSL`, `GDR`,
+  `LPR`), parameterized Phase 2–4 discovery thread briefs (`ML`, `GSS*`,
+  `GAI*`, `EPW`, `SIM`, `RCH`, `BCT`, and specialist threads), and the initial
+  unsharded Phase 3 `plan.md` + scope packets + discovery briefs directly from
+  the skill snapshot without loading full template files into orchestrator
+  context.
 - `scripts/seal-work-unit.py`: validates the snapshot and input budget, hashes
   a final brief and its exact inputs (passed as `--input ROLE=/absolute/path`),
   queues the attempt, and makes the brief read-only in one recoverable transaction.
@@ -513,9 +521,12 @@ After the index rebuild, run
 --revision <revision sha from pin.md>`
 directly — a deterministic helper, never an agent. It refuses to run if the
 worktree HEAD does not match the pinned revision. It runs each surface's
-caller search once and writes `callers/index.tsv` plus per-symbol result
-files; discovery threads consult those instead of re-running identical
-searches.
+caller search once, writes `callers/index.tsv` plus per-symbol result files,
+and generates 2-hop class lifetime & async hop dossiers under
+`callers/dossiers/` (`callers/dossiers/index.tsv` + `callers/dossiers/<Class>.md`
+covering member lifetime declarations, `WeakPtrFactory` member ordering,
+destructor/reset sites, and Hop 1 → Hop 2 `BindOnce`/`PostTask`/`Run` chains);
+discovery threads consult those instead of re-running identical searches.
 
 ## Phase 2 — Prior-Feedback Reconciliation (follow-up reviews only)
 
@@ -533,22 +544,34 @@ every prior finding, reconciliation against unresolved Gerrit threads in
 
 ## Phase 3 — Thread Planning
 
-Spawn the **Planner agent** (brief in `phase-briefs.md`). For profile schema 3
-`evidence-graph-v1`, it starts two independent bounded generalist **passes**
-over all inventory graph edges. Each pass is one row only when it fits; large
-graphs shard both passes over the same connected-component/budget partition,
-so every edge is assigned exactly once in each pass. Each pass independently
-records low/medium/high specialist escalation likelihoods with cited signals
-and counterevidence. A zero-edge inventory uses one `graph:none` row per pass;
-all ten assessments must be low with cited counterevidence. After their ledgers
-rebuild `indexes/topology.tsv` and
+When `profile.json` sets `initial_plan_fast_path_eligible: true` and the
+inventory complexity graph fits in a single unsharded pass (`<= 12` edges), run
+`scripts/build-initial-plan.py <review-dir> --worktree <pinned worktree>`
+directly instead of spawning an LLM Planner agent for the initial round. It
+deterministically writes `plan.md`, `packets/<WORK>.spec.tsv`,
+`packets/<WORK>-code.md`, and `briefs/<WORK>.md` for the two independent
+generalist passes (`GSS` and `GAI`, automatically attaching `mechanical-leads.md`
+to `GSS` and `context.md` + `callers/dossiers/*.md` to `GAI`) plus any explicit
+`<PREFIX> hard` specialist sweeps from `inventory.md`. Spawn the **Planner
+agent** (`PLAN`, brief in `phase-briefs.md`) only when the initial graph
+requires multi-shard partitioning (`effort: large` or `> 12` edges) or after
+`GSS`/`GAI` complete and `indexes/specialist-priors.tsv` / unresolved topology
+edges require a graph-routing continuation (`PLAN attempt 2+`).
+
+For profile schema 3 `evidence-graph-v1`, Phase 3 starts two independent bounded
+generalist **passes** over all inventory graph edges. Each pass is one row only
+when it fits; large graphs shard both passes over the same
+connected-component/budget partition, so every edge is assigned exactly once in
+each pass. Each pass independently records low/medium/high specialist escalation
+likelihoods with cited signals and counterevidence. A zero-edge inventory uses
+one `graph:none` row per pass; all ten assessments must be low with cited
+counterevidence. After their ledgers rebuild `indexes/topology.tsv` and
 `indexes/specialist-priors.tsv`, the Planner adds a full specialist sweep only
 for an explicit changed-contract/boundary `<PREFIX> hard` trigger, high from
-either pass, or medium from both; exactly one
-medium gets a bounded probe by default. It also appends catalog lenses demanded
-by unresolved/disputed edges, typed candidate obligations, or graph split
-thresholds. It writes one self-contained discovery
-brief per spawned row.
+either pass, or medium from both; exactly one medium gets a bounded probe by
+default. It also appends catalog lenses demanded by unresolved/disputed edges,
+typed candidate obligations, or graph split thresholds. It writes one
+self-contained discovery brief per spawned row.
 
 - Deliverables: `plan.md` and `briefs/<THREAD>.md` for every `spawn` row.
 - Return: the spawn list — thread name, brief path, priority — plus the

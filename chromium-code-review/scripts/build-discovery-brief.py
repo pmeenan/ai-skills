@@ -26,9 +26,13 @@ def parse_pin(pin_md: Path) -> dict[str, str]:
         fail(f"missing pin.md at {pin_md}")
     text = pin_md.read_text(encoding="utf-8")
     cl_match = re.search(r"# CL ([0-9a-zA-Z_-]+) — patchset (\d+) pin", text)
-    if not cl_match:
-        fail("could not parse CL/patchset from pin.md")
-    cl, ps = cl_match.group(1), cl_match.group(2)
+    if cl_match:
+        cl, ps = cl_match.group(1), cl_match.group(2)
+    else:
+        cl_field = re.search(r"- CL:\s*(\S+)", text)
+        ps_field = re.search(r"- Patchset:\s*(\S+)", text)
+        cl = cl_field.group(1) if cl_field else "local"
+        ps = ps_field.group(1) if ps_field else "1"
 
     rev_match = re.search(r"- Revision SHA:\s*([0-9a-fA-F]+)", text)
     parent_match = re.search(r"- Parent SHA:\s*([0-9a-fA-F]+)", text)
@@ -123,6 +127,45 @@ def main() -> int:
 
     for k, v in replacements.items():
         combined = combined.replace(k, v)
+
+    if re.match(r"^(?:GSS|GAI)\d*$", args.work_id) or args.entry.startswith(
+        (
+            "Generalist Semantic And State Discovery",
+            "Generalist Adversarial And Integration Discovery",
+        )
+    ):
+        combined += (
+            "\n6. Schema-3 Generalist Deliverable Requirements (mandatory for "
+            f"{args.work_id}):\n"
+            "   In your ledger file, in addition to the compliance matrix, "
+            "candidate rows, and candidate descriptors, you MUST include:\n"
+            "   - `## Complexity graph delta` table: `| edge | status | evidence "
+            "| candidate | next obligation |` covering every edge assigned to "
+            "your shard (`status` in `open`, `resolved`, `candidate`, "
+            "`unreviewed`, `disputed`; `evidence` cites code; `candidate` lists "
+            "candidate IDs or `-`; `next obligation` lists any next obligation "
+            "or `-`).\n"
+            "   - `## Specialist escalation assessments` table: `| lens | graph "
+            "scope | likelihood | signals | counterevidence |` with one row for "
+            "each of the 10 specialist lenses (`Threading And Synchronization`, "
+            "`Ownership And Blink Lifecycle`, `Mojo IPC Authorization And "
+            "Sandbox`, `Performance And Resource Scaling`, `Platform And "
+            "Language Semantics`, `Build API And Generated Assets`, `Privacy And "
+            "Telemetry`, `Accessibility And Internationalization`, `Network "
+            "Semantics`, `Fuzzing And Test Strategy`) over your exact `graph:...` "
+            "scope using only `low`, `medium`, or `high` and citing signals plus "
+            "counterevidence.\n"
+        )
+    elif "specialist:probe" in scope_str.lower():
+        combined += (
+            "\n6. Specialist Probe Gate Requirement:\n"
+            "   Execute at most three cited risk units (deepest/highest-fanout "
+            "path, one teardown/error/boundary path, and one test-defense path) "
+            "and include the exact `## Specialist probe outcome` table (`| lens "
+            "| graph scope | result | evidence | remaining scope |` with "
+            "`result` in `clean` or `escalate`). If escalating, return "
+            "`partial — remaining: specialist:full; graph:...`.\n"
+        )
 
     out_path = args.output or (review_dir / "briefs" / f"{args.work_id}.md")
     out_path.parent.mkdir(parents=True, exist_ok=True)

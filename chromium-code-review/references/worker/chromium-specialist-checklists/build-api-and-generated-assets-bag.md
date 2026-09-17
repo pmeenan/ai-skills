@@ -23,6 +23,9 @@ and `BAG-*` rows citing metadata and source-of-truth inputs.
 - Check direct `deps`/`public_deps`, configs, data deps, toolchain context,
   `DEPS`, `specific_include_rules`, visibility, and `testonly`. Do not treat a
   single `gn check` configuration as universal proof.
+- Verify GN `declare_args()` namespace conventions (e.g., `v8_...`, `skia_...`,
+  or component-prefixed flag names) and ensure architecture/platform-specific
+  build flags document their target configurations.
 - Check `OWNERS`, per-file rules, component ownership, and new-directory
   coverage; moves can change review/dependency policy.
 - Verify component export macros, template instantiation, vtable/key function,

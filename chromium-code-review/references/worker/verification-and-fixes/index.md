@@ -10,7 +10,7 @@ preamble, so its rules travel with every section.
 
 | section | file | source lines |
 | --- | --- | --- |
-| Verifying Candidate Findings | verifying-candidate-findings.md | 49 |
+| Verifying Candidate Findings | verifying-candidate-findings.md | 55 |
 | Skeptic Verdicts | skeptic-verdicts.md | 48 |
 | Execution-Based Verification | execution-based-verification.md | 28 |
 | Evaluating Fixes | evaluating-fixes.md | 79 |

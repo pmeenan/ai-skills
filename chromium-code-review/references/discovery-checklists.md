@@ -258,6 +258,23 @@ this section:
 - For processing that can be stopped, bypassed, or canceled mid-stream: the
   subsequent reads/writes, EOF, callbacks, cleanup, and invalidation of any
   partially transformed state.
+- **Consult `callers/dossiers/<ClassName>.md` when present:** Verify any
+  automatic `WeakPtrFactory` member-ordering warning (whether `WeakPtrFactory`
+  is declared before sibling members), compare Hop 0 teardown sites
+  (`~ClassName()`, `Shutdown()`, `Reset()`, `OnDisconnect()`) against Hop 1 →
+  Hop 2 `BindOnce`/`PostTask`/`Run` registrations, and confirm no member is
+  accessed after reset or partial teardown.
+- **MPArch frame-tree scope (`WebContentsObserver` & `NavigationThrottle`):**
+  In `content/` and `chrome/browser/`, `DidStartNavigation`,
+  `ReadyToCommitNavigation`, `DidFinishNavigation`, `RenderFrameDeleted`, and
+  `DocumentOnLoadCompleted` fire for **subframes, fenced frames, prerendered
+  pages, and BackForwardCache restores**, not just the primary main frame.
+  Verify that hooks mutating tab-level or `WebContents`-scoped state explicitly
+  gate on `navigation_handle->IsInPrimaryMainFrame()` (or
+  `render_frame_host->IsInPrimaryMainFrame()` /
+  `GetLifecycleState() == RenderFrameHost::LifecycleState::kActive`) and check
+  `navigation_handle->HasCommitted()` in `DidFinishNavigation` before reading
+  post-commit navigation properties.
 
 Example pattern: `timer_.Start(..., BindOnce(&Foo::OnDone, Unretained(this)))`
 plus a reset path that does not stop the timer. Ask what stops the callback
@@ -307,11 +324,14 @@ loop as a wall-time nuisance.
   `url/url_util.cc` (such as `kFileSystemScheme` or `kBlobScheme`) instead of
   grepping for literal scheme strings.
 - If the CL changes a persisted format (cache entry layout, prefs, protos,
-  serialized enums, on-disk flags): what reads new-format data after a
+  serialized enums, SQLite `kCurrentVersionNumber`, IndexedDB schema version,
+  on-disk flags): what reads new-format data after a
   rollback to old code, and what reads old-format data after rollout? Where
   is the version or format check, and what does each reader do on mismatch?
   Treat "the feature flag turned off after entries were written" as a normal
   production state, not an edge case — Finch rollbacks guarantee it happens.
+  Verify that the default-off path gracefully tolerates or migrates newer
+  persisted prefs/rows rather than crashing on `CHECK` or corrupting user data.
 - Renumbering or reusing values of a persisted or serialized enum silently
   changes the meaning of data already on disk. Verify existing values stay
   stable and new values append.
@@ -343,6 +363,14 @@ unobservable.
   concrete code whose behavior changes.
 - Does the disabled/default path still use the old behavior with minimal
   change? If the change sits on a shared path, identify that explicitly.
+- **`fieldtrial_testing_config.json` drift & `FeatureParam` safety:** When a
+  `BASE_FEATURE` is `FEATURE_DISABLED_BY_DEFAULT` in C++ but enabled in
+  `testing/variations/fieldtrial_testing_config.json`, CQ browser/unit tests
+  run with the flag **ON** by default—masking crashes in the production
+  default-OFF path. Verify that at least one test explicitly exercises
+  `InitAndDisableFeature(kFeature)`, and verify that `base::FeatureParam::Get()`
+  is never read on a path where `base::FeatureList::IsEnabled(kFeature)` is
+  false unless the default parameter fallback is explicitly safe.
 - Search for existing implementations of the same conceptual feature. Can the
   old and new paths both apply to the same operation?
 - If new production behavior has broad blast radius, is there a
@@ -479,6 +507,18 @@ trusted; the candidate stands unless the browser-side range check exists.
   `ERR_IO_PENDING` and completed with a positive count where `socket.h`
   requires `OK` — the contract was documented in the base header all along,
   and no thread opened it.)
+- **Simplification & Anti-Overengineering (Senior Maintainer Rubric):**
+  Explicitly identify and challenge unnecessary abstraction layers introduced by
+  the CL:
+  - Flag newly introduced `virtual` interfaces or abstract base classes that
+    have only a single production implementation and no concrete multi-backend,
+    IPC, or component-boundary dependency-inversion requirement.
+  - Flag premature pass-through wrapper classes or indirection helpers that
+    merely forward calls without owning state, enforcing invariants, or
+    decoupling compilation units.
+  - Flag test-only methods, hooks, or state leaking into production public
+    interfaces when `friend` declarations, `*ForTesting()` conventions, or
+    test-specific subclasses can isolate the test surface.
 
 ## Tests As Specifications
 
@@ -615,15 +655,21 @@ dropping them from an otherwise-LGTM review.
   `base::SequenceCheckerImpl` directly, verify there is an intentional
   release-build `CHECK()` requirement before suggesting the macro; the macro
   compiles away outside DCHECK builds.
-- Look for artifacts of deleted blocks: double blank lines, orphaned
-  comments, redundant braces, now-empty sections, and stale TODO wording.
+- **Patchset Churn & Multi-Turn Leftover Hygiene:** Detect artifacts left
+  behind across iterative patchset revisions:
+  - Spurious `#include` directives or forward declarations added in earlier
+    patchset iterations whose symbols are no longer referenced in the final
+    file diff.
+  - Unreferenced local or intermediate variables, dead helper parameters,
+    stale test setup scaffolding, unnecessary lambda captures, or leftover
+    debugging/logging artifacts.
+  - Artifacts of deleted blocks: double blank lines, orphaned comments,
+    redundant braces, now-empty sections, and stale TODO wording.
 - Check vertical spacing in both directions: besides stray double blank
   lines, flag a *missing* blank line where one aids readability, for example
   above a comment that introduces a new logical block or member group.
   `clang-format` neither removes nor inserts these, so they survive a
   formatter check.
-- Check that removed statements or call sites did not leave unused locals,
-  stale test setup parameters, or unnecessary lambda captures.
 - Audit linkage and visibility constraints before suggesting test hooks or
   toggles. Helpers and feature flags inside anonymous namespaces have
   internal linkage and cannot be referenced directly from another translation

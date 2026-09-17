@@ -585,6 +585,103 @@ def validate_suggestion_target(
         )
 
 
+def validate_gerrit_comment_anchor(
+    root: Path,
+    item: str,
+    gerrit_text: str,
+    report: Report,
+) -> None:
+    """Prove every Gerrit comment fragment has one valid file:line[-end] anchor."""
+    all_targets = list(
+        re.finditer(
+            r"(?m)^(?:###\s+)?([A-Za-z0-9_.+@{}\-/]+):([1-9]\d*)"
+            r"(?:-([1-9]\d*))?\s*$",
+            gerrit_text,
+        )
+    )
+    if len(all_targets) != 1:
+        report.error(
+            f"output coverage {item} Gerrit fragment has "
+            f"{len(all_targets)} standalone target declarations; expected "
+            "exactly one total"
+        )
+        return
+
+    match = all_targets[0]
+    repo_path = match.group(1)
+    pure_path = PurePosixPath(repo_path)
+    if (
+        pure_path.is_absolute()
+        or ".." in pure_path.parts
+        or not pure_path.parts
+        or pure_path.as_posix() != repo_path
+    ):
+        report.error(
+            f"output coverage {item} Gerrit comment target {repo_path} is not "
+            "a normalized repo-relative path"
+        )
+        return
+
+    start = int(match.group(2))
+    end = int(match.group(3) or start)
+    target_text = f"{repo_path}:{start}" + (f"-{end}" if match.group(3) else "")
+    if end < start:
+        report.error(
+            f"output coverage {item} Gerrit comment target range {target_text} "
+            "is reversed"
+        )
+        return
+
+    pin_path = root / "pin.md"
+    if not pin_path.is_file():
+        return
+    pin = read_text(pin_path, report)
+    changed: set[str] = set()
+    in_files = False
+    for line in pin.splitlines():
+        if line.startswith("- Files changed"):
+            in_files = True
+            continue
+        if in_files:
+            file_match = re.match(
+                r"^  - (.*?)(?: \[[A-Z?]+; \+[0-9?]+/-[0-9?]+\])?$",
+                line,
+            )
+            if file_match:
+                changed.add(file_match.group(1))
+            elif line.strip():
+                in_files = False
+    if changed and repo_path not in changed:
+        report.error(
+            f"output coverage {item} Gerrit comment target {target_text} "
+            f"references unchanged or unknown file {repo_path}"
+        )
+        return
+
+    worktree_value = field(pin, "Worktree")
+    revision = field(pin, "Revision SHA")
+    if not worktree_value or not revision:
+        return
+    worktree = Path(worktree_value.split(" (", 1)[0])
+    if not worktree.is_dir():
+        return
+    try:
+        source = subprocess.run(
+            ["git", "-C", str(worktree), "show", f"{revision}:{repo_path}"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).stdout.decode("utf-8")
+    except (subprocess.CalledProcessError, UnicodeDecodeError):
+        return
+    source_lines = source.splitlines()
+    if end > len(source_lines):
+        report.error(
+            f"output coverage {item} Gerrit comment target range {target_text} "
+            f"is outside the pinned file's {len(source_lines)} lines"
+        )
+
+
 def read_json(path: Path, report: Report) -> Any:
     try:
         raw = path.read_bytes()
@@ -1571,7 +1668,10 @@ def validate_plan(
                 for candidate in row.get("candidate", "").split(",")
                 if candidate.strip() not in {"", "-", "—"}
             }
-            missing_candidates = {c for c in candidate_ids if c.split("-")[0] in {"GAI", "GSS"}} - routed_candidates
+            missing_candidates = {
+                c for c in candidate_ids
+                if re.match(r"^(?:GAI|GSS)\d*$", c.split("-")[0])
+            } - routed_candidates
             unknown_candidates = routed_candidates - candidate_ids
             if missing_candidates:
                 report.error(
@@ -4536,6 +4636,7 @@ def validate_output_coverage(
                     f"output coverage {item} marks Suggested edit omitted but "
                     "contains a suggestion block"
                 )
+            validate_gerrit_comment_anchor(root, item, gerrit_text, report)
             return
 
         target = SUGGESTION_TARGET.fullmatch(detail)

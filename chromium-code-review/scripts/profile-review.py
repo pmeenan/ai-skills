@@ -106,7 +106,14 @@ SPECIALIST_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
             r"\b(?:raw_ptr|scoped_refptr|RefCounted|GarbageCollected|Member\s*<|"
             r"WeakMember\s*<|Persistent\s*<|Trace\s*\(\s*Visitor|Oilpan|"
             r"ExecutionContext|ScriptState|ContextDestroyed|DocumentLifecycle|"
-            r"BackForwardCache|BFCache|prerender|frozen|detached)\b",
+            r"BackForwardCache|BFCache|prerender|frozen|detached|"
+            r"HandleScope|DirectHandle|MaybeDirectHandle|Tagged\s*<|"
+            r"WriteBarrier|CONDITIONAL_WRITE_BARRIER|SKIP_WRITE_BARRIER|"
+            r"DisallowGarbageCollection|ExternalPointerTag|TrustedPointerTable|"
+            r"CppHeapPointerTable|CloseAndEscape|BrowserContextKeyedServiceFactory|"
+            r"ProfileKeyedServiceFactory|DependsOn\s*\(|WebContentsObserver|"
+            r"NavigationThrottle|DidStartNavigation|ReadyToCommitNavigation|"
+            r"DidFinishNavigation|RenderFrameDeleted|IsInPrimaryMainFrame)\b",
             re.IGNORECASE | re.MULTILINE,
         ),
     ),
@@ -123,10 +130,12 @@ SPECIALIST_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     (
         "PRS", "Performance And Resource Scaling",
         re.compile(
-            r"\b(?:benchmark|perf(?:ormance)?|latency|throughput|memory pressure|"
+            r"\.sksl(?:$|\b)|\b(?:benchmark|perf(?:ormance)?|latency|throughput|memory pressure|"
             r"resource exhaustion|unbounded|evict(?:ion)?|cache size|queue size|"
             r"reserve\s*\(|shrink_to_fit|MayBlock|startup|binary size|wakeups?|"
             r"power|GPU memory|thread hops?|allocations?|copies|memcpy|memmove|"
+            r"SkSafeMath|SkScalarIsFinite|SkColorSpace|kPremul_SkAlphaType|"
+            r"kUnpremul_SkAlphaType|skgpu::graphite|GrRecordingContext|"
             r"O\([^)]+\))\b|(?:^|/)(?:tools/perf|testing/perf|benchmarks?)/",
             re.IGNORECASE | re.MULTILINE,
         ),
@@ -134,10 +143,11 @@ SPECIALIST_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     (
         "PLS", "Platform And Language Semantics",
         re.compile(
-            r"\.(?:rs|java|kt|kts|m|mm|swift|js|mjs|ts|tsx|py|gn|gni|proto|mojom)$|"
+            r"\.(?:rs|java|kt|kts|m|mm|swift|js|mjs|ts|tsx|py|sh|tq|gn|gni|proto|mojom)$|"
             r"\b(?:JNI_|jni::|JavaParamRef|ObjC|extern\s+\"C\"|cxx::bridge|"
             r"unsafe\s*\{|cfg\s*\(|BUILDFLAG|IS_(?:WIN|MAC|ANDROID|LINUX|CHROMEOS)|"
-            r"32[- ]bit|endianness|alignment)\b",
+            r"MacroAssembler|UseScratchRegisterScope|Turbofan|Maglev|"
+            r"UnsafeCast|32[- ]bit|endianness|alignment)\b",
             re.IGNORECASE | re.MULTILINE,
         ),
     ),
@@ -145,7 +155,7 @@ SPECIALIST_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
         "BAG", "Build API And Generated Assets",
         re.compile(
             r"(?:^|/)(?:BUILD\.gn|DEPS|OWNERS)$|\.(?:gn|gni|grd|grdp|xtb|proto|mojom)$|"
-            r"\b(?:public_deps|specific_include_rules|visibility|testonly|"
+            r"\b(?:public_deps|specific_include_rules|visibility|testonly|declare_args|"
             r"COMPONENT_EXPORT|CONTENT_EXPORT|BASE_EXPORT|NET_EXPORT|"
             r"generate(?:d)?|grit|resource_ids?)\b",
             re.IGNORECASE | re.MULTILINE,
@@ -156,6 +166,7 @@ SPECIALIST_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
         re.compile(
             r"(?:^|/)(?:histograms|enums|ukm)\.xml$|\b(?:UmaHistogram|HistogramTester|"
             r"ukm::|UkmRecorder|UkmSource|incognito|off[-_ ]the[-_ ]record|"
+            r"ProfileSelections|BuildRedirectedInIncognito|GetOffTheRecordProfile|"
             r"StoragePartition|consent|retention|deletion|identifiability|PII|"
             r"metrics::)\b",
             re.IGNORECASE | re.MULTILINE,
@@ -177,17 +188,21 @@ SPECIALIST_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
             r"\b(?:redirect|NetworkIsolationKey|NetworkAnonymizationKey|"
             r"SchemefulSite|CookiePartitionKey|credentials mode|CORS|CSP|CORP|COEP|"
             r"SameSite|proxy|idempotent|body replay|Vary|cache key|certificate|TLS|"
-            r"URLLoader|ResourceRequest|net::ERR_)\b",
+            r"URLLoader|ResourceRequest|net::ERR_|kCurrentVersionNumber|"
+            r"kCompatibleVersionNumber|MigrateVersion|Register(?:Boolean|Integer|String|Dictionary|List)Pref)\b",
             re.IGNORECASE | re.MULTILINE,
         ),
     ),
     (
         "FTS", "Fuzzing And Test Strategy",
         re.compile(
+            r"(?:^|/)fieldtrial_testing_config\.json$|\.status(?:$|\b)|"
             r"\b(?:LLVMFuzzerTestOneInput|FuzzedDataProvider|fuzz(?:er|ing)?|"
             r"seed corpus|dictionary|WebTest|WPT|browser test|"
+            r"PrepareFunctionForOptimization|OptimizeFunctionOnNextCall|"
+            r"FeatureParam|ScopedFeatureList|InitAndEnableFeature|InitAndDisableFeature|"
             r"test expectations|DISABLED_|FLAKY_)\b|"
-            r"(?:^|/)(?:fuzzers?|web_tests|wpt_internal)/|"
+            r"(?:^|/)(?:fuzzers?|web_tests|wpt_internal|test/mjsunit)/|"
             r"(?:_fuzzer|_browsertest|_browser_test)\.[^.]+$",
             re.IGNORECASE | re.MULTILINE,
         ),
@@ -432,6 +447,32 @@ def prior_context(review_dir: Path, revision: str) -> dict[str, Any]:
     return result
 
 
+def evaluate_small_low_risk(
+    files: list[dict[str, Any]], hunks: int, surfaces: int,
+    signals: dict[str, int], context: dict[str, Any], diff_bytes: int,
+    worker_budget: int,
+) -> dict[str, Any]:
+    total_lines = sum(item["changed_lines"] for item in files)
+    checks = [
+        (1 <= len(files) <= 3, "between 1 and 3 changed files"),
+        (total_lines <= 80, "at most 80 changed lines"),
+        (hunks <= 10, "at most 10 diff hunks"),
+        (surfaces <= 8, "at most 8 approximate changed surfaces"),
+        (diff_bytes <= worker_budget // 4, "zero-context diff fits within 25% of one worker budget"),
+        (not HIGH_RISK_SIGNALS.intersection(signals), "no behavior-sensitive risk tokens in changed lines"),
+        (context["unresolved_threads"] == 0, "no unresolved Gerrit threads"),
+        (not context["prior_feedback_input_available"], "no supplied prior-review input"),
+        (context["malformed_entries"] == 0, "no malformed normalized-comment entries"),
+    ]
+    proof_text = [label for _, label in checks]
+    failed = [label for passed, label in checks if not passed]
+    return {
+        "eligible": len(failed) == 0,
+        "proof": proof_text,
+        **({"failed": failed} if failed else {}),
+    }
+
+
 def choose_effort(
     files: list[dict[str, Any]], hunks: int, surfaces: int,
     signals: dict[str, int], context: dict[str, Any], diff_bytes: int,
@@ -529,6 +570,7 @@ def markdown(profile: dict[str, Any]) -> str:
         f"- Approximate changed surfaces: {counts['approximate_changed_surfaces']}",
         f"- Unresolved / malformed comment threads: {profile['prior_context']['unresolved_threads']} / {profile['prior_context']['malformed_entries']}",
         f"- External context references / fast path: {profile['prior_context']['external_context']['count']} / {'eligible' if profile['context_fast_path_eligible'] else 'not eligible'}",
+        f"- Deterministic initial plan / compact dual-generalist fast path: {'eligible' if profile['initial_plan_fast_path_eligible'] else 'not eligible'} / {'eligible' if profile['compact_generalist_fast_path_eligible'] else 'not eligible'}",
         "- Reasons: " + "; ".join(profile["effort_reasons"]),
         "",
         "## File classes",
@@ -634,8 +676,12 @@ def main() -> int:
     signals = signal_counts([item["path"] for item in files], patch)
     triggers = specialist_triggers([item["path"] for item in files], patch)
     context = prior_context(review_dir, revision)
+    patch_bytes = len(patch.encode("utf-8"))
     effort, reasons, micro = choose_effort(
-        files, hunks, surfaces, signals, context, len(patch.encode("utf-8")), worker_budget
+        files, hunks, surfaces, signals, context, patch_bytes, worker_budget
+    )
+    small_low_risk = evaluate_small_low_risk(
+        files, hunks, surfaces, signals, context, patch_bytes, worker_budget
     )
     classes: dict[str, dict[str, int]] = {}
     for name in sorted({item["class"] for item in files}):
@@ -649,6 +695,7 @@ def main() -> int:
         "effort": effort,
         "effort_reasons": reasons,
         "micro_eligibility": micro,
+        "small_low_risk_eligibility": small_low_risk,
         "pin": {"revision_sha": revision, "parent_sha": parent, "worktree": str(worktree)},
         "counts": {
             "files": len(files),
@@ -671,10 +718,12 @@ def main() -> int:
         "specialist_triggers": triggers,
         "prior_context": context,
         "context_fast_path_eligible": (
-            effort == "micro"
+            (effort == "micro" or small_low_risk["eligible"])
             and context["external_context"]["available"]
             and context["external_context"]["count"] == 0
         ),
+        "initial_plan_fast_path_eligible": effort != "large",
+        "compact_generalist_fast_path_eligible": small_low_risk["eligible"],
         "topology": {
             "policy": "evidence-graph-v1",
             "initial_generalists": 2,

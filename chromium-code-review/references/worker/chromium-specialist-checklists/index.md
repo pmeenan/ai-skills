@@ -12,12 +12,12 @@ preamble, so its rules travel with every section.
 | --- | --- | --- |
 | Shared Execution Contract | shared-execution-contract.md | 40 |
 | Threading And Synchronization (TSY) | threading-and-synchronization-tsy.md | 30 |
-| Ownership And Blink Lifecycle (OBL) | ownership-and-blink-lifecycle-obl.md | 32 |
+| Ownership And Blink Lifecycle (OBL) | ownership-and-blink-lifecycle-obl.md | 59 |
 | Mojo IPC Authorization And Sandbox (MIS) | mojo-ipc-authorization-and-sandbox-mis.md | 36 |
-| Performance And Resource Scaling (PRS) | performance-and-resource-scaling-prs.md | 27 |
-| Platform And Language Semantics (PLS) | platform-and-language-semantics-pls.md | 35 |
-| Build API And Generated Assets (BAG) | build-api-and-generated-assets-bag.md | 29 |
-| Privacy And Telemetry (PAT) | privacy-and-telemetry-pat.md | 39 |
+| Performance And Resource Scaling (PRS) | performance-and-resource-scaling-prs.md | 46 |
+| Platform And Language Semantics (PLS) | platform-and-language-semantics-pls.md | 51 |
+| Build API And Generated Assets (BAG) | build-api-and-generated-assets-bag.md | 32 |
+| Privacy And Telemetry (PAT) | privacy-and-telemetry-pat.md | 43 |
 | Accessibility And Internationalization (AXI) | accessibility-and-internationalization-axi.md | 31 |
-| Network Semantics (NET) | network-semantics-net.md | 31 |
-| Fuzzing And Test Strategy (FTS) | fuzzing-and-test-strategy-fts.md | 38 |
+| Network Semantics (NET) | network-semantics-net.md | 37 |
+| Fuzzing And Test Strategy (FTS) | fuzzing-and-test-strategy-fts.md | 49 |

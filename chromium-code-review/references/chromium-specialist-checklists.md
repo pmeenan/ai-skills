@@ -95,11 +95,13 @@ required order`, a lock-order graph, wait/post/cancel/destroy timelines, and
 Within a routed scope, inspect owning/non-owning pointers, `raw_ptr`, reference cycles, external
 handles, `GarbageCollected`, `Member`, `WeakMember`, `Persistent`, `Trace`, DOM
 or event mutation, script-capable bindings, navigation, BFCache, prerender,
-freeze/resume, detach, or execution-context destruction.
+freeze/resume, detach, execution-context destruction, or V8 heap/GC handles
+(`HandleScope`, `DirectHandle`, `Tagged<T>`, write barriers, and V8 Sandbox
+pointer tables).
 
-In the thread ledger, produce a strong/weak/raw/Oilpan/handle ownership graph,
-an applicable lifecycle-state table, reentrancy timelines, and `OBL-*`
-rows citing the ownership/trace edge and teardown guard.
+In the thread ledger, produce a strong/weak/raw/Oilpan/V8-handle ownership graph,
+an applicable lifecycle-state table, reentrancy/GC-safepoint timelines, and `OBL-*`
+rows citing the ownership/trace edge and teardown/safepoint guard.
 
 - Give each allocation or handle one release authority. Trace early return,
   replacement, move, reset, disconnect, partial initialization, and teardown.
@@ -110,12 +112,37 @@ rows citing the ownership/trace edge and teardown guard.
 - For Oilpan, verify all strong edges participate in `Trace`; choose `Member`,
   `WeakMember`, or `Persistent` from intended reachability. Check mixin/base
   tracing, cross-heap edges, and pre-finalizers that touch GC objects.
+- For V8 Heap & GC (`v8/` and Blink-V8 bindings):
+  - Never hold raw `Tagged<T>` / `HeapObject` pointers or unrooted object slots
+    across a GC safepoint or allocating helper; wrap in `Handle` / `DirectHandle`
+    before any call that can allocate or trigger collection.
+  - Verify `HandleScope` boundaries: prevent handle accumulation inside loops
+    (add an inner `HandleScope`) and require `CloseAndEscape` when returning a
+    handle across a local scope.
+  - Validate write barriers (`WriteBarrier`, `CONDITIONAL_WRITE_BARRIER`) on
+    heap-to-heap stores; treat `SKIP_WRITE_BARRIER` or `DisallowGarbageCollection`
+    as claims that must be proven against every reachable callee.
+  - For V8 Sandbox (`ExternalPointerTag`, `TrustedPointerTable`,
+    `CppHeapPointerTable`), verify type-specific pointer tags and enforce strict
+    in-sandbox bounds/offset sanitization before dereferencing external memory.
 - Do not rely on finalization for timely OS, GPU, Mojo, or network cleanup.
 - Trace active, frozen, BFCache/prerendered, detached, context-destroyed,
   navigation-replaced, and destructing states as applicable. Verify suspend is
   distinct from terminal cleanup and restore/rebind cannot duplicate work.
 - Bind document-scoped work to a fresh document/navigation identity so old
   callbacks cannot mutate a replacement document or restored entry.
+- For `WebContentsObserver` and `NavigationThrottle` hooks (`DidStartNavigation`,
+  `ReadyToCommitNavigation`, `DidFinishNavigation`, `RenderFrameDeleted`):
+  verify MPArch frame-tree scope—require `IsInPrimaryMainFrame()` (or
+  `GetLifecycleState() == kActive`) before mutating `WebContents`/tab-level
+  state so subframe, fenced-frame, prerender, or BFCache navigations cannot
+  corrupt primary page state, and require `HasCommitted()` in
+  `DidFinishNavigation` before reading committed navigation state.
+- For `BrowserContextKeyedServiceFactory` / `ProfileKeyedServiceFactory`
+  implementations: verify that every other `KeyedService` accessed by the
+  service (especially during `Shutdown()` or destructor execution) has a
+  matching `DependsOn(OtherFactory::GetInstance())` call in the factory
+  constructor so teardown order is guaranteed.
 - Treat event dispatch, custom-element reactions, promise resolution, binding
   conversion/callbacks, DOM mutation, focus changes, and observer notification
   as script-reentrant. Revalidate pointers, indices, lifecycle, and invariants.
@@ -162,7 +189,8 @@ binder-to-implementation flow, sandbox capability delta, and `MIS-*` rows.
 
 Within a routed scope, inspect hot/startup code, per-frame/tab/process state, unbounded loops or
 inputs, caches/queues, allocations/copies, task hops, timers/wakeups, GPU
-resources, benchmarks, or claimed performance/memory effects.
+resources, Skia/Graphite/Ganesh graphics pipelines, image codecs, `.sksl` shaders,
+benchmarks, or claimed performance/memory effects.
 
 In the thread ledger, produce `operation | cost/item | bound | fanout |
 worst cost`, `resource | owner | cap | eviction/release | pressure behavior`,
@@ -180,16 +208,35 @@ before/after evidence, and `PRS-*` rows citing bounds and measurements.
   idle process/device. Quantify polling/timer wakeups in background/no-work.
 - Account for startup and binary size: static initialization, eager services,
   templates, generated tables, and per-locale/config resources.
-- For GPU work, calculate resource bytes, copies, synchronization, readback,
-  retained surfaces, device limits, and loss/reset cleanup.
+- For GPU, Skia (`skia/`, `cc/`, `gpu/`, `viz/`), and Shader (`.sksl`, WGSL/GLSL) work:
+  - **Graphite & Ganesh GPU Pipelines:** Calculate resource bytes, copies,
+    synchronization, and readback; verify command buffer recording, backend
+    texture binding lifetime, pipeline layout caching, draw-pass ordering
+    invariants, and device loss/reset cleanup.
+  - **Image Codecs & Safe Stride Math:** Enforce overflow-checked arithmetic
+    (`SkSafeMath`, `base::CheckedNumeric`) on image dimensions, stride /
+    row-bytes (`width * bytesPerPixel`), and buffer allocation sizes during
+    stream parsing and decompression.
+  - **Geometry & Coordinate Sanitization:** Verify robust geometric clipping and
+    explicit `SkScalarIsFinite` / `isFinite()` sanitization on bounds, paths,
+    and transform matrices before rasterization or GPU buffer upload.
+  - **Color Spaces & Alpha Blending:** Check `sRGB` vs wide-gamut (`Display-P3`,
+    Rec.2020) transfer function application, and enforce premultiplied
+    (`kPremul_SkAlphaType`) vs unpremultiplied (`kUnpremul_SkAlphaType`) alpha
+    invariants across blitters, shaders, and paint pipelines.
+  - **SkSL / Shader Correctness:** Check precision qualification (`half` vs
+    `float` range/underflow), vector swizzle validity, uninitialized varyings,
+    and branch convergence across GPU targets (no derivative ops in non-uniform
+    branches).
 - Require representative benchmarks/profiles with units, variance, stable
   comparison, and a metric/trace isolating the changed work.
 
 ## Platform And Language Semantics (PLS)
 
 Within a routed scope, inspect build/platform guards, OS APIs, paths/handles, packed or serialized
-data, CPU-specific code, architecture-sized types, or Java/Kotlin, Objective-C,
-Rust, JavaScript/TypeScript, Python, GN, Mojo, or proto sources.
+data, CPU-specific/MacroAssembler code, V8 compiler/Torque (`.tq`) pipelines,
+architecture-sized types, or Java/Kotlin, Objective-C, Rust,
+JavaScript/TypeScript, Python, Shell (`.sh`), GN, Mojo, or proto sources.
 
 In the thread ledger, produce applicable OS/arch/bitness/endianness/
 build configurations, compiled implementation/tests per non-equivalent row,
@@ -199,6 +246,18 @@ language boundary hazards/tools, and `PLS-*` rows with build/test citations.
   conditions; find missing implementations, dependencies, tests, and branches.
 - Check 32-bit truncation/layout, pointer/integer conversions, native-sized wire
   fields, alignment/packing, unaligned access, and endianness.
+- For V8 Compiler, Codegen, & Torque (`.tq`):
+  - **Turbofan & Maglev:** Verify graph reduction, node replacement, type/range
+    mutation, and deoptimization `FrameState` invariants across optimization
+    passes.
+  - **MacroAssembler & Arch Backends (`x64`, `arm64`, `ia32`, `riscv`, `ppc64`, `s390x`, `loong64`):**
+    Require non-aliasing register assertions (`DCHECK(!scratch.is(dst))`,
+    `UseScratchRegisterScope`), verify helper macros do not clobber live
+    condition flags or scratch registers, and guard `checked_cast` / immediate
+    offset encoding against truncation.
+  - **Torque (`.tq`) & Builtins:** Verify Torque type-hierarchy invariants,
+    `cast<>` vs `UnsafeCast<>` preconditions, and builtin call descriptor
+    transitioning/GC expectations.
 - Verify path separators/roots/case/Unicode/reserved names/permissions/atomic
   replace, plus POSIX fd and Windows handle validity/inheritance/close behavior.
 - Check OS API availability/behavior across supported SDK/deployment targets,
@@ -213,8 +272,11 @@ language boundary hazards/tools, and `PLS-*` rows with build/test citations.
   repr/layout, panic/unwind, `Send`/`Sync`, callback lifetime, and error mapping.
 - WebUI JS/TS: check promise cancellation/rejection, listener cleanup, stale
   results, message trust, HTML/Trusted Types sinks, DOM nullability, and bundles.
-- Python: check runtime compatibility, subprocess quoting, paths/encoding,
-  deterministic order, timeout/error cleanup, hermetic imports, and tests.
+- Python & Shell (`.py`, `.sh`): check Python 3 hermetic imports, subprocess
+  quoting, paths/encoding, deterministic order, and timeout/error cleanup. In
+  `.sh` scripts, enforce macOS BSD vs GNU Linux portability (avoid GNU-only
+  `sed -i` without backup suffix, `grep -P`, `readlink -f`, `stat -c`, or
+  bashisms under `#!/bin/sh`).
 - GN/Mojo/proto: check target/toolchain context and generated-language defaults,
   unknown values, numbering/versioning, and regeneration inputs.
 - Verify each cross-language contract in producer and consumer; bindings can
@@ -235,6 +297,9 @@ and `BAG-*` rows citing metadata and source-of-truth inputs.
 - Check direct `deps`/`public_deps`, configs, data deps, toolchain context,
   `DEPS`, `specific_include_rules`, visibility, and `testonly`. Do not treat a
   single `gn check` configuration as universal proof.
+- Verify GN `declare_args()` namespace conventions (e.g., `v8_...`, `skia_...`,
+  or component-prefixed flag names) and ensure architecture/platform-specific
+  build flags document their target configurations.
 - Check `OWNERS`, per-file rules, component ownership, and new-directory
   coverage; moves can change review/dependency policy.
 - Verify component export macros, template instantiation, vtable/key function,
@@ -283,6 +348,10 @@ timeline, `metric | site | population/frequency | value/unit | metadata`, and
   Preserve enum numbers, never reuse retired values, and cover emitted maxima.
 - Count UMA emissions per logical event across retries, duplicate observers,
   restore, success, and error paths.
+- For `KeyedService` `ProfileSelections` (`BuildRedirectedInIncognito`,
+  `BuildForRegularProfile`, `BuildSeparateInstanceInIncognito`) and
+  `GetOffTheRecordProfile`: verify that regular-profile state, history, caches,
+  or identifiers never leak into Incognito/OTR or Guest/System profiles.
 - For UKM, verify source/document identity freshness, consent/policy/incognito
   gates, profile isolation, cardinality, identifiability, and absence of PII.
 - Test non-emission when gated plus duplicate-callback, incognito, stale
@@ -345,6 +414,12 @@ context ownership, and `NET-*` rows citing canonicalization/policy/isolation.
   download/navigation policy to internal, cached, and preloaded paths too.
 - Verify TLS/cert hostname/error/pinning/CT/downgrade/client-cert behavior and
   profile-bound exception storage.
+- For persisted prefs (`Register*Pref`), SQLite schema versions
+  (`kCurrentVersionNumber`, `kCompatibleVersionNumber`), IndexedDB, and disk
+  cache formats: verify Finch rollback/downgrade compatibility so that if a
+  feature flag is turned off after new-format data is persisted, the default-off
+  path gracefully tolerates or migrates the stored state without `CHECK`
+  crashes or profile corruption.
 - Use standard URL/header canonicalization. Reject CR/LF injection, conflicting
   lengths, forbidden headers, ambiguous IPs, and userinfo confusion.
 - Test redirects, auth/proxy, non-replayable body, credential/partition isolation,
@@ -384,7 +459,18 @@ faithful level | test | negative case | configuration`, and `FTS-*` rows.
 - Require the test to fail against parent behavior for the intended reason.
   Mutation-probe changed conditions/state/callbacks/gates and assert externally
   meaningful behavior across positive/negative/boundary/error/teardown paths.
+  For V8 `test/mjsunit/` and compiler regression tests, verify optimization/tier
+  flags (`%PrepareFunctionForOptimization`, `%OptimizeFunctionOnNextCall`) and
+  ensure negative assertions or catch blocks do not mask dead execution branches.
+- When `testing/variations/fieldtrial_testing_config.json` enables a feature
+  whose C++ `BASE_FEATURE` default is `FEATURE_DISABLED_BY_DEFAULT`, require at
+  least one test that explicitly exercises `InitAndDisableFeature(kFeature)` (so
+  the production default-off path is not left untested on CQ), and verify
+  `base::FeatureParam` combinations across enabled/disabled dependent flags.
 - Keep tests hermetic and production-faithful. Do not mock away ordering,
   serialization, lifecycle, authorization, persistence, or process boundaries.
-- Inspect disabled/flaky/retry/expectation/skip changes. Require narrow reasons
+- Inspect disabled/flaky/retry/expectation/skip changes (including
+  `TestExpectations` and V8 `.status` files such as `mjsunit.status` /
+  `cctest.status`). Verify skips are placed in the designated architecture,
+  variant, or platform section with a tracking bug ID, require narrow reasons,
   and ensure the test runs in relevant CQ/CI shards with the feature activated.

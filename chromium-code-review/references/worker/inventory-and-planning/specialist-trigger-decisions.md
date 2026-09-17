@@ -34,20 +34,23 @@ Set positive Chromium specialist rows' `discovery triggers` to exactly
 `<PREFIX> absent` for that entry and use the exact roster name as `surface`.
 Soft amplifiers appear only in the later generalist assessments. An N/A plan row may cite only
 associated rows carrying that explicit absence marker; an unrelated or
-positive existing `T` ID is not evidence.
+positive existing `T` ID is not evidence. When `directives.md` contains
+`- Skip test coverage: true`, test-focused entries (`Fuzzing And Test Strategy`
+and `Tests As Specifications`) are routed to `not-applicable` citing the directive;
+workers and synthesis agents suppress findings regarding missing unit/browser tests.
 
 | roster entry | hard full-sweep trigger | soft likelihood amplifiers (not triggers) |
 | --- | --- | --- |
 | Threading And Synchronization | changed synchronization discipline, happens-before/lock/atomic ordering, sequence ownership, or a handoff/destruction rule that changes possible concurrency | task runners, callbacks, sequence checkers, or async callers whose concurrency contract is unchanged |
-| Ownership And Blink Lifecycle | changed ownership transfer/release/trace/cycle/lifecycle transition, changed owner-versus-borrower lifetime, or a pointer/handle crossing an async, reentrant, detach, or destruction boundary | local borrowed pointers, moves, `WeakPtr`, ref-count, observers, or lifecycle-adjacent code with unchanged ownership and bounded synchronous use |
+| Ownership And Blink Lifecycle | changed ownership transfer/release/trace/cycle/lifecycle transition, changed owner-versus-borrower lifetime, a pointer/handle crossing an async, reentrant, detach, or destruction boundary, or changed V8 `HandleScope`/raw `Tagged<T>` across GC safepoints, write barriers, or V8 Sandbox pointer tagging | local borrowed pointers, moves, `WeakPtr`, ref-count, observers, or lifecycle-adjacent code with unchanged ownership and bounded synchronous use |
 | Mojo IPC Authorization And Sandbox | changed wire contract, binder/interface exposure, principal/identity validation, authorization, receiver context, transferred capability, or sandbox policy | consumer-only use of generated types, remotes, receivers, or enums with no changed IPC/security boundary |
-| Performance And Resource Scaling | changed algorithmic complexity, bound/cap/eviction, resource lifetime/multiplier, hot-path work, hop/wakeup behavior, or measured performance contract | an optimization claim, copies/moves/allocations, or repeated-looking code in a locally bounded path with no established scaling delta |
-| Platform And Language Semantics | changed platform/build/architecture branch, ABI/layout, OS behavior, JNI/FFI boundary, or cross-language contract | platform types or non-C++ implementation details whose platform/language boundary is unchanged |
-| Build API And Generated Assets | changed build/dependency metadata, public/exported API, component boundary, resource manifest, schema, or generated-source declaration | consumer-only use of an unchanged public/generated API or ordinary private include movement |
+| Performance And Resource Scaling | changed algorithmic complexity, bound/cap/eviction, resource lifetime/multiplier, hot-path work, hop/wakeup behavior, measured performance contract, or changed Skia/Graphite/Ganesh GPU pipeline, `.sksl` shader, color-space/premul blending, or image codec stride/allocation math | an optimization claim, copies/moves/allocations, or repeated-looking code in a locally bounded path with no established scaling delta |
+| Platform And Language Semantics | changed platform/build/architecture branch, ABI/layout, OS behavior, JNI/FFI boundary, cross-language contract, V8 Turbofan/Maglev/Torque (`.tq`)/MacroAssembler register/codegen logic, or portable shell (`.sh`) scripting | platform types or non-C++ implementation details whose platform/language boundary is unchanged |
+| Build API And Generated Assets | changed build/dependency metadata, `declare_args()` flag definitions, public/exported API, component boundary, resource manifest, schema, or generated-source declaration | consumer-only use of an unchanged public/generated API or ordinary private include movement |
 | Privacy And Telemetry | changed collection, transmission, storage, partitioning, retention/deletion, identifier/credential handling, consent, or UMA/UKM semantics/metadata | local rearrangement of site/origin/profile-associated data with unchanged data practices and telemetry |
 | Accessibility And Internationalization | changed UI/input/focus or accessibility semantics, user-visible/localized string/resource behavior, formatting/pluralization, or RTL/bidi behavior | UI-adjacent implementation with unchanged exposed semantics and resources |
 | Network Semantics | changed protocol/policy, validation/canonicalization, defaults/error mapping, cookie/credential/cache/proxy/auth/redirect/retry/TLS/DNS behavior, isolation key, or CORS/CSP/CORP/COEP enforcement | refactoring inside request/response/header parsing or transport code with an unchanged externally observable contract |
-| Fuzzing And Test Strategy | changed accepted input grammar, trust-boundary validation, parser/protocol/state-machine behavior, fuzz target/corpus/dictionary, disabled/flaky expectations, or removal of boundary coverage | behavior-preserving parser refactoring, hostile-input adjacency, or a test-level choice that is merely nontrivial |
+| Fuzzing And Test Strategy | changed accepted input grammar, trust-boundary validation, parser/protocol/state-machine behavior, fuzz target/corpus/dictionary, disabled/flaky expectations or `.status` test skips, `mjsunit` compiler regression tests, or removal of boundary coverage | behavior-preserving parser refactoring, hostile-input adjacency, or a test-level choice that is merely nontrivial |
 
 ### Specialist sweep likelihood
 

@@ -66,11 +66,14 @@ same P0 throughput collapse by adjudicating the design intended in-thread.
   `url/url_util.cc` (such as `kFileSystemScheme` or `kBlobScheme`) instead of
   grepping for literal scheme strings.
 - If the CL changes a persisted format (cache entry layout, prefs, protos,
-  serialized enums, on-disk flags): what reads new-format data after a
+  serialized enums, SQLite `kCurrentVersionNumber`, IndexedDB schema version,
+  on-disk flags): what reads new-format data after a
   rollback to old code, and what reads old-format data after rollout? Where
   is the version or format check, and what does each reader do on mismatch?
   Treat "the feature flag turned off after entries were written" as a normal
   production state, not an edge case — Finch rollbacks guarantee it happens.
+  Verify that the default-off path gracefully tolerates or migrates newer
+  persisted prefs/rows rather than crashing on `CHECK` or corrupting user data.
 - Renumbering or reusing values of a persisted or serialized enum silently
   changes the meaning of data already on disk. Verify existing values stay
   stable and new values append.
