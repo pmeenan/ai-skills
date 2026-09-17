@@ -1217,6 +1217,18 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             opp["path_accounting"][0]["covered_by_probe_identity"] = 1.0
             self.assertFalse(ledger.decomposed_by_prose(opp))
 
+    def test_investigation_references_are_on_the_ledger(self):
+        """An id or a mechanism key named in an investigation exists (round
+        41: #283 named by a key that never existed); paths are not keys."""
+        ledger = campaign.Ledger(self.dir).load()
+        campaign.new_opportunity(ledger, kind="mechanism", anchor="x", area_key="a", mechanism_key="css/real-thing", profile_id="p")
+        text = "see #1 and css/real-thing; css/resolver/style_cascade.cc and third_party/blink/x.cc are files; core/dom is not a namespace"
+        self.assertEqual([], campaign.ledger_reference_problems(text, ledger))
+        self.assertEqual(["#9999 is not on the ledger", "'css/not-a-thing' is not a mechanism key on the ledger"],
+                         campaign.ledger_reference_problems("#9999 and css/not-a-thing", ledger))
+        self.assertEqual([], campaign.ledger_reference_problems("css/mine", ledger, ("css/mine",)))
+        self.assertEqual([], campaign.ledger_reference_problems("anything", None))
+
     def test_probe_union_sizes_by_the_site_class(self):
         """A key-repeat sizes only an unchanged-input site (a fragment keyed
         without its paint phase read 79-88% repeats in round 32); a predicate

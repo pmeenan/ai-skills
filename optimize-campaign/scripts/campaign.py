@@ -7284,6 +7284,30 @@ def verify_reading(citations, repository_root, label):
     return names
 
 
+_REF_ID_RE = re.compile(r"#(\d{1,4})\b")
+_REF_KEY_RE = re.compile(r"\b([a-z][a-z0-9-]*)/([a-z0-9][a-z0-9-]*)\b(?![/._])")
+
+
+def ledger_reference_problems(text, ledger, own_keys=()):
+    """A `#id` or a mechanism key named in an investigation is on the ledger
+    (round 41: #283 named by a key that never existed). Keys are checked in
+    the namespaces the ledger's mechanisms use; paths (css/resolver/x.cc)
+    are not keys."""
+    if ledger is None:
+        return []
+    ids = {o["id"] for o in ledger.data["opportunities"]}
+    keys = {o.get("mechanism_key") for o in ledger.data["opportunities"] if o.get("mechanism_key")} | set(k for k in own_keys if k)
+    namespaces = {k.split("/")[0] for k in keys}
+    problems = set()
+    for m in _REF_ID_RE.finditer(str(text or "")):
+        if int(m.group(1)) not in ids:
+            problems.add(f"#{m.group(1)} is not on the ledger")
+    for m in _REF_KEY_RE.finditer(str(text or "")):
+        if m.group(1) in namespaces and m.group(0) not in keys:
+            problems.add(f"{m.group(0)!r} is not a mechanism key on the ledger")
+    return sorted(problems)
+
+
 def investigation_text_shape(text):
     """A hypothesis with its numbers, symbols, paths and identifiers blanked:
     the template it was written from (round 37: twelve areas, one template)."""
@@ -7406,6 +7430,9 @@ def require_efficiency_investigation(index, item, packet, share, story, config, 
             if abs(saved - ceiling) < 1e-9 and share * ceiling >= qual_floor:
                 raise CampaignError(f"{label} hypothesis {n}: saved_fraction equals the ceiling; say what the change saves")
         for field, text in (("change", change), ("reason", reason)):
+            refs = ledger_reference_problems(text, ledger, (item.get("mechanism_key"),))
+            if refs:
+                raise CampaignError(f"{label} hypothesis {n}: its `{field}` names what the ledger does not have: {'; '.join(refs)}. Ids and keys come from `show`, not from memory.")
             shape = investigation_text_shape(text)
             if shape in shapes:
                 raise CampaignError(
@@ -7468,6 +7495,10 @@ def enforce_efficiency_rows(paths, story_shares, story, campaign_dir, config=Non
                 "`campaign.py cost-packet --opp <id> --children <file> --path 1`, bound as cost_evidence: {path, sha256}."
             )
         packet, _ = load_bound_cost_packet(item, story, campaign_dir)
+        for field in ("algorithm_hypothesis", "existing_mechanism", "evidence"):
+            refs = ledger_reference_problems(item.get(field), ledger, (item.get("mechanism_key"),))
+            if refs:
+                raise CampaignError(f"Path {index} ({item['anchor'][:80]!r}) `{field}` names what the ledger does not have: {'; '.join(refs)}. Ids and keys come from `show`, not from memory.")
         require_efficiency_investigation(index, item, packet, story_shares.get(index, 0.0), story, config, ledger, prior,
                                          repository_root=repository_root)
 
