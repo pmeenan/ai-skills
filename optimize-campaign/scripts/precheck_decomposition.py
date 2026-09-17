@@ -61,6 +61,10 @@ def main(campaign_dir, opp_id, children):
     ledger.data["config"] = campaign.area_config(ledger.data["config"], parent)  # a suite area's floor is the suite floor
     result = campaign.load_decomposition(children)
     profile = ledger.profile(parent["profile_id"])
+    if result.get("area_key") != parent["area_key"] or result.get("profile_id") != parent.get("profile_id"):
+        print(f"PROBLEMS:\n - the file's area_key/profile_id ({result.get('area_key')!r}, {result.get('profile_id')!r}) are not #{parent['id']}'s "
+              f"({parent['area_key']!r}, {parent.get('profile_id')!r}); decompose refuses it. Scaffold the area again (decompose-scaffold --opp {parent['id']}).")
+        return 1
     phase = campaign.discovery_phase(ledger)
     print(f"discovery phase: {phase}; area scope: {parent.get('scope') or 'story'}")
     measured = {tuple(r[k] for k in ("capture_id", "entry_key", "hotspot_key")): r.get("measured_share_pct", 0.0)
