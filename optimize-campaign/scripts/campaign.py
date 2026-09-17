@@ -7285,6 +7285,9 @@ def verify_reading(citations, repository_root, label):
 
 
 _REF_ID_RE = re.compile(r"#(\d{1,4})\b")
+_REF_ATTRIB_RE = re.compile(
+    r"([A-Za-z_][\w:<>~]*::[\w~]+)(?:\([^)]*\))?[`'\"]?\s*(?:is\s+|in\s+|as\s+|\(|,\s*)?"
+    r"(?:its\s+own\s+|efficiency\s+|redundancy\s+|algorithmic\s+|existing\s+)*(area|areas|mechanism)?\s*[`'\"(]*#(\d{1,4})\b")
 _REF_KEY_RE = re.compile(r"\b([a-z][a-z0-9-]*)/([a-z0-9][a-z0-9-]*)\b(?![/._])")
 
 
@@ -7305,6 +7308,23 @@ def ledger_reference_problems(text, ledger, own_keys=()):
     for m in _REF_KEY_RE.finditer(str(text or "")):
         if m.group(1) in namespaces and m.group(0) not in keys:
             problems.add(f"{m.group(0)!r} is not a mechanism key on the ledger")
+    # "<Symbol> in area #N" / "<Symbol> (mechanism #N)": the number is that
+    # function's (round 42: BlockNode::Layout "in area #238", the hit-test
+    # mechanism).
+    by_id = {o["id"]: o for o in ledger.data["opportunities"]}
+    for m in _REF_ATTRIB_RE.finditer(str(text or "")):
+        symbol, kind_word, num = m.group(1), m.group(2), int(m.group(3))
+        opp = by_id.get(num)
+        if opp is None:
+            continue
+        short = frame_short_name(symbol)
+        target = f"{opp.get('anchor') or ''} {opp.get('mechanism_key') or ''}"
+        if short and short not in target:
+            problems.add(f"#{num} is {frame_short_name(opp.get('anchor')) or opp.get('mechanism_key')}, not {short}")
+        elif kind_word in ("area", "areas") and opp.get("kind") != "discovery":
+            problems.add(f"#{num} is a mechanism, not an area")
+        elif kind_word == "mechanism" and opp.get("kind") != "mechanism":
+            problems.add(f"#{num} is an area, not a mechanism")
     return sorted(problems)
 
 

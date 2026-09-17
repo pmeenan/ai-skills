@@ -1227,6 +1227,16 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         self.assertEqual(["#9999 is not on the ledger", "'css/not-a-thing' is not a mechanism key on the ledger"],
                          campaign.ledger_reference_problems("#9999 and css/not-a-thing", ledger))
         self.assertEqual([], campaign.ledger_reference_problems("css/mine", ledger, ("css/mine",)))
+        # A number attributed to a function is that function's (round 42).
+        area = campaign.new_opportunity(ledger, kind="discovery", anchor="S/blink::BlockNode::Layout(blink::ConstraintSpace const&)", area_key="eff-s-layout", profile_id="p")
+        mech = campaign.new_opportunity(ledger, kind="mechanism", anchor="blink::TreeScope::ElementFromPoint(double, double) const", area_key="a", mechanism_key="hittest/x", profile_id="p")
+        ok = f"`BlockNode::Layout` in area `#{area['id']}` and TreeScope::ElementFromPoint (mechanism #{mech['id']}); #{area['id']} again"
+        self.assertEqual([], campaign.ledger_reference_problems(ok, ledger))
+        bad = f"`BlockNode::Layout` in area `#{mech['id']}`, FlexLayoutAlgorithm::LayoutInternal in area #{mech['id']}"
+        self.assertEqual([f"#{mech['id']} is ElementFromPoint, not Layout", f"#{mech['id']} is ElementFromPoint, not LayoutInternal"],
+                         campaign.ledger_reference_problems(bad, ledger))
+        self.assertEqual([f"#{mech['id']} is a mechanism, not an area"],
+                         campaign.ledger_reference_problems(f"TreeScope::ElementFromPoint in area #{mech['id']}", ledger))
         self.assertEqual([], campaign.ledger_reference_problems("anything", None))
 
     def test_probe_union_sizes_by_the_site_class(self):
