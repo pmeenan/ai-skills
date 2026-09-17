@@ -7843,7 +7843,7 @@ def enforce_efficiency_rows(paths, story_shares, story, campaign_dir, config=Non
             if refs:
                 raise CampaignError(f"Path {index} ({item['anchor'][:80]!r}) `{field}` names what the ledger does not have: {'; '.join(refs)}. Ids and keys come from `show`, not from memory.")
         own_time = ledger is not None and any(
-            o.get("efficiency_basis") == "own-time" and o.get("anchor") == f"{story}/{item.get('anchor')}"
+            o.get("efficiency_basis") == "own-time" and o.get("anchor") in (item.get("anchor"), f"{story}/{item.get('anchor')}")
             for o in ledger.data["opportunities"])
         require_efficiency_investigation(index, item, packet, story_shares.get(index, 0.0), story, config, ledger, prior,
                                          repository_root=repository_root, own_time=own_time)
