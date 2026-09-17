@@ -7572,7 +7572,7 @@ def verify_reading(citations, repository_root, label):
     return names
 
 
-_REF_ID_RE = re.compile(r"#(\d{1,4})\b")
+_REF_ID_RE = re.compile(r"(?<![A-Za-z0-9])#(\d{1,4})\b")  # not UAX#14, TR#29
 _REF_ATTRIB_RE = re.compile(
     r"([A-Za-z_][\w:<>~]*::[\w~]+)(?:\([^)]*\))?[`'\"]?\s*(?:is\s+|in\s+|as\s+|\(|,\s*)?"
     r"(?:its\s+own\s+|efficiency\s+|redundancy\s+|algorithmic\s+|existing\s+)*(area|areas|mechanism)?\s*[`'\"(]*#(\d{1,4})\b")
