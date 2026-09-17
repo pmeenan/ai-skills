@@ -7187,6 +7187,14 @@ def functions_answered_for(ledger):
     return out
 
 
+def own_time_area_key(story, frame):
+    """One key per frame: the short name reads, the digest of the whole
+    symbol separates template instances and overloads (two ParseChildren
+    instances shared a key in round 47)."""
+    digest = hashlib.sha256(frame.encode()).hexdigest()[:8]
+    return f"own-{slug_key(story)}-{slug_key(frame_short_name(frame))}-{digest}"
+
+
 def own_time_frontier_rows(ledger, table=None):
     """The efficiency search the counted frontier cannot reach: every
     in-scope function, counted or not, by the time in its own body. A row
@@ -7218,7 +7226,7 @@ def own_time_frontier_rows(ledger, table=None):
             continue
         shares = {st: sh.get(f, 0.0) for st, sh in per_story.items()}
         home = max(shares, key=lambda st: shares[st] / floors[st])
-        area_key = f"own-{slug_key(home)}-{slug_key(anchor_function(f))}"[:160]
+        area_key = own_time_area_key(home, f)
         area = areas.get(area_key)
         if area is not None and area.get("path_accounting"):
             status = ("candidate" if any(r.get("disposition") == "algorithmic" for r in area["path_accounting"])
@@ -7631,7 +7639,7 @@ def ledger_investigation_shapes(ledger):
 
 
 def require_efficiency_investigation(index, item, packet, share, story, config, ledger, prior_shapes=None,
-                                     repository_root=None):
+                                     repository_root=None, own_time=False):
     """An efficiency investigation is one structured hypothesis per place the
     row's time goes. Each names the change (what the code computes today and
     what the cheaper algorithm computes instead, naming the code it changes),
@@ -7779,7 +7787,17 @@ def require_efficiency_investigation(index, item, packet, share, story, config, 
             f"{label}: an algorithmic row's own claim is one of its hypotheses, with outcome "
             f"`{EFFICIENCY_ROW_OUTCOME}` on the row's avoided frames; none has it."
         )
-    large = [e for e in (packet.get("children") or []) if float(e.get("fraction_of_row", 0.0)) >= EFFICIENCY_ATTENTION_FRACTION]
+    children = packet.get("children") or []
+    if own_time:
+        # An own-time area answers for the function's body and the helpers
+        # it calls; an in-scope callee answers for itself in its own area.
+        namespaces = tuple((config or {}).get("in_scope_namespaces") or IN_SCOPE_NAMESPACES)
+        body = [e for e in children if not frame_in_scope(str(e.get("frame") or ""), namespaces)]
+        body_total = sum(float(e.get("fraction_of_row", 0.0)) for e in body) or 1.0
+        large = [e for e in body if e.get("frame") == "(self)"
+                 or float(e.get("fraction_of_row", 0.0)) / body_total >= EFFICIENCY_ATTENTION_FRACTION]
+    else:
+        large = [e for e in children if float(e.get("fraction_of_row", 0.0)) >= EFFICIENCY_ATTENTION_FRACTION]
     for e in large:
         if not any(cost_evidence.frame_matches(e["frame"], c) for c in covered):
             raise CampaignError(
@@ -7824,8 +7842,11 @@ def enforce_efficiency_rows(paths, story_shares, story, campaign_dir, config=Non
             refs = ledger_reference_problems(item.get(field), ledger, (item.get("mechanism_key"),))
             if refs:
                 raise CampaignError(f"Path {index} ({item['anchor'][:80]!r}) `{field}` names what the ledger does not have: {'; '.join(refs)}. Ids and keys come from `show`, not from memory.")
+        own_time = ledger is not None and any(
+            o.get("efficiency_basis") == "own-time" and o.get("anchor") == f"{story}/{item.get('anchor')}"
+            for o in ledger.data["opportunities"])
         require_efficiency_investigation(index, item, packet, story_shares.get(index, 0.0), story, config, ledger, prior,
-                                         repository_root=repository_root)
+                                         repository_root=repository_root, own_time=own_time)
 
 
 def cmd_calibrate(args):
