@@ -197,6 +197,21 @@ exclusive share is largest): one work ref, the function itself, the suite
 floor as its floor, and `redundancy_closings` naming the rows that counted
 it.
 
+The counted frontier has two blind spots, both found in round 47: it ranks
+by the suite mean only, so a function worth 3% of one story and 0.15% of
+the suite never appears; and it lists only functions a counter sat in, so
+a function closed on an ancestor's count is never read. `own-time-frontier`
+covers both. It ranks every in-scope function, counted or not, by the time
+in its own body (`frame_own_shares_cached`: the samples whose deepest
+in-scope frame it is, with no foreign frame beneath; `frame_in_scope` sees
+past a leading return type, which a namespace-prefix test misses). A
+function is a row when that own time clears a story's qualification floor
+in that story, or the suite floor as a mean, and is `answered` when an
+efficiency area or a mechanism row already sits on it. `--open [--limit n]`
+makes each OPEN function an efficiency area (`efficiency_basis: own-time`)
+in the story where own time is largest against the floor. Exhaustion
+counts OPEN and opened-but-unread own-time rows as blockers.
+
 An efficiency area's one row says one of two things, and nothing else
 (`enforce_phase_dispositions`):
 

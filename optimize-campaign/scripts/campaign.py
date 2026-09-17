@@ -6791,6 +6791,9 @@ def phase_blockers(ledger):
         out.append(f"{len(open_suite)} suite-frontier function(s) are OPEN (campaign.py suite-frontier --open)")
     if open_eff:
         out.append(f"{len(open_eff)} efficiency-frontier function(s) are OPEN (campaign.py efficiency-frontier --open)")
+    open_own = [r for r in own_time_frontier_rows(ledger, table)["rows"] if r["status"] in ("OPEN", "opened")]
+    if open_own:
+        out.append(f"{len(open_own)} own-time frontier function(s) are OPEN or opened and unread (campaign.py own-time-frontier --open)")
     return out
 
 
@@ -7116,6 +7119,195 @@ def cmd_efficiency_frontier(args):
         ledger.save()
     print(f"opened {opened} efficiency area(s)")
     return 0
+
+
+def frame_in_scope(frame, namespaces):
+    """Is the frame a function of the campaign's namespaces? A template or
+    free function's symbol leads with its return type (`void
+    blink::SelectorQuery::Execute<...>`), which a prefix test misses."""
+    prefixes = tuple(f"{ns}::" for ns in namespaces)
+    if frame.startswith(prefixes):
+        return True
+    head = frame.split("(anonymous namespace)")[0].split("(")[0]
+    if " " not in head:
+        return False
+    return head.rsplit(" ", 1)[-1].lstrip("*&").startswith(prefixes)
+
+
+def frame_own_shares_cached(collapsed_file, namespaces, foreign=FOREIGN_NAMESPACES):
+    """Own share (%) of every in-scope frame in one capture: the samples
+    whose deepest in-scope frame it is, with no foreign (V8) frame beneath
+    it. The function's body, what the compiler inlined into it, and the
+    allocator, libc and library helpers it calls. Memoized per capture."""
+    path = pathlib.Path(collapsed_file)
+    cache = None
+    try:
+        st = path.stat()
+        key = hashlib.sha256(json.dumps([str(path.resolve()), st.st_size, st.st_mtime_ns, list(namespaces), list(foreign)]).encode()).hexdigest()[:24]
+        cache = _INCLUSIVE_CACHE_DIR / f"own-{key}.json"
+        if cache.is_file():
+            return json.loads(cache.read_text())
+    except (OSError, ValueError):
+        pass
+    foreign_prefixes = tuple(f"{ns}::" for ns in foreign)
+    total = 0.0
+    own = {}
+    for frames, weight in iter_stacks([path]):
+        total += weight
+        for frame in reversed(frames):
+            if frame.startswith(foreign_prefixes):
+                break
+            if frame_in_scope(frame, namespaces):
+                own[frame] = own.get(frame, 0.0) + weight
+                break
+    shares = {f: 100.0 * w / total for f, w in own.items()} if total > 0 else {}
+    if cache is not None:
+        try:
+            _INCLUSIVE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = cache.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(shares))
+            tmp.replace(cache)
+        except OSError:
+            pass
+    return shares
+
+
+def functions_answered_for(ledger):
+    """The frames some reading already answers for: an efficiency or
+    own-time area's function, and every row a mechanism sits on."""
+    out = set()
+    for opp in ledger.data["opportunities"]:
+        if opp.get("kind") != "discovery":
+            continue
+        if opp.get("scope") == "efficiency" and "/" in str(opp.get("anchor") or ""):
+            out.add(opp["anchor"].split("/", 1)[1])
+        for row in opp.get("path_accounting") or []:
+            if row.get("disposition") in ("novel", "known", "algorithmic"):
+                out.add(str(row.get("anchor") or ""))
+    return out
+
+
+def own_time_frontier_rows(ledger, table=None):
+    """The efficiency search the counted frontier cannot reach: every
+    in-scope function, counted or not, by the time in its own body. A row
+    when its own time clears a story's qualification floor in that story, or
+    the suite floor as a mean across the suite, and no efficiency area or
+    mechanism row answers for it. Status as the efficiency frontier's."""
+    table = table or suite_inclusive_shares(ledger)
+    cfg = ledger.data["config"]
+    foreign = tuple(cfg.get("foreign_namespaces") or FOREIGN_NAMESPACES)
+    per_story = {}
+    for story, files in table["captures"].items():
+        acc = {}
+        for _, path in files:
+            for f, sh in frame_own_shares_cached(path, table["namespaces"], foreign).items():
+                acc[f] = acc.get(f, 0.0) + sh / len(files)
+        per_story[story] = acc
+    n = len(table["stories"]) or 1
+    mean = {}
+    for shares in per_story.values():
+        for f, sh in shares.items():
+            mean[f] = mean.get(f, 0.0) + sh / n
+    floors = {story: qualification_floor_pct(cfg, story)[0] for story in per_story}
+    answered = functions_answered_for(ledger)
+    areas = {o.get("area_key"): o for o in ledger.data["opportunities"] if o.get("kind") == "discovery"}
+    rows = []
+    for f in sorted(mean, key=lambda x: (-mean[x], x)):
+        clears = {st: sh[f] for st, sh in per_story.items() if sh.get(f, 0.0) >= floors[st]}
+        if not clears and mean[f] < table["floor"]:
+            continue
+        shares = {st: sh.get(f, 0.0) for st, sh in per_story.items()}
+        home = max(shares, key=lambda st: shares[st] / floors[st])
+        area_key = f"own-{slug_key(home)}-{slug_key(anchor_function(f))}"[:160]
+        area = areas.get(area_key)
+        if area is not None and area.get("path_accounting"):
+            status = ("candidate" if any(r.get("disposition") == "algorithmic" for r in area["path_accounting"])
+                      else "investigated")
+        elif area is not None:
+            status = "opened"
+        elif f in answered:
+            status = "answered"
+        else:
+            status = "OPEN"
+        rows.append({"frame": f, "own_suite_pct": round(mean[f], 4), "home_story": home,
+                     "home_own_pct": round(shares[home], 3), "home_floor_pct": round(floors[home], 3),
+                     "stories_clearing": {st: round(v, 3) for st, v in sorted(clears.items(), key=lambda kv: -kv[1])},
+                     "status": status, "area_key": area_key})
+    return {"rows": rows, "table": table, "own_total_pct": round(sum(mean.values()), 2),
+            "answered_pct": round(sum(v for f, v in mean.items() if f in answered), 2)}
+
+
+def cmd_own_time_frontier(args):
+    """Every in-scope function by the time in its own body, whether or not
+    a counter ever sat in it; with --open (efficiency phase only), an
+    efficiency area per OPEN function in its home story."""
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    phase = discovery_phase(ledger)
+    if args.open and phase != "efficiency":
+        raise CampaignError(f"the campaign is in the {phase} phase; own-time areas open in the efficiency phase")
+    found = own_time_frontier_rows(ledger)
+    table, rows = found["table"], found["rows"]
+    print(f"in-scope own time {found['own_total_pct']:.1f}% of the score; {found['answered_pct']:.1f}% in functions a "
+          f"reading answers for; {len(rows)} function(s) clear a story floor or the suite floor "
+          f"({table['floor']:.3f}%) on their own time; phase {phase}")
+    print(f"{'own%':>6} {'home':26} {'home%':>6} {'floor':>6} {'clear':>5} status        function")
+    to_open = []
+    for r in rows:
+        print(f"{r['own_suite_pct']:5.2f}% {r['home_story'][:26]:26} {r['home_own_pct']:5.2f}% {r['home_floor_pct']:5.2f}% "
+              f"{len(r['stories_clearing']):5d} {r['status']:13} {r['frame'][:90]}")
+        if r["status"] == "OPEN":
+            to_open.append(r)
+    if not args.open:
+        return 0
+    opened = 0
+    for r in to_open[: args.limit or None]:
+        home = r["home_story"]
+        refs, sources = [], []
+        inclusive = 0.0
+        files = table["captures"].get(home) or []
+        for capture_id, path in files:
+            share = frame_inclusive_shares_cached(path, table["namespaces"]).get(r["frame"])
+            if share is None:
+                share = descendant_root_share(path, r["frame"])
+            inclusive += share / len(files)
+            entry = f"story:{home}/function:{r['frame']}"
+            refs.append({"capture_id": capture_id, "entry_key": entry, "hotspot_key": "@root",
+                         "semantic_key": f"symbol:{r['frame']}", "measured_share_pct": share})
+            sources.append({"capture_id": capture_id, "entry_key": entry})
+        opp = new_opportunity(ledger, kind="discovery", anchor=f"{home}/{r['frame']}", area_key=r["area_key"],
+                              profile_id=table["profile"].get("id"), share=inclusive,
+                              notes=(f"own-time frontier: {r['home_own_pct']:.2f}% of {home} in the function's own body "
+                                     f"(story floor {r['home_floor_pct']:.2f}%), {r['own_suite_pct']:.3f}% as a suite mean; "
+                                     "no efficiency area or mechanism row answers for it"))
+        opp["target_story"] = home
+        opp["scope"] = "efficiency"
+        opp["efficiency_basis"] = "own-time"
+        opp["own_time_pct"] = r["home_own_pct"]
+        opp["own_suite_pct"] = r["own_suite_pct"]
+        opp["suite_stories"] = {st: round(table["per_story"][st].get(r["frame"], 0.0), 3) for st in table["per_story"]
+                                if table["per_story"][st].get(r["frame"], 0.0) > 0}
+        opp["suite_share_pct"] = round(sum(opp["suite_stories"].values()) / (len(table["stories"]) or 1), 4)
+        opp["redundancy_closings"] = []
+        opp["expected_work_refs"] = refs
+        opp["source_refs"] = sources
+        opp["measured_priority_pct"] = inclusive
+        opened += 1
+        print(f"opened #{opp['id']} {r['area_key']} in {home}")
+    if opened:
+        ledger.save()
+    print(f"opened {opened} own-time area(s)")
+    return 0
+
+
+def descendant_root_share(collapsed_file, frame):
+    """Inclusive share (%) of one frame, for a frame the namespace-prefix
+    table does not hold (its symbol leads with a return type)."""
+    total = hit = 0.0
+    for frames, weight in iter_stacks([collapsed_file]):
+        total += weight
+        if frame in frames:
+            hit += weight
+    return 100.0 * hit / total if total else 0.0
 
 
 def avoided_shares_by_story(ledger, anchor, avoided_frames):
@@ -13309,6 +13501,11 @@ def build_parser():
     p = sub.add_parser("efficiency-frontier", help="The counted, necessary work ranked by the time it carries outside every other counted function; --open (efficiency phase) makes each OPEN function an efficiency area in its home story")
     p.add_argument("--open", action="store_true")
     p.set_defaults(func=cmd_efficiency_frontier)
+
+    p = sub.add_parser("own-time-frontier", help="Every in-scope function by the time in its own body, counted or not; --open (efficiency phase, host) makes each OPEN function an efficiency area in its home story")
+    p.add_argument("--open", action="store_true")
+    p.add_argument("--limit", type=int, default=0, help="open at most this many, largest first")
+    p.set_defaults(func=cmd_own_time_frontier)
 
     p = sub.add_parser("register-site", help="Host: record the hypothesis class a probe site's key and predicate test")
     p.add_argument("--site", required=True, help="site name as passed to RedundancyCounter")

@@ -2523,5 +2523,31 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         self.assertNotIn("eligible frontier", text)
 
 
+    def test_frame_in_scope_sees_past_a_return_type(self):
+        ns = ("blink", "cc")
+        self.assertTrue(campaign.frame_in_scope("blink::Element::RecalcStyle(blink::StyleRecalcChange)", ns))
+        self.assertTrue(campaign.frame_in_scope("void blink::SelectorQuery::Execute<blink::AllElementsSelectorQueryTrait>(blink::ContainerNode&)", ns))
+        self.assertTrue(campaign.frame_in_scope("blink::Element* blink::(anonymous namespace)::HTMLFastPathParser<char16_t>::ParseElement<true>()", ns))
+        self.assertTrue(campaign.frame_in_scope("v8::Local<v8::Value> blink::ToV8(blink::Node*)", ns))
+        self.assertFalse(campaign.frame_in_scope("v8::internal::Invoke(blink::Foo*)", ns))
+        self.assertFalse(campaign.frame_in_scope("std::unique_ptr<blink::Foo> base::Make(int)", ns))
+
+    def test_own_shares_stop_at_a_foreign_frame(self):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as d:
+            f = os.path.join(d, "c.collapsed")
+            with open(f, "w") as fh:
+                fh.write("root;blink::A();blink::B();malloc 30\n")
+                fh.write("root;blink::A();v8::Run();blink::C() 50\n")
+                fh.write("root;blink::A();v8::Run() 20\n")
+            saved = campaign._INCLUSIVE_CACHE_DIR
+            campaign._INCLUSIVE_CACHE_DIR = pathlib.Path(d) / "cache"
+            try:
+                own = campaign.frame_own_shares_cached(f, ("blink",))
+            finally:
+                campaign._INCLUSIVE_CACHE_DIR = saved
+        self.assertEqual(own, {"blink::B()": 30.0, "blink::C()": 50.0})
+
+
 if __name__ == "__main__":
     unittest.main()
