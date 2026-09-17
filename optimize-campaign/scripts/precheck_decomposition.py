@@ -262,7 +262,7 @@ def efficiency_precheck(ledger, parent, result, shares, story, story_floor, camp
             cs = p["cost_summary"]
             impact = shares.get(i, 0.0) * frac
             qual_floor = max(campaign.qualification_floor_pct(ledger.data["config"], story)[0], ledger.data["config"]["share_floor_pct"])
-            suite = campaign.algorithmic_suite_impact(ledger, p["anchor"], frac)
+            suite = campaign.algorithmic_suite_impact_measured(ledger, p["anchor"], p.get("avoided_frames") or [], frac, story)
             print(f"row {i} algorithmic {p['anchor'][:60]} share={shares.get(i,0):.2f} frac={frac} avoided={cs['avoided_fraction_of_row']:.4f} of row via {cs['avoided_frames']}; "
                   f"story impact {impact:.3f}% (qualification floor {qual_floor:.3f}%), suite impact {suite['suite_impact_pct']:.3f}% (floor {suite['suite_floor_pct']:.3f}%) [{suite['impact_basis']}]"
                   + ("; qualifies in the story" if impact >= qual_floor else "; qualifies across the suite" if suite["qualifies_suite"] else ""))

@@ -1074,7 +1074,7 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         with self.assertRaisesRegex(campaign.CampaignError, "mandatory in an efficiency area"):
             campaign.enforce_phase_dispositions([{"anchor": "blink::Big()", "disposition": "mandatory"}], "efficiency", area)
         campaign.enforce_phase_dispositions([alg, {"anchor": "blink::Own()", "disposition": "no-qualifying-mechanism"}], "efficiency", area)
-        story_dir, _ = self._two_story_profile({"A": "main;blink::Big();blink::Leaf() 50\nmain;blink::Big();blink::Own() 10\nmain;other 40\n"})
+        story_dir, _ = self._two_story_profile({"A": "main;blink::Big();blink::Leaf() 50\nmain;blink::Big();blink::Own() 10\nmain;blink::Big();blink::Tiny() 1\nmain;other 40\n"})
         ledger = campaign.Ledger(self.dir).load(); cfg = ledger.data["config"]
         repo = self.dir / "repo"; (repo / "core").mkdir(parents=True)
         (repo / "core" / "big.cc").write_text("// header\n" * 10 + "void Big() {\n  Leaf();\n  Own();\n}\n" + "//\n" * 5 + "void Leaf() {}\n" + "//\n" * 3 + "void Own() {}\n")
@@ -1115,7 +1115,26 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
                 run(row)
         row["investigation"]["hypotheses"] = [leaf]
         run(row)
-        self.assertEqual([0.833333], [h["ceiling_fraction"] for h in row["cost_summary"]["hypotheses"]])
+        self.assertEqual([0.819672], [h["ceiling_fraction"] for h in row["cost_summary"]["hypotheses"]])
+        # The suite impact of a claim is measured story by story: the avoided
+        # frames' own share in each story's stacks x the claimed part of the
+        # home ceiling (round 43: a child large at home and absent elsewhere).
+        row_share, avoided = campaign.avoided_shares_by_story(ledger, "blink::Big()", ["blink::Leaf()"])["A"]
+        self.assertAlmostEqual(100 * 61 / 101, row_share); self.assertAlmostEqual(100 * 50 / 101, avoided)
+        measured = campaign.algorithmic_suite_impact_measured(ledger, "blink::Big()", ["blink::Leaf()"], 0.41, "A")
+        self.assertAlmostEqual(0.5, measured["claimed_part_of_ceiling"], places=3)
+        self.assertAlmostEqual(100 * 50 / 101 * (0.41 / (50 / 61)), measured["suite_impact_pct"], places=3)
+        # A child whose whole share is below both floors closes by its
+        # ceiling: no change to invent, no fraction to guess. One that could
+        # carry a candidate cannot.
+        tiny = {"avoided_frames": ["blink::Tiny()"], "outcome": "ceiling"}
+        row["investigation"]["hypotheses"] = [leaf, tiny]
+        run(row)
+        self.assertEqual("ceiling", row["cost_summary"]["hypotheses"][1]["outcome"])
+        row["investigation"]["hypotheses"] = [dict(tiny, avoided_frames=["blink::Leaf()"])]
+        with self.assertRaisesRegex(campaign.CampaignError, "needs the frames' whole share below both floors"):
+            run(row)
+        row["investigation"]["hypotheses"] = [leaf]
         # A saving that clears a floor is the algorithmic row, not saves-less.
         big = dict(leaf, saved_fraction=0.5)
         row["investigation"]["hypotheses"] = [big]

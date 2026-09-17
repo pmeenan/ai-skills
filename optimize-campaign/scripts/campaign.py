@@ -7109,6 +7109,85 @@ def cmd_efficiency_frontier(args):
     return 0
 
 
+def avoided_shares_by_story(ledger, anchor, avoided_frames):
+    """Per story, (row share %, avoided share %): the share of the story's
+    samples under `anchor`, and the part of it in the avoided frames (each
+    name a direct child of the anchor, inclusive, else a leaf: the cost
+    packet's semantics), measured in every story's own stacks. Cached on
+    disk per capture set."""
+    import cost_evidence
+    table = suite_inclusive_shares(ledger)
+    out = {}
+    for story, files in table["captures"].items():
+        if not files:
+            continue
+        paths = [pathlib.Path(path) for _, path in files]
+        stamp = [[str(q.resolve()), q.stat().st_size, q.stat().st_mtime_ns] for q in paths]
+        key = hashlib.sha256(json.dumps([stamp, anchor, sorted(avoided_frames)]).encode()).hexdigest()[:24]
+        cache = _INCLUSIVE_CACHE_DIR / f"avoided-{key}.json"
+        if cache.is_file():
+            try:
+                out[story] = tuple(json.loads(cache.read_text()))
+                continue
+            except (OSError, ValueError):
+                pass
+        total = row = 0.0
+        children, leaves = {}, {}
+        for frames, weight in iter_stacks(paths):
+            total += weight
+            if anchor not in frames:
+                continue
+            row += weight
+            index = len(frames) - 1 - frames[::-1].index(anchor)
+            child = frames[index + 1] if index + 1 < len(frames) else "(self)"
+            children[child] = children.get(child, 0.0) + weight
+            leaves[frames[-1]] = leaves.get(frames[-1], 0.0) + weight
+        avoided = 0.0
+        for name in avoided_frames:
+            found = [w for f, w in children.items() if cost_evidence.frame_matches(f, name)]
+            if not found:
+                found = [w for f, w in leaves.items() if cost_evidence.frame_matches(f, name)]
+            avoided += sum(found)
+        avoided = min(avoided, row)
+        n = len(paths)
+        result = (100.0 * row / total if total else 0.0, 100.0 * avoided / total if total else 0.0)
+        out[story] = result
+        try:
+            _INCLUSIVE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = cache.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(result)); tmp.replace(cache)
+        except OSError:
+            pass
+    return out
+
+
+ALGORITHMIC_IMPACT_BASIS_MEASURED = ("avoided frames' share measured in every story's stacks x the claimed part of the "
+                                     "home-story ceiling: a ranking, proven only by sizing")
+
+
+def algorithmic_suite_impact_measured(ledger, anchor, avoided_frames, fraction, home_story):
+    """The suite impact of a cheaper algorithm, story by story: in each
+    story the avoided frames' measured share under the function, times the
+    part of the home-story ceiling the row claims (fraction / ceiling). A
+    child that is large in the home story and absent elsewhere contributes
+    nothing elsewhere (round 43: UpdateActiveStyle read 1.05% of the suite
+    by the home fraction and 0.25% measured)."""
+    table = suite_inclusive_shares(ledger)
+    shares = avoided_shares_by_story(ledger, anchor, avoided_frames)
+    home_row, home_avoided = shares.get(home_story, (0.0, 0.0))
+    ceiling = (home_avoided / home_row) if home_row else 0.0
+    ratio = min(1.0, float(fraction) / ceiling) if ceiling > 0 else 0.0
+    sized = {story: avoided * ratio for story, (_, avoided) in shares.items()}
+    n = len(table["stories"]) or 1
+    impact = sum(sized.values()) / n
+    return {"suite_impact_pct": round(impact, 4), "suite_floor_pct": table["floor"], "suite_floor_basis": table["basis"],
+            "stories_total": n, "stories_sized": len([v for v in sized.values() if v > 0]),
+            "stories_errored": 0, "errors": {},
+            "contributions": {st: round(v, 4) for st, v in sorted(sized.items(), key=lambda kv: -kv[1]) if v > 0},
+            "qualifies_suite": impact >= table["floor"], "impact_basis": ALGORITHMIC_IMPACT_BASIS_MEASURED,
+            "home_ceiling_fraction": round(ceiling, 6), "claimed_part_of_ceiling": round(ratio, 4)}
+
+
 def algorithmic_suite_impact_multi(ledger, fractions_by_anchor):
     """The suite impact of one cheaper algorithm claimed on several
     functions (distinct anchors add; the same anchor takes its largest
@@ -7218,12 +7297,12 @@ def investigation_is_bounded(item):
         return False
     hypotheses = investigation["hypotheses"]
     if all(isinstance(h, dict) for h in hypotheses):
-        return all(h.get("outcome") and h.get("reason") for h in hypotheses)
+        return all(h.get("outcome") and (h.get("reason") or h.get("outcome") == "ceiling") for h in hypotheses)
     return bool(investigation.get("falsifications")
                 and any(re.search(r"\d", str(f)) for f in investigation["falsifications"]))
 
 
-EFFICIENCY_OUTCOMES = ("saves-less", "not-equivalent", "already-done")
+EFFICIENCY_OUTCOMES = ("saves-less", "not-equivalent", "already-done", "ceiling")
 EFFICIENCY_ROW_OUTCOME = "algorithmic"  # the hypothesis that is the row's own claim
 EFFICIENCY_ATTENTION_FRACTION = 0.2
 EFFICIENCY_CHANGE_MIN_CHARS = 80
@@ -7386,6 +7465,30 @@ def require_efficiency_investigation(index, item, packet, share, story, config, 
         reason = " ".join(str(h.get("reason") or "").split())
         frames = h.get("avoided_frames")
         outcome = h.get("outcome")
+        if outcome == "ceiling":
+            # Nothing on these frames can qualify: their whole share is below
+            # the story's floor here and their measured share across the suite
+            # is below the suite floor. No change to invent, no fraction to guess.
+            if not isinstance(frames, list) or not frames or not all(isinstance(f, str) and f.strip() for f in frames):
+                raise CampaignError(f"{label} hypothesis {n}: `avoided_frames` names the packet frames the ceiling is taken over")
+            ceiling, unmatched = cost_evidence.avoided_fraction(packet, frames)
+            if unmatched:
+                raise CampaignError(f"{label} hypothesis {n}: avoided_frames {unmatched[:4]} are not in the cost packet's child or leaf tables")
+            suite = (algorithmic_suite_impact_measured(ledger, item.get("anchor"), frames, ceiling, story)
+                     if ledger is not None else None)
+            if share * ceiling >= qual_floor or (suite is not None and suite.get("qualifies_suite")):
+                raise CampaignError(
+                    f"{label} hypothesis {n}: outcome `ceiling` needs the frames' whole share below both floors; "
+                    f"{ceiling:.4f} of the row is {share * ceiling:.3f}% of {story} (floor {qual_floor:.3f}%)"
+                    + (f" and {suite['suite_impact_pct']:.3f}% of the suite measured (floor {suite['suite_floor_pct']:.3f}%)" if suite else "")
+                    + ". These frames can carry a candidate: read them and state a change."
+                )
+            for f in frames:
+                covered.add(f.rstrip("(").rstrip())
+            ceilings.append({"avoided_frames": list(frames), "ceiling_fraction": round(ceiling, 6), "outcome": outcome,
+                             "story_ceiling_pct": round(share * ceiling, 4),
+                             "suite_ceiling_pct": (suite or {}).get("suite_impact_pct")})
+            continue
         read = verify_reading(h.get("read"), repository_root, f"{label} hypothesis {n}")
         read_all |= read
         if (len(change) < EFFICIENCY_CHANGE_MIN_CHARS or not EXISTING_MECHANISM_SYMBOL_RE.search(change)
@@ -7438,7 +7541,8 @@ def require_efficiency_investigation(index, item, packet, share, story, config, 
                     "avoided frames' fraction of the row"
                 )
             story_impact = share * saved
-            suite = algorithmic_suite_impact(ledger, item.get("anchor"), saved) if ledger is not None else None
+            suite = (algorithmic_suite_impact_measured(ledger, item.get("anchor"), frames, saved, story)
+                     if ledger is not None else None)
             if story_impact >= qual_floor or (suite is not None and suite.get("qualifies_suite")):
                 raise CampaignError(
                     f"{label} hypothesis {n}: a change saving {saved:.4f} of the row is {story_impact:.3f}% of "
@@ -7464,7 +7568,7 @@ def require_efficiency_investigation(index, item, packet, share, story, config, 
             covered.add(f.rstrip("(").rstrip())
         ceilings.append({"avoided_frames": list(frames), "ceiling_fraction": round(ceiling, 6), "outcome": outcome,
                          "saved_fraction": saved, "read": [dict(c) for c in h.get("read")]})
-    if own_name not in read_all:
+    if own_name not in read_all and any(h.get("outcome") != "ceiling" for h in hypotheses):
         raise CampaignError(
             f"{label}: no hypothesis cites a reading of {own_name} itself (`read`: its file and the lines "
             "of its definition); the investigation starts with the function."
@@ -9778,8 +9882,9 @@ def cmd_decompose(args):
                 suite = None
                 if not test_bypass_active():
                     if path_item["disposition"] == "algorithmic":
-                        suite = algorithmic_suite_impact(ledger, path_item["anchor"], fraction)
-                        path_item["impact_basis"] = ALGORITHMIC_IMPACT_BASIS
+                        suite = algorithmic_suite_impact_measured(
+                            ledger, path_item["anchor"], path_item.get("avoided_frames") or [], fraction, story_name)
+                        path_item["impact_basis"] = ALGORITHMIC_IMPACT_BASIS_MEASURED
                     else:
                         suite = path_item_suite_impact(path_item, ledger)
                     if suite is not None:
@@ -12158,13 +12263,23 @@ def cmd_suite_impacts(args):
                 rows_by_key.setdefault(key, row)
                 frac = float(row.get("estimated_avoidable_fraction") or 0.0)
                 by_anchor = alg_anchors.setdefault(key, {})
-                by_anchor[row["anchor"]] = max(by_anchor.get(row["anchor"], 0.0), frac)
+                if frac >= by_anchor.get(row["anchor"], (0.0,))[0]:
+                    by_anchor[row["anchor"]] = (frac, list(row.get("avoided_frames") or []), disc.get("target_story"))
     for opp in ledger.data["opportunities"]:
         if opp.get("kind") != "mechanism" or opp.get("status") in MECHANISM_TERMINAL:
             continue
         row = rows_by_key.get(opp.get("mechanism_key"))
         if row is not None and row.get("disposition") == "algorithmic":
-            summary = algorithmic_suite_impact_multi(ledger, alg_anchors[opp.get("mechanism_key")])
+            parts = [algorithmic_suite_impact_measured(ledger, anchor, frames, frac, home)
+                     for anchor, (frac, frames, home) in alg_anchors[opp.get("mechanism_key")].items()]
+            summary = dict(parts[0])
+            merged = {}
+            for part in parts:
+                for st, v in part["contributions"].items():
+                    merged[st] = merged.get(st, 0.0) + v
+            summary["contributions"] = {st: round(v, 4) for st, v in sorted(merged.items(), key=lambda kv: -kv[1])}
+            summary["suite_impact_pct"] = round(sum(merged.values()) / (summary["stories_total"] or 1), 4)
+            summary["qualifies_suite"] = summary["suite_impact_pct"] >= (summary["suite_floor_pct"] or 0.0)
         else:
             summary = path_item_suite_impact(row, ledger) if row else None
         if summary is None:

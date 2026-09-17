@@ -208,10 +208,11 @@ An efficiency area's one row says one of two things, and nothing else
   packet bounds (the avoided frames' summed fraction of the row), and states
   the `algorithm_hypothesis` (what the code computes, what the cheaper
   algorithm computes instead and why the result is the same, the packet's
-  fraction). Its story impact is share x fraction; its suite impact is that
-  product in every story averaged over the suite
-  (`algorithmic_suite_impact`), a **ranking** the home story's packet bounds
-  and the other stories assume (`impact_basis`); sizing proves it. A row
+  fraction). Its story impact is share x fraction; its suite impact is measured story
+  by story (`algorithmic_suite_impact_measured`): the avoided frames' share
+  under the function in each story's own stacks, times the part of the
+  home-story ceiling the row claims, averaged over the suite. A **ranking**
+  (`impact_basis`); sizing proves it. A row
   below the story floor and the suite floor is refused: a saving the
   measurement cannot read is not a candidate, and the row closes as the
   other kind with that algorithm as a falsified hypothesis.
@@ -231,7 +232,12 @@ An efficiency area's one row says one of two things, and nothing else
   itself and every frame the hypothesis avoids, which the gate verifies
   against the checkout (the file exists, the range is at most 600 lines,
   the symbol's name occurs in it; `verify_reading`). Every child at or
-  above 20% of the row, `(self)` included, has a hypothesis. A change or
+  above 20% of the row, `(self)` included, has a hypothesis. A child
+  whose whole share cannot qualify closes with outcome `ceiling` (its
+  `avoided_frames` only): the gate checks that the frames' ceiling is below
+  the story's floor and that their share measured in every story's stacks is
+  below the suite floor; no change is invented and no fraction guessed for
+  work that cannot matter. A change or
   reason written from another hypothesis's template, on this row or on any
   efficiency row on the ledger, is refused (round 37: twelve areas, one
   sentence). `stop_reason`, `budget_used` and `source_revision` stay on the
