@@ -237,6 +237,11 @@ An efficiency area's one row says one of two things, and nothing else
   sentence). `stop_reason`, `budget_used` and `source_revision` stay on the
   investigation; it binds the same `cost_evidence`.
 
+An `algorithmic` row carries the same investigation: its own claim is the
+hypothesis with outcome `algorithmic` (on the row's avoided frames), the
+other children at or above 20% of the row have theirs, and every reading is
+verified the same way.
+
 A redundancy found while investigating efficiency belongs to the
 function's row in its story or suite area (a `novel` row with a packet),
 not to the efficiency area. An avoided frame that is another counted

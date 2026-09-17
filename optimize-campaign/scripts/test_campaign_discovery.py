@@ -1137,6 +1137,22 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             run(row)
         row["investigation"]["hypotheses"] = [leaf, own]
         run(row)
+        # An algorithmic row carries the same investigation: its own claim as
+        # the hypothesis with outcome `algorithmic` (on its avoided frames),
+        # readings verified like any other.
+        alg_row = {"anchor": "blink::Big()", "disposition": "algorithmic", "avoided_frames": ["blink::Leaf()"],
+                   "cost_evidence": row["cost_evidence"],
+                   "investigation": {"hypotheses": [dict(leaf, outcome="algorithmic"), own], "stop_reason": "row", "budget_used": "1h", "source_revision": "x"}}
+        run(alg_row)
+        alg_row["investigation"]["hypotheses"] = [dict(own, outcome="algorithmic"), leaf]
+        with self.assertRaisesRegex(campaign.CampaignError, "among the row's"):
+            run(alg_row)
+        alg_row["investigation"]["hypotheses"] = [dict(leaf, outcome="qualifies"), own]
+        with self.assertRaisesRegex(campaign.CampaignError, "or `algorithmic` for the hypothesis"):
+            run(alg_row)
+        alg_row.pop("investigation")
+        with self.assertRaisesRegex(campaign.CampaignError, "algorithmic in an efficiency area without a bounded investigation"):
+            run(alg_row)
 
     def test_suite_area_rows_qualify_by_the_real_floors(self):
         """A suite area's floor (the suite floor) says which rows bind a

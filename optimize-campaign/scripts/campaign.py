@@ -7200,6 +7200,7 @@ def investigation_is_bounded(item):
 
 
 EFFICIENCY_OUTCOMES = ("saves-less", "not-equivalent", "already-done")
+EFFICIENCY_ROW_OUTCOME = "algorithmic"  # the hypothesis that is the row's own claim
 EFFICIENCY_ATTENTION_FRACTION = 0.2
 EFFICIENCY_CHANGE_MIN_CHARS = 80
 EFFICIENCY_REASON_MIN_CHARS = 60
@@ -7337,8 +7338,18 @@ def require_efficiency_investigation(index, item, packet, share, story, config, 
                 f"{label} hypothesis {n}: avoids {unread[:3]} without a `read` citation of "
                 f"{[frame_short_name(f) for f in unread[:3]]}; a hypothesis about a frame is written after reading it"
             )
-        if outcome not in EFFICIENCY_OUTCOMES:
-            raise CampaignError(f"{label} hypothesis {n}: `outcome` is one of {', '.join(EFFICIENCY_OUTCOMES)}")
+        if outcome == EFFICIENCY_ROW_OUTCOME and item.get("disposition") == "algorithmic":
+            own_frames = {frame_short_name(f) for f in (item.get("avoided_frames") or [])}
+            if not {frame_short_name(f) for f in frames} <= own_frames:
+                raise CampaignError(
+                    f"{label} hypothesis {n}: outcome `algorithmic` is the row's own claim, so its avoided_frames "
+                    f"are among the row's {sorted(own_frames)}; another child's hypothesis has one of the other outcomes"
+                )
+        elif outcome not in EFFICIENCY_OUTCOMES:
+            raise CampaignError(
+                f"{label} hypothesis {n}: `outcome` is one of {', '.join(EFFICIENCY_OUTCOMES)}"
+                + (f", or `{EFFICIENCY_ROW_OUTCOME}` for the hypothesis that is this algorithmic row's claim" if item.get("disposition") == "algorithmic" else "")
+            )
         if (len(reason) < EFFICIENCY_REASON_MIN_CHARS or not EXISTING_MECHANISM_SYMBOL_RE.search(reason)):
             raise CampaignError(
                 f"{label} hypothesis {n}: `reason` says why the outcome holds, naming a symbol or file "
@@ -7411,13 +7422,15 @@ def enforce_efficiency_rows(paths, story_shares, story, campaign_dir, config=Non
     config = config if config is not None else (ledger.data["config"] if ledger is not None else {})
     prior = ledger_investigation_shapes(ledger)
     for index, item in enumerate(paths, 1):
-        if item.get("disposition") != "no-qualifying-mechanism":
+        if item.get("disposition") not in ("no-qualifying-mechanism", "algorithmic"):
             continue
         if not investigation_is_bounded(item):
             raise CampaignError(
-                f"Path {index} ({item['anchor'][:80]!r}) is no-qualifying-mechanism in an efficiency "
+                f"Path {index} ({item['anchor'][:80]!r}) is {item.get('disposition')} in an efficiency "
                 "area without a bounded investigation: hypotheses (objects: change, avoided_frames, "
-                "outcome, saved_fraction, reason), stop_reason, budget_used, source_revision, and cost_evidence."
+                "outcome, saved_fraction, reason, read), stop_reason, budget_used, source_revision, and "
+                "cost_evidence. An algorithmic row carries the same investigation: its own claim as the "
+                f"hypothesis with outcome `{EFFICIENCY_ROW_OUTCOME}`, the other children with theirs."
             )
         if not (item.get("cost_evidence") or {}).get("path"):
             raise CampaignError(
