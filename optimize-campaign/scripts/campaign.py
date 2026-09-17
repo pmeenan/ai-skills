@@ -2949,7 +2949,10 @@ def packet_applicable_literal(packet, campaign_dir):
         return _LITERAL_CACHE[key]
     path = pathlib.Path(rel)
     if not path.is_absolute():
-        path = pathlib.Path(campaign_dir) / path
+        # Stored packets name the patch relative to the campaign; a union
+        # rebuilt from the command line may name it relative to the cwd.
+        joined = pathlib.Path(campaign_dir) / path
+        path = joined if joined.is_file() or not path.is_file() else path
     text = _PATCH_TEXT_CACHE.get(str(path))
     if text is None:
         try:
@@ -5792,6 +5795,9 @@ def cmd_probe_union(args):
         if r.get("error"):
             print(f"{r['story']:34} {r['error']}")
             continue
+        if r.get("never_ran"):
+            print(f"{r['story']:34} never ran in the scored window (zero impact)")
+            continue
         sh = f"{r['symbol_share_pct']:.2f}%" if r["symbol_share_pct"] is not None else "n/a"
         im = f"{r['impact_pct']:.2f}%" if r["impact_pct"] is not None else "n/a"
         print(f"{r['story']:34} {sh:>7} {r['floor_pct']:5.2f}% {r['calls_per_repetition']:8.1f} "
@@ -6576,7 +6582,7 @@ def mechanism_suite_impact(ledger, site, symbol, scope_symbol=None):
         if patch is None and packet.get("patch"):
             candidate = pathlib.Path(str(packet["patch"]))
             if not candidate.is_absolute():
-                candidate = pathlib.Path(ledger.dir) / candidate
+                candidate = (pathlib.Path(ledger.dir) / candidate).resolve()
             patch = str(candidate)
     if not logs:
         _SUITE_IMPACT_CACHE[key] = None
