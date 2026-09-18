@@ -5860,7 +5860,7 @@ def cmd_probe_union_all(args):
         ok = [r for r in rows if not r.get("error") and r.get("impact_pct") is not None]
         best = max(ok, key=lambda r: r["impact_pct"]) if ok else None
         qualifying = [r["story"] for r in ok if r.get("qualifies")]
-        unsized = [f"{r['story']} ({r['coverage']:.2f})" for r in ok if r.get("not_sized")]
+        unsized = [f"{r['story']} ({r['coverage']:.2f})" if r.get("coverage") is not None else f"{r['story']} ({r['not_sized']})" for r in ok if r.get("not_sized")]
         print(f"{site:44} {symbols[site][:52]:52} "
               f"{(best['story'][:30] if best else '-'):30} "
               f"{(('%.2f%%' % best['impact_pct']) if best else 'n/a'):>7} "
