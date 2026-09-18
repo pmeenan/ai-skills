@@ -47,6 +47,7 @@ class is probed again with a predicate that varies or excluded by the host.
 | `unconsumed-result` | work whose result nothing reads | (target, version) | the consumer does not run before the result is invalidated (ink bounds never painted, layout of a subtree never displayed, a clean subtree walked) | applicable time fraction = results computed for nobody |
 | `notification-fanout` | listeners, observers or reactions are notified and nobody is listening | (event or reaction type, target) | no listener, observer or reaction is registered for this notification | applicable time fraction = dispatch machinery with no recipient |
 | `copy-churn` | unchanged data is copied or re-serialized | (source identity, size hash) | the same source was copied before in this update | repeat time fraction = copies of what was already there |
+| `unchanged-output` | the work ran and produced what it already had, and a caller could have known without running it | the work's identity and inputs (box and constraint space; object and paint context) | output equality with the previous result (fragment geometry, property-tree change type and invalidation reason) | applicable time fraction of the *caller's* dependent work: the producer had to run to be compared, so its own time is never counted (round 54) |
 
 A predicate that tests an existing cache's *hit* (round 28: the AtomicString
 counter, the proposed FrameShapeCache test) measures the cheap path and

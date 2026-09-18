@@ -64,7 +64,7 @@ ROW_PREFIX = "[SP3_REDUNDANCY_ROW] "
 APPLICABLE_SATURATED = 0.999
 # references/hypotheses.md
 HYPOTHESIS_CLASSES = ("unchanged-input", "no-op-mutation", "redundant-trigger", "cache-hit-path",
-                      "unconsumed-result", "notification-fanout", "copy-churn")
+                      "unconsumed-result", "notification-fanout", "copy-churn", "unchanged-output")
 SCHEMA_VERSION = 1
 
 
