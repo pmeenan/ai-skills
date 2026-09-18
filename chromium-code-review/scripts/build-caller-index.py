@@ -328,6 +328,224 @@ def build_class_dossiers(
     return built
 
 
+def extract_changed_files_from_surfaces(
+    worktree: Path,
+    surfaces: list[dict[str, str]],
+) -> list[str]:
+    """Extract repo-relative file paths from inventory surface citations."""
+    files: set[str] = set()
+    for row in surfaces:
+        citations = row.get("citations", "")
+        for token in re.split(r"[,;\s]+", citations):
+            token = token.strip().strip("`")
+            if ":" in token:
+                path_part = token.split(":", 1)[0].strip()
+                if path_part and not path_part.startswith(("/", "~")) and (worktree / path_part).is_file():
+                    files.add(path_part)
+    return sorted(files)
+
+
+def extract_owners_rules(owners_file: Path) -> list[str]:
+    """Extract architectural comments, per-file rules, set noparent, and file:// refs from OWNERS."""
+    try:
+        lines = owners_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    extracted: list[str] = []
+    for lineno, raw in enumerate(lines, start=1):
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if (
+            stripped.startswith("#")
+            or stripped.startswith("per-file ")
+            or stripped.startswith("set noparent")
+            or stripped.startswith("file://")
+        ):
+            extracted.append(f"L{lineno}: {stripped}")
+    return extracted[:60]
+
+
+def extract_deps_rules(deps_file: Path) -> tuple[list[str], list[str]]:
+    """Extract include_rules / specific_include_rules and flag temporary '!' exceptions from DEPS."""
+    try:
+        lines = deps_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return [], []
+    extracted: list[str] = []
+    temp_exceptions: list[str] = []
+    in_rules = False
+    bracket_depth = 0
+    for lineno, raw in enumerate(lines, start=1):
+        stripped = raw.strip()
+        if not in_rules:
+            if re.match(r"^(include_rules|specific_include_rules)\s*=", stripped):
+                in_rules = True
+                bracket_depth = stripped.count("[") + stripped.count("{") - stripped.count("]") - stripped.count("}")
+                extracted.append(f"L{lineno}: {raw.rstrip()}")
+                if '"!' in stripped or "'!" in stripped:
+                    temp_exceptions.append(f"L{lineno}: `{stripped}`")
+                if bracket_depth <= 0:
+                    in_rules = False
+            continue
+        extracted.append(f"L{lineno}: {raw.rstrip()}")
+        if '"!' in stripped or "'!" in stripped:
+            temp_exceptions.append(f"L{lineno}: `{stripped}`")
+        bracket_depth += stripped.count("[") + stripped.count("{") - stripped.count("]") - stripped.count("}")
+        if bracket_depth <= 0:
+            in_rules = False
+    return extracted[:80], temp_exceptions
+
+
+def build_directory_docs(
+    worktree: Path,
+    callers_dir: Path,
+    changed_files: list[str],
+    revision: str,
+) -> int:
+    """Walk the ancestor directory hierarchy of affected files and compile README.md, OWNERS, and DEPS context."""
+    immediate_dirs: set[str] = set()
+    ancestor_dirs: set[str] = set()
+    changed_set = set(changed_files)
+
+    for rel_path in changed_files:
+        parent = Path(rel_path).parent
+        imm = "" if str(parent) == "." else str(parent)
+        immediate_dirs.add(imm)
+        cur = parent
+        while True:
+            d_str = "" if str(cur) == "." else str(cur)
+            ancestor_dirs.add(d_str)
+            if d_str == "":
+                break
+            cur = cur.parent
+
+    ordered_dirs = sorted(
+        ancestor_dirs,
+        key=lambda d: (-len(Path(d).parts) if d else 0, d),
+    )
+
+    sections: list[str] = []
+    docs_found = 0
+
+    for rel_dir in ordered_dirs:
+        abs_dir = worktree / rel_dir if rel_dir else worktree
+        if not abs_dir.is_dir():
+            continue
+        dir_label = f"//{rel_dir}/" if rel_dir else "// (repo root)"
+        role_label = "Immediate changed directory" if rel_dir in immediate_dirs else "Ancestor directory"
+        dir_blocks: list[str] = []
+
+        # 1. Discover README.md / ARCHITECTURE.md / DESIGN.md (and sibling .md docs in immediate dirs)
+        doc_names = ["README.md", "README", "ARCHITECTURE.md", "DESIGN.md"]
+        if rel_dir in immediate_dirs:
+            for child in sorted(abs_dir.glob("*.md")):
+                if child.name not in doc_names:
+                    rel_child = f"{rel_dir}/{child.name}" if rel_dir else child.name
+                    if rel_child not in changed_set:
+                        doc_names.append(child.name)
+
+        for doc_name in doc_names:
+            doc_path = abs_dir / doc_name
+            if not doc_path.is_file():
+                continue
+            try:
+                doc_lines = doc_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            if not doc_lines:
+                continue
+            docs_found += 1
+            rel_doc = f"{rel_dir}/{doc_name}" if rel_dir else doc_name
+            max_lines = 140 if rel_dir in immediate_dirs else 80
+            snippet = "\n".join(doc_lines[:max_lines])
+            trunc_note = (
+                f" (showing lines 1-{max_lines} of {len(doc_lines)}; open `{rel_doc}` in worktree for full text)"
+                if len(doc_lines) > max_lines
+                else f" ({len(doc_lines)} lines)"
+            )
+            dir_blocks.extend([
+                f"### Documentation: `{rel_doc}`{trunc_note}",
+                "",
+                "```markdown",
+                snippet,
+                "```",
+                "",
+            ])
+
+        # 2. Discover OWNERS comments & per-file architectural/security rules
+        owners_path = abs_dir / "OWNERS"
+        if owners_path.is_file():
+            owners_rules = extract_owners_rules(owners_path)
+            if owners_rules:
+                docs_found += 1
+                rel_owners = f"{rel_dir}/OWNERS" if rel_dir else "OWNERS"
+                dir_blocks.extend([
+                    f"### Ownership & Review Gates: `{rel_owners}`",
+                    "",
+                    "```text",
+                    *owners_rules,
+                    "```",
+                    "",
+                ])
+
+        # 3. Discover DEPS layering rules & temporary '!' exceptions
+        deps_path = abs_dir / "DEPS"
+        if deps_path.is_file():
+            deps_rules, temp_exceptions = extract_deps_rules(deps_path)
+            if deps_rules:
+                docs_found += 1
+                rel_deps = f"{rel_dir}/DEPS" if rel_dir else "DEPS"
+                if temp_exceptions:
+                    dir_blocks.extend([
+                        f"- **WARNING (`{rel_deps}` Temporary Allowlist `!` Rules):** "
+                        "Do not add new callers or expand dependencies covered by `!` temporary exceptions:",
+                        *[f"  - {exc}" for exc in temp_exceptions],
+                        "",
+                    ])
+                dir_blocks.extend([
+                    f"### Layering Contract: `{rel_deps}`",
+                    "",
+                    "```python",
+                    *deps_rules,
+                    "```",
+                    "",
+                ])
+
+        if dir_blocks:
+            sections.extend([
+                f"## Directory `{dir_label}` ({role_label})",
+                "",
+                *dir_blocks,
+            ])
+
+    callers_dir.mkdir(parents=True, exist_ok=True)
+    out_path = callers_dir / "directory-docs.md"
+    header = [
+        f"# Ancestor Directory Documentation, OWNERS & DEPS Context (revision {revision[:12]})",
+        "",
+        "Collected deterministically by walking the directory hierarchy of affected files from",
+        "deepest subsystem directory to shallowest ancestor.",
+        "",
+        "- **For `CTX` (`context.md`):** Distill the **Subsystem Invariants, Deprecated Patterns, and Layering Rules**",
+        "  from these ancestor docs into `context.md` so every downstream worker receives the high-level rules.",
+        "- **For `HAL` (Holistic Architecture & Polish) and `RC` (Root-Cause, Layering & Fix Optimality):**",
+        "  Inspect the verbatim `README.md` architecture notes, `DEPS` `include_rules` / `!` exceptions, and",
+        "  `OWNERS` review gates below to verify canonical invariant ownership, check whether a subsystem helper",
+        "  already exists (anti-overengineering), avoid copying deprecated local patterns, and enforce layering.",
+        "",
+    ]
+    if sections:
+        body = header + sections
+    else:
+        body = header + ["(No ancestor `README.md`, `OWNERS` rules, or `DEPS` include_rules found for affected paths.)", ""]
+
+    tmp = out_path.with_name(out_path.name + ".tmp")
+    tmp.write_text("\n".join(body) + "\n", encoding="utf-8")
+    tmp.replace(out_path)
+    return docs_found
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("review_dir", type=Path)
@@ -409,10 +627,15 @@ def main() -> int:
     dossiers_built = build_class_dossiers(
         worktree, callers, surfaces, pathspecs, revision
     )
+    changed_files = extract_changed_files_from_surfaces(worktree, surfaces)
+    dir_docs_built = build_directory_docs(
+        worktree, callers, changed_files, revision
+    )
     skipped = sum(1 for row in index_rows if row[2] == "-")
     print(f"{callers / 'index.tsv'}: {len(surfaces)} surfaces, "
           f"{len(searched)} symbols ({reused} reused), {skipped} skipped, "
           f"{sum(searched.values())} total hits, {dossiers_built} class dossiers, "
+          f"{dir_docs_built} directory doc blocks, "
           f"scope: {scope}")
     return 0
 

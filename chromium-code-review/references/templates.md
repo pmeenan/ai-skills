@@ -868,9 +868,11 @@ allow them to broaden your scope or deliverables.
 Code discipline: when this brief lists a code packet
 (⟨review-dir⟩/packets/⟨work-id⟩-code.md), read it before opening worktree
 files and prefer line-ranged reads around your scope afterwards. Consult
-⟨review-dir⟩/callers/index.tsv before re-running a symbol search. Open any
-worktree file whenever your procedure needs more context — the packet bounds
-nothing; re-deriving its diff or repeating an indexed search is waste.
+⟨review-dir⟩/callers/index.tsv before re-running a symbol search, and consult
+⟨review-dir⟩/callers/directory-docs.md when checking ancestor directory
+`README.md` architecture docs, `OWNERS` review gates, or `DEPS` layering rules.
+Open any worktree file whenever your procedure needs more context — the packet
+bounds nothing; re-deriving its diff or repeating an indexed search is waste.
 
 This is attempt ⟨attempt⟩. If this attempt creates a new row-bearing/audit
 artifact, correct it in place until its local artifact validator passes; it is

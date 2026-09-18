@@ -51,6 +51,13 @@ or new state holder, record a root-cause row with these fields:
 
 Use these drills to fill the row:
 
+- Consult `callers/directory-docs.md` directly (in addition to `context.md`) to
+  read the verbatim ancestor `README.md` architecture sections, `DEPS`
+  `include_rules` / `specific_include_rules` / `!` temporary allowlist rules, and
+  `OWNERS` constraints for the affected directories. Use those subsystem docs to
+  confirm which class or layer is the documented canonical invariant owner and
+  whether a shared helper already exists before endorsing a new wrapper, cache,
+  or cross-directory dependency.
 - Walk one layer upstream to the producer/source of the value, event, state, or
   timing decision. Ask whether enforcing the invariant there would protect more
   callsites with less state or fewer special cases.

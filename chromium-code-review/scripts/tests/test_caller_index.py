@@ -139,6 +139,46 @@ class CallerIndexTests(unittest.TestCase):
         result = self.run_index()
         self.assertNotEqual(result.returncode, 0)
 
+    def test_builds_ancestor_directory_docs(self) -> None:
+        (self.repo / "components" / "README.md").write_text(
+            "# Components Overview\nShared browser/renderer components.\n",
+            encoding="utf-8",
+        )
+        (self.repo / "components" / "foo" / "README.md").write_text(
+            "# Foo Subsystem\nDeprecated: do not use LegacyBuffer; use DelayBuffer.\n",
+            encoding="utf-8",
+        )
+        (self.repo / "components" / "foo" / "OWNERS").write_text(
+            "# Changes to buffer state require security review.\n"
+            "alice@chromium.org\n"
+            "per-file *.mojom=file://ipc/SECURITY_OWNERS\n",
+            encoding="utf-8",
+        )
+        (self.repo / "components" / "foo" / "DEPS").write_text(
+            'include_rules = [\n'
+            '  "+base",\n'
+            '  "-chrome",\n'
+            '  "!content/public/browser/legacy_helper.h",\n'
+            ']\n',
+            encoding="utf-8",
+        )
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "add docs")
+        new_rev = git(self.repo, "rev-parse", "HEAD")
+
+        result = self.run_index(revision=new_rev)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        dir_docs = (self.review / "callers" / "directory-docs.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("## Directory `//components/foo/` (Immediate changed directory)", dir_docs)
+        self.assertIn("## Directory `//components/` (Ancestor directory)", dir_docs)
+        self.assertIn("Deprecated: do not use LegacyBuffer", dir_docs)
+        self.assertIn("per-file *.mojom=file://ipc/SECURITY_OWNERS", dir_docs)
+        self.assertNotIn("alice@chromium.org", dir_docs)
+        self.assertIn("Temporary Allowlist `!` Rules", dir_docs)
+        self.assertIn("!content/public/browser/legacy_helper.h", dir_docs)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -76,13 +76,19 @@ specialist roster (added only via graph routing):
   shard's `ledger/ML*.md` as a row, then run the section's remaining manual
   leads. A compact return may report counts; the artifact itself may never be
   truncated to a top-N summary.
-- One holistic-and-polish thread: bug alignment and scope (does the CL solve
-  the bug it cites, cohesively, at a reviewable size, without unnecessary
-  abstraction or unrelated hardening?), diff-to-description coverage (does the
-  CL description mention every non-core behavior change and notable defensive
-  cleanup?), idiom consistency (names, declaration placement, types, containers,
-  callbacks, ownership, error handling vs nearby code), performance and memory
-  cost, test-coverage proportionality, and the Changed-Lines Polish scan.
+- One holistic-and-polish thread: reads both `context.md` and the verbatim
+  ancestor directory documentation in `callers/directory-docs.md` (`README.md`,
+  `OWNERS` rules, and `DEPS` layering contracts). Checks bug alignment and scope
+  (does the CL solve the bug it cites, cohesively, at a reviewable size, without
+  unnecessary abstraction or unrelated hardening?), anti-overengineering against
+  existing subsystem helpers documented in `callers/directory-docs.md`,
+  layering compliance against `DEPS` (`include_rules`, `specific_include_rules`,
+  and temporary `!` allowlist exceptions that must not be expanded),
+  diff-to-description coverage (does the CL description mention every non-core
+  behavior change and notable defensive cleanup?), idiom consistency (names,
+  declaration placement, types, containers, callbacks, ownership, error handling
+  vs nearby code and ancestor `README.md` deprecation guidance), performance and
+  memory cost, test-coverage proportionality, and the Changed-Lines Polish scan.
   "Holistic" names its lens, not a license: like every thread, its
   deliverable is ledger rows — a coverage gap is reported as a row naming
   the missing test, never remediated by writing it.

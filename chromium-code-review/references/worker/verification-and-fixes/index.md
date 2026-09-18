@@ -15,6 +15,6 @@ preamble, so its rules travel with every section.
 | Execution-Based Verification | execution-based-verification.md | 28 |
 | Evaluating Fixes | evaluating-fixes.md | 79 |
 | Root-Cause Trigger Planning | root-cause-trigger-planning.md | 31 |
-| Root-Cause, Layering, And Fix Optimality | root-cause-layering-and-fix-optimality.md | 98 |
+| Root-Cause, Layering, And Fix Optimality | root-cause-layering-and-fix-optimality.md | 105 |
 | Final Synthesis Pass | final-synthesis-pass.md | 50 |
 | Verdict Alignment And Gerrit Output Rules | verdict-alignment-and-gerrit-output-rules.md | 65 |

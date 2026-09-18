@@ -44,6 +44,14 @@ than making analysis shallower.
 
 ## Gather Context (Pass 1)
 
+- Read `callers/directory-docs.md` (deterministically compiled from the ancestor
+  directory hierarchy of the affected files: `README.md`, local `*.md` design
+  docs, `OWNERS` architectural comments and `per-file` gates, and `DEPS`
+  `include_rules` / `specific_include_rules` / `!` temporary allowlist rules).
+  Distill the **Subsystem Invariants, Deprecated Patterns, and Layering Rules**
+  from these ancestor docs into `context.md` so all downstream reviewers inherit
+  the directory's mental model, threading/lifetime expectations, and deprecation
+  guardrails without re-reading the raw docs.
 - Follow public Bug links and design docs referenced by the CL description when
   needed to judge intent, scope, or bug alignment.
 - Audit the CL description, commit message, and referenced design docs against
@@ -57,10 +65,12 @@ than making analysis shallower.
   polish findings: suggest reverting them, splitting them out, or documenting
   the extra scope in the description.
 - Compare changed code to nearby Chromium patterns, ownership boundaries, and
-  existing tests. When local precedent is unclear, search the module and then
-  the wider tree.
+  existing tests. When local precedent in a neighboring file conflicts with an
+  ancestor `README.md` deprecation warning or `DEPS` temporary (`!`) exception,
+  the documented rule in `callers/directory-docs.md` wins over legacy code.
 
-Record the results in `context.md`: bug summary and alignment notes,
+Record the results in `context.md`: subsystem invariants/deprecations/layering
+rules from `callers/directory-docs.md`, bug summary and alignment notes,
 description-vs-implementation discrepancies, and the scope-relevance notes
 that the holistic thread and the draft writer will consume.
 
@@ -281,13 +291,19 @@ specialist roster (added only via graph routing):
   shard's `ledger/ML*.md` as a row, then run the section's remaining manual
   leads. A compact return may report counts; the artifact itself may never be
   truncated to a top-N summary.
-- One holistic-and-polish thread: bug alignment and scope (does the CL solve
-  the bug it cites, cohesively, at a reviewable size, without unnecessary
-  abstraction or unrelated hardening?), diff-to-description coverage (does the
-  CL description mention every non-core behavior change and notable defensive
-  cleanup?), idiom consistency (names, declaration placement, types, containers,
-  callbacks, ownership, error handling vs nearby code), performance and memory
-  cost, test-coverage proportionality, and the Changed-Lines Polish scan.
+- One holistic-and-polish thread: reads both `context.md` and the verbatim
+  ancestor directory documentation in `callers/directory-docs.md` (`README.md`,
+  `OWNERS` rules, and `DEPS` layering contracts). Checks bug alignment and scope
+  (does the CL solve the bug it cites, cohesively, at a reviewable size, without
+  unnecessary abstraction or unrelated hardening?), anti-overengineering against
+  existing subsystem helpers documented in `callers/directory-docs.md`,
+  layering compliance against `DEPS` (`include_rules`, `specific_include_rules`,
+  and temporary `!` allowlist exceptions that must not be expanded),
+  diff-to-description coverage (does the CL description mention every non-core
+  behavior change and notable defensive cleanup?), idiom consistency (names,
+  declaration placement, types, containers, callbacks, ownership, error handling
+  vs nearby code and ancestor `README.md` deprecation guidance), performance and
+  memory cost, test-coverage proportionality, and the Changed-Lines Polish scan.
   "Holistic" names its lens, not a license: like every thread, its
   deliverable is ledger rows — a coverage gap is reported as a row naming
   the missing test, never remediated by writing it.

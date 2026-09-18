@@ -789,6 +789,23 @@ def main() -> int:
     else:
         atomic_write(review_dir / "profile.json", encoded)
         atomic_write(review_dir / "profile.md", markdown(profile))
+        try:
+            import importlib.util
+            caller_idx_path = Path(__file__).resolve().parent / "build-caller-index.py"
+            if caller_idx_path.is_file():
+                spec = importlib.util.spec_from_file_location("build_caller_index", caller_idx_path)
+                if spec and spec.loader:
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    changed_paths = [str(item["path"]) for item in files if item.get("path")]
+                    mod.build_directory_docs(
+                        worktree,
+                        review_dir / "callers",
+                        changed_paths,
+                        revision_sha,
+                    )
+        except Exception:
+            pass
         print(f"{effort}: {review_dir / 'profile.json'}; {review_dir / 'profile.md'}")
     return 0
 

@@ -17,6 +17,14 @@ only the user directives and skill brief.
 
 ## Gather Context (Pass 1)
 
+- Read `callers/directory-docs.md` (deterministically compiled from the ancestor
+  directory hierarchy of the affected files: `README.md`, local `*.md` design
+  docs, `OWNERS` architectural comments and `per-file` gates, and `DEPS`
+  `include_rules` / `specific_include_rules` / `!` temporary allowlist rules).
+  Distill the **Subsystem Invariants, Deprecated Patterns, and Layering Rules**
+  from these ancestor docs into `context.md` so all downstream reviewers inherit
+  the directory's mental model, threading/lifetime expectations, and deprecation
+  guardrails without re-reading the raw docs.
 - Follow public Bug links and design docs referenced by the CL description when
   needed to judge intent, scope, or bug alignment.
 - Audit the CL description, commit message, and referenced design docs against
@@ -30,9 +38,11 @@ only the user directives and skill brief.
   polish findings: suggest reverting them, splitting them out, or documenting
   the extra scope in the description.
 - Compare changed code to nearby Chromium patterns, ownership boundaries, and
-  existing tests. When local precedent is unclear, search the module and then
-  the wider tree.
+  existing tests. When local precedent in a neighboring file conflicts with an
+  ancestor `README.md` deprecation warning or `DEPS` temporary (`!`) exception,
+  the documented rule in `callers/directory-docs.md` wins over legacy code.
 
-Record the results in `context.md`: bug summary and alignment notes,
+Record the results in `context.md`: subsystem invariants/deprecations/layering
+rules from `callers/directory-docs.md`, bug summary and alignment notes,
 description-vs-implementation discrepancies, and the scope-relevance notes
 that the holistic thread and the draft writer will consume.
