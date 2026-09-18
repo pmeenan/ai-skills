@@ -18,6 +18,7 @@ CAMP = str(SCRIPTS / 'campaign.py')
 SRC = None    # repository root (from the profile)
 led = None; cfg = None
 TODAY = datetime.date.today().isoformat()
+ATTEMPT = ''
 SKILL = subprocess.run(['git', '-C', str(SCRIPTS), 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True).stdout.strip()
 
 
@@ -118,7 +119,7 @@ def review(oid, rev):
         report = C / f'reviews/decomp-{oid}-r{rev}-{role}.json'
         subprocess.run(['python3', CAMP, '--dir', str(C), 'decompose-review-scaffold', '--opp', str(oid), '--role', role, '--children', str(children), '--out', str(report)], check=True, capture_output=True)
         rep = json.loads(report.read_text())
-        task = f"claude-host-review-r{rev}-{oid}-{role}-{TODAY}"
+        task = f"claude-host-review-r{rev}-{oid}-{role}-{TODAY}{ATTEMPT}"
         tpath = C / 'reviews' / 'transcripts' / f'decomp-{oid}-r{rev}-{role}.md'
         rep['reviewer_task_id'] = task; rep['transcript_ref'] = str(tpath); rep['verdict'] = 'PASS'; rep['challenges'] = []; rep['resolved_challenges'] = []
         attested = rep['artifact_digests_checked']
@@ -207,8 +208,10 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--dir', required=True, help='campaign directory')
     ap.add_argument('--rev', type=int, required=True, help='request revision number (decomp-<id>-r<rev>.json)')
+    ap.add_argument('--attempt', default='', help='suffix for the reviewer task ids when a reviewed artifact was edited and reviewed again')
     ap.add_argument('ids', type=int, nargs='+')
     a = ap.parse_args()
+    ATTEMPT = ('-' + a.attempt) if a.attempt else ''
     C = pathlib.Path(a.dir).resolve()
     led = campaign.Ledger(str(C)).load(); cfg = led.data['config']
     SRC = (led.data['profile_runs'][-1].get('repository_root') if led.data.get('profile_runs') else None) or '.'
