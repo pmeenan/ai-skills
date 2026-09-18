@@ -47,17 +47,17 @@ continuation. Never compress evidence or reduce the checklist to fit.
 Every phase brief in `phase-briefs.md` carries a `Tier:` annotation, and every
 `spawn` row in `plan.md` carries a `tier` column. The tier names the least
 capable model class the task tolerates. Assume the review session is started in
-a Pro/frontier-tier model, check the subagent spawning tool's available model
-options, and map the skill's `tier` to the harness's subagent model parameter
-(defaulting to Jetski tier names, with Opus-family names as fallbacks), while
-still recording `frontier`, `standard`, `mechanical`, or `inherit` in
-`seal-work-unit.py --tier`:
+a frontier-tier model (`pro`, `fable`, or `astra`), check the subagent spawning
+tool's available model options, and map the skill's `tier` to the harness's
+subagent model parameter (defaulting to Antigravity/Jetski tier names, with Anthropic and
+OpenAI names as fallbacks), while still recording `frontier`, `standard`,
+`mechanical`, or `inherit` in `seal-work-unit.py --tier`:
 
-| `seal-work-unit.py --tier` | subagent `Model` (default: Jetski / fallback: Opus family) | capability semantics | thinking/reasoning setting |
-| --- | --- | --- | --- |
-| `mechanical` | `flash_lite` (fallback: `haiku` or `flash`) | exact rule-following over small structured inputs: union/uniqueness checks, ordered concatenation, single-line mutations, schema-shaped extraction. No open-ended code reasoning. | minimal or none |
-| `standard` | `flash` (fallback: `sonnet`) | structured enumeration and classification, summarization/distillation, prose rendered from an already-verified evidence record, audits against deterministic checklists (`CTX`, `INV`, `PF`, `ML`, `HAL`, `IAR`, `FW*`, `DRAFT`) | harness default |
-| `frontier` | `inherit` (fallback: `pro` / `opus` if session is not frontier) | adversarial code tracing, interleaving/lifetime/ownership reasoning, invariant-owner and layering judgment, refutation, contradiction hunting, roster/scoping judgment (`GSS`, `GAI`, specialists, recipes, `PLAN*`, `V*`, `RC*`, `CH*`) — inherits the session's Pro/frontier model | maximum available |
+| `seal-work-unit.py --tier` | Antigravity/Jetski (default) | Anthropic (fallback) | OpenAI (fallback) | capability semantics | thinking/reasoning setting |
+| --- | --- | --- | --- | --- | --- |
+| `mechanical` | `flash_lite` | `sonnet` | `luna` | exact rule-following over small structured inputs: union/uniqueness checks, ordered concatenation, single-line mutations, schema-shaped extraction. No open-ended code reasoning. | minimal or none |
+| `standard` | `flash` | `opus` | `sol` | structured enumeration and classification, summarization/distillation, prose rendered from an already-verified evidence record, audits against deterministic checklists (`CTX`, `INV`, `PF`, `ML`, `HAL`, `IAR`, `FW*`, `DRAFT`) | harness default |
+| `frontier` | `inherit` (`pro`) | `inherit` (`fable`) | `inherit` (`astra`) | adversarial code tracing, interleaving/lifetime/ownership reasoning, invariant-owner and layering judgment, refutation, contradiction hunting, roster/scoping judgment (`GSS`, `GAI`, specialists, recipes, `PLAN*`, `V*`, `RC*`, `CH*`) — inherits the session's frontier model | maximum available |
 
 Rules:
 

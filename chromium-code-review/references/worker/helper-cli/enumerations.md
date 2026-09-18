@@ -37,7 +37,7 @@ not in these tables is rejected outright.
 | `validate-review-dir.py --phase` | `auto`, `pin`, `collection`, `verification`, `reconciliation`, `final` |
 | `validate-worker-artifact.py --kind` | `auto`, `inventory`, `plan`, `ledger`, `verdict`, `affinity`, `generic` |
 | `seal-work-unit.py --tier` | `frontier`, `inherit`, `mechanical`, `standard` |
-| subagent `Model` (check harness; Jetski default / Opus fallback) | `frontier` $\rightarrow$ `inherit` (`pro`/`opus`), `standard` $\rightarrow$ `flash` (`sonnet`), `mechanical` $\rightarrow$ `flash_lite` (`haiku`) |
+| subagent `Model` (Antigravity/Jetski default / Anthropic / OpenAI) | `frontier` $\rightarrow$ `inherit` (`pro` / `fable` / `astra`), `standard` $\rightarrow$ `flash` (`opus` / `sol`), `mechanical` $\rightarrow$ `flash_lite` (`sonnet` / `luna`) |
 | `seal-work-unit.py --input ROLE=` | `control`, `reference`, `assigned`, `candidate-packet`, `card`, `frame`, `section`, `prestate` |
 | orchestration `state` | `queued`, `running`, `partial`, `retryable`, `needs-repair`, `complete`, `terminated` |
 | `worktree-lease.py` subcommands | `acquire`, `write-state`, `validate-state`, `heartbeat`, `release`, `release-token`, `check`, `holder-of`, `holders`, `gc` |
