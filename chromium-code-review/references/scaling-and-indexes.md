@@ -46,15 +46,18 @@ continuation. Never compress evidence or reduce the checklist to fit.
 
 Every phase brief in `phase-briefs.md` carries a `Tier:` annotation, and every
 `spawn` row in `plan.md` carries a `tier` column. The tier names the least
-capable model class the task tolerates. Tiers are capability descriptions,
-never model names — the orchestrator resolves them inside whatever family the
-harness offers:
+capable model class the task tolerates. Assume the review session is started in
+a Pro/frontier-tier model, check the subagent spawning tool's available model
+options, and map the skill's `tier` to the harness's subagent model parameter
+(defaulting to Jetski tier names, with Opus-family names as fallbacks), while
+still recording `frontier`, `standard`, `mechanical`, or `inherit` in
+`seal-work-unit.py --tier`:
 
-| tier | capability semantics | resolve to (illustrative, non-normative) | thinking/reasoning setting |
+| `seal-work-unit.py --tier` | subagent `Model` (default: Jetski / fallback: Opus family) | capability semantics | thinking/reasoning setting |
 | --- | --- | --- | --- |
-| `mechanical` | exact rule-following over small structured inputs: union/uniqueness checks, ordered concatenation, single-line mutations, schema-shaped extraction. No open-ended code reasoning. | the smallest/fastest model offered alongside the session model (Haiku-class, Flash-Lite/Flash-class, mini-class) | minimal or none |
-| `standard` | structured enumeration and classification, summarization/distillation, prose rendered from an already-verified evidence record, audits against deterministic checklists | the session's default model or a mid-tier family member (Sonnet-class, Flash-class) | harness default |
-| `frontier` | adversarial code tracing, interleaving/lifetime/ownership reasoning, invariant-owner and layering judgment, refutation, contradiction hunting, roster/scoping judgment | the strongest model the harness offers (Opus/Fable-class, Pro-class, high-reasoning-class), with the highest available thinking or reasoning setting | maximum available |
+| `mechanical` | `flash_lite` (fallback: `haiku` or `flash`) | exact rule-following over small structured inputs: union/uniqueness checks, ordered concatenation, single-line mutations, schema-shaped extraction. No open-ended code reasoning. | minimal or none |
+| `standard` | `flash` (fallback: `sonnet`) | structured enumeration and classification, summarization/distillation, prose rendered from an already-verified evidence record, audits against deterministic checklists (`CTX`, `INV`, `PF`, `ML`, `HAL`, `IAR`, `FW*`, `DRAFT`) | harness default |
+| `frontier` | `inherit` (fallback: `pro` / `opus` if session is not frontier) | adversarial code tracing, interleaving/lifetime/ownership reasoning, invariant-owner and layering judgment, refutation, contradiction hunting, roster/scoping judgment (`GSS`, `GAI`, specialists, recipes, `PLAN*`, `V*`, `RC*`, `CH*`) — inherits the session's Pro/frontier model | maximum available |
 
 Rules:
 

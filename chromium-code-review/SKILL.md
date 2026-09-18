@@ -48,17 +48,23 @@ a fresh-context subagent whose deliverable is files in the review directory.
 Handoffs between phases are those files, never conversation context.
 
 **Invoking this skill IS the user's explicit request for multi-agent
-orchestration.** Where a harness gates heavy orchestration on user opt-in, this
-invocation satisfies it. Do not ask the user for permission to spawn subagents,
-and do not downgrade to serial self-execution while any subagent-spawning tool
-exists in the harness — the serial path in
-`references/conditional-orchestration.md` is only for harnesses with no such
-tool at all.
+orchestration and per-tier model selection.** Where a harness gates subagent
+spawning or non-default subagent models on user opt-in, this invocation
+satisfies it. Assume the session starts in a Pro/frontier model, check the
+subagent tool's available model tiers, and map each work unit's tier dynamically
+rather than passing raw skill tier labels: use `inherit` for `frontier` units
+(or the harness's frontier tier if not inheriting), and explicitly select the
+harness's `standard` or `mechanical` tier for lower-tier units (`CTX`, `INV`,
+`PF`, `ML`, `HAL`, `IAR`, `FW*`, `DRAFT`) — defaulting to Jetski names
+(`inherit` / `flash` / `flash_lite`) with Opus-family fallbacks
+(`inherit` or `opus` / `sonnet` / `haiku`). Always pass `--tier
+frontier|standard|mechanical|inherit` to `seal-work-unit.py`. Never ask
+permission to spawn subagents or downgrade to serial execution while a
+subagent tool exists (`references/conditional-orchestration.md`).
 
-  This architecture is load-bearing, not stylistic: runs that held the whole
-  review in one context blew through 1M-token windows mid-review and lost all
-  progress. Files survive context loss; a compacted orchestrator resumes from
-  the review directory.
+  Runs that held the whole review in one context blew through 1M-token windows
+  mid-review and lost all progress. Files survive context loss; a compacted
+  orchestrator resumes from the review directory.
 
 **Hard context-budget rules for the orchestrator:**
 
