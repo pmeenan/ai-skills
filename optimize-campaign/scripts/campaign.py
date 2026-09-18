@@ -7370,6 +7370,53 @@ def avoided_shares_by_story(ledger, anchor, avoided_frames):
     return out
 
 
+def avoided_union_by_story(ledger, specs):
+    """Per story, the avoided share (%) of several claims on one mechanism
+    counted once per sample: for each sample the largest claimed part of
+    the ceiling among the anchors it passes through whose avoided frames it
+    hits (the direct child of the anchor, else the leaf), so nested anchors
+    do not add. specs: [(anchor, avoided_frames, ratio)]. Cached per
+    capture set."""
+    import cost_evidence
+    table = suite_inclusive_shares(ledger)
+    out = {}
+    for story, files in table["captures"].items():
+        if not files:
+            continue
+        paths = [pathlib.Path(path) for _, path in files]
+        stamp = [[str(q.resolve()), q.stat().st_size, q.stat().st_mtime_ns] for q in paths]
+        key = hashlib.sha256(json.dumps([stamp, [[a, sorted(f), round(r, 6)] for a, f, r in specs]]).encode()).hexdigest()[:24]
+        cache = _INCLUSIVE_CACHE_DIR / f"avoided-union-{key}.json"
+        if cache.is_file():
+            try:
+                out[story] = float(json.loads(cache.read_text()))
+                continue
+            except (OSError, ValueError):
+                pass
+        total = avoided = 0.0
+        for frames, weight in iter_stacks(paths):
+            total += weight
+            best = 0.0
+            for anchor, names, ratio in specs:
+                if ratio <= best or anchor not in frames:
+                    continue
+                index = len(frames) - 1 - frames[::-1].index(anchor)
+                child = frames[index + 1] if index + 1 < len(frames) else "(self)"
+                leaf = frames[-1]
+                if any(cost_evidence.frame_matches(child, n) or cost_evidence.frame_matches(leaf, n) for n in names):
+                    best = ratio
+            avoided += weight * best
+        result = 100.0 * avoided / total if total else 0.0
+        out[story] = result
+        try:
+            _INCLUSIVE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = cache.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(result)); tmp.replace(cache)
+        except OSError:
+            pass
+    return out
+
+
 ALGORITHMIC_IMPACT_BASIS_MEASURED = ("avoided frames' share measured in every story's stacks x the claimed part of the "
                                      "home-story ceiling: a ranking, proven only by sizing")
 
@@ -12495,10 +12542,15 @@ def cmd_suite_impacts(args):
             parts = [algorithmic_suite_impact_measured(ledger, anchor, frames, frac, home)
                      for anchor, (frac, frames, home) in alg_anchors[opp.get("mechanism_key")].items()]
             summary = dict(parts[0])
-            merged = {}
-            for part in parts:
-                for st, v in part["contributions"].items():
-                    merged[st] = merged.get(st, 0.0) + v
+            if len(parts) > 1:
+                # One mechanism on several functions: a sample under two of
+                # them (ParseChildren above ParseElement, round 51) is one
+                # sample, sized once at the larger claim, not twice.
+                specs = [(anchor, frames, part["claimed_part_of_ceiling"])
+                         for (anchor, (frac, frames, home)), part in zip(alg_anchors[opp.get("mechanism_key")].items(), parts)]
+                merged = avoided_union_by_story(ledger, specs)
+            else:
+                merged = dict(parts[0]["contributions"])
             summary["contributions"] = {st: round(v, 4) for st, v in sorted(merged.items(), key=lambda kv: -kv[1])}
             summary["suite_impact_pct"] = round(sum(merged.values()) / (summary["stories_total"] or 1), 4)
             summary["qualifies_suite"] = summary["suite_impact_pct"] >= (summary["suite_floor_pct"] or 0.0)
