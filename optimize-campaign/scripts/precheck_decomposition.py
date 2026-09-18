@@ -81,6 +81,7 @@ def main(campaign_dir, opp_id, children):
     floor = ledger.data["config"]["share_floor_pct"]
     problems = []
     judged = campaign.carried_view(result["paths"], carried) if carried else result["paths"]
+    judged_owners = campaign.carried_view(result["paths"], carried, keep_owners=True) if carried else result["paths"]
     story_floor = max(campaign.story_floor_pct(ledger.data["config"], story)[0], floor)
     try: campaign.enforce_phase_dispositions(result["paths"], phase, parent)
     except campaign.CampaignError as e: problems.append(str(e))
@@ -89,7 +90,7 @@ def main(campaign_dir, opp_id, children):
     coverage_map = campaign.packet_coverage_map(result["paths"], profile, story, campaign_dir)
     try: campaign.enforce_anchor_names_its_work(result["paths"])
     except campaign.CampaignError as e: problems.append(str(e))
-    for i, p in enumerate(result["paths"], 1):
+    for i, p in enumerate(judged, 1):
         if p["disposition"] in ("novel", "algorithmic"):
             try: campaign.require_existing_mechanism(p, i)
             except campaign.CampaignError as e: problems.append(str(e))
@@ -114,14 +115,14 @@ def main(campaign_dir, opp_id, children):
     # wrapper descent judges them.
     run_all(problems, lambda w: campaign.enforce_packet_relevance(
         w, [(i, p) for i, p in enumerate(w, 1) if p.get("redundancy_evidence") and p.get("wrapper_of") is None],
-        profile, story, campaign_dir), result["paths"])
+        profile, story, campaign_dir), judged)
     bound = run_all(problems, campaign.enforce_measured_dispositions, judged, shares, ledger.data["config"], floor, story, campaign_dir, coverage=coverage_map, profile=profile, ledger=ledger) or set()
-    for i, p in enumerate(result["paths"], 1):
+    for i, p in enumerate(judged, 1):
         if p.get("unmeasurable_bound"):
             ub = p["unmeasurable_bound"]
             print(f"row {i} {p['disposition']} {p['anchor'][:60]} closes unmeasurable: bound {ub['story_bound_pct']:.3f}% < story floor {ub['story_floor_pct']:.3f}%, suite {ub.get('suite_impact_pct')}% < {ub.get('suite_floor_pct')}%")
     run_all(problems, campaign.enforce_wrapper_descent, judged, shares, profile, story, campaign_dir, ledger.data["config"], floor)
-    unbound = [i for i, p in enumerate(result["paths"], 1)
+    unbound = [i for i, p in enumerate(judged, 1)
                if p["disposition"] in ("mandatory", "no-qualifying-mechanism")
                and shares.get(i, 0.0) >= story_floor
                and not p.get("redundancy_evidence") and p.get("wrapper_of") is None]
@@ -151,13 +152,13 @@ def main(campaign_dir, opp_id, children):
     run_all(problems, lambda w: campaign.enforce_own_counters(
         w, shares, ledger.data["config"], floor, story, campaign_dir,
         [(i, p) for i, p in relevance_rows if w[i - 1].get("disposition") != SKIPPED], site_symbols, coverage=coverage_map),
-        result["paths"])
+        judged)
     own = [(i, p["own_counters"]) for i, p in enumerate(result["paths"], 1) if p.get("own_counters")]
     if own: print("\nrows closed on their own counters:", own[:20])
     run_all(problems, lambda w: campaign.enforce_nearest_packet(
         w, shares, ledger.data["config"], floor, story, campaign_dir,
         [(i, p) for i, p in relevance_rows if w[i - 1].get("disposition") != SKIPPED], profile, coverage=coverage_map),
-        result["paths"])
+        judged)
     try:
         rows_cov, reference = campaign.packet_time_coverage(result["paths"], relevance_rows, profile, story, campaign_dir)
         if rows_cov:
@@ -167,11 +168,11 @@ def main(campaign_dir, opp_id, children):
     except campaign.CampaignError as e: problems.append(str(e))
     run_all(problems, lambda w: campaign.enforce_row_text_numbers(
         w, [(i, p) for i, p in relevance_rows if w[i - 1].get("disposition") != SKIPPED], shares, ledger.data["config"], floor, story, campaign_dir),
-        result["paths"])
+        judged)
     measured_rows = {i for i, p in enumerate(result["paths"], 1)
                      if p["disposition"] in ("mandatory", "no-qualifying-mechanism")
                      and shares.get(i, 0.0) >= story_floor and p.get("redundancy_evidence")}
-    run_all(problems, lambda w: campaign.enforce_mandatory_invariants(w, {i for i in measured_rows if w[i - 1].get("disposition") != SKIPPED}), result["paths"])
+    run_all(problems, lambda w: campaign.enforce_mandatory_invariants(w, {i for i in measured_rows if w[i - 1].get("disposition") != SKIPPED}), judged)
     try:
         campaign.enforce_row_text_distinct(result["paths"])
     except campaign.CampaignError as e: problems.append(str(e))
@@ -205,18 +206,18 @@ def main(campaign_dir, opp_id, children):
             m = lookup(p["covered_by"])
             if m: owners[p["covered_by"]] = m["anchor"]
     try:
-        campaign.enforce_covered_by_sample_identity(result["paths"], owners, profile, story)
+        campaign.enforce_covered_by_sample_identity(judged_owners, owners, profile, story)
     except campaign.CampaignError as e: problems.append(str(e))
     try:
         symbols = campaign.owner_probe_symbols(result["paths"], lookup, campaign_dir, ledger=ledger)
-        campaign.enforce_covered_by_probe_identity(result["paths"], symbols, profile, story)
+        campaign.enforce_covered_by_probe_identity(judged_owners, symbols, profile, story)
     except campaign.CampaignError as e: problems.append(str(e))
     try:
         symbols = campaign.owner_probe_symbols(result["paths"], lookup, campaign_dir, ledger=ledger)
-        campaign.enforce_covered_by_nearest_probe(result["paths"], symbols,
+        campaign.enforce_covered_by_nearest_probe(judged_owners, symbols,
             campaign.story_probe_symbols(campaign_dir, story), profile, story)
     except campaign.CampaignError as e: problems.append(str(e))
-    for i, p in enumerate(result["paths"], 1):
+    for i, p in enumerate(judged, 1):
         if p["disposition"] in ("novel", "known") and shares.get(i) is not None:
             frac = p.get("estimated_avoidable_fraction")
             supplied = p.get("estimated_local_story_impact_pct")
@@ -253,7 +254,7 @@ def efficiency_precheck(ledger, parent, result, shares, story, story_floor, camp
     investigation quoting the cost packet)."""
     try: campaign.enforce_anchor_names_its_work(result["paths"])
     except campaign.CampaignError as e: problems.append(str(e))
-    for i, p in enumerate(result["paths"], 1):
+    for i, p in enumerate(judged, 1):
         if p["disposition"] != "algorithmic":
             continue
         try: campaign.require_algorithmic_fields(p, i)

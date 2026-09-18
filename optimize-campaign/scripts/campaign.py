@@ -4137,9 +4137,22 @@ def enforce_covered_by_nearest_probe(paths, owner_symbols, probe_symbols, profil
                     ia = len(frames) - 1 - frames[::-1].index(anchor)
                     for index, item, owner, others in by_anchor[anchor]:
                         owner_pos = [i for i in positions.get(owner, []) if i <= ia]
-                        io = owner_pos[-1] if owner_pos else -1
+                        if owner_pos:
+                            io = owner_pos[-1]
+                            def sits_between(i, lo=io, hi=ia):
+                                return lo < i <= hi
+                        else:
+                            # The row wraps its owner (WalkTree over Walk, round
+                            # 57): what matters is a probe strictly between them.
+                            below = [i for i in positions.get(owner, []) if i > ia]
+                            if below:
+                                def sits_between(i, lo=ia, hi=below[0]):
+                                    return lo < i < hi
+                            else:
+                                def sits_between(i, hi=ia):
+                                    return i <= hi
                         for symbol in others:
-                            if any(io < i <= ia for i in positions.get(symbol, [])):
+                            if any(sits_between(i) for i in positions.get(symbol, [])):
                                 between[index][symbol] = between[index].get(symbol, 0.0) + weight
     for index, item, owner, others in rows:
         anchor = item["anchor"]
@@ -9988,7 +10001,7 @@ def carried_rows(parent, paths):
     return out
 
 
-def carried_view(paths, carried):
+def carried_view(paths, carried, keep_owners=False):
     """The paths list with carried rows replaced by a copy every row rule
     skips (the pre-check's neutralization): anchor and share stay so that
     share accounting and owner lookups hold; disposition, packet and
@@ -10002,8 +10015,14 @@ def carried_view(paths, carried):
             for field in ("wrapper_of", "redundancy_evidence", "invariant", "existing_mechanism", "evidence",
                           "packet_hypothesis", "investigation", "cost_evidence"):
                 neutral.pop(field, None)
-            neutral["disposition"] = CARRIED_ROW_DISPOSITION
             neutral["carried_disposition"] = row.get("disposition")
+            if keep_owners and row.get("disposition") in ("novel", "known", "algorithmic"):
+                # For the covered-by rules: a carried mechanism row is still
+                # the owner of the rows that name it; its packet and text
+                # are not judged again.
+                neutral["disposition"] = row.get("disposition")
+            else:
+                neutral["disposition"] = CARRIED_ROW_DISPOSITION
             view.append(neutral)
         else:
             view.append(row)
@@ -10091,6 +10110,7 @@ def cmd_decompose(args):
     if carried and not getattr(args, "carry_unchanged", False):
         carried = set()
     judged = carried_view(result["paths"], carried)
+    judged_owners = carried_view(result["paths"], carried, keep_owners=True)
     enforce_phase_dispositions(result["paths"], discovery_phase(ledger), parent)
     source_profile = ledger.profile(parent.get("profile_id"))
     decomposition_challenges = validate_gate_challenges(
@@ -10175,6 +10195,8 @@ def cmd_decompose(args):
             story_shares[path_index] = min(
                 measured_work[ref] for ref in path_primary
             )
+            if path_index in carried:
+                continue  # accepted with its revision; judged only where a changed row references it
             if path_item["disposition"] in ("novel", "algorithmic") and not test_bypass_active():
                 require_existing_mechanism(path_item, path_index)
             if path_item["disposition"] in ("novel", "known", "algorithmic"):
@@ -10558,8 +10580,7 @@ def cmd_decompose(args):
                 owner_anchors[path_item["mechanism_key"]] = path_item["anchor"]
         for owner in covered_owners:
             owner_anchors.setdefault(owner.get("mechanism_key"), owner.get("anchor"))
-        enforce_covered_by_sample_identity(
-            result["paths"], owner_anchors, source_profile,
+        enforce_covered_by_sample_identity(judged_owners, owner_anchors, source_profile,
             parent.get("target_story"),
         )
         owner_symbols = owner_probe_symbols(
@@ -10567,12 +10588,10 @@ def cmd_decompose(args):
             lambda key: ledger.mechanism(parent["area_key"], key),
             ledger.dir, ledger=ledger,
         )
-        enforce_covered_by_probe_identity(
-            result["paths"], owner_symbols, source_profile,
+        enforce_covered_by_probe_identity(judged_owners, owner_symbols, source_profile,
             parent.get("target_story"),
         )
-        enforce_covered_by_nearest_probe(
-            result["paths"], owner_symbols,
+        enforce_covered_by_nearest_probe(judged_owners, owner_symbols,
             story_probe_symbols(ledger.dir, parent.get("target_story")),
             source_profile, parent.get("target_story"),
         )
