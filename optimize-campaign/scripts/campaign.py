@@ -10440,12 +10440,19 @@ def cmd_decompose(args):
             # 40: the two template instantiations of the fast-path parser).
             known.append((existing, path_item))
         elif path_item["disposition"] in ("novel", "algorithmic"):
-            if existing:
+            if existing and (existing.get("parent_id") == parent["id"]
+                             or parent["id"] in (existing.get("discovery_ids") or [])):
+                # The row that created the mechanism, carried into a later
+                # revision of the same area (round 57: #137's ElementFromPoint
+                # row is #238's origin): reconciled, not refused.
+                known.append((existing, path_item))
+            elif existing:
                 raise CampaignError(
                     f"Path {path_item['mechanism_key']} is marked novel but "
                     f"already exists as #{existing['id']:03d}"
                 )
-            novel.append((path_item, area_key))
+            else:
+                novel.append((path_item, area_key))
         else:
             if not existing:
                 raise CampaignError(
