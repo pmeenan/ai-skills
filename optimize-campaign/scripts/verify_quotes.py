@@ -14,7 +14,7 @@ import pathlib
 import re
 import sys
 
-MARK = re.compile(r"sed -n '(\d+),(\d+)p' (\S+)[^\n]*\n(?:[^\n]*\n){0,3}?```[a-z]*\n(.*?)```", re.S)
+MARK = re.compile(r"sed -n '(\d+),(\d+)p' ([^\s`'")]+)[^\n]*\n(?:[^\n]*\n){0,3}?```[a-z]*\n(.*?)```", re.S)
 
 
 def norm(line):
