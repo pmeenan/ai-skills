@@ -288,7 +288,7 @@ class ProfileReviewTest(unittest.TestCase):
         self.assertEqual("standard", profile["effort"])
         self.assertEqual("production", profile["files"][0]["class"])
 
-    def test_external_context_is_reported_and_blocks_only_context_fast_path(self) -> None:
+    def test_external_context_is_reported_and_allows_context_fast_path(self) -> None:
         temporary, review = self.make_review({"README.md": "old\n"}, {"README.md": "new\n"})
         self.addCleanup(temporary.cleanup)
         self.write_detail(
@@ -298,7 +298,9 @@ class ProfileReviewTest(unittest.TestCase):
         profile = json.loads(run("python3", str(PROFILE), str(review), "--stdout").stdout)
         self.assertEqual("micro", profile["effort"])
         self.assertGreater(profile["prior_context"]["external_context"]["count"], 0)
-        self.assertFalse(profile["context_fast_path_eligible"])
+        # Available external context is evidence the description was read,
+        # not a reason to force the slow path.
+        self.assertTrue(profile["context_fast_path_eligible"])
 
     def test_link_free_pinned_description_allows_micro_context_fast_path(self) -> None:
         temporary, review = self.make_review({"README.md": "old\n"}, {"README.md": "new\n"})
@@ -336,11 +338,9 @@ class ProfileReviewTest(unittest.TestCase):
         )
         self.addCleanup(temporary.cleanup)
         profile = json.loads(run("python3", str(PROFILE), str(review), "--stdout").stdout)
-        self.assertEqual("standard", profile["effort"])
-        self.assertIn(
-            "all files are documentation or non-executable metadata",
-            profile["micro_eligibility"]["failed"],
-        )
+        # Not micro — it is executable code — but small, trigger-free, and
+        # risk-free enough for the trivial-code fast path.
+        self.assertEqual("trivial-code", profile["effort"])
 
     def test_context_budget_and_check_mode(self) -> None:
         temporary, review = self.make_review({"README.md": "old\n"}, {"README.md": "new\n"})

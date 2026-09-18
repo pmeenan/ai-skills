@@ -15,7 +15,7 @@ A few core ideas came out of that process:
   * **Verification** acts as a skeptic. A separate agent takes each candidate issue and traces the surrounding code, callers, and tests to either prove the bug is real or refute it before it ever appears in the review.
 * **Fix the root cause, not the symptom:** Early versions of the skill would sometimes spot a real bug (like a null pointer or unexpected state) and suggest adding a local guard at the crash site, even when the real problem was a broken contract in the caller or owner. A dedicated **Root-Cause & Fix Optimality** step now checks whether a proposed fix is at the right architectural layer or if it's just a band-aid.
 * **Keep each agent focused in a fresh context:** Trying to review an entire Chromium CL inside a single long conversation eventually fills up the context window and degrades attention on later files. Instead, the top-level agent acts only as a coordinator. It delegates the actual code reading to focused subagents that each get a clean context window and write their findings to files on disk.
-* **Use scripts for mechanical work so agents can focus on judgment:** Tasks like running `clang-format`, finding all callers of a changed function across the repository, checking whether `WeakPtrFactory` is declared last in a class header, or checking that Gerrit comments point to valid diff lines are done by scripts in [`scripts/`](scripts/) before the agents start reading.
+* **Use scripts for mechanical work and state bookkeeping so agents can focus on judgment:** Tasks like running `clang-format`, finding all callers of a changed function across the repository, checking whether `WeakPtrFactory` is declared last in a class header, or checking that Gerrit comments point to valid diff lines are done by scripts in [`scripts/`](scripts/) before the agents start reading. Likewise, waiting on subagent waves (`await-workers.py`), transitioning work-unit states (`set-work-state.py`), and looking up gate errors (`explain-gate-error.py`) are handled by deterministic scripts that watch validated artifacts on disk rather than relying on subagent completion messages or manual TSV edits.
 
 ---
 
@@ -45,7 +45,7 @@ flowchart TD
 
 To make sure the review selectively targets the appropriate areas and doesn't run the full gamut of agents on every CL, it first goes through a decision tree to understand the size and scope of the change.
 
-A profiling script ([`scripts/profile-review.py`](scripts/profile-review.py)) inspects the diff size, the types of files touched, and whether the code touches higher-risk areas (such as async callbacks, Mojo IPC, memory ownership, threading, or persistence). Based on that profile and what the initial Inventory pass finds, the review scales across five levels:
+A profiling script ([`scripts/profile-review.py`](scripts/profile-review.py)) inspects the diff size, the types of files touched, and whether the code touches higher-risk areas (such as async callbacks, Mojo IPC, memory ownership, threading, or persistence). Based on that profile and what the initial Inventory pass finds, the review scales across six levels:
 
 ```mermaid
 flowchart TD
@@ -54,8 +54,10 @@ flowchart TD
     IsLarge -- "No" --> IsHighRisk{"Does it touch high-risk patterns?<br/>(Async tasks, Mojo IPC, GC/ownership,<br/>threading, security, or disk storage)"}
     IsHighRisk -- "Yes" --> HighRisk["High-Risk CL Process<br/>• Run both generalist passes with precomputed class lifetime dossiers<br/>• Immediately spawn relevant domain specialists<br/>• Run full skeptic verification and root-cause checks"]
     IsHighRisk -- "No" --> IsDocsOnly{"Is it only documentation<br/>or metadata?"}
-    IsDocsOnly -- "Yes" --> Micro["Micro CL Process<br/>• Skip bug/design context agent if no links<br/>• Skip the planning agent<br/>• Run a lightweight dual check for accuracy and formatting"]
-    IsDocsOnly -- "No" --> IsSmall{"Is it a small, localized code change?<br/>(1–3 files, <=80 lines, no risk signals,<br/>simple local call graph)"}
+    IsDocsOnly -- "Yes" --> Micro["Micro CL Process<br/>• Collapsed topology: 1 inventory, 1 discovery thread,<br/>  and 1 challenge round<br/>• Skip bug/design context agent if no links"]
+    IsDocsOnly -- "No" --> IsTrivialCode{"Is it a tiny, trigger-free code edit?<br/>(<=4 files, <=20 lines, <=6 hunks,<br/>no risk signals or specialist triggers)"}
+    IsTrivialCode -- "Yes" --> TrivialCode["Trivial-Code Process<br/>• Collapsed topology: 1 inventory, 1 discovery thread,<br/>  1 skeptic batch (if needed), and 1 challenge round"]
+    IsTrivialCode -- "No" --> IsSmall{"Is it a small, localized code change?<br/>(1–3 files, <=80 lines, no risk signals,<br/>simple local call graph)"}
     IsSmall -- "Yes" --> Small["Small Low-Risk Process<br/>• Skip the planning agent (plan is built by script)<br/>• Run only 2 generalist passes that also cover<br/>  mechanical checks and polish<br/>• Skip verification if no candidates are found"]
     IsSmall -- "No" --> Standard["Standard CL Process<br/>• Build initial plan by script<br/>• Run 2 generalist passes first<br/>• Spawn a specialist only if the generalists<br/>  spot a domain-specific concern"]
 ```
@@ -121,7 +123,7 @@ These agents manage the stages of the review before and after discovery:
 | **Verification Skeptics (`V*`)** | The main filter against false positives. Each Skeptic takes a group of candidate issues from Discovery and tries to *disprove* them by checking real callers, preconditions, locks, and tests. Only issues proven reachable survive. |
 | **Invariant Affinity Auditor (`IAR`)** | Checks all surviving findings side-by-side to make sure the review doesn't contradict itself or report the same underlying bug three different ways. |
 | **Root-Cause Challenger (`RC`)** | Reads the confirmed findings alongside the verbatim ancestor directory docs (`callers/directory-docs.md`) to make sure we recommend fixing the documented canonical owner of the broken invariant—and reusing existing subsystem helpers—rather than suggesting a fragile caller workaround or crossing a `DEPS` layering boundary. |
-| **Synthesis & Challenger Agents** | The **Synthesis** agent writes the human-facing review and anchors comments to exact diff lines. Before the review is delivered, an independent **Challenger** agent audits the draft to catch any over-stated severity, unhelpful tone, or misplaced line anchors. |
+| **Synthesis & Challenger Agents** | The **Synthesis** agent writes the human-facing review and anchors comments to exact diff lines. Before delivery, an independent **Challenger** agent audits the draft (capped at 2 rounds, or 1 when there are no promoted findings). Issues are classified as **substantive** (disputing a finding's existence, severity, root cause, or fix) or **clerical** (line-range anchors, headings, formatting); clerical defects are repaired in place by `collect-challenge-round.py` without triggering a full redraft. |
 
 ---
 

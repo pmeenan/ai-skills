@@ -30,7 +30,11 @@ import time
 from typing import Iterator
 
 
-DEFAULT_STALE_SECONDS = os.environ.get("CHROMIUM_REVIEW_LEASE_SECONDS", "3600")
+# Measured review-worker latency is a 49-minute mean with a 79-minute
+# maximum, so a one-hour lease expired mid-discovery routinely. Three
+# hours keeps a live worker inside its lease while still letting gc
+# reclaim a genuinely abandoned one the same day.
+DEFAULT_STALE_SECONDS = os.environ.get("CHROMIUM_REVIEW_LEASE_SECONDS", "10800")
 ARCHIVE_RETENTION_SECONDS = 30 * 24 * 60 * 60
 WORKTREE_REMOVAL_MULTIPLIER = 2
 
@@ -77,6 +81,26 @@ def validate_stale_seconds(value: int) -> int:
     if value < 60:
         fail("--stale-seconds must be at least 60")
     return value
+
+
+def recovery_command(path: Path, review_dir: Path, age: float) -> str:
+    """Spell out the acquire command that recovers from an expired lease.
+
+    An operator who hits a staleness failure otherwise has to read this
+    source to discover that --force and --stale-seconds exist.
+    """
+    script = Path(__file__).resolve()
+    acquire = (
+        f"python3 {script} acquire {path.parent} "
+        f"--review-dir {review_dir} --holder {holder_key_of(path)}"
+    )
+    generous = max(int(age) + 3600, 10800)
+    return (
+        f"take it over with `{acquire} --force`, or, if that holder is still "
+        f"working, widen the limit for this run with "
+        f"`{acquire} --stale-seconds {generous}` "
+        f"(or export CHROMIUM_REVIEW_LEASE_SECONDS={generous})"
+    )
 
 
 def validate_holder(value: str) -> str:
@@ -602,8 +626,9 @@ def heartbeat(arguments: argparse.Namespace) -> None:
         age = lease_age(path)
         if age > stale_seconds:
             fail(
-                f"lease expired {int(age)}s after its last progress; reacquire "
-                "before continuing",
+                f"lease expired {int(age)}s after its last progress (limit "
+                f"{stale_seconds}s); reacquire before continuing: "
+                + recovery_command(path, review_dir, age),
                 code=3,
             )
         append_event(path, token, "heartbeat", message=arguments.message)
@@ -654,7 +679,8 @@ def check(arguments: argparse.Namespace) -> None:
         if age > stale_seconds:
             fail(
                 f"lease is stale ({int(age)}s since progress; limit "
-                f"{stale_seconds}s): {path}",
+                f"{stale_seconds}s): {path}. To continue, "
+                + recovery_command(path, review_dir, age),
                 code=3,
             )
     print(f"active {int(age)}s {path}")
@@ -729,7 +755,8 @@ def holder_of(arguments: argparse.Namespace) -> None:
                         f"last progress (limit {stale_seconds}s): {path}. It "
                         "must stop rather than silently revive; pass an "
                         "explicit --holder only if the user confirms "
-                        "restarting it.",
+                        "restarting it. Once confirmed, "
+                        + recovery_command(path, review_dir, age),
                         code=OWNERSHIP_LOST,
                     )
                 print(recorded_holder or holder_key_of(path))

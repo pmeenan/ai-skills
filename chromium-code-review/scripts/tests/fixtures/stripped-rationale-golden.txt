@@ -3,6 +3,11 @@
 # Regenerate: python3 -m unittest scripts.tests.test_worker_references (see assertion
 # message for the observed value) or update by hand when a rationale block is added/removed on purpose.
 
+execution-orchestration.md: Measured mean worker latency is 49 minutes. Runs that launched waves o
+execution-orchestration.md: two spent most of their wall clock idle — 79% of one 17.9-hour run. Th
+execution-orchestration.md: run that launched eight at once collected seven of eight threads in 65
+execution-orchestration.md: minutes. Day-plus runs were queue-dominated: a three-child default aga
+execution-orchestration.md: 30-thread plan left most of the clock waiting on scheduling, not analy
 inventory-and-planning.md: Measured runs keep paying for omissions: one silently dropped the Tear
 inventory-and-planning.md: recipe and with it the only thread that checks end-of-operation resour
 inventory-and-planning.md: release; another (large CL) omitted the Mode × Host matrix and both

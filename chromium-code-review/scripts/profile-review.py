@@ -473,11 +473,23 @@ def evaluate_small_low_risk(
     }
 
 
+def eligibility(proof: list[bool], proof_text: list[str]) -> dict[str, Any]:
+    """Package one parallel proof/label pair as a profile eligibility record."""
+    if all(proof):
+        return {"eligible": True, "proof": proof_text}
+    return {
+        "eligible": False,
+        "proof": proof_text,
+        "failed": [text for passed, text in zip(proof, proof_text) if not passed],
+    }
+
+
 def choose_effort(
     files: list[dict[str, Any]], hunks: int, surfaces: int,
-    signals: dict[str, int], context: dict[str, Any], diff_bytes: int,
+    signals: dict[str, int], triggers: list[dict[str, Any]],
+    context: dict[str, Any], diff_bytes: int,
     worker_budget: int,
-) -> tuple[str, list[str], dict[str, Any]]:
+) -> tuple[str, list[str], dict[str, Any], dict[str, Any]]:
     total_lines = sum(item["changed_lines"] for item in files)
     max_file_lines = max((item["changed_lines"] for item in files), default=0)
     classes = {item["class"] for item in files}
@@ -494,15 +506,18 @@ def choose_effort(
         large_reasons.append("a single file has more than 1,500 changed lines")
     if diff_bytes > worker_budget:
         large_reasons.append("the zero-context diff exceeds one worker input budget")
+    unproven = {"eligible": False, "proof": []}
     if large_reasons:
-        return "large", large_reasons, {"eligible": False, "proof": []}
+        return "large", large_reasons, unproven, dict(unproven)
 
     high_risk = sorted(HIGH_RISK_SIGNALS.intersection(signals))
     if high_risk:
-        return "high-risk", [f"risk signal: {name}" for name in high_risk], {
-            "eligible": False,
-            "proof": [],
-        }
+        return (
+            "high-risk",
+            [f"risk signal: {name}" for name in high_risk],
+            unproven,
+            dict(unproven),
+        )
 
     micro_proof = [
         len(files) <= 4,
@@ -528,17 +543,58 @@ def choose_effort(
         "no supplied prior-review input",
         "no malformed normalized-comment entries",
     ]
-    if all(micro_proof):
-        return "micro", ["all conservative micro proofs passed"], {
-            "eligible": True,
-            "proof": proof_text,
-        }
-    failed = [text for passed, text in zip(micro_proof, proof_text) if not passed]
-    return "standard", ["micro proof failed: " + reason for reason in failed], {
-        "eligible": False,
-        "proof": proof_text,
-        "failed": failed,
-    }
+    # A one-line #include removal is not documentation, so it could never
+    # satisfy the micro proof above, yet reviewing it at standard effort cost
+    # more orchestrator steps than a substantive change. trivial-code sits
+    # strictly between the two: it admits code, but only on a proof that is at
+    # least as strict as micro on every risk-bearing dimension, and stricter
+    # on size. A high-risk signal or a specialist trigger still forbids it.
+    trivial_code_proof = [
+        len(files) <= 4,
+        total_lines <= 20,
+        hunks <= 6,
+        surfaces <= 6,
+        bool(files),
+        not HIGH_RISK_SIGNALS.intersection(signals),
+        not triggers,
+        context["unresolved_threads"] == 0,
+        not context["prior_feedback_input_available"],
+        context["malformed_entries"] == 0,
+    ]
+    trivial_code_proof_text = [
+        "at most 4 changed files",
+        "at most 20 changed lines",
+        "at most 6 diff hunks",
+        "at most 6 approximate changed surfaces",
+        "at least one changed file",
+        "no behavior-sensitive risk tokens in changed lines",
+        "no trigger-only specialist lenses",
+        "no unresolved Gerrit threads",
+        "no supplied prior-review input",
+        "no malformed normalized-comment entries",
+    ]
+    micro = eligibility(micro_proof, proof_text)
+    trivial_code = eligibility(trivial_code_proof, trivial_code_proof_text)
+    if micro["eligible"]:
+        return (
+            "micro",
+            ["all conservative micro proofs passed"],
+            micro,
+            trivial_code,
+        )
+    if trivial_code["eligible"]:
+        return (
+            "trivial-code",
+            ["all conservative trivial-code proofs passed"],
+            micro,
+            trivial_code,
+        )
+    reasons = ["micro proof failed: " + reason for reason in micro["failed"]]
+    reasons += [
+        "trivial-code proof failed: " + reason
+        for reason in trivial_code["failed"]
+    ]
+    return "standard", reasons, micro, trivial_code
 
 
 def atomic_write(path: Path, content: str) -> None:
@@ -677,8 +733,8 @@ def main() -> int:
     triggers = specialist_triggers([item["path"] for item in files], patch)
     context = prior_context(review_dir, revision)
     patch_bytes = len(patch.encode("utf-8"))
-    effort, reasons, micro = choose_effort(
-        files, hunks, surfaces, signals, context, patch_bytes, worker_budget
+    effort, reasons, micro, trivial_code = choose_effort(
+        files, hunks, surfaces, signals, triggers, context, patch_bytes, worker_budget
     )
     small_low_risk = evaluate_small_low_risk(
         files, hunks, surfaces, signals, context, patch_bytes, worker_budget
@@ -695,6 +751,7 @@ def main() -> int:
         "effort": effort,
         "effort_reasons": reasons,
         "micro_eligibility": micro,
+        "trivial_code_eligibility": trivial_code,
         "small_low_risk_eligibility": small_low_risk,
         "pin": {"revision_sha": revision, "parent_sha": parent, "worktree": str(worktree)},
         "counts": {
@@ -717,10 +774,12 @@ def main() -> int:
         "risk_signals": dict(sorted(signals.items())),
         "specialist_triggers": triggers,
         "prior_context": context,
+        # Available external context is evidence the pinned description was
+        # read, not a reason to force the slow path, so only availability
+        # gates the skeleton.
         "context_fast_path_eligible": (
-            (effort == "micro" or small_low_risk["eligible"])
+            (effort in {"micro", "trivial-code"} or small_low_risk["eligible"])
             and context["external_context"]["available"]
-            and context["external_context"]["count"] == 0
         ),
         "initial_plan_fast_path_eligible": effort != "large",
         "compact_generalist_fast_path_eligible": small_low_risk["eligible"],
@@ -755,6 +814,13 @@ def main() -> int:
             ],
         },
     }
+    if effort in {"micro", "trivial-code"}:
+        # A proof-carrying fast path has one reading, so a second independent
+        # generalist pass and further challenge rounds only re-derive it.
+        # State the collapse here so the orchestrator never has to.
+        profile["topology"]["collapsed"] = True
+        profile["topology"]["initial_generalists"] = 1
+        profile["topology"]["max_challenge_rounds"] = 1
     tier_budgets = {"frontier": 1048576, "standard": 1048576}
     tier_tokens = {}
     for item in args.tier_context_window_tokens:

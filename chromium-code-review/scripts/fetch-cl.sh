@@ -13,7 +13,7 @@
 # exact SHA.
 #
 # Several independent reviews may share one pinned worktree concurrently. Each
-# holds its own one-hour append-only lease log under
+# holds its own three-hour append-only lease log under
 #   <src-parent>/codereview/locks/cl-<cl>-ps<ps>/<holder>.log
 # keyed by --holder. Without that flag the identity is stable across re-pins of
 # one review directory: the holder an existing pin.md already owns — whose
@@ -58,6 +58,19 @@ options:
   -h, --help       show this help message and exit
   --holder <key>   explicit lease holder identity
   --force-restart  replace an existing fresh lease owned by this holder
+
+conventions:
+  CHROMIUM_SRC     absolute path of the depot_tools-managed chromium/src
+                   checkout, e.g. /usr/local/google/chromium/src. Set it
+                   whenever this script is not run from inside that checkout;
+                   otherwise the src directory is auto-detected and the
+                   worktree cache is placed at <src-parent>/codereview/.
+  review-dir       a local-disk directory, by convention
+                   /tmp/cl-<CL>-ps<PS>. It must support chmod: x20 and other
+                   FUSE scratchpads reject chmod with EINVAL and cannot hold
+                   the pin's mutable lease state. This script probes the
+                   directory for chmod support before doing any network or
+                   git work and aborts early if it is unsuitable.
 HELP_EOF
       exit 0
       ;;
@@ -78,7 +91,7 @@ GIT_REMOTE="${GIT_REMOTE:-origin}"
 CURL_CONNECT_TIMEOUT="${CURL_CONNECT_TIMEOUT:-15}"
 CURL_MAX_TIME="${CURL_MAX_TIME:-90}"
 CURL_RETRIES="${CURL_RETRIES:-3}"
-LEASE_STALE_SECONDS="${CHROMIUM_REVIEW_LEASE_SECONDS:-3600}"
+LEASE_STALE_SECONDS="${CHROMIUM_REVIEW_LEASE_SECONDS:-10800}"
 MATERIALIZE_TIMEOUT="${CHROMIUM_REVIEW_MATERIALIZE_TIMEOUT:-1800}"
 PROJECT_ENC="${GERRIT_PROJECT//\//%2F}"
 
@@ -91,6 +104,38 @@ PROJECT_ENC="${GERRIT_PROJECT//\//%2F}"
 for command_name in curl python3 git mktemp flock; do
   command -v "$command_name" >/dev/null 2>&1 || die "$command_name is required"
 done
+
+# Every pin write path — lease-state.json above all — depends on chmod, and
+# x20/FUSE review directories reject it with EINVAL. Probing costs one file
+# create; discovering it after the change-detail fetch and the worktree
+# checkout costs the whole of phase 0. Probe the nearest existing ancestor so
+# the review directory itself is still created by the normal path below, and
+# probe rather than deny by path prefix so this stays correct elsewhere.
+probe_chmod_support() {
+  local target="$1" label="$2" probe=""
+  probe="$(mktemp "$target/.fetch-cl-chmod-probe.XXXXXXXX" 2>/dev/null)" \
+    || die "cannot create files in the $label $target; choose a writable local-disk review directory such as ${TMPDIR:-/tmp}/cl-$CL-ps<patchset>"
+  if ! chmod 600 -- "$probe" 2>/dev/null; then
+    rm -f -- "$probe" || true
+    die "the $label $target does not support chmod (x20 and other FUSE filesystems return EINVAL), so the authenticated mutable lease state could not be persisted there; rerun with a local-disk review directory such as ${TMPDIR:-/tmp}/cl-$CL-ps<patchset>"
+  fi
+  rm -f -- "$probe" || true
+}
+
+if [[ -n "$REQUESTED_REVIEW_DIR" ]]; then
+  PROBE_DIR="$(python3 -c 'import os, sys
+path = os.path.abspath(sys.argv[1])
+while not os.path.isdir(path):
+    parent = os.path.dirname(path)
+    if parent == path:
+        break
+    path = parent
+print(path)' "$REQUESTED_REVIEW_DIR")" \
+    || die "cannot resolve the requested review directory $REQUESTED_REVIEW_DIR"
+  probe_chmod_support "$PROBE_DIR" "requested review directory"
+else
+  probe_chmod_support "${TMPDIR:-/tmp}" "default review directory root"
+fi
 
 if [[ -n "$HOLDER" ]]; then
   [[ "$HOLDER" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]] \

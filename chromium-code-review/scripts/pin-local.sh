@@ -75,12 +75,38 @@ REQUESTED_REVIEW_DIR="${3:-}"
 [[ "$PS" =~ ^[0-9]+$ ]] || die "patchset must be a positive integer"
 [[ "$CL" =~ ^[0-9a-zA-Z_-]+$ ]] || die "CL identifier must be alphanumeric, hyphen, or underscore"
 
-LEASE_STALE_SECONDS="${CHROMIUM_REVIEW_LEASE_SECONDS:-3600}"
+LEASE_STALE_SECONDS="${CHROMIUM_REVIEW_LEASE_SECONDS:-10800}"
 MATERIALIZE_TIMEOUT="${CHROMIUM_REVIEW_MATERIALIZE_TIMEOUT:-1800}"
 
 for command_name in python3 git mktemp flock; do
   command -v "$command_name" >/dev/null 2>&1 || die "$command_name is required"
 done
+
+probe_chmod_support() {
+  local target="$1" label="$2" probe=""
+  probe="$(mktemp "$target/.pin-local-chmod-probe.XXXXXXXX" 2>/dev/null)" \
+    || die "cannot create files in the $label $target; choose a writable local-disk review directory such as ${TMPDIR:-/tmp}/cl-$CL-ps<patchset>"
+  if ! chmod 600 -- "$probe" 2>/dev/null; then
+    rm -f -- "$probe" || true
+    die "the $label $target does not support chmod (x20 and other FUSE filesystems return EINVAL), so the authenticated mutable lease state could not be persisted there; rerun with a local-disk review directory such as ${TMPDIR:-/tmp}/cl-$CL-ps<patchset>"
+  fi
+  rm -f -- "$probe" || true
+}
+
+if [[ -n "$REQUESTED_REVIEW_DIR" ]]; then
+  PROBE_DIR="$(python3 -c 'import os, sys
+path = os.path.abspath(sys.argv[1])
+while not os.path.isdir(path):
+    parent = os.path.dirname(path)
+    if parent == path:
+        break
+    path = parent
+print(path)' "$REQUESTED_REVIEW_DIR")" \
+    || die "cannot resolve the requested review directory $REQUESTED_REVIEW_DIR"
+  probe_chmod_support "$PROBE_DIR" "requested review directory"
+else
+  probe_chmod_support "${TMPDIR:-/tmp}" "default review directory root"
+fi
 
 if [[ -n "$HOLDER" ]]; then
   [[ "$HOLDER" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]] \

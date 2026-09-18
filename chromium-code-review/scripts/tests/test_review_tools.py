@@ -795,7 +795,9 @@ output.write_bytes(pathlib.Path(source).read_bytes())
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         lease = self.holder_log()
-        old = int(lease.stat().st_mtime) - 3700
+        # Age it past worktree-lease.py's DEFAULT_STALE_SECONDS (3 hours,
+        # chosen to outlast a real review worker) so the takeover path runs.
+        old = int(lease.stat().st_mtime) - 10900
         os.utime(lease, (old, old))
 
         second_review = self.base / "second-review"
