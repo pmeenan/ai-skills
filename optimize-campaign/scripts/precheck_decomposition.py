@@ -66,7 +66,10 @@ def main(campaign_dir, opp_id, children):
               f"({parent['area_key']!r}, {parent.get('profile_id')!r}); decompose refuses it. Scaffold the area again (decompose-scaffold --opp {parent['id']}).")
         return 1
     phase = campaign.discovery_phase(ledger)
-    print(f"discovery phase: {phase}; area scope: {parent.get('scope') or 'story'}")
+    carried = campaign.carried_rows(parent, result["paths"]) if parent.get("status") == "decomposed" else set()
+    print(f"discovery phase: {phase}; area scope: {parent.get('scope') or 'story'}"
+          + (f"; revision carries {len(carried)} of {len(result['paths'])} rows unchanged from the accepted revision "
+             "(judged only where a changed row references them; import with decompose --carry-unchanged)" if carried else ""))
     measured = {tuple(r[k] for k in ("capture_id", "entry_key", "hotspot_key")): r.get("measured_share_pct", 0.0)
                 for r in parent["expected_work_refs"]}
     shares = {}
@@ -77,6 +80,7 @@ def main(campaign_dir, opp_id, children):
     story = parent["target_story"]
     floor = ledger.data["config"]["share_floor_pct"]
     problems = []
+    judged = campaign.carried_view(result["paths"], carried) if carried else result["paths"]
     story_floor = max(campaign.story_floor_pct(ledger.data["config"], story)[0], floor)
     try: campaign.enforce_phase_dispositions(result["paths"], phase, parent)
     except campaign.CampaignError as e: problems.append(str(e))
@@ -111,12 +115,12 @@ def main(campaign_dir, opp_id, children):
     run_all(problems, lambda w: campaign.enforce_packet_relevance(
         w, [(i, p) for i, p in enumerate(w, 1) if p.get("redundancy_evidence") and p.get("wrapper_of") is None],
         profile, story, campaign_dir), result["paths"])
-    bound = run_all(problems, campaign.enforce_measured_dispositions, result["paths"], shares, ledger.data["config"], floor, story, campaign_dir, coverage=coverage_map, profile=profile, ledger=ledger) or set()
+    bound = run_all(problems, campaign.enforce_measured_dispositions, judged, shares, ledger.data["config"], floor, story, campaign_dir, coverage=coverage_map, profile=profile, ledger=ledger) or set()
     for i, p in enumerate(result["paths"], 1):
         if p.get("unmeasurable_bound"):
             ub = p["unmeasurable_bound"]
             print(f"row {i} {p['disposition']} {p['anchor'][:60]} closes unmeasurable: bound {ub['story_bound_pct']:.3f}% < story floor {ub['story_floor_pct']:.3f}%, suite {ub.get('suite_impact_pct')}% < {ub.get('suite_floor_pct')}%")
-    run_all(problems, campaign.enforce_wrapper_descent, result["paths"], shares, profile, story, campaign_dir, ledger.data["config"], floor)
+    run_all(problems, campaign.enforce_wrapper_descent, judged, shares, profile, story, campaign_dir, ledger.data["config"], floor)
     unbound = [i for i, p in enumerate(result["paths"], 1)
                if p["disposition"] in ("mandatory", "no-qualifying-mechanism")
                and shares.get(i, 0.0) >= story_floor
@@ -126,7 +130,7 @@ def main(campaign_dir, opp_id, children):
     # Every row that binds a packet, whatever the measured-disposition rule
     # said: the coverage table and the build check are most useful when
     # that rule has already refused a row.
-    relevance_rows = [(i, p) for i, p in enumerate(result["paths"], 1)
+    relevance_rows = [(i, p) for i, p in enumerate(judged, 1)
                       if i in bound or (p["disposition"] in ("novel", "known", "mandatory", "no-qualifying-mechanism")
                                         and p.get("redundancy_evidence"))]
     packets = campaign.bound_packets(result["paths"], relevance_rows, campaign_dir)
@@ -159,7 +163,7 @@ def main(campaign_dir, opp_id, children):
         if rows_cov:
             print("\npacket time coverage (ms per repetition against the probed function's profile share):")
             print(campaign.format_time_coverage(rows_cov, reference))
-        campaign.enforce_packet_time_coverage(result["paths"], relevance_rows, profile, story, campaign_dir)
+        campaign.enforce_packet_time_coverage(judged, relevance_rows, profile, story, campaign_dir)
     except campaign.CampaignError as e: problems.append(str(e))
     run_all(problems, lambda w: campaign.enforce_row_text_numbers(
         w, [(i, p) for i, p in relevance_rows if w[i - 1].get("disposition") != SKIPPED], shares, ledger.data["config"], floor, story, campaign_dir),
@@ -172,7 +176,7 @@ def main(campaign_dir, opp_id, children):
         campaign.enforce_row_text_distinct(result["paths"])
     except campaign.CampaignError as e: problems.append(str(e))
     try:
-        campaign.enforce_row_text_symbols(result["paths"], relevance_rows, profile.get("repository_root"),
+        campaign.enforce_row_text_symbols(judged, relevance_rows, profile.get("repository_root"),
                                           frames=campaign.distinct_frames(campaign.collapsed_stack_files(profile, story)))
     except campaign.CampaignError as e: problems.append(str(e))
     # decompose judges below-floor against every capture's share (any >= floor refuses)
@@ -186,10 +190,10 @@ def main(campaign_dir, opp_id, children):
         problems.append(f"{len(wrong)} below-floor row(s) whose share in some capture is at/above the {story_floor:.3f}% floor (decompose refuses these; bind the nearest packet as mandatory): {wrong[:20]}")
     try: campaign.enforce_out_of_scope_anchors(result["paths"], ledger.data["config"])
     except campaign.CampaignError as e: problems.append(str(e))
-    try: campaign.enforce_mandatory_packets(result["paths"])
+    try: campaign.enforce_mandatory_packets(judged)
     except campaign.CampaignError as e: problems.append(str(e))
     try:
-        campaign.enforce_large_mandatory_rows(result["paths"], shares, profile, story, campaign_dir)
+        campaign.enforce_large_mandatory_rows(judged, shares, profile, story, campaign_dir)
         big = [(i, round(shares[i], 2), p.get("probed_below")) for i, p in enumerate(result["paths"], 1)
                if p["disposition"] in ("mandatory", "no-qualifying-mechanism") and shares.get(i, 0.0) >= campaign.ALGORITHMIC_ATTENTION_PCT]
         if big: print("\nlarge rows closed by count (row, share, rows probed beneath):", big[:20])

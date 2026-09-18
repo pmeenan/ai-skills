@@ -9967,6 +9967,86 @@ def cmd_decompose_review_scaffold(args):
     return 0
 
 
+CARRIED_ROW_DISPOSITION = "carried-from-accepted-revision"
+
+
+def carried_rows(parent, paths):
+    """1-based indices of rows identical to the accepted revision's rows in
+    the ledger. A revision that changes six rows of a 200-row area is judged
+    on those six and on every row that references them; the rest were
+    accepted when they were staged and are not re-litigated against rules
+    adopted since (round 57: 1,744 problems on 109 untouched rows of #121).
+    Structural rules (covered-by owners, wrapper descent, phase dispositions)
+    still see the full list; only row-local rules see the view."""
+    accepted = parent.get("path_accounting") or []
+    out = set()
+    for index, (old, new) in enumerate(zip(accepted, paths), 1):
+        # The ledger's row carries fields decompose derived (shares, floors,
+        # summaries); the staged row is compared on the fields it states.
+        if all(old.get(key) == value for key, value in new.items()):
+            out.add(index)
+    return out
+
+
+def carried_view(paths, carried):
+    """The paths list with carried rows replaced by a copy every row rule
+    skips (the pre-check's neutralization): anchor and share stay so that
+    share accounting and owner lookups hold; disposition, packet and
+    wrapper_of go so that no row-local rule fires on them."""
+    if not carried:
+        return paths
+    view = []
+    for index, row in enumerate(paths, 1):
+        if index in carried:
+            neutral = dict(row)
+            for field in ("wrapper_of", "redundancy_evidence", "invariant", "existing_mechanism", "evidence",
+                          "packet_hypothesis", "investigation", "cost_evidence"):
+                neutral.pop(field, None)
+            neutral["disposition"] = CARRIED_ROW_DISPOSITION
+            neutral["carried_disposition"] = row.get("disposition")
+            view.append(neutral)
+        else:
+            view.append(row)
+    return view
+
+
+DERIVED_ROW_FIELDS = (
+    "qualification_floor_pct", "qualification_floor_basis", "redundancy_summary", "story_profile_share_pct",
+    "estimated_local_story_impact_pct", "expected_value", "expected_value_unit", "packet_relevance",
+    "own_counters", "packet_time_coverage", "cost_summary", "suite_impact", "measured_bound",
+    "covered_by_nearest_probe", "covered_by_probe_identity", "covered_by_sample_identity", "nearest_packet",
+    "probed_below", "wrapper_coverage", "wrapper_targets_share_pct",
+)
+
+
+def accepted_decomposition(parent):
+    """The accepted revision of an area in staged-file form: the base a
+    restage edits, with the fields decompose derived removed so that the
+    rows compare equal to the ledger's (carried_rows). Round 57: the
+    operator restaged from an older outbox file and reverted 109 rows."""
+    rows = []
+    for row in parent.get("path_accounting") or []:
+        rows.append({k: v for k, v in row.items() if k not in DERIVED_ROW_FIELDS})
+    return {"area_key": parent.get("area_key"), "profile_id": parent.get("profile_id"),
+            "accounting_evidence": parent.get("accounting_evidence"),
+            "exported_from": {"discovery": parent.get("id"), "revision": parent.get("decomposition_revision"),
+                              "digest": parent.get("decomposition_sha256")},
+            "paths": rows}
+
+
+def cmd_export_decomposition(args):
+    """Write the accepted revision of a decomposed area as the file a
+    restage starts from (edit only the rows the restage changes)."""
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    parent = ledger.opp(int(args.opp))
+    if not parent.get("path_accounting"):
+        raise CampaignError(f"#{parent['id']} has no accepted decomposition")
+    out = pathlib.Path(args.out)
+    out.write_text(json.dumps(accepted_decomposition(parent), indent=2) + "\n")
+    print(f"#{parent['id']} revision {parent.get('decomposition_revision')}: {len(parent['path_accounting'])} rows -> {out}")
+    return 0
+
+
 def cmd_decompose(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     parent = ledger.opp(args.opp)
@@ -10007,6 +10087,10 @@ def cmd_decompose(args):
         campaign_dir=ledger.dir,
     )
     result = load_decomposition(args.children)
+    carried = carried_rows(parent, result["paths"]) if revising_failed_decomposition else set()
+    if carried and not getattr(args, "carry_unchanged", False):
+        carried = set()
+    judged = carried_view(result["paths"], carried)
     enforce_phase_dispositions(result["paths"], discovery_phase(ledger), parent)
     source_profile = ledger.profile(parent.get("profile_id"))
     decomposition_challenges = validate_gate_challenges(
@@ -10226,22 +10310,23 @@ def cmd_decompose(args):
         # then closes part by part. A list wrapper's packet covers only the
         # remainder of its samples; wrapper descent judges it, not relevance.
         relevance_rows = [
-            (index, item) for index, item in enumerate(result["paths"], 1)
+            (index, item) for index, item in enumerate(judged, 1)
             if item.get("redundancy_evidence") and item.get("wrapper_of") is None
         ]
         enforce_packet_relevance(
-            result["paths"], relevance_rows, source_profile,
+            judged, relevance_rows, source_profile,
             parent.get("target_story"), ledger.dir,
         )
         bound = enforce_measured_dispositions(
-            result["paths"], story_shares, ledger.data["config"], floor,
+            judged, story_shares, ledger.data["config"], floor,
             parent.get("target_story"), ledger.dir, coverage=coverage_map, profile=source_profile,
             ledger=ledger,
         )
-        enforce_wrapper_descent(result["paths"], story_shares, source_profile,
+        enforce_wrapper_descent(
+            judged, story_shares, source_profile,
                                 parent.get("target_story"), ledger.dir, ledger.data["config"], floor)
         relevance_rows = [
-            (index, item) for index, item in enumerate(result["paths"], 1)
+            (index, item) for index, item in enumerate(judged, 1)
             if index in bound or (
                 item["disposition"] in ("novel", "known", "mandatory", "no-qualifying-mechanism")
                 and item.get("redundancy_evidence")
@@ -10253,30 +10338,32 @@ def cmd_decompose(args):
         site_symbols = enforce_sites_named(
             result["paths"], relevance_rows, parent.get("target_story"), ledger.dir)
         enforce_own_counters(
-            result["paths"], story_shares, ledger.data["config"], floor,
+            judged, story_shares, ledger.data["config"], floor,
             parent.get("target_story"), ledger.dir, relevance_rows, site_symbols,
             coverage=coverage_map)
         enforce_nearest_packet(
-            result["paths"], story_shares, ledger.data["config"], floor,
+            judged, story_shares, ledger.data["config"], floor,
             parent.get("target_story"), ledger.dir, relevance_rows, source_profile,
             coverage=coverage_map)
         enforce_packet_time_coverage(
-            result["paths"], relevance_rows, source_profile,
+            judged, relevance_rows, source_profile,
             parent.get("target_story"), ledger.dir,
         )
         enforce_row_text_numbers(
-            result["paths"], relevance_rows, story_shares, ledger.data["config"],
+            judged, relevance_rows, story_shares, ledger.data["config"],
             floor, parent.get("target_story"), ledger.dir,
         )
-        enforce_mandatory_invariants(result["paths"], bound)
+        enforce_mandatory_invariants(
+            judged, bound)
         enforce_row_text_distinct(result["paths"])
         enforce_row_text_symbols(
-            result["paths"], relevance_rows, source_profile.get("repository_root"),
+            judged, relevance_rows, source_profile.get("repository_root"),
             frames=distinct_frames(collapsed_stack_files(source_profile, parent.get("target_story"))))
         enforce_out_of_scope_anchors(result["paths"], ledger.data["config"])
-        enforce_mandatory_packets(result["paths"])
+        enforce_mandatory_packets(
+            judged)
         enforce_large_mandatory_rows(
-            result["paths"], story_shares, source_profile, parent.get("target_story"),
+            judged, story_shares, source_profile, parent.get("target_story"),
             ledger.dir)
     wrongly_below_floor = [
         item for item in result["paths"]
@@ -13321,6 +13408,8 @@ def build_parser():
         help="Complete decomposition JSON object with accounting and path dispositions",
     )
     add_gate_challenge_arguments(p)
+    p.add_argument("--carry-unchanged", action="store_true",
+                   help="revision of an accepted decomposition: rows identical to the accepted revision are not re-judged by row-local rules")
     p.set_defaults(func=cmd_decompose)
 
     p = sub.add_parser(
@@ -13574,6 +13663,11 @@ def build_parser():
     p = sub.add_parser("efficiency-frontier", help="The counted, necessary work ranked by the time it carries outside every other counted function; --open (efficiency phase) makes each OPEN function an efficiency area in its home story")
     p.add_argument("--open", action="store_true")
     p.set_defaults(func=cmd_efficiency_frontier)
+
+    p = sub.add_parser("export-decomposition", help="The accepted revision of a decomposed area in staged-file form: the base a restage edits")
+    p.add_argument("--opp", required=True)
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_export_decomposition)
 
     p = sub.add_parser("own-time-frontier", help="Every in-scope function by the time in its own body, counted or not; --open (efficiency phase, host) makes each OPEN function an efficiency area in its home story")
     p.add_argument("--open", action="store_true")
