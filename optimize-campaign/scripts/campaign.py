@@ -10053,6 +10053,39 @@ def accepted_decomposition(parent):
             "paths": rows}
 
 
+def cmd_budget(args):
+    """Host: attach a causal opportunity budget (paired-oracle or
+    critical-path-counterfactual bounds, references/measurement-policy.md)
+    to a mechanism after its oracle experiment, validated by
+    opportunity_budget.rank; `advance --to sized` requires it."""
+    from opportunity_budget import rank
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    opp = ledger.opp(int(args.opp))
+    if opp.get("kind") != "mechanism":
+        raise CampaignError(f"#{opp['id']} is not a mechanism")
+    path = pathlib.Path(args.file)
+    try:
+        packet = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise CampaignError(f"Cannot read budget {path}: {exc}") from exc
+    for row in packet.get("workloads") or []:
+        artifact = pathlib.Path(ledger.dir) / str(row.get("artifact") or "")
+        if not row.get("artifact") or not artifact.is_file():
+            raise CampaignError(f"budget row {row.get('name')!r} names no artifact file under the campaign ({row.get('artifact')!r})")
+        if sha256_file(artifact) != row.get("artifact_sha256"):
+            raise CampaignError(f"budget row {row.get('name')!r}: artifact_sha256 does not match {artifact}")
+    try:
+        ranked = rank(packet)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise CampaignError(f"budget refused: {exc}") from exc
+    opp["opportunity_budget"] = packet
+    opp["opportunity_budget_rank"] = ranked
+    opp.setdefault("history", []).append({"ts": utc_now(), "event": f"opportunity budget attached from {path.name}: {ranked['reason']}, aggregate upper {ranked['aggregate_score_upper_pct']:.3f}%"})
+    ledger.save()
+    print(f"#{opp['id']} budget: {ranked}")
+    return 0
+
+
 def cmd_export_decomposition(args):
     """Write the accepted revision of a decomposed area as the file a
     restage starts from (edit only the rows the restage changes)."""
@@ -13689,6 +13722,11 @@ def build_parser():
     p = sub.add_parser("efficiency-frontier", help="The counted, necessary work ranked by the time it carries outside every other counted function; --open (efficiency phase) makes each OPEN function an efficiency area in its home story")
     p.add_argument("--open", action="store_true")
     p.set_defaults(func=cmd_efficiency_frontier)
+
+    p = sub.add_parser("budget", help="Host: attach a validated causal opportunity budget to a mechanism (its rows name artifact files under the campaign)")
+    p.add_argument("--opp", required=True)
+    p.add_argument("--file", required=True)
+    p.set_defaults(func=cmd_budget)
 
     p = sub.add_parser("export-decomposition", help="The accepted revision of a decomposed area in staged-file form: the base a restage edits")
     p.add_argument("--opp", required=True)
