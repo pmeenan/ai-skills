@@ -348,7 +348,7 @@ class ScopedCycleProbe {
     if (!active_ || stopped_)
       return;
     stopped_ = true;
-    block_.active_scope = parent_;
+    active_scope_ = parent_;
     CounterRead end;
     uint64_t inclusive = 0;
     if (!event_->Read(&end) ||
