@@ -442,10 +442,6 @@ inline uint32_t CaptureBlockFromEnvironment(uint32_t fallback) {
   return static_cast<uint32_t>(parsed);
 }
 
-inline const char* CurrentProcessType() {
-  return "renderer";
-}
-
 inline uint64_t MonotonicRawNanoseconds() {
   struct timespec timestamp = {};
   if (clock_gettime(CLOCK_MONOTONIC_RAW, &timestamp) != 0)
@@ -454,6 +450,11 @@ inline uint64_t MonotonicRawNanoseconds() {
          static_cast<uint64_t>(timestamp.tv_nsec);
 }
 #endif  // PERF_INSTRUMENTATION_COMMON_HELPERS_DEFINED_
+
+inline const char* CurrentProcessType() {
+  return "renderer";
+}
+
 
 inline void EmitCycleRow(FILE* output,
                          uint32_t block,
