@@ -1070,9 +1070,14 @@ def browser_build_id(browser: pathlib.Path, readelf: pathlib.Path) -> str:
 def browser_text_digest(browser: pathlib.Path, objcopy: pathlib.Path) -> str:
     with tempfile.TemporaryDirectory(prefix="sp3-browser-text-") as tmp:
         text_section = pathlib.Path(tmp) / "chrome.text"
+        # llvm-objcopy with no output path rewrites the input in place (the
+        # bytes change even with no edits, round 62), so the copy goes to a
+        # scratch file that is discarded with the directory.
+        scratch_copy = pathlib.Path(tmp) / "chrome.objcopy-out"
         try:
             subprocess.run(
-                [str(objcopy), f"--dump-section=.text={text_section}", str(browser)],
+                [str(objcopy), f"--dump-section=.text={text_section}", str(browser),
+                 str(scratch_copy)],
                 check=True,
                 capture_output=True,
             )
