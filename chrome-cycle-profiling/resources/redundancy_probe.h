@@ -89,6 +89,7 @@
 #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
 #pragma clang diagnostic ignored "-Wexit-time-destructors"
 #pragma clang diagnostic ignored "-Wshorten-64-to-32"
+#pragma clang diagnostic ignored "-Wunique-object-duplication"
 
 #include <elf.h>
 #include <link.h>
@@ -98,6 +99,7 @@
 #include <string.h>
 #include <sys/syscall.h>
 #include <time.h>
+#include "base/memory/raw_ptr_exclusion.h"
 #include <unistd.h>
 
 #include <cstdio>
@@ -110,12 +112,17 @@
 
 namespace perf_instrumentation {
 
+#ifndef PERF_INSTRUMENTATION_CURRENT_TID_DEFINED_
+#define PERF_INSTRUMENTATION_CURRENT_TID_DEFINED_
 inline uint64_t CurrentTid() {
   static thread_local const uint64_t tid =
       static_cast<uint64_t>(syscall(__NR_gettid));
   return tid;
 }
 
+#endif  // PERF_INSTRUMENTATION_CURRENT_TID_DEFINED_
+#ifndef PERF_INSTRUMENTATION_COMMON_HELPERS_DEFINED_
+#define PERF_INSTRUMENTATION_COMMON_HELPERS_DEFINED_
 inline void WriteJsonString(FILE* output, const char* value) {
   for (const unsigned char* p =
            reinterpret_cast<const unsigned char*>(value ? value : "");
@@ -147,6 +154,8 @@ inline uint64_t MonotonicRawNanoseconds() {
   return static_cast<uint64_t>(timestamp.tv_sec) * 1000000000ULL +
          static_cast<uint64_t>(timestamp.tv_nsec);
 }
+
+#endif  // PERF_INSTRUMENTATION_COMMON_HELPERS_DEFINED_
 
 // The GNU build id of the running executable (the first object
 // dl_iterate_phdr reports), as lowercase hex; "unknown" when the program
@@ -199,6 +208,8 @@ inline const char* BuildId() {
   return id;
 }
 
+#ifndef PERF_INSTRUMENTATION_SCORED_WINDOW_DEFINED_
+#define PERF_INSTRUMENTATION_SCORED_WINDOW_DEFINED_
 inline std::atomic<bool>& ScoredWindowActive() {
   static std::atomic<bool> active{false};
   return active;
@@ -211,6 +222,8 @@ inline bool IsInScoredWindow() {
 inline void SetScoredWindowActive(bool active) {
   ScoredWindowActive().store(active, std::memory_order_relaxed);
 }
+
+#endif  // PERF_INSTRUMENTATION_SCORED_WINDOW_DEFINED_
 
 // FNV-1a over arbitrary bytes; adequate for distinct-input counting.
 inline uint64_t HashBytes(const void* data, size_t length) {
@@ -230,6 +243,43 @@ inline uint64_t HashCombine(uint64_t a, uint64_t b) {
 
 class RedundancyCounter;
 class RedundancyScope;
+
+#if defined(SP3_DISABLE_REDUNDANCY_PROBES)
+// Instrumented-twin build: the redundancy counters are compiled to nothing so
+// the twin's cycle attribution carries none of their timing cost (round 61b:
+// the counters alone cost 21% of the suite score against the release build).
+// The API is kept so the counter sites compile unchanged; HasSeen() is never
+// true, so no counter-derived predicate fires. The scored-window gate and the
+// hash helpers above stay real: the cycle probes and the oracles use them.
+class RedundancyCounter {
+ public:
+  explicit RedundancyCounter(const char* /*site*/) {}
+  RedundancyCounter(const RedundancyCounter&) = delete;
+  RedundancyCounter& operator=(const RedundancyCounter&) = delete;
+  void Record(uint64_t /*input_hash*/, bool /*applicable*/) {}
+  void RecordTimed(uint64_t /*input_hash*/, bool /*applicable*/,
+                   uint64_t /*elapsed_ns*/, bool /*nested*/ = false) {}
+  bool HasSeen(uint64_t /*input_hash*/) const { return false; }
+  void Emit(FILE* /*output*/, uint32_t /*block*/,
+            const char* /*repetition_suite*/) const {}
+  void Reset() {}
+};
+
+class RedundancyScope {
+ public:
+  explicit RedundancyScope(RedundancyCounter& /*counter*/,
+                           uint64_t /*input_hash*/ = 0,
+                           bool /*applicable*/ = false) {}
+  RedundancyScope(const RedundancyScope&) = delete;
+  RedundancyScope& operator=(const RedundancyScope&) = delete;
+  void SetKey(uint64_t /*input_hash*/) {}
+  void SetApplicable(bool /*applicable*/) {}
+};
+
+inline void EmitRedundancyRows(FILE* /*output*/, uint32_t /*block*/,
+                               const char* /*repetition_suite*/) {}
+
+#else  // !SP3_DISABLE_REDUNDANCY_PROBES
 
 inline std::mutex& RedundancyRegistryMutex() {
   static auto& mutex = *new std::mutex();
@@ -309,7 +359,7 @@ class RedundancyCounter {
         stats_.applicable_ns += elapsed_ns;
     }
     if (input_hash == 0)
-      input_hash = 1;
+      return;
     if (stats_.overflow || !slots_)
       return;
     size_t index = static_cast<size_t>(input_hash * 0x9E3779B97F4A7C15ULL >>
@@ -336,6 +386,27 @@ class RedundancyCounter {
   }
 
  public:
+
+  bool HasSeen(uint64_t input_hash) const {
+    if (!IsInScoredWindow())
+      return false;
+    if (owner_tid_ != CurrentTid())
+      return false;
+    if (input_hash == 0)
+      return false;
+    if (stats_.overflow || !slots_)
+      return false;
+    size_t index = static_cast<size_t>(input_hash * 0x9E3779B97F4A7C15ULL >>
+                                       (64 - kCapacityLog2));
+    for (size_t probe = 0; probe < kCapacity; ++probe) {
+      uint64_t slot = slots_[(index + probe) & (kCapacity - 1)];
+      if (slot == input_hash)
+        return true;
+      if (slot == 0)
+        return false;
+    }
+    return false;
+  }
 
   void Reset() {
     stats_ = Stats{};
@@ -393,10 +464,10 @@ class RedundancyCounter {
   const char* site_;
   const uint64_t owner_tid_;
   Stats stats_{};
-  uint64_t* slots_ = nullptr;
+  RAW_PTR_EXCLUSION uint64_t* slots_ = nullptr;
   // Innermost open scope of this counter on its thread; nested scopes hand
   // their elapsed time to it so every call is timed exclusively.
-  RedundancyScope* active_scope_ = nullptr;
+  RAW_PTR_EXCLUSION RedundancyScope* active_scope_ = nullptr;
 };
 
 // Records one call, with its wall time, when the scope closes. Declare it at
@@ -421,7 +492,7 @@ class RedundancyScope {
   RedundancyScope(const RedundancyScope&) = delete;
   RedundancyScope& operator=(const RedundancyScope&) = delete;
 
-  void SetKey(uint64_t input_hash) { input_hash_ = input_hash; }
+  void SetKey(uint64_t input_hash) { input_hash_ = (input_hash == 0) ? 1 : input_hash; }
   void SetApplicable(bool applicable) { applicable_ = applicable; }
 
   ~RedundancyScope() {
@@ -438,12 +509,12 @@ class RedundancyScope {
   }
 
  private:
-  RedundancyCounter& counter_;
+  RAW_PTR_EXCLUSION RedundancyCounter& counter_;
   uint64_t input_hash_;
   bool applicable_;
   const bool active_;
   const uint64_t start_ns_;
-  RedundancyScope* const parent_;
+  RAW_PTR_EXCLUSION RedundancyScope* const parent_;
   uint64_t child_ns_ = 0;
 };
 
@@ -471,6 +542,8 @@ inline void EmitRedundancyRows(FILE* output,
     std::fclose(file_log);
   }
 }
+
+#endif  // SP3_DISABLE_REDUNDANCY_PROBES
 
 }  // namespace perf_instrumentation
 
