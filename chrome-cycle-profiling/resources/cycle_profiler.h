@@ -340,46 +340,63 @@ class ScopedCycleProbe {
   ScopedCycleProbe(const ScopedCycleProbe&) = delete;
   ScopedCycleProbe& operator=(const ScopedCycleProbe&) = delete;
 
-  ~ScopedCycleProbe() {
-    if (!active_)
+  // Ends the measurement now, so that work after it (the mechanism's own
+  // predicate, evaluated to attribute the call) is not counted in the
+  // mechanism's cycles. SetApplicable() may still be called after Stop();
+  // the destructor does the attribution. Idempotent.
+  void Stop() {
+    if (!active_ || stopped_)
       return;
-    active_scope_ = parent_;
+    stopped_ = true;
+    block_.active_scope = parent_;
     CounterRead end;
     uint64_t inclusive = 0;
-    uint64_t enabled = 0;
-    uint64_t running = 0;
     if (!event_->Read(&end) ||
-        !CounterDelta(start_, end, &inclusive, &enabled, &running)) {
+        !CounterDelta(start_, end, &inclusive, &enabled_, &running_)) {
       ++block_.invalid_reads;
       if (parent_)
         ++parent_->block_.invalid_reads;
       return;
     }
-    block_.time_enabled += enabled;
-    block_.time_running += running;
-    if (running < enabled)
+    valid_ = true;
+    block_.time_enabled += enabled_;
+    block_.time_running += running_;
+    if (running_ < enabled_)
       ++block_.multiplexed_samples;
     const uint64_t net = inclusive > block_.probe_overhead_cycles
                              ? inclusive - block_.probe_overhead_cycles
                              : 0;
     const uint64_t exclusive = net > child_cycles_ ? net - child_cycles_ : 0;
-    const uint64_t measured =
+    measured_ =
         (accounting_ == Accounting::kInclusive ? net : exclusive) * sample_every_;
-    block_.cycles += measured;
-    if (attributable_) {
-      attributable_->time_enabled += enabled;
-      attributable_->time_running += running;
-      if (running < enabled)
-        ++attributable_->multiplexed_samples;
-      attributable_->cycles += measured;
-      ++attributable_->sampled_calls;
-    }
+    block_.cycles += measured_;
     ++block_.sampled_calls;
     if (parent_)
       parent_->child_cycles_ += net;
   }
 
+  ~ScopedCycleProbe() {
+    if (!active_)
+      return;
+    Stop();
+    if (!valid_)
+      return;
+    if (attributable_) {
+      attributable_->time_enabled += enabled_;
+      attributable_->time_running += running_;
+      if (running_ < enabled_)
+        ++attributable_->multiplexed_samples;
+      attributable_->cycles += measured_;
+      ++attributable_->sampled_calls;
+    }
+  }
+
  private:
+  bool stopped_ = false;
+  bool valid_ = false;
+  uint64_t enabled_ = 0;
+  uint64_t running_ = 0;
+  uint64_t measured_ = 0;
   CycleBlock& block_;
   Accounting accounting_;
   ThreadCycleEvent* event_ = nullptr;
