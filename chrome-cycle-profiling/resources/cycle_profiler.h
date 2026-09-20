@@ -245,9 +245,24 @@ inline std::atomic<bool>& ScoredWindowActive() {
   return active;
 }
 
-inline bool IsInScoredWindow() {
+// The cycle probes' gate: always the real scored window.
+inline bool IsInCycleWindow() {
   return ScoredWindowActive().load(std::memory_order_relaxed);
 }
+
+// The redundancy counters' gate (and the oracles'). In the instrumented twin
+// (SP3_DISABLE_REDUNDANCY_PROBES) it is constant false so every counter site,
+// its key hashing and its shadow tables compile to nothing; the four
+// mechanism predicates the cycle probes attribute with use IsInCycleWindow().
+#if defined(SP3_DISABLE_REDUNDANCY_PROBES)
+constexpr bool IsInScoredWindow() {
+  return false;
+}
+#else
+inline bool IsInScoredWindow() {
+  return IsInCycleWindow();
+}
+#endif
 
 inline void SetScoredWindowActive(bool active) {
   ScoredWindowActive().store(active, std::memory_order_relaxed);
@@ -269,7 +284,7 @@ class ScopedCycleProbe {
         accounting_(accounting),
         sample_every_(sample_every ? sample_every : 1),
         attributable_(applicable ? attributable : nullptr) {
-    if (!IsInScoredWindow())
+    if (!IsInCycleWindow())
       return;
     if (!block_.CheckOwner())
       return;
