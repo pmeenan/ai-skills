@@ -140,12 +140,15 @@ class ThreadCycleEvent {
   struct perf_event_mmap_page* mmap_page_ = nullptr;
 };
 
+#ifndef PERF_INSTRUMENTATION_CURRENT_TID_DEFINED_
+#define PERF_INSTRUMENTATION_CURRENT_TID_DEFINED_
 inline uint64_t CurrentTid() {
   // Initialize on the measurement thread before entering the scored window.
   static thread_local const uint64_t tid =
       static_cast<uint64_t>(syscall(__NR_gettid));
   return tid;
 }
+#endif  // PERF_INSTRUMENTATION_CURRENT_TID_DEFINED_
 
 inline bool CounterDelta(const CounterRead& start,
                          const CounterRead& end,
@@ -240,6 +243,8 @@ inline CycleBlock& GetGlobalScoredTotalBlock() {
   return block;
 }
 
+#ifndef PERF_INSTRUMENTATION_SCORED_WINDOW_DEFINED_
+#define PERF_INSTRUMENTATION_SCORED_WINDOW_DEFINED_
 inline std::atomic<bool>& ScoredWindowActive() {
   static std::atomic<bool> active{false};
   return active;
@@ -267,6 +272,7 @@ inline bool IsInScoredWindow() {
 inline void SetScoredWindowActive(bool active) {
   ScoredWindowActive().store(active, std::memory_order_relaxed);
 }
+#endif  // PERF_INSTRUMENTATION_SCORED_WINDOW_DEFINED_
 
 class ScopedCycleProbe {
  public:
@@ -410,6 +416,8 @@ class ScopedCycleProbe {
   static inline thread_local ScopedCycleProbe* active_scope_ = nullptr;
 };
 
+#ifndef PERF_INSTRUMENTATION_COMMON_HELPERS_DEFINED_
+#define PERF_INSTRUMENTATION_COMMON_HELPERS_DEFINED_
 inline void WriteJsonString(FILE* output, const char* value) {
   for (const unsigned char* p =
            reinterpret_cast<const unsigned char*>(value ? value : "");
@@ -445,6 +453,7 @@ inline uint64_t MonotonicRawNanoseconds() {
   return static_cast<uint64_t>(timestamp.tv_sec) * 1000000000ULL +
          static_cast<uint64_t>(timestamp.tv_nsec);
 }
+#endif  // PERF_INSTRUMENTATION_COMMON_HELPERS_DEFINED_
 
 inline void EmitCycleRow(FILE* output,
                          uint32_t block,
