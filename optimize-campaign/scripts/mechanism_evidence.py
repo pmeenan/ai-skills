@@ -672,8 +672,9 @@ def validate_raw(data: dict, path: pathlib.Path) -> list[dict]:
         instrumentation.get("aa_overhead_pct"),
         f"{path}: instrumentation.aa_overhead_pct",
     )
-    if instrumentation["aa_overhead_pct"] > 1.0:
-        raise EvidenceError(f"{path}: instrumentation A/A overhead exceeds 1%")
+    # The overhead gate (and a recorded, bounded user decision) is judged by
+    # validate_aa_artifact against the A/A artifact itself; the metadata's
+    # copy of the number is checked for equality there.
     validate_aa_artifact(
         instrumentation, f"{path}: instrumentation.aa_artifact", build
     )
