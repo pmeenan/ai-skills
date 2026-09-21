@@ -389,9 +389,9 @@ class MechanismEvidenceTest(unittest.TestCase):
             self.assertEqual([], trace["traceEvents"])
             evidence.validate_trace_artifact(
                 {"path": str(out), "sha256": evidence.digest(out)}, "trace", "cpu-only")
-            with self.assertRaises(SystemExit):
-                evidence.main(["trace-attest", "--capture-summary", str(summary),
-                               "--capture-id", "cap-1", "--target-story", "Nope", "--out", str(out)])
+            self.assertEqual(1, evidence.main([
+                "trace-attest", "--capture-summary", str(summary),
+                "--capture-id", "cap-1", "--target-story", "Nope", "--out", str(out)]))
 
     def test_sizing_is_computed_from_raw_avoidable_cycles(self):
         with tempfile.TemporaryDirectory() as tmp:
