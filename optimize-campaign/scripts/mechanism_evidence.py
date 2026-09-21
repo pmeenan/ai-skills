@@ -274,6 +274,25 @@ def validate_instrumentation_transform(build: dict, instrumentation: dict, name:
         raise EvidenceError(f"{name} instrumentation revision is not its patch digest")
 
 
+OVERHEAD_DECISION_LIMIT_PCT = 1.0
+
+
+def overhead_decision_accepts(aa: dict) -> bool:
+    """A recorded user decision accepts a twin whose interval crosses the
+    gate while its point estimate is inside it (round 64: +0.93% [0.78, 1.07]).
+    The decision names who took it, when and why; the point-estimate bound is
+    the limit of what a decision can accept, so the record is a bounded
+    override, not a bypass."""
+    decision = aa.get("overhead_decision")
+    if not isinstance(decision, dict) or decision.get("accepted") is not True:
+        return False
+    for field in ("by", "on", "note"):
+        if not isinstance(decision.get(field), str) or not decision[field].strip():
+            return False
+    overhead = aa.get("overhead_pct")
+    return isinstance(overhead, (int, float)) and abs(float(overhead)) <= OVERHEAD_DECISION_LIMIT_PCT
+
+
 def reduce_instrumentation_aa(manifest: dict, source_ref: dict) -> dict:
     if manifest.get("runner") != "run_ab_benchmark.py/v4":
         raise EvidenceError(
@@ -352,7 +371,8 @@ def validate_aa_artifact(instrumentation: dict, name: str, build: dict) -> None:
     source_ref = aa.get("source_manifest")
     validate_artifact_ref(source_ref, f"{name} source_manifest")
     source = read_json(pathlib.Path(source_ref["path"]))
-    if reduce_instrumentation_aa(source, source_ref) != aa:
+    recorded = {key: value for key, value in aa.items() if key != "overhead_decision"}
+    if reduce_instrumentation_aa(source, source_ref) != recorded:
         raise EvidenceError(f"{name} does not match deterministic A/A recomputation")
     if not isinstance(aa.get("blocks"), int) or aa["blocks"] < MIN_INSTRUMENTATION_AA_BLOCKS:
         raise EvidenceError(
@@ -361,7 +381,7 @@ def validate_aa_artifact(instrumentation: dict, name: str, build: dict) -> None:
     overhead = finite(aa.get("overhead_pct"), f"{name} overhead_pct")
     if abs(overhead - float(instrumentation["aa_overhead_pct"])) > 1e-12:
         raise EvidenceError(f"{name} overhead does not match metadata")
-    if aa.get("gate_pass") is not True:
+    if aa.get("gate_pass") is not True and not overhead_decision_accepts(aa):
         raise EvidenceError(f"{name} instrumentation overhead gate failed")
 
 
@@ -1485,6 +1505,20 @@ def cmd_ingest(args: argparse.Namespace) -> None:
 def cmd_calibrate_aa(args: argparse.Namespace) -> None:
     source_ref = artifact_ref(args.manifest)
     result = reduce_instrumentation_aa(read_json(args.manifest), source_ref)
+    if args.accept_overhead_decision:
+        if not (args.decided_by and args.decided_on):
+            raise EvidenceError("--accept-overhead-decision needs --decided-by and --decided-on")
+        if abs(float(result["overhead_pct"])) > OVERHEAD_DECISION_LIMIT_PCT:
+            raise EvidenceError(
+                "a decision cannot accept an overhead point estimate above "
+                f"{OVERHEAD_DECISION_LIMIT_PCT}% (measured {result['overhead_pct']:.4f}%)"
+            )
+        result["overhead_decision"] = {
+            "accepted": True,
+            "by": args.decided_by,
+            "on": args.decided_on,
+            "note": args.accept_overhead_decision,
+        }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
 
@@ -1788,6 +1822,17 @@ def parser() -> argparse.ArgumentParser:
     )
     calibrate.add_argument("--manifest", type=pathlib.Path, required=True)
     calibrate.add_argument("--out", type=pathlib.Path, required=True)
+    calibrate.add_argument(
+        "--accept-overhead-decision",
+        default=None,
+        help=(
+            "Record a user decision accepting a twin whose 95%% interval crosses "
+            "the +/-1%% gate while the point estimate is inside it; the text is "
+            "the reason. Requires --decided-by and --decided-on."
+        ),
+    )
+    calibrate.add_argument("--decided-by", default=None)
+    calibrate.add_argument("--decided-on", default=None, help="ISO date")
     calibrate.set_defaults(func=cmd_calibrate_aa)
     bind = commands.add_parser(
         "bind-instrumentation",

@@ -341,6 +341,30 @@ class MechanismEvidenceTest(unittest.TestCase):
             ]))
             self.assertEqual(aa, json.loads(out.read_text()))
 
+    def test_overhead_decision_is_bounded_and_recorded(self):
+        decision = {"accepted": True, "by": "user", "on": "2026-09-21", "note": "point inside gate"}
+        self.assertTrue(evidence.overhead_decision_accepts(
+            {"overhead_pct": 0.93, "gate_pass": False, "overhead_decision": decision}))
+        self.assertFalse(evidence.overhead_decision_accepts(
+            {"overhead_pct": 1.2, "gate_pass": False, "overhead_decision": decision}))
+        self.assertFalse(evidence.overhead_decision_accepts(
+            {"overhead_pct": 0.93, "gate_pass": False,
+             "overhead_decision": {**decision, "note": " "}}))
+        self.assertFalse(evidence.overhead_decision_accepts({"overhead_pct": 0.93}))
+        with tempfile.TemporaryDirectory() as tmp:
+            value = raw(tmp)
+            aa_path = pathlib.Path(value["instrumentation"]["aa_artifact"]["path"])
+            aa = json.loads(aa_path.read_text())
+            out = pathlib.Path(tmp) / "decided-aa.json"
+            self.assertEqual(0, evidence.main([
+                "calibrate-aa", "--manifest", aa["source_manifest"]["path"],
+                "--out", str(out), "--accept-overhead-decision", "recorded reason",
+                "--decided-by", "user", "--decided-on", "2026-09-21",
+            ]))
+            decided = json.loads(out.read_text())
+            self.assertEqual("recorded reason", decided["overhead_decision"]["note"])
+            self.assertEqual(aa, {k: v for k, v in decided.items() if k != "overhead_decision"})
+
     def test_sizing_is_computed_from_raw_avoidable_cycles(self):
         with tempfile.TemporaryDirectory() as tmp:
             raw_path = pathlib.Path(tmp) / "raw.json"
