@@ -274,7 +274,11 @@ def validate_instrumentation_transform(build: dict, instrumentation: dict, name:
         raise EvidenceError(f"{name} instrumentation revision is not its patch digest")
 
 
-OVERHEAD_DECISION_LIMIT_PCT = 1.0
+# Raised from 1.0 to 1.25 by user decision (2026-09-21, round 67): three
+# calibrations of the probe-only twin read 0.93, 1.10 and 1.10 with
+# overlapping intervals; the remaining cost is the mechanisms' own
+# predicates, and with Stop() before every predicate the bias is conservative.
+OVERHEAD_DECISION_LIMIT_PCT = 1.25
 
 
 def overhead_decision_accepts(aa: dict) -> bool:
