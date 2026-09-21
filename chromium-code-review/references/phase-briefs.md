@@ -97,7 +97,10 @@ regenerate a collected artifact.
 Before returning, run
 `⟨skill-dir⟩/scripts/validate-worker-artifact.py ⟨review-dir⟩ <each-row-bearing-deliverable>`.
 Fix failures in a new artifact before collection; for collected prestate use
-an amendment. Never bypass validation with an abbreviated/missing path. If no
+an amendment. Never bypass validation with an abbreviated/missing path.
+Never read or grep helper script source files (`scripts/*.py`); if validation
+fails, run `⟨skill-dir⟩/scripts/explain-gate-error.py "<exact error message>"`
+and fix only the reported field or table shape. If no
 valid correction is expressible, return `needs-repair` with the exact error.
 
 For a procedural-only repair of sealed historical attempts, include exactly
@@ -738,8 +741,10 @@ rows are context and must not be scheduled again. Then:
    ⟨skill-dir⟩/references/worker/templates/scope-packet-spec-and-code-packets.md)
    with one diff row per file the batch's candidates cite, and list
    packets/V⟨batch⟩-code.md as an assigned input in the brief;
-   the orchestrator materializes it before sealing. Register each
-   brief and its exact candidate/reference/control inputs in input-manifest.tsv.
+   the orchestrator materializes it before sealing (or run
+   `⟨skill-dir⟩/scripts/build-batch-briefs.py ⟨review-dir⟩ --phase verification`
+   after writing `verification/batches.md` to deterministically render
+   `packets/V*.spec.tsv`, `packets/V*-code.md`, and `briefs/V*.md`).
 
 Deliverables: ⟨review-dir⟩/verification/batches.md and the briefs.
 
@@ -891,8 +896,10 @@ Deliverables:
 - ⟨review-dir⟩/root-cause/batches.md in the exact shape from
   ⟨skill-dir⟩/references/worker/templates/root-cause-plan-root-cause-rows-and-reopened-rows.md.
 - briefs/RC⟨batch⟩.md per scheduled batch, using the Generated
-  Common Header verbatim and embedding the exact candidate/verdict rows;
-  register each brief and exact inputs in input-manifest.tsv.
+  Common Header verbatim and embedding the exact candidate/verdict rows (or run
+  `⟨skill-dir⟩/scripts/build-batch-briefs.py ⟨review-dir⟩ --phase root-cause`
+  after writing `root-cause/batches.md` to render `briefs/RC*.md`
+  deterministically before validating `root-cause/batches.md`).
 
 Return: one line — trigger count, scheduled count, proved-not-applicable count, and
 the RC batch list (ID, brief, candidate count).
@@ -1009,7 +1016,7 @@ Deliverables:
   refutations, each with path:line evidence.
 - If your pass opens new candidates, write them first as canonical rows in
   ledger/reopened/round-⟨round⟩-RC⟨batch⟩.md with IDs
-  R⟨round⟩-RC⟨batch⟩-1, -2, ... and the Reopened Candidates shape from the
+  R⟨round⟩-RC⟨batch⟩-⟨n⟩ (numbered from 1) and the Reopened Candidates shape from the
   same root-cause shape file. A status-line-only or brief-only candidate does
   not exist.
 - When a reopened row needs a named discovery recipe, write a bounded

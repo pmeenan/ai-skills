@@ -876,7 +876,10 @@ bounds nothing; re-deriving its diff or repeating an indexed search is waste.
 
 This is attempt ⟨attempt⟩. If this attempt creates a new row-bearing/audit
 artifact, correct it in place until its local artifact validator passes; it is
-sealed when the orchestrator collects it. For a continuation/retry of a
+sealed when the orchestrator collects it. Never read or grep helper script
+source files (`scripts/*.py`); if validation fails, run
+`⟨skill-dir⟩/scripts/explain-gate-error.py "<exact error message>"` and fix only
+the reported field or table shape. For a continuation/retry of a
 collected artifact, inspect its last complete row and amendments, do not redo
 completed scope, do not reuse row IDs, and use structured `replace-fields`
 amendments for parsed table cells. Draft/index artifacts obey their explicit

@@ -325,11 +325,13 @@ build-review-indexes.py [--output-dir DIR] [--check] <review-dir>
 build-caller-index.py --worktree W --revision R [--pathspec P] <review-dir>
 build-scope-packets.py --worktree W --parent P --revision R [--spec SPEC] [--output OUT] <review-dir> <work_id>
 build-discovery-brief.py --work-id ID [--attempt N] --entry E --procedure P [--pathspec SPEC] [--output OUT] <review-dir>
+build-batch-briefs.py --phase {verification,root-cause} [--attempt N] [--round R] [--seal] <review-dir>
 ```
 
-Run `build-scope-packets.py` before sealing, so the scoped code packet is an
-existing hashable `assigned` input rather than something every worker
-re-derives from the worktree.
+Run `build-scope-packets.py` (or `build-batch-briefs.py` for Phase 5 `V*` and
+Phase 5.5 `RC*` batches) before sealing, so the scoped code packet and generated
+briefs are deterministic, hashable inputs rather than hand-crafted by planner
+subagents.
 
 ## Mechanical collection
 

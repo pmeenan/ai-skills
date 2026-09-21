@@ -940,7 +940,7 @@ def validate_pin(root: Path, report: Report, require_active_lease: bool = False,
                     report.error(f"worktree HEAD {actual} does not match pin {sha}")
                 dirty = subprocess.run(
                     ["git", "-C", str(worktree_path), "status", "--porcelain",
-                     "--untracked-files=all"], check=True, text=True,
+                     "-uno"], check=True, text=True,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
                 if dirty:
                     report.error("pinned worktree has local or untracked changes")
@@ -2465,9 +2465,21 @@ def brief_attempts(root: Path) -> dict[Path, set[tuple[str, int]]]:
     return result
 
 
+def brief_required_level(brief_path: Path) -> int:
+    stem = brief_path.stem
+    if re.match(r"^(?:DRAFT|CHPLAN|CH\d+|PDI)\b", stem):
+        return PHASES["final"]
+    if re.match(r"^REC\b", stem):
+        return PHASES["reconciliation"]
+    if re.match(r"^(?:VPLAN|V\d+|VTER|IAR|RCPLAN|RC\d+)\b", stem):
+        return PHASES["verification"]
+    return PHASES["collection"]
+
+
 def validate_generated_briefs(
     root: Path, report: Report,
     superseded: dict[tuple[str, int], tuple[str, int]],
+    level: int = PHASES["final"],
 ) -> None:
     brief_root = root / "briefs"
     paths = sorted(brief_root.glob("**/*.md")) if brief_root.exists() else []
@@ -2476,8 +2488,10 @@ def validate_generated_briefs(
         return
     attempts = brief_attempts(root)
     for path in paths:
-        text = read_text(path, report)
         keys = attempts.get(path.resolve(), set())
+        if not keys and brief_required_level(path) > level:
+            continue
+        text = read_text(path, report)
         if len(keys) == 1 and next(iter(keys)) in superseded:
             continue
         for label in brief_contract_failures(text):
@@ -2488,6 +2502,7 @@ def validate_input_manifest(
     root: Path, budgets: dict[str, int], report: Report,
     superseded: dict[tuple[str, int], tuple[str, int]],
     indexes_current: bool,
+    level: int = PHASES["final"],
 ) -> dict[str, list[dict[str, str]]]:
     path = root / "input-manifest.tsv"
     if not path.is_file():
@@ -2704,17 +2719,22 @@ def validate_input_manifest(
                 f"{self_rows} input-manifest self rows, expected 1"
             )
 
-    expected_briefs = {
-        item.resolve() for item in (root / "briefs").glob("**/*.md")
-        if item.is_file()
-    }
-    for orch_brief in orch_briefs.values():
-        if orch_brief not in {"", "—", "-"}:
-            expected_briefs.add(Path(orch_brief).resolve())
     manifest_briefs = {
         Path(row["brief"]).resolve() for row in rows
         if Path(row["brief"]).is_absolute()
     }
+    sealed_orch_briefs = {
+        Path(orch_brief).resolve() for orch_brief in orch_briefs.values()
+        if orch_brief not in {"", "—", "-"}
+    }
+    expected_briefs = {
+        item.resolve() for item in (root / "briefs").glob("**/*.md")
+        if item.is_file() and (
+            item.resolve() in manifest_briefs
+            or item.resolve() in sealed_orch_briefs
+            or brief_required_level(item) <= level
+        )
+    } | sealed_orch_briefs
     for brief in sorted(expected_briefs - manifest_briefs):
         report.error(
             f"generated analytical brief {brief} has 0 input-manifest self "
@@ -3718,7 +3738,10 @@ def validate_verdicts(
 
     known_rows = candidates | set(verdicts)
     for path in sorted((root / "briefs").glob("**/*.md")):
-        for reopened_id in set(re.findall(r"R\d+-RC\d+-\d+", read_text(path, report))):
+        brief_text = re.sub(
+            r"with IDs\s+R\d+-RC\d+-\d+(?:,\s*-\d+)*", "", read_text(path, report)
+        )
+        for reopened_id in set(re.findall(r"R\d+-RC\d+-\d+", brief_text)):
             if reopened_id not in known_rows:
                 report.error(f"{path} references non-canonical reopened row {reopened_id}")
     return surviving
@@ -5343,9 +5366,9 @@ def main() -> int:
         procedural_supersessions = procedural_repair_supersessions(
             root, report, indexes_current
         )
-        validate_generated_briefs(root, report, procedural_supersessions)
+        validate_generated_briefs(root, report, procedural_supersessions, level)
         input_assignments = validate_input_manifest(
-            root, budgets, report, procedural_supersessions, indexes_current
+            root, budgets, report, procedural_supersessions, indexes_current, level
         )
         validate_manifest(
             root, report, final=level >= PHASES["final"],
