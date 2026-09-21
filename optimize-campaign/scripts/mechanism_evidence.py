@@ -1502,6 +1502,60 @@ def cmd_ingest(args: argparse.Namespace) -> None:
     args.out.write_text(json.dumps(raw, indent=2, sort_keys=True) + "\n")
 
 
+TRACE_ATTEST_RUNNER = "mechanism_evidence.py/trace-attest-v1"
+
+
+def cmd_trace_attest(args: argparse.Namespace) -> None:
+    """Write the metadata's trace artifact for a cpu-only classification from a
+    real profile capture: the campaign's capture summary names the run, the
+    run's manifest attests exact-scored intervals, and the artifact carries
+    the target story's interval count and score-time composition. Nothing in
+    it is typed by hand. A score-critical classification needs a dependency
+    path from the latency route instead, which this command refuses."""
+    if args.classification != "cpu-only":
+        raise EvidenceError("trace-attest writes cpu-only artifacts only; score-critical needs latency_evidence")
+    try:
+        captures = json.loads(args.capture_summary.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise EvidenceError(f"cannot read capture summary {args.capture_summary}: {exc}") from exc
+    if not isinstance(captures, list):
+        raise EvidenceError("capture summary must be a list of capture records")
+    matches = [c for c in captures if isinstance(c, dict) and c.get("capture_id") == args.capture_id]
+    if len(matches) != 1:
+        raise EvidenceError(f"capture id {args.capture_id!r} must match exactly one record")
+    capture = matches[0]
+    if capture.get("interval_kind") != "exact-scored" or capture.get("quality_rejected"):
+        raise EvidenceError("capture is not an accepted exact-scored profile capture")
+    manifest_path = pathlib.Path(capture["remote_results_dir"]) / "perf_run_manifest.json"
+    manifest = read_json(manifest_path)
+    if manifest.get("interval_kind") != "exact-scored":
+        raise EvidenceError(f"{manifest_path} does not attest exact-scored intervals")
+    intervals = [
+        i for i in manifest.get("measurement_intervals", [])
+        if isinstance(i, dict) and i.get("suite") == args.target_story
+    ]
+    if not intervals:
+        raise EvidenceError(f"{manifest_path} has no measured intervals for {args.target_story!r}")
+    composition = (capture.get("score_time_composition") or {}).get(args.target_story)
+    artifact = {
+        "metadata": {
+            "runner": TRACE_ATTEST_RUNNER,
+            "interval_kind": "exact-scored",
+            "classification": "cpu-only",
+            "target_story": args.target_story,
+            "capture_id": args.capture_id,
+            "capture_summary": artifact_ref(args.capture_summary),
+            "source_manifest": artifact_ref(manifest_path),
+            "measured_intervals": len(intervals),
+            "phases": sorted({i.get("phase") for i in intervals if i.get("phase")}),
+            "score_time_composition": composition,
+        },
+        "traceEvents": [],
+    }
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
+
+
 def cmd_calibrate_aa(args: argparse.Namespace) -> None:
     source_ref = artifact_ref(args.manifest)
     result = reduce_instrumentation_aa(read_json(args.manifest), source_ref)
@@ -1834,6 +1888,16 @@ def parser() -> argparse.ArgumentParser:
     calibrate.add_argument("--decided-by", default=None)
     calibrate.add_argument("--decided-on", default=None, help="ISO date")
     calibrate.set_defaults(func=cmd_calibrate_aa)
+    attest = commands.add_parser(
+        "trace-attest",
+        help="write a cpu-only trace artifact from a real exact-scored profile capture",
+    )
+    attest.add_argument("--capture-summary", type=pathlib.Path, required=True)
+    attest.add_argument("--capture-id", required=True)
+    attest.add_argument("--target-story", required=True)
+    attest.add_argument("--classification", choices=("cpu-only", "score-critical"), default="cpu-only")
+    attest.add_argument("--out", type=pathlib.Path, required=True)
+    attest.set_defaults(func=cmd_trace_attest)
     bind = commands.add_parser(
         "bind-instrumentation",
         help="prove a probe patch maps a product tree to an instrumented tree",

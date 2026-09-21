@@ -365,6 +365,34 @@ class MechanismEvidenceTest(unittest.TestCase):
             self.assertEqual("recorded reason", decided["overhead_decision"]["note"])
             self.assertEqual(aa, {k: v for k, v in decided.items() if k != "overhead_decision"})
 
+    def test_trace_attest_derives_cpu_only_artifact_from_a_real_capture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            run = root / "results"; run.mkdir()
+            (run / "perf_run_manifest.json").write_text(json.dumps({
+                "interval_kind": "exact-scored",
+                "measurement_intervals": [
+                    {"suite": "Charts-chartjs", "phase": "sync"},
+                    {"suite": "Charts-chartjs", "phase": "async"},
+                    {"suite": "TodoMVC-Vue", "phase": "sync"}]}))
+            summary = root / "captures.json"
+            summary.write_text(json.dumps([{
+                "capture_id": "cap-1", "interval_kind": "exact-scored",
+                "quality_rejected": False, "remote_results_dir": str(run),
+                "score_time_composition": {"Charts-chartjs": {"x": 1}}}]))
+            out = root / "trace.json"
+            self.assertEqual(0, evidence.main([
+                "trace-attest", "--capture-summary", str(summary), "--capture-id", "cap-1",
+                "--target-story", "Charts-chartjs", "--out", str(out)]))
+            trace = json.loads(out.read_text())
+            self.assertEqual(2, trace["metadata"]["measured_intervals"])
+            self.assertEqual([], trace["traceEvents"])
+            evidence.validate_trace_artifact(
+                {"path": str(out), "sha256": evidence.digest(out)}, "trace", "cpu-only")
+            with self.assertRaises(SystemExit):
+                evidence.main(["trace-attest", "--capture-summary", str(summary),
+                               "--capture-id", "cap-1", "--target-story", "Nope", "--out", str(out)])
+
     def test_sizing_is_computed_from_raw_avoidable_cycles(self):
         with tempfile.TemporaryDirectory() as tmp:
             raw_path = pathlib.Path(tmp) / "raw.json"
