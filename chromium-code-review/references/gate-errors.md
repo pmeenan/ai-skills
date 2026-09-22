@@ -963,7 +963,7 @@ index staleness error (§4.1). Fix the inner message here.
 | `sharded inventory leaves hunk <h> with no owning surface row` | Incomplete shard coverage. | Add a surface row owning that hunk. | build-review-indexes.py:229 |
 | `<f>: Complexity graph edges lacks required columns` | Header mismatch. | Copy the header from the template. | build-review-indexes.py:248 |
 | `<f>: invalid graph edge ID '<id>'` | Bad edge ID. | Use the `E-<n>` form from the template. | build-review-indexes.py:255 |
-| `duplicate graph edge <id>` | Two rows for one edge. | De-duplicate. | build-review-indexes.py:257 |
+| `duplicate graph edge <id>` | Multiple inventory rows use the same edge ID. | Give each shard its own `E-I<shard>-...` namespace. For collected artifacts, append `replace-fields` amendments targeting each original edge ID and update all referring graph scopes/deltas; preserve the original rows. | build-review-indexes.py:257 |
 | `<f>: graph edge <id> has invalid kind '<k>'` / `invalid status '<s>'` | Bad token. | Use the template's kind/status vocabulary. | build-review-indexes.py:259, :261 |
 | `<f>: graph edge <id> lacks evidence` | No citation. | Add `path:line`. | build-review-indexes.py:263 |
 | `<f>: Complexity graph delta lacks required columns` | Header mismatch. | Copy the header. | build-review-indexes.py:278 |

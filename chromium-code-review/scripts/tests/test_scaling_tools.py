@@ -547,6 +547,51 @@ class BuildReviewIndexesTest(unittest.TestCase):
         self.assertEqual("ledger/EPW.md", rows[0]["effective_source"])
         self.assertEqual("ledger/EPW.md=candidate", rows[0]["observations"])
 
+    def test_append_only_repair_of_colliding_graph_shards(self) -> None:
+        temporary, root = self.make_review()
+        self.addCleanup(temporary.cleanup)
+        originals = {}
+        for shard in ("I1", "I2"):
+            path = root / "inventory" / f"{shard}.md"
+            originals[path] = f"""## Complexity graph edges
+
+| edge | from | to | kind | status | evidence |
+| --- | --- | --- | --- | --- | --- |
+| E-CALL-1 | Foo | Bar | caller | open | foo.cc:11 |
+
+## Trigger inventory
+
+| scope ID | surface | discovery triggers | root-cause trigger | graph scope | evidence |
+| --- | --- | --- | --- | --- | --- |
+| {shard}-T001 | Foo | NET hard | required: contract | graph:E-CALL-1 | foo.cc:11 |
+"""
+            write(path, originals[path])
+        failed = run("python3", str(INDEXES), str(root), check=False)
+        self.assertNotEqual(0, failed.returncode)
+        self.assertIn("duplicate graph edge E-CALL-1", failed.stderr)
+        for path, original in originals.items():
+            shard = path.stem
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(f"""
+## Amendments
+
+| amendment | target | operation | replacement / reason | evidence | attempt |
+| --- | --- | --- | --- | --- | --- |
+| {shard}-A1 | E-CALL-1 | replace-fields | {{"edge":"E-{shard}-CALL-1"}} | shard collision | 2 |
+| {shard}-A2 | {shard}-T001 | replace-fields | {{"graph scope":"graph:E-{shard}-CALL-1"}} | shard collision | 2 |
+""")
+            self.assertTrue(path.read_text(encoding="utf-8").startswith(original))
+            run("python3", str(ARTIFACT_VALIDATE), str(root), str(path))
+        run("python3", str(INDEXES), str(root))
+        edges = self.read_tsv(root / "indexes" / "topology.tsv")
+        self.assertEqual(["E-I1-CALL-1", "E-I2-CALL-1"],
+                         [row["edge"] for row in edges])
+        inventory = self.read_tsv(root / "indexes" / "inventory.tsv")
+        for shard in ("I1", "I2"):
+            trigger = next(row for row in inventory if row["id"] == f"{shard}-T001")
+            self.assertIn(f"graph-scope=graph:E-{shard}-CALL-1", trigger["tags"])
+        run("python3", str(INDEXES), str(root), "--check")
+
     def test_builds_independent_specialist_prior_index(self) -> None:
         temporary, root = self.make_review()
         self.addCleanup(temporary.cleanup)
@@ -1656,4 +1701,3 @@ class InitialPlanAndCallerDossierTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

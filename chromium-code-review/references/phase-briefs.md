@@ -267,6 +267,9 @@ intervals, or `none`⟩. Do not inventory another shard's hunks/surfaces and do
 not create or edit context.md. For a surface crossing dense-shard boundaries,
 the shard owning its earliest changed line owns the complete surface row;
 adjacent reads are context only.
+Namespace graph-edge IDs with this shard name (for example, shard I1 uses
+E-I1-CALL-1), and use those exact IDs in every graph scope. Bare E-CALL-1
+style IDs collide when independently produced shards are combined.
 
 Pinned range/pathspec: parent ⟨parent-sha⟩, revision ⟨sha⟩, exact repo-relative
 pathspec ⟨explicit path list including both sides of renames/deletions⟩. Use

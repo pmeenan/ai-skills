@@ -238,6 +238,9 @@ def _apply_plan_repair_table(
 
 def _row_matches(heading: str, row: dict[str, str], index: int,
                  target: str) -> bool:
+    if heading in {"Complexity graph edges", "Complexity graph delta"}:
+        if row.get("edge") == target:
+            return True
     if target.startswith("matrix:") and heading == "Compliance matrix":
         return target == f"matrix:{index}"
     if target.startswith("descriptor:") and heading == "Candidate descriptors":

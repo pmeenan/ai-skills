@@ -129,7 +129,13 @@ twice). Use `replace-fields` for any structurally parsed table cell. Its
 table headers. Targets are a stable row ID, `matrix:<1-based-row>`,
 `descriptor:<candidate>`, `trace:<candidate>:<obligation>`,
 `affinity:<candidate>`, `family:<RF-id>`, `audit:<check>`, or
-`root-family:<RF-id>`. Indexers,
+`root-family:<RF-id>`. Graph rows in `Complexity graph edges` and
+`Complexity graph delta` can be targeted by their `edge` ID. To repair an
+ID collision across inventory shards, amend the `edge` cell in each affected
+file and explicitly amend every reference to it (including trigger `graph scope`
+cells and any downstream graph deltas). Later amendments target the effective
+renamed ID. Targets must still resolve to exactly one row within their file;
+renaming does not rewrite references automatically. Indexers,
 validators, and collectors all apply these replacements before checking the
 effective row. Use the narrative operations only for candidate lifecycle
 text. The latest valid amendment for a target is authoritative, but the

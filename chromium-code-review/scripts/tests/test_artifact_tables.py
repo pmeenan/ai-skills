@@ -90,6 +90,53 @@ def roster_rows(text: str) -> tuple[list[dict[str, str]], list[str]]:
     return rows, errors
 
 
+class GraphAmendmentTest(unittest.TestCase):
+    def test_renames_edge_then_amends_effective_id(self) -> None:
+        for heading in ("Complexity graph edges", "Complexity graph delta"):
+            with self.subTest(heading=heading):
+                text = f"""## {heading}
+
+| edge | status |
+| --- | --- |
+| E-CALL-1 | open |
+
+## Amendments
+
+| amendment | target | operation | replacement / reason |
+| --- | --- | --- | --- |
+| A1 | E-CALL-1 | replace-fields | {{"edge":"E-I1-CALL-1"}} |
+| A2 | E-I1-CALL-1 | replace-fields | {{"status":"resolved"}} |
+"""
+                tables, errors = effective_tables(text)
+                self.assertEqual([], errors)
+                self.assertEqual(
+                    [{"edge": "E-I1-CALL-1", "status": "resolved"}],
+                    tables[0][2],
+                )
+                raw, errors = parse_tables(text)
+                self.assertEqual([], errors)
+                self.assertEqual("E-CALL-1", raw[0][2][0]["edge"])
+
+    def test_ambiguous_edge_target_is_rejected(self) -> None:
+        text = """## Complexity graph edges
+
+| edge | status |
+| --- | --- |
+| E-CALL-1 | open |
+| E-CALL-1 | resolved |
+
+## Amendments
+
+| amendment | target | operation | replacement / reason |
+| --- | --- | --- | --- |
+| A1 | E-CALL-1 | replace-fields | {"edge":"E-I1-CALL-1"} |
+"""
+        tables, errors = effective_tables(text)
+        self.assertIn("resolves to 2 rows", "\n".join(errors))
+        self.assertEqual(["E-CALL-1", "E-CALL-1"],
+                         [row["edge"] for row in tables[0][2]])
+
+
 class PlanContinuationTest(unittest.TestCase):
     def test_graph_routing_appends_new_effective_identity(self) -> None:
         text = plan([

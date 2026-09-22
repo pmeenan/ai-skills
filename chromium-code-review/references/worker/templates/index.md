@@ -11,7 +11,7 @@ preamble, so its rules travel with every section.
 | section | file | source lines |
 | --- | --- | --- |
 | Row IDs | row-ids.md | 59 |
-| The Review Directory | the-review-directory.md | 138 |
+| The Review Directory | the-review-directory.md | 144 |
 | pin.md | pin-md.md | 32 |
 | profile.json, profile.md, And Context Budgets | profile-json-profile-md-and-context-budgets.md | 53 |
 | directives.md, progress.md, And orchestration.tsv | directives-md-progress-md-and-orchestration-tsv.md | 62 |
@@ -19,7 +19,7 @@ preamble, so its rules travel with every section.
 | Scope-Packet Spec And Code Packets | scope-packet-spec-and-code-packets.md | 34 |
 | context.md | context-md.md | 41 |
 | gerrit/unresolved-threads.json | gerrit-unresolved-threads-json.md | 37 |
-| inventory.md — Changed-Surface Inventory And Risk-Area Map | inventory-md-changed-surface-inventory-and-risk-area-map.md | 145 |
+| inventory.md — Changed-Surface Inventory And Risk-Area Map | inventory-md-changed-surface-inventory-and-risk-area-map.md | 148 |
 | plan.md — Thread-Plan Roster | plan-md-thread-plan-roster.md | 107 |
 | Generated Common Header | generated-common-header.md | 97 |
 | Subagent Brief — Discovery Thread | subagent-brief-discovery-thread.md | 102 |

@@ -46,7 +46,10 @@ stateful helpers/mocks keep individual rows. Class-meaningless fields are
 | T003 | Ownership And Blink Lifecycle | OBL absent | not required: no ownership/Blink-lifecycle path, symbol, surface, or profile signal matched | — | profile.json:/risk_signals; pin.md:/Changed-files |
 ```
 
-Schema-3 inventory also contains the typed handoff graph:
+Schema-3 inventory also contains the typed handoff graph. Edge IDs must be
+unique across the review. Inventory shards include their shard name, for
+example `E-I1-CALL-1` and `E-I2-CALL-1`; unsharded inventories may use
+`E-CALL-1`. Use the same ID in trigger scopes and downstream graph deltas:
 
 ```markdown
 ## Complexity graph edges

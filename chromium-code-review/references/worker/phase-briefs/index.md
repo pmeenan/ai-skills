@@ -14,7 +14,7 @@ preamble, so its rules travel with every section.
 | Adaptive Topology Preflight (mechanical) | adaptive-topology-preflight-mechanical.md | 25 |
 | Brief — Context (Phase 1, always separate from inventory when spawned) | brief-context-phase-1-always-separate-from-inventory-when-spawned.md | 34 |
 | Brief — Inventory (Phase 1, unsharded) | brief-inventory-phase-1-unsharded.md | 46 |
-| Brief — Inventory Shard (Phase 1, one per file group or dense hunk range) | brief-inventory-shard-phase-1-one-per-file-group-or-dense-hunk-range.md | 52 |
+| Brief — Inventory Shard (Phase 1, one per file group or dense hunk range) | brief-inventory-shard-phase-1-one-per-file-group-or-dense-hunk-range.md | 55 |
 | Brief — Gerrit Thread Normalizer (after Phase 0, all review modes) | brief-gerrit-thread-normalizer-after-phase-0-all-review-modes.md | 34 |
 | Brief — Prior Feedback (Phase 2, follow-up reviews only) | brief-prior-feedback-phase-2-follow-up-reviews-only.md | 37 |
 | Brief — Planner (Phase 3) | brief-planner-phase-3.md | 136 |
