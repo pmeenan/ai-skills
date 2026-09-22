@@ -216,7 +216,8 @@ twice). Use `replace-fields` for any structurally parsed table cell. Its
 table headers. Targets are a stable row ID, `matrix:<1-based-row>`,
 `descriptor:<candidate>`, `trace:<candidate>:<obligation>`,
 `affinity:<candidate>`, `family:<RF-id>`, `audit:<check>`, or
-`root-family:<RF-id>`. Graph rows in `Complexity graph edges` and
+`root-family:<RF-id>`, or `assessment:<lens>` for a row in
+`Specialist escalation assessments`. Graph rows in `Complexity graph edges` and
 `Complexity graph delta` can be targeted by their `edge` ID. To repair an
 ID collision across inventory shards, amend the `edge` cell in each affected
 file and explicitly amend every reference to it (including trigger `graph scope`

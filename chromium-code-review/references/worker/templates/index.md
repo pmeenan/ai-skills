@@ -11,7 +11,7 @@ preamble, so its rules travel with every section.
 | section | file | source lines |
 | --- | --- | --- |
 | Row IDs | row-ids.md | 59 |
-| The Review Directory | the-review-directory.md | 144 |
+| The Review Directory | the-review-directory.md | 145 |
 | pin.md | pin-md.md | 32 |
 | profile.json, profile.md, And Context Budgets | profile-json-profile-md-and-context-budgets.md | 53 |
 | directives.md, progress.md, And orchestration.tsv | directives-md-progress-md-and-orchestration-tsv.md | 62 |

@@ -241,6 +241,9 @@ def _row_matches(heading: str, row: dict[str, str], index: int,
     if heading in {"Complexity graph edges", "Complexity graph delta"}:
         if row.get("edge") == target:
             return True
+    if (target.startswith("assessment:")
+            and heading == "Specialist escalation assessments"):
+        return row.get("lens") == target.removeprefix("assessment:")
     if target.startswith("matrix:") and heading == "Compliance matrix":
         return target == f"matrix:{index}"
     if target.startswith("descriptor:") and heading == "Candidate descriptors":

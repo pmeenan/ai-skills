@@ -91,6 +91,26 @@ def roster_rows(text: str) -> tuple[list[dict[str, str]], list[str]]:
 
 
 class GraphAmendmentTest(unittest.TestCase):
+    def test_updates_specialist_assessment_after_continuation(self) -> None:
+        text = """## Specialist escalation assessments
+
+| lens | graph scope | likelihood | signals | counterevidence |
+| --- | --- | --- | --- | --- |
+| Network Semantics | graph:E-I1-CALL-1 | low | preliminary | trace incomplete |
+
+## Amendments
+
+| amendment | target | operation | replacement / reason |
+| --- | --- | --- | --- |
+| A1 | assessment:Network Semantics | replace-fields | {"likelihood":"high","signals":"foo.cc:12 callback crosses boundary"} |
+"""
+        tables, errors = effective_tables(text)
+        self.assertEqual([], errors)
+        self.assertEqual("high", tables[0][2][0]["likelihood"])
+        raw, errors = parse_tables(text)
+        self.assertEqual([], errors)
+        self.assertEqual("low", raw[0][2][0]["likelihood"])
+
     def test_renames_edge_then_amends_effective_id(self) -> None:
         for heading in ("Complexity graph edges", "Complexity graph delta"):
             with self.subTest(heading=heading):
