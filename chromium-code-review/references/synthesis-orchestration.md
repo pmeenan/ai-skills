@@ -88,7 +88,9 @@ a pass.
 
 If a shard is missing, repair it. Classify each issue as substantive or
 clerical before acting. Clerical issues are repaired and recorded by the
-challenge collector without a redraft or new round. Substantive issues may
+challenge collector without a redraft or new round, using the authenticated
+`clerical-resolutions.json` projection/structured-amendment receipt from the
+challenge template. Substantive issues may
 trigger a targeted Draft Writer, or the affected Finding Writers / Frame
 Writer and reassembly, followed by a second complete challenge round.
 

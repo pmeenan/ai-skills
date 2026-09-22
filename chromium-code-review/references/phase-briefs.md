@@ -1008,7 +1008,11 @@ replacement in the canonical multiline RC-row fields from the root-cause shape
 file named below;
 otherwise record the concrete eligibility condition that fails. Put only
 `applicable — RC⟨batch⟩-⟨n⟩` in the root-family table cell; the RC row owns
-the lossless code.
+the lossless code. After collection, use the append-only Suggested-edit
+amendment schema in the root-cause shape file for corrections to the decision,
+target, selected lines, or replacement. If the effective family decision
+changes, also amend the root-family table cell with structured
+`replace-fields`; never rewrite the collected prefix.
 
 Deliverables:
 - root-cause/RC⟨batch⟩.md — RC⟨batch⟩-⟨n⟩ rows in the shape
@@ -1429,6 +1433,12 @@ re-adjudicate them.
 Inputs: challenge/round-⟨round⟩/index.md and every planned CH*.md in that
 round directory. Verify every
 planned shard exists and mechanically extract issue IDs/counts.
+
+If explicitly clerical shard rows were corrected, also read the bounded
+`challenge/round-⟨round⟩/clerical-resolutions.json` receipt in the exact schema
+from the challenge template. Accept only authenticated exact-text projections
+or present reconciliation `replace-fields` amendments; never use a receipt to
+close an unclassified or substantive issue.
 
 Deliverable: finalize the immutable round index with every shard, scope, issue
 ID, missing shard, and result; write challenge.md as a compact pointer/summary

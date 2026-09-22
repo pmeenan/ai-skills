@@ -86,3 +86,100 @@ class RootSuggestionTests(unittest.TestCase):
     def test_missing_family_analysis_and_duplicate_selection_fail(self):
         self.assertTrue(self.check(self.fixture().split('## Root-family analysis')[0])[1])
         self.assertTrue(self.check(self.fixture() + '| RF001 | EPW-1 | omitted — shared repair requires multiple sites |\n')[1])
+
+    def test_append_only_amendment_can_omit_family_suggestion(self):
+        text = self.fixture().replace(
+            'omitted — shared repair requires multiple sites',
+            '''applicable — replaces a.cc:1
+- Suggested-edit selected lines:
+  ```cpp
+  old();
+  ```
+- Suggested-edit replacement:
+  ```suggestion
+  new();
+  ```''',
+            1,
+        ).replace(
+            '| omitted — shared repair requires multiple sites |',
+            '| applicable — RC001-1 |',
+        )
+        text += '''
+## Amendments
+| amendment | target | operation | replacement / reason | evidence | attempt |
+| --- | --- | --- | --- | --- | --- |
+| RC001-A1 | root-family:RF001 | replace-fields | {"suggested edit":"omitted — replacement exceeds inline size limits"} | a.cc:1 | 2 |
+
+## Suggested-edit amendments
+### RC001-SA1
+- Target: RC001-1
+- Suggested-edit decision: omitted — replacement exceeds inline size limits
+- Evidence: a.cc:1
+- Attempt: 2
+'''
+        decisions, errors = self.check(text)
+        self.assertEqual([], errors)
+        self.assertEqual('omitted', decisions['RC001-1']['status'])
+        self.assertEqual('RC001-SA1', decisions['RC001-1']['effective_amendment'])
+        self.assertEqual('', decisions['RC001-1']['selected'])
+
+    def test_append_only_amendment_preserves_code_whitespace(self):
+        text = self.fixture().replace(
+            'omitted — shared repair requires multiple sites',
+            '''applicable — replaces a.cc:1
+- Suggested-edit selected lines:
+  ```cpp
+  old();
+  ```
+- Suggested-edit replacement:
+  ```suggestion
+  new();
+  ```''',
+            1,
+        ).replace(
+            '| omitted — shared repair requires multiple sites |',
+            '| applicable — RC001-1 |',
+        )
+        text += '''
+## Suggested-edit amendments
+### RC001-SA1
+- Target: RC001-1
+- Suggested-edit decision: applicable — replaces a.cc:1
+- Suggested-edit selected lines:
+  ```cpp
+    old();
+  ```
+- Suggested-edit replacement:
+  ```suggestion
+    new();
+  ```
+- Evidence: a.cc:1
+- Attempt: 2
+'''
+        decisions, errors = self.check(text)
+        self.assertEqual([], errors)
+        self.assertEqual('  old();', decisions['RC001-1']['selected'])
+        self.assertEqual('  new();', decisions['RC001-1']['replacement'])
+
+    def test_amendment_target_is_exact_and_batch_prefix_safe(self):
+        base = self.fixture()
+        unknown = base + '''
+## Suggested-edit amendments
+### RC001-SA1
+- Target: RC001-10
+- Suggested-edit decision: omitted — replacement exceeds inline size limits
+- Evidence: a.cc:1
+- Attempt: 2
+'''
+        self.assertTrue(any('unknown row RC001-10' in error
+                            for error in self.check(unknown)[1]))
+        cross_batch = base + '''
+## Suggested-edit amendments
+### RC002-SA1
+- Target: RC001-1
+- Suggested-edit decision: omitted — replacement exceeds inline size limits
+- Evidence: a.cc:1
+- Attempt: 2
+'''
+        self.assertTrue(any('does not match its file prefix' in error
+                            for error in self.check(cross_batch)[1]))

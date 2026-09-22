@@ -1144,6 +1144,7 @@ class ReviewDirectoryValidatorTest(unittest.TestCase):
         shutil.copy2(SCRIPTS / "artifact_tables.py", tools / "artifact_tables.py")
         shutil.copy2(SCRIPTS / "orchestration_state.py", tools / "orchestration_state.py")
         shutil.copy2(SCRIPTS / "input_accounting.py", tools / "input_accounting.py")
+        shutil.copy2(SCRIPTS / "challenge_clerical.py", tools / "challenge_clerical.py")
         helper = tools / "worktree-lease.py"
         helper.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
         helper.chmod(0o644)
@@ -2865,6 +2866,40 @@ Return partial with explicit remaining scope when needed.
         self.refresh_input_manifest()
         self.refresh_indexes()
 
+    def test_final_allows_cpp_template_syntax_in_gerrit_comment(self) -> None:
+        self.make_final_artifacts()
+        (self.review / "gerrit-comments.md").write_text(
+            "# Gerrit-ready comments\n\n"
+            "Please keep base::OnceCallback<void(std::pair<bool,int64_t>)> "
+            "as the completion type.\n",
+            encoding="utf-8",
+        )
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
+    def test_final_still_rejects_placeholders_paths_and_urls(self) -> None:
+        self.make_final_artifacts()
+        gerrit = self.review / "gerrit-comments.md"
+        for forbidden in (
+            "Replace <description> before posting.",
+            "Do not post Wrapper<placeholder>.",
+            "See /tmp/private-review/output.txt.",
+            "See file:///home/reviewer/output.txt.",
+        ):
+            with self.subTest(forbidden=forbidden):
+                gerrit.write_text(
+                    f"# Gerrit-ready comments\n\n{forbidden}\n", encoding="utf-8"
+                )
+                run = subprocess.run(
+                    [str(VALIDATE), str(self.review), "--phase", "final"],
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+                self.assertIn("local path/URL or placeholder", run.stdout)
+
     def make_sectioned_final(self) -> None:
         self.make_final_artifacts()
         draft_sections = self.review / "draft-sections"
@@ -3870,6 +3905,22 @@ Return partial with explicit remaining scope when needed.
         self.assertEqual(run.returncode, 1)
         self.assertIn("section:FRAME appears 0 times", run.stdout)
         self.assertIn("global:consistency appears 0 times", run.stdout)
+
+    def test_nonsectioned_global_consistency_token_is_valid_coverage(self) -> None:
+        self.make_final_artifacts()
+        index = self.review / "challenge" / "round-1" / "index.md"
+        index.write_text(
+            index.read_text(encoding="utf-8")
+            .replace("| CH001 | all fixture rows |", "| CH001 | global-consistency |")
+            .replace("row:EPW-1, row:R1-RC001-1 | none |",
+                     "row:EPW-1, row:R1-RC001-1, global:consistency | none |"),
+            encoding="utf-8",
+        )
+        run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
     def test_final_fixture_requires_accepted_freshness_and_challenge(self) -> None:
         self.make_final_artifacts()

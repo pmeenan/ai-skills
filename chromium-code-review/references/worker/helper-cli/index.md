@@ -14,7 +14,7 @@ preamble, so its rules travel with every section.
 | Table schemas | table-schemas.md | 31 |
 | Waiting for workers | waiting-for-workers.md | 39 |
 | Mutating work-unit state | mutating-work-unit-state.md | 16 |
-| Authenticated output history | authenticated-output-history.md | 17 |
+| Authenticated output history | authenticated-output-history.md | 20 |
 | Restamping prestate rows | restamping-prestate-rows.md | 23 |
 | Sealing a work unit | sealing-a-work-unit.md | 18 |
 | Generating a phase brief | generating-a-phase-brief.md | 37 |

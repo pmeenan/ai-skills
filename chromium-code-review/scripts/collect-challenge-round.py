@@ -23,6 +23,8 @@ from pathlib import Path
 import re
 import sys
 
+from challenge_clerical import issue_classification, load_clerical_resolutions
+
 REQUIRED_COLUMNS = ["shard", "scope", "brief", "artifact",
                     "expected coverage", "issues"]
 CLOSED_STATUSES = {"resolved", "fixed", "addressed", "withdrawn", "rebutted",
@@ -42,9 +44,9 @@ def is_separator(cells: list[str]) -> bool:
     return all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells if cell)
 
 
-def parse_shard_issues(path: Path) -> tuple[list[str], int]:
+def parse_shard_issues(path: Path) -> tuple[list[dict[str, str]], int]:
     """Return (issue IDs, open count) from one immutable shard artifact."""
-    identifiers: list[str] = []
+    issues: list[dict[str, str]] = []
     open_count = 0
     header: list[str] | None = None
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -61,10 +63,10 @@ def parse_shard_issues(path: Path) -> tuple[list[str], int]:
         identifier = row.get("id", "")
         if not re.fullmatch(r"CH\d+-\d+", identifier):
             continue
-        identifiers.append(identifier)
+        issues.append(row)
         if row.get("status", "").lower() not in CLOSED_STATUSES:
             open_count += 1
-    return identifiers, open_count
+    return issues, open_count
 
 
 def main() -> int:
@@ -85,15 +87,18 @@ def main() -> int:
         None)
     if not revision:
         fail(f"{index_path} lacks '- Draft revision: <n>'")
+    resolutions, resolution_errors = load_clerical_resolutions(
+        review_dir, round_dir, revision
+    )
 
-    problems: list[str] = []
+    problems: list[str] = list(resolution_errors)
     total_issues = 0
     total_open = 0
     shard_count = 0
     header: list[str] | None = None
     output: list[str] = []
     for line in lines:
-        if re.match(r"- (Result|Total open issues):", line):
+        if re.match(r"- (Result|Total open issues|Clerical resolutions):", line):
             continue  # Replaced by this collection pass.
         if not line.lstrip().startswith("|"):
             header = None
@@ -132,10 +137,34 @@ def main() -> int:
             problems.append(
                 f"shard {shard}: audited draft revision {recorded.group(1)}, "
                 f"round expects {revision}")
-        identifiers, open_count = parse_shard_issues(artifact_path)
-        total_issues += len(identifiers)
-        total_open += open_count
-        row["issues"] = ", ".join(identifiers) if identifiers else "none"
+        issues, _ = parse_shard_issues(artifact_path)
+        unresolved: list[str] = []
+        for issue in issues:
+            identifier = issue["id"]
+            total_issues += 1
+            if issue.get("status", "").lower() in CLOSED_STATUSES:
+                continue
+            resolution = resolutions.get((shard, identifier))
+            if resolution is None:
+                unresolved.append(identifier)
+                continue
+            if issue_classification(issue) != "clerical":
+                problems.append(
+                    f"shard {shard}: {identifier} is not explicitly clerical"
+                )
+                unresolved.append(identifier)
+                continue
+            if any(
+                correction.get("kind") == "exact-text-projection"
+                and correction.get("audited_sha256") not in shard_text
+                for correction in resolution["corrections"]
+            ):
+                problems.append(
+                    f"shard {shard}: {identifier} projection hash was not audited"
+                )
+                unresolved.append(identifier)
+        total_open += len(unresolved)
+        row["issues"] = ", ".join(unresolved) if unresolved else "none"
         output.append("| " + " | ".join(
             row.get(column, "") for column in header) + " |")
 
@@ -144,7 +173,7 @@ def main() -> int:
 
     if problems:
         result = "incomplete — " + "; ".join(problems)
-    elif total_issues:
+    elif total_open:
         result = "revision required"
     else:
         result = "pass"
@@ -152,6 +181,11 @@ def main() -> int:
         output.pop()
     output += ["", f"- Result: {result}",
                f"- Total open issues: {total_open}"]
+    if resolutions:
+        output.append(
+            f"- Clerical resolutions: challenge/round-{arguments.round}/"
+            "clerical-resolutions.json"
+        )
     temporary = index_path.with_name(index_path.name + ".tmp")
     temporary.write_text("\n".join(output) + "\n", encoding="utf-8")
     temporary.replace(index_path)

@@ -133,3 +133,74 @@ class InputAccountingTests(unittest.TestCase):
         report = validator.Report()
         validator.validate_input_manifest(self.root, {}, report, {}, False)
         self.assertTrue(any('prestate prefix' in error for error in report.errors), report.errors)
+
+    def test_finalizer_authenticates_only_freshness_line_rewrite(self):
+        validator = load('validate-review-dir')
+        original = (b'before\n2. **Freshness:** pending-delivery \xe2\x80\x94 Phase 9 '
+                    b'metadata refresh remains required.\nafter\n')
+        current = (b'before\n2. **Freshness:** yes \xe2\x80\x94 current; delivery-gate.md\n'
+                   b'after\n\n## Amendments\n| CLERICAL-A1 | valid append |\n')
+        reconciliation = self.root / 'reconciliation.md'
+        reconciliation.write_bytes(current)
+        (self.root / 'reconciliation.before-clerical.md').write_bytes(original)
+        (self.root / 'delivery-gate.md').write_text(
+            '# Delivery freshness\n- Result: current\n- Gate line: yes \xe2\x80\x94 current\n'
+        )
+        row = self.row(reconciliation, original)
+        self.assertTrue(validator.finalizer_freshness_prestate_matches(
+            self.root, row, current
+        ))
+        self.assertFalse(validator.finalizer_freshness_prestate_matches(
+            self.root, row, current.replace(b'before', b'changed')
+        ))
+        self.assertFalse(validator.finalizer_freshness_prestate_matches(
+            self.root, row, current.replace(b'after', b'changed', 1)
+        ))
+        (self.root / 'delivery-gate.md').write_text(
+            '# Delivery freshness\n- Result: fetch failed\n- Gate line: no \xe2\x80\x94 fetch failed\n'
+        )
+        self.assertFalse(validator.finalizer_freshness_prestate_matches(
+            self.root, row, current
+        ))
+
+    def test_top_level_revision_archive_requires_exact_manifest_binding(self):
+        for name in ('draft-review.md', 'gerrit-comments.md', 'output-coverage.tsv'):
+            with self.subTest(name=name):
+                artifact = self.root / name
+                artifact.write_bytes(b'revision two')
+                previous = b'original revision one of ' + name.encode()
+                row = self.row(artifact, previous)
+                source = self.root / 'historical.md'
+                source.write_bytes(previous)
+                command = [sys.executable, str(SCRIPTS / 'archive-output-version.py'),
+                           str(self.root), str(artifact), str(source)]
+                # A binding for another output cannot authorize this path.
+                wrong = dict(row, input_path=str(self.root / 'draft-parts/F001.md'))
+                (self.root / 'input-manifest.tsv').write_text(encode(INPUT_COLUMNS, [wrong]))
+                self.assertNotEqual(0, subprocess.run(command, capture_output=True).returncode)
+                (self.root / 'input-manifest.tsv').write_text(encode(INPUT_COLUMNS, [row]))
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertTrue(archived_output_matches(self.root, row))
+                self.assertEqual(b'revision two', artifact.read_bytes())
+                self.assertFalse(archived_output_matches(self.root, dict(row, bytes='1')))
+                self.assertFalse(archived_output_matches(self.root, dict(row, sha256='0' * 64)))
+                source.write_bytes(b'unbound older revision')
+                self.assertNotEqual(0, subprocess.run(command, capture_output=True).returncode)
+
+    def test_other_artifact_prefixes_cannot_use_output_history(self):
+        previous = b'authenticated bytes are insufficient for non-output artifacts'
+        source = self.root / 'historical.md'
+        source.write_bytes(previous)
+        names = ('ledger/F001.md', 'draft-assembly/manifest.md', 'challenge.md',
+                 'nested/draft-review.md', 'draft-review.revision-1.md',
+                 'draft-parts/nested/F001.md', 'output-coverage.tsv.extra')
+        for name in names:
+            with self.subTest(name=name):
+                artifact = self.root / name
+                row = self.row(artifact, previous)
+                (self.root / 'input-manifest.tsv').write_text(encode(INPUT_COLUMNS, [row]))
+                result = subprocess.run([sys.executable, str(SCRIPTS / 'archive-output-version.py'),
+                                         str(self.root), str(artifact), str(source)], capture_output=True)
+                self.assertNotEqual(0, result.returncode)
+                self.assertFalse(archived_output_matches(self.root, row))

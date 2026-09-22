@@ -5,6 +5,7 @@ import json
 import re
 
 OUTPUT_DIRS = {'draft-parts', 'gerrit-parts', 'output-coverage'}
+OUTPUT_FILES = {'draft-review.md', 'gerrit-comments.md', 'output-coverage.tsv'}
 
 
 def mutable_output(root: Path, path: Path) -> bool:
@@ -12,7 +13,8 @@ def mutable_output(root: Path, path: Path) -> bool:
         relative = path.resolve().relative_to(root.resolve())
     except ValueError:
         return False
-    return len(relative.parts) == 2 and relative.parts[0] in OUTPUT_DIRS
+    return ((len(relative.parts) == 1 and relative.name in OUTPUT_FILES)
+            or (len(relative.parts) == 2 and relative.parts[0] in OUTPUT_DIRS))
 
 
 def archived_output_matches(root: Path, row: dict[str, str]) -> bool:

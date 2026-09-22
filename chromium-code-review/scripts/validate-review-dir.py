@@ -27,6 +27,7 @@ import sys
 from typing import Any, Iterable
 
 from input_accounting import archived_output_matches, executable_only
+from challenge_clerical import issue_classification, load_clerical_resolutions
 
 from artifact_tables import (
     PLAN_ROSTER_COLUMNS,
@@ -272,6 +273,41 @@ class Report:
         return 0
 
 
+def finalizer_freshness_prestate_matches(
+    root: Path, row: dict[str, str], current: bytes
+) -> bool:
+    """Authenticate refresh-delivery-gate.py's sole reconciliation rewrite."""
+    path = Path(row.get("input_path", ""))
+    try:
+        if path.resolve() != (root / "reconciliation.md").resolve():
+            return False
+        before = root / "reconciliation.before-clerical.md"
+        original = before.read_bytes()
+        if (str(len(original)) != row.get("bytes")
+                or hashlib.sha256(original).hexdigest() != row.get("sha256")):
+            return False
+        gate = (root / "delivery-gate.md").read_text(encoding="utf-8")
+        result = field(gate, "Result") or ""
+        gate_line = field(gate, "Gate line") or ""
+        if result not in {"current", "historical pin verified", "trivial delta verified"} \
+                or not re.match(r"(?i)^yes\b", gate_line):
+            return False
+        pattern = re.compile(
+            rb"^2\.\s+(?:\*\*)?Freshness:(?:\*\*)?\s*.*$", re.MULTILINE
+        )
+        if len(pattern.findall(original)) != 1:
+            return False
+        replacement = (
+            f"2. **Freshness:** yes — {result}; delivery-gate.md".encode()
+        )
+        if len(pattern.findall(current)) != 1:
+            return False
+        projected_prefix = pattern.sub(replacement, original, count=1)
+        return current.startswith(projected_prefix)
+    except (OSError, UnicodeError):
+        return False
+
+
 def read_text(path: Path, report: Report, required: bool = True) -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -358,13 +394,18 @@ def root_suggestion_decisions(
     decisions: dict[str, dict[str, Any]] = {}
     family_members: dict[str, set[str]] = defaultdict(set)
     family_choices: dict[str, list[str]] = defaultdict(list)
+    amendment_ids: set[str] = set()
     root_cause = root / "root-cause"
     for path in sorted(root_cause.glob("RC*.md")) if root_cause.exists() else []:
         text = read_text(path, report)
         matches = list(re.finditer(r"(?m)^## (RC\d+-\d+)\b[^\r\n]*$", text))
-        for position, match in enumerate(matches):
+        for match in matches:
             identifier = match.group(1)
-            end = matches[position + 1].start() if position + 1 < len(matches) else len(text)
+            next_heading = re.search(r"(?m)^## (?!#)[^\r\n]+$", text[match.end():])
+            end = (
+                match.end() + next_heading.start()
+                if next_heading is not None else len(text)
+            )
             section = text[match.end():end]
             family_match = re.search(
                 r"(?im)^- Root family:[ \t]*(\S[^\r\n]*)$", section
@@ -437,6 +478,121 @@ def root_suggestion_decisions(
                 "selected": selected or "",
                 "replacement": replacement or "",
             }
+        amendment_headings = list(re.finditer(
+            r"(?m)^## Suggested-edit amendments\s*$", text
+        ))
+        for amendment_heading in amendment_headings:
+            amendment_end = re.search(
+                r"(?m)^## (?!#)[^\r\n]+$", text[amendment_heading.end():]
+            )
+            amendment_text = text[
+                amendment_heading.end():
+                amendment_heading.end() + amendment_end.start()
+                if amendment_end is not None else len(text)
+            ]
+            amendment_matches = list(re.finditer(
+                r"(?m)^### (RC\d+-SA\d+)\s*$", amendment_text
+            ))
+            if not amendment_matches:
+                report.error(
+                    f"{path}: Suggested-edit amendments section has no "
+                    "RC<batch>-SA<n> entries"
+                )
+            for position, amendment_match in enumerate(amendment_matches):
+                amendment_id = amendment_match.group(1)
+                end = (
+                    amendment_matches[position + 1].start()
+                    if position + 1 < len(amendment_matches)
+                    else len(amendment_text)
+                )
+                section = amendment_text[amendment_match.end():end]
+                if amendment_id in amendment_ids:
+                    report.error(
+                        f"root-cause Suggested edit amendment {amendment_id} "
+                        "is defined more than once"
+                    )
+                    continue
+                amendment_ids.add(amendment_id)
+                if amendment_id.split("-", 1)[0] != path.stem:
+                    report.error(
+                        f"root-cause Suggested edit amendment {amendment_id} "
+                        f"does not match its file prefix {path.stem}"
+                    )
+                    continue
+                target_match = re.search(
+                    r"(?im)^- Target:[ \t]*(RC\d+-\d+)\s*$", section
+                )
+                decision_match = re.search(
+                    r"(?im)^- Suggested-edit decision:\s*"
+                    r"(applicable|omitted)\s*(?:—|-)\s*(\S[^\r\n]*)$",
+                    section,
+                )
+                evidence_match = re.search(
+                    r"(?im)^- Evidence:[ \t]*(\S[^\r\n]*)$", section
+                )
+                attempt_match = re.search(
+                    r"(?im)^- Attempt:[ \t]*([1-9]\d*)\s*$", section
+                )
+                if not all((target_match, decision_match, evidence_match,
+                            attempt_match)):
+                    report.error(
+                        f"root-cause Suggested edit amendment {amendment_id} "
+                        "requires exact Target, Suggested-edit decision, "
+                        "Evidence, and positive Attempt fields"
+                    )
+                    continue
+                target = target_match.group(1)
+                if amendment_id.split("-", 1)[0] != target.split("-", 1)[0]:
+                    report.error(
+                        f"root-cause Suggested edit amendment {amendment_id} "
+                        f"cannot target a different batch prefix: {target}"
+                    )
+                    continue
+                decision = decisions.get(target)
+                if decision is None:
+                    report.error(
+                        f"root-cause Suggested edit amendment {amendment_id} "
+                        f"targets unknown row {target}"
+                    )
+                    continue
+                status = decision_match.group(1).lower()
+                detail = decision_match.group(2).strip()
+                selected = fenced_field(section, "Suggested-edit selected lines")
+                replacement = fenced_field(
+                    section, "Suggested-edit replacement", "suggestion"
+                )
+                if status == "applicable":
+                    if SUGGESTION_TARGET.fullmatch(detail) is None:
+                        report.error(
+                            f"root-cause Suggested edit amendment {amendment_id} "
+                            "has malformed applicable target"
+                        )
+                        continue
+                    if selected is None or replacement is None:
+                        report.error(
+                            f"root-cause Suggested edit amendment {amendment_id} "
+                            "applicable decision requires selected and replacement fences"
+                        )
+                        continue
+                elif detail.lower() in NON_SPECIFIC_OMISSION:
+                    report.error(
+                        f"root-cause Suggested edit amendment {amendment_id} "
+                        "has a non-specific omission reason"
+                    )
+                    continue
+                elif selected is not None or replacement is not None:
+                    report.error(
+                        f"root-cause Suggested edit amendment {amendment_id} "
+                        "marks the edit omitted but contains code fences"
+                    )
+                    continue
+                decision.update({
+                    "status": status,
+                    "detail": detail,
+                    "selected": selected or "",
+                    "replacement": replacement or "",
+                    "effective_amendment": amendment_id,
+                })
         for heading, header, rows in table_dicts(text):
             if heading != "Root-family analysis":
                 continue
@@ -2382,9 +2538,12 @@ def procedural_repair_supersessions(
                 prefix_bytes = int(prestate.get("bytes", ""))
             except ValueError:
                 prefix_bytes = -1
-            if not archived_output_matches(root, prestate) and (
+            if (not archived_output_matches(root, prestate)
+                    and not finalizer_freshness_prestate_matches(
+                        root, prestate, payload)
+                    and (
                     prefix_bytes < 0 or prefix_bytes > len(payload) or prestate.get(
-                    "sha256") != hashlib.sha256(payload[:prefix_bytes]).hexdigest()):
+                    "sha256") != hashlib.sha256(payload[:prefix_bytes]).hexdigest())):
                 reasons.append("repair artifact prestate row is invalid")
 
         repair_input_paths = {
@@ -2637,7 +2796,9 @@ def validate_input_manifest(
         if row["role"] == "prestate":
             # A canonical artifact the attempt appends to: the declared bytes
             # and hash cover the immutable pre-attempt prefix.
-            if declared is not None and not archived_output_matches(root, row):
+            if (declared is not None
+                    and not archived_output_matches(root, row)
+                    and not finalizer_freshness_prestate_matches(root, row, payload)):
                 if declared > len(payload):
                     report.error(
                         f"input-manifest.tsv:{line_number}: prestate prefix "
@@ -5234,6 +5395,25 @@ def validate_draft_sections(root: Path, draft_revision: str,
     return sections
 
 
+def contains_local_path_url_or_placeholder(text: str) -> bool:
+    if re.search(r"(?:file://|/(?:tmp|home)/)", text):
+        return True
+    for match in re.finditer(r"<[^>\n]+>", text):
+        if match.group(0)[1:-1].strip().lower() in {
+                "replacement", "code", "placeholder"}:
+            return True
+        prefix = text[:match.start()]
+        # C++ template arguments are attached to the template name. This also
+        # covers nested templates because the outer match consumes the first
+        # inner closing angle bracket.
+        if re.search(r"(?:[A-Za-z_]\w*|>)$", prefix):
+            continue
+        if match.group(0) == "<=>":
+            continue
+        return True
+    return False
+
+
 def validate_final(root: Path, sha: str | None, source_ids: dict[str, Path],
                    synthesis_items: dict[str, str], budgets: dict[str, int],
                    input_assignments: dict[str, list[dict[str, str]]],
@@ -5250,7 +5430,7 @@ def validate_final(root: Path, sha: str | None, source_ids: dict[str, Path],
     draft_revision = field(draft, "Draft revision") or ""
     if not re.fullmatch(r"[1-9]\d*", draft_revision):
         report.error("draft-review.md lacks a positive integer Draft revision")
-    if re.search(r"(?:file://|/(?:tmp|home)/|<[^>]+>)", gerrit):
+    if contains_local_path_url_or_placeholder(gerrit):
         report.error("gerrit-comments.md contains a local path/URL or placeholder inline")
     validate_output_coverage(root, synthesis_items, draft, gerrit, report)
     sections = validate_draft_sections(
@@ -5321,6 +5501,19 @@ def validate_final(root: Path, sha: str | None, source_ids: dict[str, Path],
         index_path = root / pointer.group(0)
         index_text = read_text(index_path, report)
         challenge_revision = field(index_text, "Draft revision") or ""
+        clerical_resolutions, clerical_errors = load_clerical_resolutions(
+            root, index_path.parent, challenge_revision
+        )
+        for error in clerical_errors:
+            report.error(error)
+        declared_receipt = field(index_text, "Clerical resolutions") or ""
+        expected_receipt = index_path.parent.relative_to(root).as_posix() \
+            + "/clerical-resolutions.json"
+        if clerical_resolutions and declared_receipt != expected_receipt:
+            report.error(
+                f"{index_path} does not declare its clerical resolution receipt"
+            )
+        seen_clerical_resolutions: set[tuple[str, str]] = set()
         if not re.fullmatch(r"[1-9]\d*", challenge_revision):
             report.error(f"{index_path} lacks a positive integer Draft revision")
         if challenge_revision != draft_revision:
@@ -5360,21 +5553,19 @@ def validate_final(root: Path, sha: str | None, source_ids: dict[str, Path],
                 seen_shards.add(shard)
                 if not row.get("scope") or not row.get("expected coverage"):
                     report.error(f"{index_path} shard {shard or '?'} lacks scope/coverage")
-                if sections and row.get("scope", "").lower().startswith(
-                        "global-consistency"):
-                    global_consistency_shards += 1
                 expected_tokens = {
                     item.strip() for item in
                     row.get("expected coverage", "").split(",") if item.strip()
                 }
-                if sections:
-                    is_global_scope = row.get("scope", "").lower().startswith(
-                        "global-consistency"
+                is_global_scope = row.get("scope", "").lower().startswith(
+                    "global-consistency"
+                )
+                if is_global_scope:
+                    global_consistency_shards += 1
+                if ("global:consistency" in expected_tokens) != is_global_scope:
+                    report.error(
+                        f"{index_path} shard {shard or '?'} global scope/token mismatch"
                     )
-                    if ("global:consistency" in expected_tokens) != is_global_scope:
-                        report.error(
-                            f"{index_path} shard {shard or '?'} global scope/token mismatch"
-                        )
                 for token in expected_tokens:
                     if token:
                         coverage[token] += 1
@@ -5392,6 +5583,20 @@ def validate_final(root: Path, sha: str | None, source_ids: dict[str, Path],
                         report.error(f"challenge shard missing/empty: {artifact_path}")
                 else:
                     report.error(f"{index_path} shard {shard or '?'} lacks an artifact")
+                if artifact_path is not None and artifact_path.is_file():
+                    artifact_text = read_text(artifact_path, report)
+                    for heading, issue_header, issue_rows in table_dicts(artifact_text):
+                        if "id" not in issue_header:
+                            continue
+                        for issue in issue_rows:
+                            key = (shard, issue.get("id", ""))
+                            if key not in clerical_resolutions:
+                                continue
+                            seen_clerical_resolutions.add(key)
+                            if issue_classification(issue) != "clerical":
+                                report.error(
+                                    f"clerical receipt resolves non-clerical issue {key[1]}"
+                                )
                 if row.get("issues", "").lower() not in {"none", "0", "—", "-"}:
                     report.error(f"passing challenge shard {shard or '?'} still lists issues")
                 if sections and brief_path.is_file():
@@ -5515,6 +5720,11 @@ def validate_final(root: Path, sha: str | None, source_ids: dict[str, Path],
                             )
         if not found_shards or not seen_shards:
             report.error(f"{index_path} has no complete challenge shard roster")
+        for shard, issue in sorted(
+                set(clerical_resolutions) - seen_clerical_resolutions):
+            report.error(
+                f"clerical receipt names absent challenge issue {shard}/{issue}"
+            )
         if sections and global_consistency_shards != 1:
             report.error(
                 f"{index_path} has {global_consistency_shards} global-consistency "
@@ -5523,7 +5733,7 @@ def validate_final(root: Path, sha: str | None, source_ids: dict[str, Path],
         expected_coverage = ({f"card:{item}" for item in synthesis_items}
                              | {f"row:{item}" for item in source_ids}
                              | {f"section:{item}" for item in sections})
-        if sections:
+        if sections or global_consistency_shards:
             expected_coverage.add("global:consistency")
         for token in sorted(expected_coverage):
             if coverage[token] != 1:

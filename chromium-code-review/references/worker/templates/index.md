@@ -35,7 +35,7 @@ preamble, so its rules travel with every section.
 | root-cause/ — Plan, Root-Cause Rows, And Reopened Rows | root-cause-plan-root-cause-rows-and-reopened-rows.md | 168 |
 | reconciliation.md — Reconciliation Table And Pre-Output Gate | reconciliation-md-reconciliation-table-and-pre-output-gate.md | 100 |
 | synthesis/ — Bounded Index And Evidence Cards | synthesis-bounded-index-and-evidence-cards.md | 53 |
-| Exact Output Fragments, draft-parts/, And draft-assembly/ | exact-output-fragments-draft-parts-and-draft-assembly.md | 102 |
+| Exact Output Fragments, draft-parts/, And draft-assembly/ | exact-output-fragments-draft-parts-and-draft-assembly.md | 120 |
 | challenge/ And challenge.md | challenge-and-challenge-md.md | 41 |
 | patchset-delta.md And delivery-gate.md | patchset-delta-md-and-delivery-gate-md.md | 38 |
 | gerrit-comments.md | gerrit-comments-md.md | 39 |

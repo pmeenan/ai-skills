@@ -434,7 +434,15 @@ Columns and roles are exact. `role` is one of `brief`, `control`, `reference`,
 to: its bytes/SHA-256 cover the immutable pre-attempt prefix, and the
 validator verifies the current file still begins with exactly that prefix —
 append-only growth, never a rewrite. Every other role's hash must match the
-file exactly when the attempt is sealed. Later directory validation preserves
+file exactly when the attempt is sealed. The validator permits a single
+finalizer-owned exception for `reconciliation.md`: when
+`reconciliation.before-clerical.md` exactly matches the sealed prestate and an
+affirmative `delivery-gate.md` exists, `refresh-delivery-gate.py` may replace
+only the unique Freshness line with its deterministic accepted-result line.
+The projected prestate must remain the exact current-file prefix; legitimate
+append-only amendments may follow it. Any other changed byte within that
+prefix, missing/mismatched saved prestate, or non-affirmative gate remains a
+prefix-rewrite failure. Later directory validation preserves
 a stale non-`prestate` row only when its bytes/hash match a canonical artifact
 prefix sealed as `prestate` by a later complete same-artifact attempt, or when
 it names a deterministic `indexes/` output whose rebuild is current and its
@@ -1792,6 +1800,41 @@ omissions select the first RC ID in lexical order; they are not extra family
 decisions. Scoped rows outside an authoritative family cannot supply a
 promoted finding's Suggested edit.
 
+After collection, correct a root-cause Suggested-edit decision without changing
+the original row by appending this exact section to the same `RC*.md` file:
+
+````markdown
+## Suggested-edit amendments
+
+### RC001-SA1
+- Target: RC001-1
+- Suggested-edit decision: applicable — replaces net/streams/delay_buffer.cc:203
+- Suggested-edit selected lines:
+
+  ```cpp
+    return write_len_;
+  ```
+- Suggested-edit replacement:
+
+  ```suggestion
+    return result;
+  ```
+- Evidence: net/streams/delay_buffer.cc:203
+- Attempt: 2
+````
+
+The amendment ID is `RC<batch>-SA<n>` and must share the target row's exact
+batch prefix. `Target` resolves one complete RC row ID; prefix matches are not
+accepted. An applicable amendment requires the exact changed-side target plus
+both lossless fenced fields. An omitted amendment uses a specific reason and
+has neither fence. `Evidence` is non-empty and `Attempt` is a positive integer.
+The latest valid amendment for a row is its effective Suggested-edit decision;
+the original text remains authoritative history. When an amendment changes a
+family from applicable to omitted or changes its omission reason, also append a
+structured `replace-fields` amendment targeting `root-family:<RF-id>` so the
+table's `suggested edit` cell exactly matches the amended decision. Do not use
+`replace-fields` for the narrative decision or fenced code.
+
 Reopened candidates become canonical rows before further work. For round 1,
 challenger RC001 owns `ledger/reopened/round-1-RC001.md`:
 
@@ -2049,6 +2092,24 @@ would exceed either bound, add another level. The assembly manifest shape is:
 | L02-N001 | FRAME.md, L01-N001.md, L01-N002.md | 172911 | draft-review.md + gerrit-comments.md | complete |
 ```
 
+Before a substantive draft revision, preserve the current derived assembly
+manifest byte-for-byte as
+`draft-assembly/manifest.revision-⟨old-revision⟩.md`. Preserve each old node
+output and fragment before rewriting it; use a revision-qualified copy in
+the same directory (for example, `AS1.revision-1.md` or
+`F001.revision-1.md`). An existing archive must match the original bytes;
+never overwrite it with a different version. These historical copies remain
+immutable. For eligible manifested output paths, also authenticate the old
+bytes with `archive-output-version.py` as described in `helper-cli.md`.
+Only after preserving the prior manifest may the current
+`draft-assembly/manifest.md` be replaced. Reassemble the revised outputs and
+record the actual new revision's exact child paths, measured input bytes,
+and output paths in that current manifest. Do not repoint the historical
+manifest to revised children, invent node amendments, or carry forward stale
+byte counts. This revision contract applies to the derived assembly manifest;
+it grants no exception to ledger prefix preservation or existing manifest
+input authentication. The gate continues to validate the current assembly.
+
 The root output starts with `- Draft revision: ⟨n⟩`; `FRAME.md` is a required
 root input, not optional framing that may be dropped during assembly. The root
 also collects the measured per-worker coverage rows into canonical
@@ -2109,10 +2170,48 @@ discarding shard rows:
 
 The immutable index lives at `challenge/round-1/index.md`; `challenge.md`
 contains only the current round, index path, issue count, and pass/fail result.
+For an issue whose immutable shard row explicitly classifies it `clerical`, a
+collector may close it without changing the shard by writing
+`challenge/round-<N>/clerical-resolutions.json` before recollection:
+
+```json
+{
+  "draft_revision": "2",
+  "resolutions": [{
+    "issue": "CH007-1",
+    "shard": "CH007",
+    "classification": "clerical",
+    "evidence": "internal card path only",
+    "corrections": [{
+      "kind": "exact-text-projection",
+      "path": "draft-sections/FRAME.md",
+      "before_path": "draft-parts/FRAME.before-clerical.md",
+      "audited_sha256": "<hash present in CH007.md>",
+      "current_sha256": "<current file hash>",
+      "replacements": [{"old": "<exact old text>", "new": "<exact new text>", "count": 1}]
+    }]
+  }]
+}
+```
+
+An `exact-text-projection` authenticates the preserved before-file hash against
+the immutable shard and must reproduce the complete current file by the listed
+ordered exact replacements. A reconciliation-only correction instead uses
+`{"kind":"structured-amendment","path":"reconciliation.md","amendment":"<ID>"}`;
+the named `replace-fields` amendment must be present and remains subject to all
+normal reconciliation gates. Every receipt entry names one exact shard/issue,
+has nonempty evidence, and resolves only a row explicitly classified
+`clerical`, either in a `classification` column or with the word `clerical` in
+the normative `scope` or `required correction` cell. Unclassified or
+substantive issues remain open. The collector
+records the receipt path in the index, and final validation rechecks it.
+
 After any draft revision, increment the round and run a new complete challenge
 generation under `challenge/round-<N>/`; never overwrite an earlier round. A
 revision is never accepted based only on the old challenge's issues being
-addressed; the revised draft is challenged afresh.
+addressed; the revised draft is challenged afresh. The authenticated clerical
+projection above is the sole exception because it proves the exact byte delta
+from the challenged input while preserving every immutable shard.
 
 ## patchset-delta.md And delivery-gate.md
 

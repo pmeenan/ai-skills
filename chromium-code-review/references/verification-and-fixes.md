@@ -410,7 +410,10 @@ token, then writes the compact challenge index.
 Any draft change after challenge creates a new draft revision and requires a
 new full challenge generation: fresh plan, fresh shard IDs/artifacts, and a
 fresh collected index. Rechecking only the previously reported problems is not
-a contradiction pass and cannot satisfy the gate. Gerrit freshness is checked
+a contradiction pass and cannot satisfy the gate. The only exception is an
+explicitly clerical issue closed by the collector's authenticated exact-text
+projection receipt; it proves the complete current bytes from the preserved
+challenged bytes and leaves the immutable shard unchanged. Gerrit freshness is checked
 only after the last collected challenge and is rechecked after every revision.
 
 ## Verdict Alignment And Gerrit Output Rules

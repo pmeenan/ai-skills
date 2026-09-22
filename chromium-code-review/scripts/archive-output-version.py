@@ -13,7 +13,7 @@ args = parser.parse_args()
 root = require_review_dir(args.review_dir)
 artifact = args.artifact.resolve()
 if not mutable_output(root, artifact):
-    fail('only final-output fragment or coverage-row history may be archived')
+    fail('only final-output, fragment, or coverage history may be archived')
 payload = args.historical_bytes.read_bytes()
 sha = digest(payload)
 with guard(root):

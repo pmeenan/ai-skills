@@ -87,6 +87,24 @@ would exceed either bound, add another level. The assembly manifest shape is:
 | L02-N001 | FRAME.md, L01-N001.md, L01-N002.md | 172911 | draft-review.md + gerrit-comments.md | complete |
 ```
 
+Before a substantive draft revision, preserve the current derived assembly
+manifest byte-for-byte as
+`draft-assembly/manifest.revision-⟨old-revision⟩.md`. Preserve each old node
+output and fragment before rewriting it; use a revision-qualified copy in
+the same directory (for example, `AS1.revision-1.md` or
+`F001.revision-1.md`). An existing archive must match the original bytes;
+never overwrite it with a different version. These historical copies remain
+immutable. For eligible manifested output paths, also authenticate the old
+bytes with `archive-output-version.py` as described in `helper-cli.md`.
+Only after preserving the prior manifest may the current
+`draft-assembly/manifest.md` be replaced. Reassemble the revised outputs and
+record the actual new revision's exact child paths, measured input bytes,
+and output paths in that current manifest. Do not repoint the historical
+manifest to revised children, invent node amendments, or carry forward stale
+byte counts. This revision contract applies to the derived assembly manifest;
+it grants no exception to ledger prefix preservation or existing manifest
+input authentication. The gate continues to validate the current assembly.
+
 The root output starts with `- Draft revision: ⟨n⟩`; `FRAME.md` is a required
 root input, not optional framing that may be dropped during assembly. The root
 also collects the measured per-worker coverage rows into canonical

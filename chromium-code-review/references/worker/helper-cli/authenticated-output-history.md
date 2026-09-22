@@ -33,8 +33,9 @@ Throughout, `<skill-dir>` means the sealed snapshot at
 archive-output-version.py <review-dir> <absolute-output-path> <historical-bytes-file>
 ```
 
-Before revising a collected `draft-parts`, `gerrit-parts`, or `output-coverage`
-file, archive its old bytes with this helper (the current file itself may be
+Before revising a collected direct child of `draft-parts`, `gerrit-parts`, or
+`output-coverage`, or the top-level `draft-review.md`, `gerrit-comments.md`, or
+`output-coverage.tsv`, archive its old bytes with this helper (the current file itself may be
 the historical-bytes input). The bytes must exactly match an existing input
 manifest binding for that path. Archives are read-only, content-addressed
 files under `output-history/`; an already revised version can be restored
@@ -43,3 +44,5 @@ The gate may authenticate historical input/prestate rows against this archive
 without rehashing those old rows. Current output coverage and validation still
 check the current files. This exception never applies to ledgers or other
 append-only artifacts.
+The named revision copies required by the output revision contract still
+must be preserved; this authenticated archive supplements those copies.
