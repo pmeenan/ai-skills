@@ -91,6 +91,85 @@ def roster_rows(text: str) -> tuple[list[dict[str, str]], list[str]]:
 
 
 class GraphAmendmentTest(unittest.TestCase):
+    def test_fields_alias_applies_scope_and_candidate_membership(self) -> None:
+        text = """## Complexity graph delta
+
+| edge | status | evidence | candidate | next obligation |
+| --- | --- | --- | --- | --- |
+| E-I2-CALL-1 | candidate | foo.cc:10 | GAI2-1 | verify |
+
+## Specialist escalation assessments
+
+| lens | graph scope | likelihood | signals | counterevidence |
+| --- | --- | --- | --- | --- |
+| Network Semantics | graph:E-I2-CALL-1,E-I2-TEST-1 | medium | foo.cc:10 | foo.cc:20 |
+
+## Amendments
+
+| amendment | target | operation | fields | evidence | attempt |
+| --- | --- | --- | --- | --- | --- |
+| GAI2-A32 | assessment:Network Semantics | replace-fields | {"graph scope":"graph:E-I2-CALL-1"} | foo.cc:10 | 6 |
+| GAI2-A41 | E-I2-CALL-1 | replace-fields | {"candidate":"GAI2-1, GAI2-2"} | foo.cc:10 | 6 |
+"""
+        tables, errors = effective_tables(text)
+        self.assertEqual([], errors)
+        self.assertEqual("GAI2-1, GAI2-2", tables[0][2][0]["candidate"])
+        self.assertEqual("graph:E-I2-CALL-1", tables[1][2][0]["graph scope"])
+        raw, _ = parse_tables(text)
+        self.assertEqual("GAI2-1", raw[0][2][0]["candidate"])
+
+    def test_malformed_amendments_fail_closed(self) -> None:
+        cases = [
+            ("amendment | target | operation | payload", "A1 | X-1 | replace-fields | {}", "exactly one payload"),
+            ("amendment | target | fields", "A1 | X-1 | {}", "exactly one payload"),
+            ("amendment | target | operation | fields | replacement / reason", "A1 | X-1 | replace-fields | {} | {}", "exactly one payload"),
+            ("amendment | target | operation | fields", "A1 | X-1 | supersede | narrative", "requires replace-fields"),
+            ("amendment | target | operation | fields", "A1 | X-1 | replace-fields | broken", "not valid JSON"),
+            ("amendment | target | operation | fields", 'A1 | X-1 | replace-fields | {"bogus":"x"}', "unknown field"),
+            ("amendment | target | operation | replacement / reason", "A1 | X-1 | typo | reason", "unknown operation"),
+        ]
+        for header, amendment, expected in cases:
+            with self.subTest(header=header, amendment=amendment):
+                separator = " | ".join("---" for _ in header.split(" | "))
+                text = ("## Candidate rows\n\n| id | status |\n| --- | --- |\n| X-1 | candidate |\n\n"
+                        f"## Amendments\n\n| {header} |\n| {separator} |\n| {amendment} |\n")
+                tables, errors = effective_tables(text)
+                self.assertTrue(any(expected in e for e in errors), errors)
+                self.assertEqual("candidate", tables[0][2][0]["status"])
+
+    def test_updates_effective_plan_roster_scope(self) -> None:
+        entry = "Ownership And Blink Lifecycle"
+        original = graph_route(plan([
+            row("Generalist Semantic And State Discovery", "graph:all-inventory-edges", "spawn"),
+        ], []), 2, [row(entry, "specialist:full; graph:E-A", "spawn")])
+        for target in (entry, f"roster:{entry}"):
+            text = original + f"""
+## Amendments
+
+| amendment | target | operation | replacement / reason |
+| --- | --- | --- | --- |
+| COLFIX-A1 | {target} | replace-fields | {{"scope":"specialist:full; graph:E-A,E-B"}} |
+"""
+            rows, errors = roster_rows(text)
+            self.assertEqual([], errors)
+            updated = next(r for r in rows if r["roster entry"] == entry)
+            self.assertEqual("specialist:full; graph:E-A,E-B", updated["scope"])
+            self.assertEqual(original, text[:len(original)])
+
+    def test_ambiguous_roster_amendment_rejects_duplicates(self) -> None:
+        entry = "Network Semantics — shard 1"
+        text = plan([row(entry, "graph:E-A", "spawn"), row(entry, "graph:E-B", "spawn")], [])
+        text += f"""
+## Amendments
+
+| amendment | target | operation | replacement / reason |
+| --- | --- | --- | --- |
+| A1 | roster:{entry} | replace-fields | {{"scope":"graph:E-A,E-B"}} |
+"""
+        rows, errors = roster_rows(text)
+        self.assertTrue(any("resolves to 2 rows" in e for e in errors), errors)
+        self.assertEqual(["graph:E-A", "graph:E-B"], [r["scope"] for r in rows])
+
     def test_updates_specialist_assessment_after_continuation(self) -> None:
         text = """## Specialist escalation assessments
 

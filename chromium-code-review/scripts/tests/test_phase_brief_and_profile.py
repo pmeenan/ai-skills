@@ -123,6 +123,18 @@ class BuildPhaseBriefTests(unittest.TestCase):
             "--output", str(target), *extra,
         )
 
+    def test_generated_verification_planner_extracts_command_executable(self) -> None:
+        shutil.copytree(SCRIPTS.parent, self.skill, dirs_exist_ok=True)
+        output = self.review / "briefs" / "VPLAN.md"
+        result = run(str(BUILD_BRIEF), str(self.review), "VPLAN", "Verification Planner",
+                     "--output", str(output), "--set", "batch=001", "--set", "n=1")
+        self.assertEqual(0, result.returncode, result.stderr)
+        validator = load_module("quoted_command_validator", SCRIPTS / "validate-review-dir.py")
+        inputs = validator.named_brief_inputs(output)
+        executable = self.skill / "scripts" / "build-batch-briefs.py"
+        self.assertIn(executable, inputs)
+        self.assertFalse(any(" --phase verification" in str(path) for path in inputs))
+
     def test_pathspec_fills_both_placeholder_spellings(self) -> None:
         self.write_phase_briefs(self.standard_body())
         result = self.build("--pathspec", "net/a.cc net/a.h")

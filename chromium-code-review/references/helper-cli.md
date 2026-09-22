@@ -333,6 +333,23 @@ Phase 5.5 `RC*` batches) before sealing, so the scoped code packet and generated
 briefs are deterministic, hashable inputs rather than hand-crafted by planner
 subagents.
 
+`build-batch-briefs.py` reads the canonical `## Batches` tables in the
+verification/root-cause templates. Root-cause membership uses
+`root families / scopes`; legacy generator headings and `items` remain accepted.
+Malformed, missing, duplicate, or zero-row schedules fail instead of reporting
+successful zero rendering. Do not invoke it for the separately validated empty
+fast paths, which have no worker briefs to create. Existing batches and briefs
+must not be regenerated while workers are active or their inputs are sealed.
+
+For root-cause batches containing provisional merge aliases,
+`build-batch-briefs.py` adds a bounded `packets/RC*-merge-context.md` input with
+exact proposed chains, effective comparison candidates/descriptors, and each
+ultimate survivor's unique verdict, trace closures, and verified affinity.
+This is supporting comparison evidence, not additional assigned work or
+accepted equivalence; a refuted survivor does not refute its alias. Missing or
+cyclic targets, ambiguous/missing verdict context, and packet-budget overflow
+fail generation. Split complete comparison units rather than truncating them.
+
 ## Mechanical collection
 
 ```

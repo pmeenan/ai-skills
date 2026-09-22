@@ -32,11 +32,20 @@ When inventory has zero edges, each generalist assesses all ten lenses over
 the explicit `graph:none` scope, and every likelihood must be low.
 
 The two generalist passes independently populate `specialist-priors.tsv` for
-every specialist lens and matching assigned edge partition. The index carries
+every specialist lens in each matching assigned shard. A row's graph scope
+selects the edges carrying its likelihood; its cited counterevidence explicitly
+justifies low likelihood for every other assigned edge. Lens scopes may differ
+between passes and may be `graph:none` only for low. An uncertain/unreviewed
+edge stays in scope or makes the worker partial; scope narrowing needs an
+append-only evidence-backed amendment, not a planner edit. The index carries
 `lens`, `graph_scope`, `assessor`, `likelihood`, `signals`, `counterevidence`,
 `citations`, and `source`. The planner never averages these judgments: a high
-from either or medium from both requires a full sweep; one medium requires at
-least a bounded probe; two cited lows add no specialist work. Only an explicit
+from either or medium from both **on the same edge** requires full coverage
+of that edge; one medium requires at least a bounded probe of that edge; two
+cited lows add no specialist work. Routing can split or combine these exact
+edge obligations across specialists. The canonical ledger source identifies
+the assessor and shard, so different selected subsets never hide a missing
+assessment. Both generalists still cover every inventory edge exactly once. Only an explicit
 `<PREFIX> hard` changed-contract/boundary trigger overrides the priors. File
 type, subsystem proximity, and isolated local constructs are soft amplifiers.
 

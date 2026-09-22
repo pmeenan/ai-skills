@@ -267,15 +267,6 @@ def ledger_check(parsed: list[tuple[str, list[str], list[dict[str, str]]]],
                 f"missing={','.join(sorted(missing)) or '-'}; "
                 f"unknown={','.join(sorted(unknown)) or '-'}"
             )
-        graph_scopes = {
-            row.get("graph scope", "").strip().upper()
-            for row in by_lens.values()
-        }
-        if len(graph_scopes) != 1:
-            fail(
-                f"{artifact} specialist assessments must share one exact "
-                "assigned graph scope"
-            )
         for lens, row in by_lens.items():
             likelihood = row.get("likelihood", "").strip().lower()
             signals = row.get("signals", "").strip()

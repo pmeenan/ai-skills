@@ -85,7 +85,18 @@ prior for every specialist lens over its exact assigned edge slice:
 ```
 
 Use all ten exact specialist names and only `low`, `medium`, or `high`.
-Signals and counterevidence must cite code/test evidence or graph edges. The
+Signals and counterevidence must cite code/test evidence or graph edges.
+Each row's graph scope selects the assigned edges carrying that likelihood;
+different lenses and the two independent passes may select different subsets.
+The row's cited counterevidence must explicitly justify low likelihood on
+**every excluded assigned edge**, individually or as a justified group. An
+unreviewed or uncertain edge cannot be excluded: retain it at medium/high or
+return partial. `graph:none` means the entire shard has cited low likelihood
+for that lens. Narrowing a previously collected scope requires an append-only
+`assessment:<lens>` amendment with updated counterevidence; never narrow a
+scope merely to fit an existing specialist assignment. These lens subsets do
+not reduce either generalist's mandatory full-shard graph coverage.
+ The
 likelihood measures residual discovery value: whether a full sweep is likely
 to uncover additional specialist edges. An isolated local construct with
 closed ownership, uses, exits, and consumers may be low even though it matches

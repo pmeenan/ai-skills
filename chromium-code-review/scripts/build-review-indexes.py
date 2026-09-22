@@ -331,7 +331,7 @@ def specialist_prior_rows(
     paths = sorted((root / "ledger").glob("**/*.md")) \
         if (root / "ledger").is_dir() else []
     output: list[list[str]] = []
-    seen: dict[tuple[str, tuple[str, ...], str], str] = {}
+    seen: dict[tuple[str, str, str], str] = {}
     for path in paths:
         match = re.fullmatch(r"(GSS|GAI)\d*", path.stem.upper())
         if not match:
@@ -340,7 +340,6 @@ def specialist_prior_rows(
         source = relative(path, root)
         found = False
         path_lenses: set[str] = set()
-        path_scopes: set[tuple[str, ...]] = set()
         for heading, header, rows in tables(read(path), source):
             if heading != "Specialist escalation assessments":
                 continue
@@ -374,13 +373,7 @@ def specialist_prior_rows(
                 if not scope_match and not empty_scope:
                     fail(
                         f"{source}: {lens} graph scope must be exact "
-                        "graph:E-... edge IDs, or graph:none for a zero-edge "
-                        "inventory"
-                    )
-                if empty_scope and inventory_edges:
-                    fail(
-                        f"{source}: {lens} may use graph:none only when the "
-                        "inventory has zero graph edges"
+                        "graph:E-... edge IDs, or graph:none for a low assessment"
                     )
                 edges = (
                     tuple(sorted(scope_match.group(1).split(",")))
@@ -431,7 +424,9 @@ def specialist_prior_rows(
                         f"{source}: {lens} graph:none assessment must be low; "
                         "a higher likelihood requires an inventory edge"
                     )
-                key = (lens, edges, assessor)
+                if lens in path_lenses:
+                    fail(f"{source}: duplicate specialist assessment for {lens}")
+                key = (lens, source, assessor)
                 if key in seen:
                     fail(
                         f"duplicate {assessor} specialist assessment for "
@@ -439,7 +434,6 @@ def specialist_prior_rows(
                     )
                 seen[key] = source
                 path_lenses.add(lens)
-                path_scopes.add(edges)
                 output.append([
                     lens, (f"graph:{','.join(edges)}" if edges else "graph:none"),
                     assessor, likelihood,
@@ -455,11 +449,6 @@ def specialist_prior_rows(
             fail(
                 f"{source}: generalist ledger lacks specialist assessment(s): "
                 + ", ".join(sorted(missing))
-            )
-        if len(path_scopes) != 1:
-            fail(
-                f"{source}: generalist specialist assessments must share one "
-                "exact assigned graph scope"
             )
     return sorted(output, key=lambda row: (row[0], row[1], row[2], row[-1]))
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -27,6 +28,7 @@ import sys
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 from brief_inputs import named_brief_inputs  # noqa: E402
+from artifact_tables import effective_tables  # noqa: E402
 
 
 def fail(message: str) -> None:
@@ -64,52 +66,69 @@ def parse_pin(pin_md: Path) -> dict[str, str]:
     }
 
 
-def parse_markdown_table(text: str, heading_pattern: str) -> list[dict[str, str]]:
-    lines = text.splitlines()
-    in_section = False
-    headers: list[str] = []
-    rows: list[dict[str, str]] = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("## "):
-            in_section = bool(re.search(heading_pattern, stripped, re.IGNORECASE))
-            headers = []
-            continue
-        if not in_section or not stripped.startswith("|"):
-            continue
-        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
-        if not headers:
-            headers = [cell.lower() for cell in cells]
-            continue
-        if all(re.fullmatch(r"[-: ]+", cell) for cell in cells if cell):
-            continue
-        rows.append(dict(zip(headers, cells + [""] * (len(headers) - len(cells)))))
+def batch_rows(text: str, phase: str) -> list[dict[str, str]]:
+    """Read the normative Batches table, with legacy generator aliases."""
+    parsed, errors = effective_tables(text, f"{phase}/batches.md")
+    if errors:
+        fail("; ".join(errors))
+    alias = "Skeptic batches" if phase == "verification" else "Scheduled root-cause batches"
+    tables = [(header, rows) for heading, header, rows in parsed
+              if heading.lower() in {"batches", alias.lower()}]
+    if len(tables) != 1:
+        fail(f"{phase}/batches.md must contain exactly one Batches table; "
+             "an empty fast path requires separate index validation and has no briefs to render")
+    header, rows = tables[0]
+    required = ({"batch", "brief", "candidates", "verdict file"} if phase == "verification"
+                else {"batch", "brief", "root families / scopes", "output", "bounded input"})
+    # Legacy root-cause plans used items for the scope column.
+    if phase == "root-cause" and "items" in header:
+        required = {"batch", "items"}
+    if not required.issubset(header):
+        fail(f"{phase}/batches.md has malformed batch columns; expected " + ", ".join(sorted(required)))
+    if not rows:
+        fail(f"{phase}/batches.md has zero batch rows; no briefs rendered")
+    seen: set[str] = set()
+    prefix = "V" if phase == "verification" else "RC"
+    for row in rows:
+        work_id = row.get("batch", "")
+        if not re.fullmatch(rf"{prefix}\d+", work_id) or work_id in seen:
+            fail(f"invalid or duplicate {phase} batch ID {work_id!r}")
+        seen.add(work_id)
+        scope = row.get("candidates", "") if phase == "verification" else row.get("root families / scopes", row.get("items", ""))
+        if not scope or scope in {"-", "—"}:
+            fail(f"{work_id} has empty batch membership")
+        for field, expected in (("brief", f"briefs/{work_id}.md"),
+                                ("verdict file" if phase == "verification" else "output", f"{phase}/{work_id}.md")):
+            if field in row and row[field] != expected:
+                fail(f"{work_id} {field} must be {expected}")
     return rows
 
 
+def markdown_row(values: list[str]) -> str:
+    return "| " + " | ".join(value.replace("|", r"\|") for value in values) + " |"
+
+
 def load_candidate_rows(review_dir: Path) -> dict[str, tuple[Path, str, str]]:
-    """Return candidate_id -> (source_path, table_header_lines, row_line)."""
+    """Return effective canonical candidates, never descriptors with matching IDs."""
     result: dict[str, tuple[Path, str, str]] = {}
     sources = sorted((review_dir / "ledger").glob("**/*.md"))
     if (review_dir / "collection.md").is_file():
         sources.append(review_dir / "collection.md")
     for path in sources:
-        lines = path.read_text(encoding="utf-8").splitlines()
-        header_line = ""
-        sep_line = ""
-        for line in lines:
-            stripped = line.strip()
-            if not stripped.startswith("|"):
+        parsed, errors = effective_tables(path.read_text(encoding="utf-8"), str(path))
+        if errors:
+            fail("; ".join(errors))
+        for heading, header, rows in parsed:
+            if heading != "Candidate rows" and path.name != "collection.md":
                 continue
-            cells = [c.strip() for c in stripped.strip("|").split("|")]
-            if cells and cells[0].lower() in {"row", "id"}:
-                header_line = stripped
+            if not {"id", "claim", "location", "evidence / hypothesis", "status"}.issubset(header):
                 continue
-            if all(re.fullmatch(r"[-: ]+", c) for c in cells if c):
-                sep_line = stripped
-                continue
-            if cells and re.fullmatch(r"(?:R\d+-)?[A-Z0-9]+-\d+", cells[0]):
-                result[cells[0]] = (path.resolve(), f"{header_line}\n{sep_line}", stripped)
+            table_header = markdown_row(header) + "\n" + markdown_row(["---"] * len(header))
+            for row in rows:
+                identifier = row["id"]
+                if identifier in result:
+                    fail(f"duplicate canonical candidate {identifier}")
+                result[identifier] = (path.resolve(), table_header, markdown_row([row.get(key, "") for key in header]))
     return result
 
 
@@ -140,6 +159,123 @@ def load_verdict_rows(review_dir: Path) -> dict[str, tuple[Path, str, str]]:
                 result[cells[0]] = (path.resolve(), f"{header_line}\n{sep_line}", stripped)
                 result[cells[1]] = (path.resolve(), f"{header_line}\n{sep_line}", stripped)
     return result
+
+
+def merge_support_context(review_dir: Path, assigned: list[str],
+                          candidates: dict[str, tuple[Path, str, str]] | None = None) -> str:
+    """Bounded evidence for proposed aliases; never expands assigned RC work."""
+    batch_path = review_dir / "verification" / "batches.md"
+    if not batch_path.is_file():
+        return ""
+    tables, errors = effective_tables(batch_path.read_text(encoding="utf-8"), str(batch_path))
+    if errors:
+        fail("; ".join(errors))
+    proposals: dict[str, tuple[str, str]] = {}
+    for heading, header, rows in tables:
+        if not heading.startswith("Merge proposals") or not {"row", "proposal"}.issubset(header):
+            continue
+        for row in rows:
+            match = re.match(r"merge-into\s+((?:R\d+-RC\d+-\d+|[A-Z][A-Z0-9]*-\d+))\b", row["proposal"])
+            if not match or row["row"] in proposals:
+                fail(f"malformed/duplicate merge proposal {row['row']}")
+            proposals[row["row"]] = (match.group(1), row["proposal"])
+    aliases = sorted(set(assigned) & set(proposals))
+    if not aliases:
+        return ""
+    candidates = candidates if candidates is not None else load_candidate_rows(review_dir)
+    chains: dict[str, list[str]] = {}
+    targets: set[str] = set()
+    for alias in aliases:
+        chain = [alias]
+        current = alias
+        while current in proposals:
+            current = proposals[current][0]
+            if current in chain:
+                fail(f"provisional merge cycle for {alias}: " + " -> ".join(chain + [current]))
+            chain.append(current)
+        for member in chain:
+            if member not in candidates:
+                fail(f"provisional merge {alias} references missing canonical candidate {member}")
+        chains[alias] = chain
+        targets.add(current)
+    cache: dict[Path, list] = {}
+    def parsed(path: Path):
+        if path not in cache:
+            value, errors = effective_tables(path.read_text(encoding="utf-8"), str(path))
+            if errors:
+                fail("; ".join(errors))
+            cache[path] = value
+        return cache[path]
+    def section(path: Path, heading: str, candidate: str, required: bool = True) -> str:
+        blocks = []
+        count = 0
+        for name, header, rows in parsed(path):
+            if name != heading:
+                continue
+            selected = [row for row in rows if row.get("candidate") == candidate]
+            if selected:
+                count += len(selected)
+                blocks.append(markdown_row(header) + "\n" + markdown_row(["---"] * len(header)) + "\n"
+                              + "\n".join(markdown_row([row.get(key, "") for key in header]) for row in selected))
+        if required and not count:
+            fail(f"merge support for {candidate} lacks {heading} in {path}")
+        if heading in {"Candidate descriptors", "Verified affinity"} and count > 1:
+            fail(f"merge support for {candidate} has ambiguous {heading}")
+        return "\n\n".join(blocks)
+    verdicts: dict[str, list[tuple[Path, list[str], dict[str, str]]]] = {target: [] for target in targets}
+    for path in sorted((review_dir / "verification").glob("V*.md")):
+        if path.name == "VTER.md":
+            continue
+        for _, header, rows in parsed(path):
+            if not {"id", "candidate", "verdict"}.issubset(header):
+                continue
+            for row in rows:
+                if row.get("candidate") in targets:
+                    verdicts[row["candidate"]].append((path, header, row))
+    blocks = ["# Provisional merge comparison context", "",
+              "Supporting context only; assigned work remains the original RC batch scope. "
+              "These are unaccepted merge proposals. A target's verdict (including REFUTED) "
+              "does not establish equivalence or supply a verdict for its alias. Compare "
+              "trigger, invariant, ownership, and outcome independently; preserve differences.", ""]
+    sources = {batch_path}
+    included: set[str] = set()
+    for alias, chain in chains.items():
+        blocks += [f"## Proposed chain for {alias}", " -> ".join(chain), ""]
+        for member in chain[:-1]:
+            blocks += [proposals[member][1], ""]
+        for member in chain:
+            if member in included:
+                continue
+            included.add(member)
+            source, header, row = candidates[member]
+            sources.add(source)
+            blocks += [f"### Candidate {member} (comparison context)", f"Source: {source}", header, row, "",
+                       "### Candidate descriptors", section(source, "Candidate descriptors", member), ""]
+    for target in sorted(targets):
+        matches = verdicts[target]
+        if len(matches) != 1:
+            fail(f"merge target {target} requires exactly one survivor verdict; found {len(matches)}")
+        source, header, row = matches[0]
+        if row["verdict"] not in {"CONFIRMED", "REFUTED", "UNPROVEN"}:
+            fail(f"merge target {target} has invalid survivor verdict")
+        sources.add(source)
+        blocks += [f"## Exact survivor evidence for {target}", f"Source: {source}",
+                   markdown_row(header), markdown_row(["---"] * len(header)),
+                   markdown_row([row.get(key, "") for key in header]), "",
+                   "### Trace closure", section(source, "Trace closure", target), "",
+                   "### Verified affinity", section(source, "Verified affinity", target), ""]
+    blocks += ["## Source fingerprints", ""]
+    for source in sorted(sources):
+        blocks.append(f"- {source}: sha256={hashlib.sha256(source.read_bytes()).hexdigest()}")
+    content = "\n".join(blocks) + "\n"
+    profile = json.loads((review_dir / "profile.json").read_text(encoding="utf-8"))
+    budgets = profile.get("budgets", {})
+    limits = [budgets.get("candidate_packet_budget_bytes"), budgets.get("worker_input_budget_bytes")]
+    if any(not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0 for limit in limits):
+        fail("merge comparison context requires positive candidate-packet and worker-input budgets")
+    if len(content.encode("utf-8")) > min(limits):
+        fail("merge comparison context exceeds packet budget; split the RC batch or extract smaller complete comparison units; never truncate")
+    return content
 
 
 def seal_command(
@@ -190,10 +326,7 @@ def build_verification(review_dir: Path, skill_dir: Path, pin_info: dict[str, st
     batches_md = review_dir / "verification" / "batches.md"
     if not batches_md.is_file():
         fail(f"missing {batches_md}")
-    rows = parse_markdown_table(batches_md.read_text(encoding="utf-8"), r"^##\s+Skeptic batches")
-    if not rows:
-        print("build-batch-briefs.py: 0 skeptic batches scheduled")
-        return
+    rows = batch_rows(batches_md.read_text(encoding="utf-8"), "verification")
 
     cand_map = load_candidate_rows(review_dir)
     profile = json.loads((review_dir / "profile.json").read_text(encoding="utf-8"))
@@ -205,10 +338,11 @@ def build_verification(review_dir: Path, skill_dir: Path, pin_info: dict[str, st
 
     for row in rows:
         work_id = row.get("batch", "").strip()
-        if not re.fullmatch(r"V\d+", work_id):
-            continue
         batch_num = work_id[1:]
         cand_ids = [c.strip() for c in re.split(r"[,\s]+", row.get("candidates", "")) if c.strip()]
+        unknown = set(cand_ids) - set(cand_map)
+        if unknown:
+            fail(f"{work_id} references unknown candidate(s): " + ", ".join(sorted(unknown)))
         spec_path = review_dir / "packets" / f"{work_id}.spec.tsv"
         code_packet_path = review_dir / "packets" / f"{work_id}-code.md"
         brief_path = review_dir / "briefs" / f"{work_id}.md"
@@ -289,7 +423,7 @@ def build_verification(review_dir: Path, skill_dir: Path, pin_info: dict[str, st
             f"{skill_dir / 'references/worker/verification-and-fixes/existence-verification-and-style-authority.md'}, and "
             f"{skill_dir / 'references/worker/synthesis-and-output/severity-calibration.md'}.\n"
             f"2. Verify each candidate in {', '.join(cand_ids)} against the pinned worktree and emit one verdict row ({work_id}-1, {work_id}-2, ...) "
-            f"plus `## Trace closures` and `## Verified affinity descriptors` in the exact shape from "
+            f"plus `## Trace closure` and `## Verified affinity` in the exact shape from "
             f"{skill_dir / 'references/worker/templates/verification-batches-and-skeptic-verdict-rows.md'}.\n\n"
             f"Deliverable: {review_dir / 'verification' / f'{work_id}.md'}.\n"
         )
@@ -320,10 +454,7 @@ def build_root_cause(review_dir: Path, skill_dir: Path, pin_info: dict[str, str]
     batches_md = review_dir / "root-cause" / "batches.md"
     if not batches_md.is_file():
         fail(f"missing {batches_md}")
-    rows = parse_markdown_table(batches_md.read_text(encoding="utf-8"), r"^##\s+Scheduled root-cause batches")
-    if not rows:
-        print("build-batch-briefs.py: 0 root-cause batches scheduled")
-        return
+    rows = batch_rows(batches_md.read_text(encoding="utf-8"), "root-cause")
 
     cand_map = load_candidate_rows(review_dir)
     verd_map = load_verdict_rows(review_dir)
@@ -335,13 +466,11 @@ def build_root_cause(review_dir: Path, skill_dir: Path, pin_info: dict[str, str]
 
     for row in rows:
         work_id = row.get("batch", "").strip()
-        if not re.fullmatch(r"RC\d+", work_id):
-            continue
         batch_num = work_id[2:]
-        items_str = row.get("items", "").strip()
+        items_str = row.get("root families / scopes", row.get("items", "")).strip()
         brief_path = review_dir / "briefs" / f"{work_id}.md"
 
-        cand_ids = [m for m in re.findall(r"(?:R\d+-)?[A-Z]+-\d+", items_str) if not m.startswith(("RF", "V", "RC"))]
+        cand_ids = [m for m in re.findall(r"(?:R\d+-RC\d+-\d+|[A-Z][A-Z0-9]*-\d+)", items_str) if not m.startswith(("RF", "V", "RC"))]
         verd_ids = re.findall(r"V\d+-\d+", items_str)
 
         source_ledgers: set[Path] = set()
@@ -363,6 +492,16 @@ def build_root_cause(review_dir: Path, skill_dir: Path, pin_info: dict[str, str]
                 if not embedded_verds:
                     embedded_verds.append(hdr)
                 embedded_verds.append(rline)
+
+        support = merge_support_context(review_dir, cand_ids, cand_map)
+        support_path = review_dir / "packets" / f"{work_id}-merge-context.md"
+        if support:
+            budget = json.loads((review_dir / "profile.json").read_text(encoding="utf-8"))["budgets"]["candidate_packet_budget_bytes"]
+            embedded_bytes = len(("\n".join(embedded_cands + embedded_verds) + support).encode("utf-8"))
+            if embedded_bytes > budget:
+                fail(f"{work_id} assigned and comparison rows exceed candidate-packet budget; split rather than truncate")
+            support_path.parent.mkdir(parents=True, exist_ok=True)
+            support_path.write_text(support, encoding="utf-8")
 
         hdr_filled = header_text
         for k, v in {
@@ -397,12 +536,17 @@ def build_root_cause(review_dir: Path, skill_dir: Path, pin_info: dict[str, str]
         if embedded_verds:
             embed_block += "#### Verdict Rows\n\n" + "\n".join(embedded_verds) + "\n"
 
+        if support:
+            embed_block += (f"\nInputs: {support_path} — bounded comparison context for provisional aliases only; "
+                            "not additional assigned candidates and not accepted merge equivalence.\n")
         brief_path.parent.mkdir(parents=True, exist_ok=True)
         brief_path.write_text(f"{hdr_filled}\n\n{body_filled}{embed_block}", encoding="utf-8")
 
         extra_roles = {p: "candidate-packet" for p in source_ledgers}
         for p in source_verdicts:
             extra_roles[p] = "assigned"
+        if support:
+            extra_roles[support_path.resolve()] = "assigned"
         cmd = seal_command(
             skill_dir=skill_dir,
             review_dir=review_dir,

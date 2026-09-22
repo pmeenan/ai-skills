@@ -238,6 +238,10 @@ def _apply_plan_repair_table(
 
 def _row_matches(heading: str, row: dict[str, str], index: int,
                  target: str) -> bool:
+    if set(row) == set(PLAN_ROSTER_COLUMNS):
+        label = target.removeprefix("roster:")
+        if row.get("roster entry") == label:
+            return True
     if heading in {"Complexity graph edges", "Complexity graph delta"}:
         if row.get("edge") == target:
             return True
@@ -531,17 +535,37 @@ def effective_tables(text: str, source: str = "input") -> tuple[list[Table], lis
     `matrix:<1-based-row>`. Descriptor/verification family tables use the
     explicit targets `descriptor:<candidate>`, `trace:<candidate>:<obligation>`,
     `affinity:<candidate>`, `family:<RF-id>`, `audit:<check>`, and
-    `root-family:<RF-id>`. Every target must resolve to exactly one row and
+    `root-family:<RF-id>`. Canonical plan roster rows accept their exact
+    roster-entry label, optionally prefixed with `roster:`. Every target must resolve to exactly one row and
     every replacement key must name an existing column.
     """
     parsed, errors = parse_tables(text, source)
     parsed = _apply_plan_continuations(text, parsed, source, errors)
     amendments: list[dict[str, str]] = []
     for heading, header, rows in parsed:
-        if heading == "Amendments" and {
-            "amendment", "target", "operation", "replacement / reason"
-        }.issubset(header):
-            amendments.extend(rows)
+        if heading != "Amendments":
+            continue
+        required = {"amendment", "target", "operation"}
+        payload_columns = set(header) & {"replacement / reason", "fields"}
+        if not required.issubset(header) or len(payload_columns) != 1:
+            errors.append(
+                f"{source}: Amendments table must contain amendment, target, "
+                "operation, and exactly one payload column: replacement / reason "
+                "(or fields for structured replace-fields compatibility)"
+            )
+            continue
+        payload_column = next(iter(payload_columns))
+        for row in rows:
+            operation = row.get("operation", "").strip().lower()
+            if operation not in {"replace-fields", "replace", "supersede", "retract-duplicate"}:
+                errors.append(f"{source}: amendment {row.get('amendment', '')} has unknown operation {operation!r}")
+                continue
+            if payload_column == "fields" and operation != "replace-fields":
+                errors.append(f"{source}: fields payload alias requires replace-fields operation")
+                continue
+            normalized = dict(row)
+            normalized["replacement / reason"] = row.get(payload_column, "")
+            amendments.append(normalized)
 
     for amendment in amendments:
         if amendment.get("operation", "").strip().lower() != "replace-fields":

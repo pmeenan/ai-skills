@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import csv
 import importlib.util
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -17,6 +19,11 @@ SPEC = importlib.util.spec_from_file_location("review_validator", SCRIPT)
 assert SPEC and SPEC.loader
 VALIDATOR = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VALIDATOR)
+
+INDEX_SPEC = importlib.util.spec_from_file_location("scope_index_builder", SCRIPT.parent / "build-review-indexes.py")
+assert INDEX_SPEC and INDEX_SPEC.loader
+INDEXER = importlib.util.module_from_spec(INDEX_SPEC)
+INDEX_SPEC.loader.exec_module(INDEXER)
 
 
 def row(entry: str, scope: str) -> dict[str, str]:
@@ -144,6 +151,150 @@ class AdaptiveTopologyPlanTests(unittest.TestCase):
             row("Generalist Adversarial And Integration Discovery", "graph:all-inventory-edges"),
         ]
         self.assertTrue(self.validate(invalid).errors)
+
+    def test_lens_scopes_survive_worker_index_and_collection_gates(self) -> None:
+        (self.root / "ledger").mkdir()
+        (self.root / "indexes" / "topology.tsv").write_text(
+            "edge\tcandidate\nE-A\t-\nE-B\t-\nE-C\t-\n", encoding="utf-8")
+        for worker in ("GSS1", "GAI1"):
+            text = """# Discovery
+
+## Compliance matrix
+
+| question | answer | evidence |
+| --- | --- | --- |
+| all assigned edges inspected? | yes | foo.cc:10 |
+
+## Candidate rows
+
+| id | claim | location | evidence / hypothesis | origin | severity | status |
+| --- | --- | --- | --- | --- | --- | --- |
+
+## Complexity graph delta
+
+| edge | status | evidence | candidate | next obligation |
+| --- | --- | --- | --- | --- |
+| E-A | resolved | foo.cc:10 | - | - |
+| E-B | resolved | foo.cc:11 | - | - |
+| E-C | resolved | foo.cc:12 | - | - |
+
+## Specialist escalation assessments
+
+| lens | graph scope | likelihood | signals | counterevidence |
+| --- | --- | --- | --- | --- |
+"""
+            for lens in VALIDATOR.SPECIALIST_LENSES:
+                scope, level = "graph:none", "low"
+                if lens == "Threading And Synchronization":
+                    scope = "graph:E-A,E-B" if worker == "GSS1" else "graph:E-B,E-C"
+                    level = "medium"
+                elif lens == "Network Semantics":
+                    scope = "graph:E-A" if worker == "GSS1" else "graph:E-C"
+                    level = "high" if worker == "GSS1" else "low"
+                text += f"| {lens} | {scope} | {level} | foo.cc:10 signal | foo.cc:12 excluded edges have guards |\n"
+            if worker == "GSS1":
+                text = text.replace(
+                    "Threading And Synchronization | graph:E-A,E-B |",
+                    "Threading And Synchronization | graph:E-A,E-B,E-C |",
+                )
+                text += """
+## Amendments
+
+| amendment | target | operation | fields | evidence | attempt |
+| --- | --- | --- | --- | --- | --- |
+| GSS1-A1 | assessment:Threading And Synchronization | replace-fields | {"graph scope":"graph:E-A,E-B"} | foo.cc:12 | 2 |
+"""
+            path = self.root / "ledger" / f"{worker}.md"
+            path.write_text(text, encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT.parent / "validate-worker-artifact.py"), str(self.root), str(path)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+        priors = INDEXER.specialist_prior_rows(self.root, {"E-A", "E-B", "E-C"})
+        self.assertEqual(20, len(priors))
+        prior_path = self.root / "indexes" / "specialist-priors.tsv"
+        def write_rows(values):
+            with prior_path.open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.writer(stream, delimiter="\t")
+                writer.writerow(("lens", "graph_scope", "assessor", "likelihood", "signals", "counterevidence", "citations", "source"))
+                writer.writerows(values)
+        write_rows(priors)
+        base = [
+            row("Generalist Semantic And State Discovery — shard 1", "graph:E-A,E-B,E-C"),
+            row("Generalist Adversarial And Integration Discovery — shard 1", "graph:E-A,E-B,E-C"),
+            row("Network Semantics", "specialist:full; graph:E-A"),
+            row("Threading And Synchronization — shard 1", "specialist:full; graph:E-B"),
+            row("Threading And Synchronization — shard 2", "specialist:probe; graph:E-A,E-C"),
+        ]
+        self.assertEqual([], self.validate(base).errors)
+        missing_probe = base[:-1] + [row("Threading And Synchronization — shard 2", "specialist:probe; graph:E-A")]
+        self.assertTrue(any("requires specialist:probe" in e and "E-C" in e for e in self.validate(missing_probe).errors))
+        weak_overlap = base[:3] + [row("Threading And Synchronization", "specialist:probe; graph:E-A,E-B,E-C")]
+        self.assertTrue(any("requires specialist:full" in e and "E-B" in e for e in self.validate(weak_overlap).errors))
+        missing_high = [r for r in base if r["roster entry"] != "Network Semantics"]
+        self.assertTrue(any("requires specialist:full" in e and "E-A" in e for e in self.validate(missing_high).errors))
+        write_rows(priors[:-1])
+        self.assertTrue(any("missing assessment" in e for e in self.validate(base).errors))
+        invalid = [r[:] for r in priors]
+        invalid[0][1] = "graph:E-FOREIGN"
+        write_rows(invalid)
+        self.assertTrue(any("unassigned graph scope" in e for e in self.validate(base).errors))
+        invalid = [r[:] for r in priors]
+        invalid[0][5] = "no risk"
+        write_rows(invalid)
+        self.assertTrue(any("without cited counterevidence" in e for e in self.validate(base).errors))
+
+    def test_empty_lens_scopes_do_not_merge_independent_shards(self) -> None:
+        self.write_priors(scope="graph:none")
+        path = self.root / "indexes" / "specialist-priors.tsv"
+        original = path.read_text(encoding="utf-8").splitlines()
+        lines = [original[0]]
+        for shard in (1, 2):
+            lines.extend(line.replace("GSS.md", f"GSS{shard}.md").replace("GAI.md", f"GAI{shard}.md") for line in original[1:])
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        rows = [row(f"{name} — shard {shard}", scope)
+                for name in VALIDATOR.GENERALIST_ROSTER
+                for shard, scope in ((1, "graph:E-A"), (2, "graph:E-B"))]
+        self.assertEqual([], self.validate(rows).errors)
+        path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+        self.assertTrue(any("missing assessment" in e for e in self.validate(rows).errors))
+
+    def test_plan_scope_amendment_closes_indexed_routing_obligation(self) -> None:
+        lens = "Ownership And Blink Lifecycle"
+        self.write_priors(semantic={lens: "high"})
+        text = """# Plan
+
+| roster entry | scope | status | tier | batch | subagent | outcome |
+| --- | --- | --- | --- | --- | --- | --- |
+| Generalist Semantic And State Discovery | graph:all-inventory-edges | spawn | frontier | D01 | — | — |
+| Generalist Adversarial And Integration Discovery | graph:all-inventory-edges | spawn | frontier | D01 | — | — |
+
+## Graph routing continuation — PLAN attempt 2
+
+| roster entry | scope | status | tier | batch | subagent | outcome |
+| --- | --- | --- | --- | --- | --- | --- |
+| Ownership And Blink Lifecycle | specialist:full; graph:E-A | spawn | frontier | D02 | — | — |
+"""
+        def effective_rows(value):
+            parsed = list(INDEXER.tables(value, "plan.md"))
+            return [r for _, header, rows in parsed if "roster entry" in header for r in rows]
+        errors = self.validate(effective_rows(text)).errors
+        self.assertTrue(any("requires specialist:full" in e and "E-B" in e for e in errors), errors)
+        text += """
+## Amendments
+
+| amendment | target | operation | replacement / reason |
+| --- | --- | --- | --- |
+| COLFIX-A1 | Ownership And Blink Lifecycle | replace-fields | {"scope":"specialist:full; graph:E-A,E-B"} |
+"""
+        (self.root / "plan.md").write_text(text, encoding="utf-8")
+        self.assertEqual([], self.validate(effective_rows(text)).errors)
+        report = VALIDATOR.Report()
+        rows, tier_seen = VALIDATOR.effective_plan_roster(self.root, report)
+        self.assertTrue(tier_seen)
+        self.assertEqual([], report.errors)
+        self.assertEqual([], self.validate(rows).errors)
 
     def test_high_from_either_generalist_requires_full_sweep(self) -> None:
         lens = "Threading And Synchronization"

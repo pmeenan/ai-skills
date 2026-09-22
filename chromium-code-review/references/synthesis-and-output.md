@@ -373,7 +373,11 @@ delivery is blocked while any line is pending or blank.
    `ledger/reopened/*.md`, `collection.md`, `verification/*.md`, and
    `root-cause/*.md` has exactly one disposition line — no ranges, no "rest
    dismissed".
-8. **Verdicts (comprehensive and non-truncated):** every promoted finding
+8. **Verdicts (comprehensive and non-truncated):** authenticated budget gaps
+   retain the exact `unreviewed — budget exhausted` disposition and visible
+   limited-review disclosure from the templates; they are not refutations,
+   owner questions, or validated merges. Every other candidate retains normal
+   verification obligations, and every promoted finding
    cites a CONFIRMED verdict with its trace, and every promoted finding and
    owner question has exactly one measured draft fragment included in
    draft-review.md and, for findings, exactly one measured Gerrit fragment

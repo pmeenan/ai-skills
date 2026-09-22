@@ -126,11 +126,23 @@ Valid operations are `replace-fields`, `replace`, `supersede`, and
 `retract-duplicate` (only when the same attempt emitted an identical row
 twice). Use `replace-fields` for any structurally parsed table cell. Its
 `replacement / reason` is a non-empty JSON object whose keys exactly match
-table headers. Targets are a stable row ID, `matrix:<1-based-row>`,
+table headers. `fields` is accepted as a compatibility alias for the payload
+column only for structured `replace-fields` operations; new artifacts use
+`replacement / reason`. An Amendments table must have the required identity
+columns and exactly one payload column. Unknown/missing payload columns,
+ambiguous dual columns, and malformed JSON fail validation rather than being
+silently ignored. Targets are a stable row ID, `matrix:<1-based-row>`,
 `descriptor:<candidate>`, `trace:<candidate>:<obligation>`,
 `affinity:<candidate>`, `family:<RF-id>`, `audit:<check>`, or
 `root-family:<RF-id>`, or `assessment:<lens>` for a row in
-`Specialist escalation assessments`. Graph rows in `Complexity graph edges` and
+`Specialist escalation assessments`, or `roster:<exact roster entry>` for a
+canonical plan roster row (include the full shard label when present). Bare
+exact roster-entry labels also resolve for existing amendments. Roster targets
+resolve after plan continuations have folded into the effective roster; they
+must still identify exactly one row. Scope corrections must cite the work
+covering each added edge; changing a plan cell does not itself perform that
+work. Use the dedicated plan continuation contracts for status transitions.
+Graph rows in `Complexity graph edges` and
 `Complexity graph delta` can be targeted by their `edge` ID. To repair an
 ID collision across inventory shards, amend the `edge` cell in each affected
 file and explicitly amend every reference to it (including trigger `graph scope`

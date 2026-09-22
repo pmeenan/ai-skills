@@ -385,8 +385,11 @@ forty worker spawns. Honor a user-supplied budget over these defaults.
 delivered.** When the budget is spent, stop starting optional work: terminate
 every unstarted or optional unit, record each one in `plan.md` and `progress.md`
 as `terminated — scope unreviewed`, and run Phases 6 to 9 on what exists.
-Disclose every terminated scope in Verification Notes. The delivery gates still
-apply to what you deliver; the budget governs how much you attempt, never how
+Disclose every terminated scope in Verification Notes. For already-discovered
+candidates in terminated verification batches, use the explicit
+[budget-limited verification contract](references/templates.md#budget-limited-verification),
+including unverified merge aliases; termination alone never closes a candidate.
+The delivery gates still apply to what you deliver; the budget governs how much you attempt, never how
 honestly you report it.
 
   Measured over 20 runs, only about 40% delivered anything at all. The rest

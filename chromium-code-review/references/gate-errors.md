@@ -236,9 +236,9 @@ the gate.
 | `cannot read specialist prior index: <err>` | `specialist-priors.tsv` unreadable. | Run `build-review-indexes.py <REVIEW_DIR>`. | validate-review-dir.py:1411 |
 | `specialist-priors.tsv contains a malformed assessment` | A row is not parseable. | Rebuild indexes; if it persists, fix the generalist ledger's assessment table. | validate-review-dir.py:1446 |
 | `specialist prior duplicates <lens> for <assessor> graph:<scope>` | Two rows for the same lens/assessor/scope. | Remove the duplicate assessment row from the generalist ledger. | validate-review-dir.py:1456 |
-| `specialist prior missing both assessments for <lens> graph:<scope>` | Neither generalist assessed that lens. | Add the lens to both generalist ledgers' `## Specialist escalation assessments` tables. | validate-review-dir.py:1469 |
-| `specialist prior uses an unassigned graph scope for <lens>: graph:<scope>` | Assessment scope is not the assessor's assigned scope. | Set the assessment scope to the generalist's own assigned graph scope. | validate-review-dir.py:1477 |
-| `specialist prior for <lens> graph:<scope> lacks assessor(s): <who>` | Only one of the two assessors covered it. | Add the missing assessor's row. | validate-review-dir.py:1483 |
+| `specialist prior uses an unassigned graph scope for <lens>: graph:<scope>` | Assessment scope is outside the assessor's assigned shard. | Keep the lens scope within that shard; justify every excluded edge with cited counterevidence. | validate-review-dir.py:1477 |
+| `specialist prior missing assessment for <lens> shard <n>: <assessor>` | An independent shard/lens assessment is absent. | Restore that generalist's assessment; another shard or the other pass cannot replace it. | validate-review-dir.py |
+| `specialist prior for <lens> excludes assigned edges without cited counterevidence` | A narrowed scope silently drops edges. | Append an assessment amendment with cited low-risk justification for every excluded edge, or retain the edges and route the required work. | validate-review-dir.py |
 | `specialist likelihood requires specialist:full for <lens>` | A `high` prior did not get a full specialist pass. | Add a plan row for that lens with scope `specialist:full`. | validate-review-dir.py:1516 |
 | `specialist likelihood requires specialist:probe or specialist:full for <lens>` | A `medium` prior got nothing. | Add a plan row with scope `specialist:probe` (or `specialist:full`). | validate-review-dir.py:1523 |
 | `positive <k> trigger <id> must cite exact graph scope` | The trigger row's scope is not `graph:<ids>`. | Put exact edge IDs in the trigger's graph-scope cell. | validate-review-dir.py:1536 |
@@ -905,7 +905,6 @@ index staleness error (§4.1). Fix the inner message here.
 | `<f> specialist assessment table has wrong columns` | Header mismatch. | Copy the header from the template. | validate-worker-artifact.py:255 |
 | `<f> duplicates specialist assessment for <lens>` | Duplicate row. | Keep one row per lens. | validate-worker-artifact.py:260 |
 | `<f> specialist assessments have missing/unknown lenses: missing=<a>; unknown=<b>` | Lens set does not equal `SPECIALIST_LENSES`. | Assess all ten lenses, using the exact names from §1. | validate-worker-artifact.py:265 |
-| `<f> specialist assessments must share one exact assigned graph scope` | Rows use different scopes. | Use the generalist's single assigned graph scope on every row. | validate-worker-artifact.py:275 |
 | `<f> <lens> must use low, medium, or high` | Bad likelihood token. | Use `low`, `medium`, or `high`. | validate-worker-artifact.py:284 |
 | `<f> <lens> has invalid exact graph scope` | Scope is not `graph:<edge-ids>` or `graph:none`. | Write exact edge IDs. | validate-worker-artifact.py:291 |
 | `<f> <lens> lacks cited signals/counterevidence` | No citations. | Cite `path:line` evidence on both sides. | validate-worker-artifact.py:297 |
@@ -972,8 +971,7 @@ index staleness error (§4.1). Fix the inner message here.
 | `<f>: Specialist escalation assessments lacks required columns` | Header mismatch. | Copy the header. | build-review-indexes.py:353 |
 | `<f>: unknown specialist lens '<l>'` | Lens name not in `SPECIALIST_LENSES`. | Use the exact lens name from §1. | build-review-indexes.py:364 |
 | `<f>: <lens> has invalid likelihood '<v>'; use low, medium, or high` | Bad likelihood. | Use `low`, `medium`, or `high`. | build-review-indexes.py:366 |
-| `<f>: <lens> graph scope must be exact graph:E-... edge IDs, or graph:none for a zero-edge inventory` | Scope is not exact. | Write `graph:E-1,E-2` (or `graph:none` only when the inventory has no edges). | build-review-indexes.py:375 |
-| `<f>: <lens> may use graph:none only when the inventory has zero graph edges` | `graph:none` with edges present. | Cite the real edges. | build-review-indexes.py:381 |
+| `<f>: <lens> graph scope must be exact graph:E-... edge IDs, or graph:none for a low assessment` | Scope is not exact. | Write `graph:E-1,E-2` or `graph:none` with low likelihood and cited counterevidence for the entire assigned shard. | build-review-indexes.py:375 |
 | `<f>: <lens> graph scope repeats an edge` | Duplicate edge in the scope. | De-duplicate. | build-review-indexes.py:390 |
 | `<f>: <lens> cites unknown graph edge(s): <ids>` | Bad edge IDs. | Correct them against the edges table. | build-review-indexes.py:393 |
 | `<f>: <lens> lacks assessed signals` / `lacks assessed counterevidence` | Empty cell. | Fill both cells. | build-review-indexes.py:398, :400 |
@@ -982,7 +980,6 @@ index staleness error (§4.1). Fix the inner message here.
 | `duplicate <k> specialist assessment for <lens> <scope> in <a> and <b>` | Two ledgers assessed the same lens/scope. | Keep one. | build-review-indexes.py:436 |
 | `<f>: generalist ledger lacks ## Specialist escalation assessments` | Section missing. | Add the section. | build-review-indexes.py:449 |
 | `<f>: generalist ledger lacks specialist assessment(s): <lenses>` | Lenses unassessed. | Assess every lens. | build-review-indexes.py:455 |
-| `<f>: generalist specialist assessments must share one exact assigned graph scope` | Mixed scopes. | Use the single assigned scope on every row. | build-review-indexes.py:460 |
 | `<f>: duplicate Candidate descriptors row for <c>` | Duplicate descriptor. | Keep one. | build-review-indexes.py:489 |
 | `duplicate candidate ID <c> in <a> and <b>` | Reused candidate ID across ledgers. | Prefix IDs per thread. | build-review-indexes.py:511 |
 | `<f>: candidate <c> has no Candidate descriptors row` | Missing descriptor. | Add it. | build-review-indexes.py:528 |

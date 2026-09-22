@@ -213,11 +213,23 @@ Valid operations are `replace-fields`, `replace`, `supersede`, and
 `retract-duplicate` (only when the same attempt emitted an identical row
 twice). Use `replace-fields` for any structurally parsed table cell. Its
 `replacement / reason` is a non-empty JSON object whose keys exactly match
-table headers. Targets are a stable row ID, `matrix:<1-based-row>`,
+table headers. `fields` is accepted as a compatibility alias for the payload
+column only for structured `replace-fields` operations; new artifacts use
+`replacement / reason`. An Amendments table must have the required identity
+columns and exactly one payload column. Unknown/missing payload columns,
+ambiguous dual columns, and malformed JSON fail validation rather than being
+silently ignored. Targets are a stable row ID, `matrix:<1-based-row>`,
 `descriptor:<candidate>`, `trace:<candidate>:<obligation>`,
 `affinity:<candidate>`, `family:<RF-id>`, `audit:<check>`, or
 `root-family:<RF-id>`, or `assessment:<lens>` for a row in
-`Specialist escalation assessments`. Graph rows in `Complexity graph edges` and
+`Specialist escalation assessments`, or `roster:<exact roster entry>` for a
+canonical plan roster row (include the full shard label when present). Bare
+exact roster-entry labels also resolve for existing amendments. Roster targets
+resolve after plan continuations have folded into the effective roster; they
+must still identify exactly one row. Scope corrections must cite the work
+covering each added edge; changing a plan cell does not itself perform that
+work. Use the dedicated plan continuation contracts for status transitions.
+Graph rows in `Complexity graph edges` and
 `Complexity graph delta` can be targeted by their `edge` ID. To repair an
 ID collision across inventory shards, amend the `edge` cell in each affected
 file and explicitly amend every reference to it (including trigger `graph scope`
@@ -659,7 +671,18 @@ prior for every specialist lens over its exact assigned edge slice:
 ```
 
 Use all ten exact specialist names and only `low`, `medium`, or `high`.
-Signals and counterevidence must cite code/test evidence or graph edges. The
+Signals and counterevidence must cite code/test evidence or graph edges.
+Each row's graph scope selects the assigned edges carrying that likelihood;
+different lenses and the two independent passes may select different subsets.
+The row's cited counterevidence must explicitly justify low likelihood on
+**every excluded assigned edge**, individually or as a justified group. An
+unreviewed or uncertain edge cannot be excluded: retain it at medium/high or
+return partial. `graph:none` means the entire shard has cited low likelihood
+for that lens. Narrowing a previously collected scope requires an append-only
+`assessment:<lens>` amendment with updated counterevidence; never narrow a
+scope merely to fit an existing specialist assignment. These lens subsets do
+not reduce either generalist's mandatory full-shard graph coverage.
+ The
 likelihood measures residual discovery value: whether a full sweep is likely
 to uncover additional specialist edges. An isolated local construct with
 closed ownership, uses, exits, and consumers may be low even though it matches
@@ -1014,7 +1037,8 @@ full matrix and all rows in the final message — never summarized.
 For a schema-3 generalist brief, item 4 additionally requires:
 1. `## Complexity graph delta` table: `| edge | status | evidence | candidate | next obligation |` where every edge assigned to the shard is listed, `status` is `open`, `resolved`, `candidate`, `unreviewed`, or `disputed`, `evidence` cites code, `candidate` lists candidate IDs (or `-`) found on that edge, and `next obligation` lists any next obligation (or `-`).
 2. `## Specialist escalation assessments` table shown above: all ten specialist
-lenses, the shard's exact `graph:E-...` scope, low/medium/high likelihood, and
+lenses, each lens's exact `graph:E-...` subset of the assigned shard (or
+`graph:none` for low), low/medium/high likelihood, and
 cited signals plus counterevidence. GSS and GAI workers decide independently;
 neither reads the other's ledger before returning.
 
@@ -1469,6 +1493,66 @@ fallback for missing ledgers, incomplete collection, or parser failure. After
 writing it, regenerate indexes so `indexes/verdicts.tsv` is a fresh zero-row
 view with current source fingerprints before evaluating the root-cause fast
 path.
+
+### Budget-limited verification
+
+When the recorded spawn budget or deadline is exhausted, preserve the batch
+plan and every candidate. For each terminated skeptic batch, append this table
+to `verification/batches.md`, with one row per directly assigned candidate and
+one per proposed merge alias whose ultimate survivor is in that batch:
+
+```markdown
+## Budget-limited verification
+
+| candidate | batch | attempt | survivor | reason |
+| --- | --- | --- | --- | --- |
+| EPW-3 | V038 | 1 | - | spawn-budget exhausted |
+| AL-4 | V038 | 1 | EPW-3 | spawn-budget exhausted |
+```
+
+Use `deadline exhausted` only after the recorded UTC deadline; otherwise use
+`spawn-budget exhausted` only after that many recorded task-bearing attempts.
+The batch and latest terminated attempt must match the preserved plan. Its
+`remaining_scope` must be exactly `budget exhausted; candidates: ` followed by
+the comma-separated directly assigned candidate IDs (not merge aliases).
+Each gap's sealed brief must name every directly assigned candidate. A changed
+brief, missing termination, incomplete alias coverage, or existing verdict
+blocks this exception. Never invent a REFUTED or UNPROVEN result for work not
+done. User-priority verification and unresolved blockers remain explicit; do
+not silently replace a promised finding validation with a gap.
+
+For an unstarted/unsealed batch, seal its existing brief with the normal
+`seal-work-unit.py` helper, phase 5 and frontier tier, artifact
+`verification/V038.md`, and the batch plan as a control input. Immediately
+terminate the sealed attempt using `set-work-state.py` with the exact
+`remaining_scope` above and `--log`. Do not spawn it or materialize unused code
+packets. Only authenticated budget gaps on a work unit with no task ID in any
+attempt may omit unread named inputs; the brief self-row and exact assignment
+remain required. Started units retain all ordinary input-integrity checks.
+
+Every gap ID's reconciliation disposition is exactly
+`unreviewed — budget exhausted`. An alias in this table is an **unverified
+merge proposal**, never a validated merge. All other candidates retain the
+normal verdict/merge obligations; delivered findings and questions retain all
+root-cause, evidence-card, challenge, and freshness gates. A tentative proposed
+fix in an unverified discovery row does not manufacture a verified root family;
+it remains unreviewed with that candidate. Actual CONFIRMED/UNPROVEN verdicts,
+actual suggested-edit decisions, and all required inventory triggers retain
+normal root-cause accounting. The challenge covers these unreviewed
+reconciliation rows as well as delivered findings.
+
+A budget-limited draft must contain `- Review completeness: limited` and this
+exact count-bearing text under `## Verification Notes`, plus a visible link to
+`verification/batches.md` containing the full gap table:
+
+```text
+Limited review: 2 candidate IDs were not independently verified because the review budget was exhausted.
+```
+
+Count direct candidates and unverified aliases. Neither draft nor Gerrit
+output may claim LGTM, a clean review, or complete verification. Preserve these
+omissions in plan/progress and do not infer that absence of a verified finding
+means the deferred hypotheses were refuted.
 
 Every candidate row appears exactly once as either a verification-batch member
 or a merge proposal. A proposed merge does not require a second skeptic verdict

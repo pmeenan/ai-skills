@@ -19,6 +19,6 @@ preamble, so its rules travel with every section.
 | 7. `worktree-lease.py` | 7-worktree-lease-py.md | 56 |
 | 8. `fetch-cl.sh` | 8-fetch-cl-sh.md | 42 |
 | 9. `build-phase-brief.py` | 9-build-phase-brief-py.md | 15 |
-| 10. `validate-worker-artifact.py` and `build-review-indexes.py` | 10-validate-worker-artifact-py-and-build-review-indexes-py.md | 137 |
+| 10. `validate-worker-artifact.py` and `build-review-indexes.py` | 10-validate-worker-artifact-py-and-build-review-indexes-py.md | 134 |
 | 11. Suggestion-block and placeholder rules | 11-suggestion-block-and-placeholder-rules.md | 34 |
 | 12. Maintaining this file | 12-maintaining-this-file.md | 14 |

@@ -15,11 +15,13 @@ from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
 import csv
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import subprocess
 import sys
 from typing import Any, Iterable
@@ -1515,14 +1517,21 @@ def validate_plan(
             and row.get("status") == "spawn"
         ]
         if prior_rows or generalist_ledgers_exist or specialist_plan_rows:
-            expected_scopes: set[frozenset[str]] = set()
-            if len(generalist_partitions) == len(GENERALIST_ROSTER):
-                expected_scopes = set(
-                    generalist_partitions[GENERALIST_ROSTER[0]].values()
+            # Scope selects the edges carrying this lens's likelihood; the
+            # remainder of the assigned shard is low with cited counterevidence.
+            # Identify the independent assessor/shard by canonical source, not
+            # scope equality: the two passes can identify different risk edges.
+            expected = {
+                (lens, shard, assessor): scope
+                for name, assessor in zip(
+                    GENERALIST_ROSTER,
+                    ("semantic-state", "adversarial-integration"),
                 )
-            assessments: dict[
-                tuple[str, frozenset[str]], dict[str, str]
-            ] = defaultdict(dict)
+                for shard, scope in generalist_partitions.get(name, {}).items()
+                for lens in SPECIALIST_LENSES
+            }
+            observed: set[tuple[str, int | None, str]] = set()
+            assessments: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
             for prior in prior_rows:
                 lens = prior.get("lens", "")
                 assessor = prior.get("assessor", "")
@@ -1533,54 +1542,41 @@ def validate_plan(
                     graph_scope,
                 )
                 prior_empty = graph_scope.lower() == "graph:none"
+                source = re.fullmatch(r"ledger/(GSS|GAI)(\d*)\.md", prior.get("source", ""))
+                source_assessor = (
+                    {"GSS": "semantic-state", "GAI": "adversarial-integration"}.get(source.group(1))
+                    if source else None
+                )
                 if (lens not in SPECIALIST_LENSES
                         or assessor not in SPECIALIST_PRIOR_ASSESSORS
+                        or source_assessor != assessor
                         or likelihood not in {"low", "medium", "high"}
                         or (not match and not prior_empty)
                         or (prior_empty and likelihood != "low")):
-                    report.error(
-                        "specialist-priors.tsv contains a malformed assessment"
-                    )
+                    report.error("specialist-priors.tsv contains a malformed assessment")
                     continue
-                scope = (
-                    frozenset(match.group(1).upper().split(","))
-                    if match else frozenset()
-                )
-                key = (lens, scope)
-                if assessor in assessments[key]:
-                    report.error(
-                        f"specialist prior duplicates {assessor} for {lens} "
-                        f"graph:{','.join(sorted(scope))}"
-                    )
-                assessments[key][assessor] = likelihood
-            expected_keys = {
-                (lens, scope)
-                for lens in SPECIALIST_LENSES for scope in expected_scopes
-            }
-            for lens, scope in sorted(
-                expected_keys - set(assessments),
-                key=lambda item: (item[0], sorted(item[1])),
-            ):
-                report.error(
-                    f"specialist prior missing both assessments for {lens} "
-                    f"graph:{','.join(sorted(scope))}"
-                )
-            for (lens, scope), by_assessor in sorted(
-                assessments.items(), key=lambda item: (item[0][0], sorted(item[0][1]))
-            ):
-                if scope not in expected_scopes:
-                    report.error(
-                        f"specialist prior uses an unassigned graph scope for "
-                        f"{lens}: graph:{','.join(sorted(scope))}"
-                    )
-                missing = SPECIALIST_PRIOR_ASSESSORS - set(by_assessor)
-                if missing:
-                    report.error(
-                        f"specialist prior for {lens} graph:{','.join(sorted(scope))} "
-                        "lacks assessor(s): " + ", ".join(sorted(missing))
-                    )
+                shard = int(source.group(2)) if source.group(2) else None
+                key = (lens, shard, assessor)
+                if key in observed:
+                    report.error(f"specialist prior duplicates {assessor} for {lens} shard {shard}")
+                observed.add(key)
+                assigned = expected.get(key)
+                scope = frozenset(match.group(1).upper().split(",")) if match else frozenset()
+                if assigned is None or not scope.issubset(assigned):
+                    report.error(f"specialist prior uses an unassigned graph scope for {lens}: {graph_scope}")
+                    continue
+                if assigned - scope:
+                    evidence = prior.get("counterevidence", "")
+                    if not (CITATION.search(evidence) or ARTIFACT_POINTER.search(evidence)
+                            or re.search(r"\bE-[A-Z0-9-]+\b", evidence)):
+                        report.error(f"specialist prior for {lens} excludes assigned edges without cited counterevidence")
+                for edge in assigned:
+                    assessments[(lens, edge)][assessor] = likelihood if edge in scope else "low"
+            for lens, shard, assessor in sorted(expected.keys() - observed, key=str):
+                report.error(f"specialist prior missing assessment for {lens} shard {shard}: {assessor}")
 
             def routed(lens: str, scope: frozenset[str], mode: str) -> bool:
+                covered: set[str] = set()
                 for planned in specialist_plan_rows:
                     planned_lens, _ = plan_row_identity(planned["roster entry"])
                     planned_scope = planned.get("scope", "")
@@ -1591,16 +1587,17 @@ def validate_plan(
                     if planned_lens != lens or not graph_match:
                         continue
                     planned_edges = set(graph_match.group(1).upper().split(","))
-                    if scope.issubset(planned_edges) and re.search(
+                    if re.search(
                         rf"(?i)(?:^|[; ]+)specialist:{mode}(?:[; ]+|$)",
                         planned_scope,
                     ):
-                        return True
-                return False
+                        covered.update(planned_edges)
+                return scope.issubset(covered)
 
-            for (lens, scope), by_assessor in assessments.items():
+            for (lens, edge), by_assessor in assessments.items():
                 if set(by_assessor) != SPECIALIST_PRIOR_ASSESSORS:
                     continue
+                scope = frozenset({edge})
                 levels = list(by_assessor.values())
                 full_required = (
                     "high" in levels or levels.count("medium") == 2
@@ -2013,12 +2010,28 @@ def named_brief_inputs(brief: Path) -> set[Path]:
         if not active and not deliverables_active:
             continue
         destination = named_inputs if active else named_deliverables
-        for quoted in re.findall(r"`(/[^`]+)`", line):
-            if quoted.endswith("/"):
-                continue
-            candidate = Path(quoted)
-            if not candidate.is_dir():
-                destination.add(candidate.resolve())
+        for quoted in re.findall(r"`([^`]+)`", line):
+            # An existing literal path wins, including filenames with spaces.
+            # Otherwise recognize shell-tokenized commands whose executable
+            # exists, without treating the whole invocation as a filename.
+            literal = Path(quoted)
+            if literal.is_absolute() and literal.exists():
+                tokens = [quoted]
+            else:
+                try:
+                    shell_tokens = shlex.split(quoted)
+                except ValueError:
+                    shell_tokens = []
+                if (len(shell_tokens) == 1
+                        or (shell_tokens and Path(shell_tokens[0]).is_absolute()
+                            and Path(shell_tokens[0]).is_file())):
+                    tokens = shell_tokens
+                else:
+                    tokens = [quoted]
+            for token in tokens:
+                candidate = Path(token)
+                if candidate.is_absolute() and not token.endswith("/") and not candidate.is_dir():
+                    destination.add(candidate.resolve())
         bare_line = re.sub(r"`[^`]*`", " ", line)
         for match in absolute_path.finditer(bare_line):
             raw = match.group(1)
@@ -2359,6 +2372,13 @@ def procedural_repair_supersessions(
                 + ", ".join(str(path) for path in missing_inputs)
             )
         for required_input in required_inputs & repair_input_paths:
+            # The repair's own canonical artifact is intentionally appended
+            # after sealing. Its authenticated prestate is the required input;
+            # no duplicate full-file row or refreshed historical hash is needed.
+            if (artifact is not None and required_input == artifact.resolve()
+                    and len(prestate_rows) == 1
+                    and manifest_row_matches(prestate_rows[0], prefix=True)):
+                continue
             matching = [
                 (row_index, item)
                 for row_index, item in enumerate(input_rows)
@@ -2503,6 +2523,7 @@ def validate_input_manifest(
     superseded: dict[tuple[str, int], tuple[str, int]],
     indexes_current: bool,
     level: int = PHASES["final"],
+    unreviewed: set[str] | None = None,
 ) -> dict[str, list[dict[str, str]]]:
     path = root / "input-manifest.tsv"
     if not path.is_file():
@@ -2700,7 +2721,8 @@ def validate_input_manifest(
         if tier_budget is not None:
             effective_budget = (tier_budget if effective_budget is None
                                 else min(effective_budget, tier_budget))
-        if effective_budget is not None and total > effective_budget:
+        if (effective_budget is not None and total > effective_budget
+                and (work_id, attempt) not in superseded):
             report.error(
                 f"input manifest work {work_id} exceeds its worker-input "
                 f"budget ({total} > {effective_budget} bytes"
@@ -2749,11 +2771,29 @@ def validate_input_manifest(
         if brief.is_absolute() and input_path.is_absolute():
             manifest_inputs_by_brief[brief.resolve()].add(input_path.resolve())
     attempts_by_brief = brief_attempts(root)
+    unstarted_budget_units: set[tuple[str, int]] = set()
+    if unreviewed:
+        gap_path = root / "verification" / "batches.md"
+        for heading, _, gap_rows in table_dicts(read_text(gap_path, report)):
+            if heading != BUDGET_GAP_HEADING:
+                continue
+            for gap in gap_rows:
+                if gap.get("candidate") not in unreviewed:
+                    continue
+                key = (gap["batch"], int(gap["attempt"]))
+                unit_rows = [row for row in orchestration_rows if row.get("work_id") == key[0]]
+                if unit_rows and all(row.get("task_id", "") in {"", "—", "-"} for row in unit_rows):
+                    unstarted_budget_units.add(key)
     for brief in sorted(expected_briefs):
         if not brief.is_file():
             continue
         keys = attempts_by_brief.get(brief, set())
         if len(keys) == 1 and next(iter(keys)) in superseded:
+            continue
+        if len(keys) == 1 and next(iter(keys)) in unstarted_budget_units:
+            # This authenticated terminated unit never consumed its named
+            # code/reference inputs. Preserve its immutable brief/assignment,
+            # but do not materialize evidence solely to cancel unused work.
             continue
         for omitted in sorted(
                 named_brief_inputs(brief) - manifest_inputs_by_brief[brief]):
@@ -2846,8 +2886,11 @@ def validate_manifest(
     for work_id, values in attempts.items():
         ordered = [rows_by_key[(work_id, attempt)] for attempt in sorted(values)
                    if (work_id, attempt) in rows_by_key]
+        original_tiers = [row.get("tier", "") for row in ordered
+                          if row.get("tier", "") in TIER_ORDER]
         recorded = [row.get("tier", "") for row in ordered
-                    if row.get("tier", "") in TIER_ORDER]
+                    if row.get("tier", "") in TIER_ORDER
+                    and (work_id, int(row["attempt"])) not in superseded]
         if frontier_kinds.match(work_id):
             for tier in recorded:
                 if TIER_ORDER[tier] < TIER_ORDER["frontier"]:
@@ -2858,8 +2901,10 @@ def validate_manifest(
                         if override else report.error(message)
                     break
         if recorded:
-            first = recorded[0]
-            for tier in recorded[1:]:
+            # Repairing a historical downgrade does not lower the original
+            # tier floor for the current repair or any future continuation.
+            first = original_tiers[0]
+            for tier in recorded:
                 if TIER_ORDER[tier] < TIER_ORDER[first]:
                     message = (
                         f"work unit {work_id} continuation dropped from tier "
@@ -3671,9 +3716,147 @@ def validate_candidate_descriptors(
             )
 
 
+BUDGET_GAP_HEADING = "Budget-limited verification"
+BUDGET_GAP_COLUMNS = ("candidate", "batch", "attempt", "survivor", "reason")
+BUDGET_GAP_DISPOSITION = "unreviewed — budget exhausted"
+
+
+def validate_budget_gaps(root: Path, candidates: set[str], report: Report) -> set[str]:
+    """Authenticate per-candidate non-verification, never a substantive verdict."""
+    path = root / "verification" / "batches.md"
+    if not path.is_file():
+        return set()
+    parsed, errors = effective_tables(path.read_text(encoding="utf-8"), str(path))
+    gap_tables = [(header, rows) for heading, header, rows in parsed if heading == BUDGET_GAP_HEADING]
+    if not gap_tables:
+        return set()
+    initial_errors = len(report.errors)
+    for error in errors:
+        report.error(error)
+    if len(gap_tables) != 1 or tuple(gap_tables[0][0]) != BUDGET_GAP_COLUMNS:
+        report.error("budget verification gaps require one canonical candidate/batch/attempt/survivor/reason table")
+        return set()
+    gaps = gap_tables[0][1]
+    if not gaps:
+        report.error("budget verification gap table must not be empty")
+        return set()
+    assignment: dict[str, str] = {}
+    merges: dict[str, str] = {}
+    for heading, header, rows in parsed:
+        if {"batch", "candidates", "brief", "verdict file"}.issubset(header):
+            for row in rows:
+                batch = row.get("batch", "")
+                if not re.fullmatch(r"V[0-9]+", batch):
+                    report.error("budget verification gap plan has invalid batch ID")
+                for candidate in {value.strip() for value in row.get("candidates", "").split(",") if value.strip()}:
+                    if candidate in assignment:
+                        report.error(f"budget gap candidate {candidate} has duplicate batch membership")
+                    assignment[candidate] = batch
+        if heading.startswith("Merge proposals") and {"row", "proposal"}.issubset(header):
+            for row in rows:
+                match = re.match(rf"merge-into\s+({ROW_ID_TEXT})\b", row["proposal"])
+                if not match or row["row"] in merges:
+                    report.error("budget gap plan has malformed or duplicate merge proposal")
+                    continue
+                merges[row["row"]] = match.group(1)
+    if set(assignment) & set(merges):
+        report.error("budget gap plan assigns a candidate both directly and as a merge proposal")
+    if (set(assignment) | set(merges) | set(merges.values())) - candidates:
+        report.error("budget gap plan references unknown canonical candidates")
+    owners: dict[str, str] = {}
+    for candidate in candidates:
+        current, seen = candidate, set()
+        while current in merges and current not in seen:
+            seen.add(current)
+            current = merges[current]
+        if current in assignment and current not in seen:
+            owners[candidate] = current
+    try:
+        with (root / "orchestration.tsv").open(encoding="utf-8", newline="") as stream:
+            orchestration = list(csv.DictReader(stream, delimiter="\t"))
+        with (root / "input-manifest.tsv").open(encoding="utf-8", newline="") as stream:
+            inputs = list(csv.DictReader(stream, delimiter="\t"))
+        directives = (root / "directives.md").read_text(encoding="utf-8")
+    except OSError as error:
+        report.error(f"budget verification gap authentication inputs unavailable: {error}")
+        return set()
+    authenticated = authenticated_manifest_keys(inputs, orchestration)
+    latest: dict[str, dict[str, str]] = {}
+    for row in orchestration:
+        key = manifest_key(row)
+        if key and (key[0] not in latest or key[1] > int(latest[key[0]]["attempt"])):
+            latest[key[0]] = row
+    budget = re.search(r"(?im)^\s*(?:-\s*)?spawn-budget:\s*([1-9][0-9]*)\s*$", directives)
+    spawned = {manifest_key(row) for row in orchestration
+               if row.get("task_id", "") not in {"", "—", "-"} and manifest_key(row)}
+    spawn_exhausted = bool(budget and len(spawned) >= int(budget.group(1)))
+    deadline = re.search(r"(?im)^\s*(?:-\s*)?deadline:\s*(.+?)\s*$", directives)
+    deadline_exhausted = False
+    if deadline:
+        try:
+            value = datetime.fromisoformat(deadline.group(1).replace(" UTC", "+00:00").replace("Z", "+00:00"))
+            deadline_exhausted = value.tzinfo is not None and datetime.now(timezone.utc) >= value
+        except ValueError:
+            pass
+    seen_gaps: set[str] = set()
+    deferred_batches: set[str] = set()
+    for gap in gaps:
+        candidate, batch = gap["candidate"], gap["batch"]
+        if candidate in seen_gaps or candidate not in candidates:
+            report.error(f"budget gap has duplicate/unknown candidate {candidate}")
+        seen_gaps.add(candidate)
+        owner = owners.get(candidate)
+        if not owner or assignment.get(owner) != batch:
+            report.error(f"budget gap {candidate} does not match exact planned batch membership")
+        expected_survivor = "-" if owner == candidate else owner
+        if gap["survivor"] != expected_survivor:
+            report.error(f"budget gap {candidate} has incorrect unverified survivor")
+        reason = gap["reason"]
+        if not ((reason == "spawn-budget exhausted" and spawn_exhausted)
+                or (reason == "deadline exhausted" and deadline_exhausted)):
+            report.error(f"budget gap {candidate} lacks an exhausted recorded budget")
+        row = latest.get(batch, {})
+        key = manifest_key(row)
+        if (row.get("state") != "terminated" or str(row.get("attempt")) != gap["attempt"]
+                or key not in authenticated):
+            report.error(f"budget gap {candidate} lacks its authenticated latest terminated batch attempt")
+        members = {item for item, unit in assignment.items() if unit == batch}
+        remaining = row.get("remaining_scope", "")
+        prefix = "budget exhausted; candidates: "
+        if not remaining.startswith(prefix) or {value.strip() for value in remaining[len(prefix):].split(",") if value.strip()} != members:
+            report.error(f"budget gap {candidate} termination does not retain the exact batch candidate scope")
+        brief = Path(row.get("brief", ""))
+        if brief.is_file():
+            mentioned = set(re.findall(ROW_ID_TEXT, brief.read_text(encoding="utf-8")))
+            if not members.issubset(mentioned):
+                report.error(f"budget gap {candidate} sealed brief omits assigned candidates")
+        deferred_batches.add(batch)
+    expected = {candidate for candidate, owner in owners.items() if assignment[owner] in deferred_batches}
+    if expected != seen_gaps:
+        report.error("budget gap table omits planned candidates or unverified merge aliases: "
+                     + ", ".join(sorted(expected - seen_gaps)))
+    return seen_gaps if len(report.errors) == initial_errors else set()
+
+
+def validate_budget_disclosure(draft: str, unreviewed: set[str], report: Report) -> None:
+    if not unreviewed:
+        return
+    notes = re.search(r"(?ims)^## Verification Notes\s*\n(.*?)(?=^## |\Z)", draft)
+    expected = (f"Limited review: {len(unreviewed)} candidate IDs were not independently "
+                "verified because the review budget was exhausted.")
+    if (not notes or expected not in notes.group(1)
+            or "verification/batches.md" not in notes.group(1)
+            or not re.search(r"(?im)^- Review completeness: limited\s*$", draft)):
+        report.error("budget-limited delivery lacks exact visible limited-review disclosure and gap-table link")
+    if re.search(r"(?im)^\s*(?:[-*]\s*)?(?:verdict:\s*)?(?:LGTM|clean review|no issues found|review complete)\b", draft):
+        report.error("budget-limited delivery claims a clean or complete review")
+
+
 def validate_verdicts(
-    root: Path, candidates: set[str], report: Report
+    root: Path, candidates: set[str], report: Report,
+    unreviewed: set[str] | None = None,
 ) -> dict[str, tuple[str, str]]:
+    unreviewed = unreviewed or set()
     verdicts: Counter[str] = Counter()
     surviving: dict[str, tuple[str, str]] = {}
     for path in sorted((root / "verification").glob("V*.md")):
@@ -3726,6 +3909,10 @@ def validate_verdicts(
                     if match:
                         merged[row["row"]] = match.group(1)
     for candidate in sorted(candidates):
+        if candidate in unreviewed:
+            if verdicts[candidate]:
+                report.error(f"budget gap {candidate} already has a verdict; gaps cannot hide verified findings")
+            continue
         if verdicts[candidate] == 0:
             survivor = merged.get(candidate)
             if not survivor or verdicts[survivor] != 1:
@@ -3881,7 +4068,9 @@ def validate_reconciliation(
     family_membership: dict[str, str],
     report: Report,
     final: bool,
+    unreviewed: set[str] | None = None,
 ) -> dict[str, tuple[str, str]]:
+    unreviewed = unreviewed or set()
     path = root / "reconciliation.md"
     text = read_text(path, report)
     dispositions: Counter[str] = Counter()
@@ -3983,6 +4172,10 @@ def validate_reconciliation(
                         report.error(f"reconciliation row {identifier} has blank disposition")
                         continue
                     normalized = disposition.lower()
+                    if identifier in unreviewed and disposition != BUDGET_GAP_DISPOSITION:
+                        report.error(f"budget gap {identifier} must remain explicitly unreviewed, not promoted/refuted/merged")
+                    elif identifier not in unreviewed and normalized.startswith("unreviewed"):
+                        report.error(f"reconciliation {identifier} has unauthenticated unreviewed disposition")
                     item_match: re.Match[str] | None = None
                     kind = ""
                     keyword = ""
@@ -5002,9 +5195,12 @@ def validate_draft_sections(root: Path, draft_revision: str,
 def validate_final(root: Path, sha: str | None, source_ids: dict[str, Path],
                    synthesis_items: dict[str, str], budgets: dict[str, int],
                    input_assignments: dict[str, list[dict[str, str]]],
-                   report: Report) -> None:
+                   report: Report, unreviewed: set[str] | None = None) -> None:
     draft = read_text(root / "draft-review.md", report)
+    validate_budget_disclosure(draft, unreviewed or set(), report)
     gerrit = read_text(root / "gerrit-comments.md", report)
+    if unreviewed and re.search(r"(?im)^\s*(?:[-*]\s*)?(?:verdict:\s*)?(?:LGTM|clean review|no issues found|review complete)\b", gerrit):
+        report.error("budget-limited Gerrit output claims a clean or complete review")
     if sha and sha not in draft:
         report.error("draft-review.md does not state the full pinned revision SHA")
     if not re.search(r"(?i)patchset\s+\d+|PS\d+", draft):
@@ -5342,6 +5538,7 @@ def main() -> int:
     budgets: dict[str, int] = {}
     input_assignments: dict[str, list[dict[str, str]]] = {}
     surviving: dict[str, tuple[str, str]] = {}
+    unreviewed: set[str] = set()
     family_membership: dict[str, str] = {}
     plan_rows: list[dict[str, str]] = []
     plan_tier_column_seen = False
@@ -5363,25 +5560,26 @@ def main() -> int:
         validate_plan(
             root, trigger_rows, plan_rows, plan_tier_column_seen, report
         )
+        source_ids, candidates, covered = ledger_data(root, report)
+        unreviewed = validate_budget_gaps(root, candidates, report)
         procedural_supersessions = procedural_repair_supersessions(
             root, report, indexes_current
         )
         validate_generated_briefs(root, report, procedural_supersessions, level)
         input_assignments = validate_input_manifest(
-            root, budgets, report, procedural_supersessions, indexes_current, level
+            root, budgets, report, procedural_supersessions, indexes_current, level, unreviewed
         )
         validate_manifest(
             root, report, final=level >= PHASES["final"],
             superseded=procedural_supersessions,
         )
-        source_ids, candidates, covered = ledger_data(root, report)
         validate_candidate_descriptors(root, candidates, report)
         validate_collection_coverage(root, report, level, plan_rows)
         validate_ter_gate(root, report, plan_rows)
         for changed in sorted(set(changed_files) - covered):
             report.error(f"per-file floor missing ledger/ORC row for {changed}")
     if level >= PHASES["verification"]:
-        surviving = validate_verdicts(root, candidates, report)
+        surviving = validate_verdicts(root, candidates, report, unreviewed)
         family_membership = validate_affinity(
             root, candidates, surviving, report
         )
@@ -5392,7 +5590,7 @@ def main() -> int:
     if level >= PHASES["reconciliation"]:
         expected_cards = validate_reconciliation(
             root, source_ids, family_membership, report,
-            final=level >= PHASES["final"]
+            final=level >= PHASES["final"], unreviewed=unreviewed
         )
         synthesis_items = validate_synthesis(
             root, source_ids, expected_cards, family_membership, budgets, report
@@ -5400,7 +5598,7 @@ def main() -> int:
     if level >= PHASES["final"]:
         validate_final(
             root, sha, source_ids, synthesis_items, budgets, input_assignments,
-            report,
+            report, unreviewed,
         )
     return report.emit()
 

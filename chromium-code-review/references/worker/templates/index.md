@@ -11,7 +11,7 @@ preamble, so its rules travel with every section.
 | section | file | source lines |
 | --- | --- | --- |
 | Row IDs | row-ids.md | 59 |
-| The Review Directory | the-review-directory.md | 145 |
+| The Review Directory | the-review-directory.md | 157 |
 | pin.md | pin-md.md | 32 |
 | profile.json, profile.md, And Context Budgets | profile-json-profile-md-and-context-budgets.md | 53 |
 | directives.md, progress.md, And orchestration.tsv | directives-md-progress-md-and-orchestration-tsv.md | 62 |
@@ -19,10 +19,10 @@ preamble, so its rules travel with every section.
 | Scope-Packet Spec And Code Packets | scope-packet-spec-and-code-packets.md | 34 |
 | context.md | context-md.md | 41 |
 | gerrit/unresolved-threads.json | gerrit-unresolved-threads-json.md | 37 |
-| inventory.md — Changed-Surface Inventory And Risk-Area Map | inventory-md-changed-surface-inventory-and-risk-area-map.md | 148 |
+| inventory.md — Changed-Surface Inventory And Risk-Area Map | inventory-md-changed-surface-inventory-and-risk-area-map.md | 159 |
 | plan.md — Thread-Plan Roster | plan-md-thread-plan-roster.md | 107 |
-| Generated Common Header | generated-common-header.md | 97 |
-| Subagent Brief — Discovery Thread | subagent-brief-discovery-thread.md | 102 |
+| Generated Common Header | generated-common-header.md | 100 |
+| Subagent Brief — Discovery Thread | subagent-brief-discovery-thread.md | 103 |
 | ledger/⟨THREAD⟩.md — Compliance Matrix And Candidate Rows | ledger-thread-md-compliance-matrix-and-candidate-rows.md | 62 |
 | ledger/TER.md And verification/VTER.md — Transformation Classes And Gate | ledger-ter-md-and-verification-vter-md-transformation-classes-and-gate.md | 60 |
 | Subagent Brief — TER Gate Skeptic | subagent-brief-ter-gate-skeptic.md | 31 |
@@ -30,7 +30,7 @@ preamble, so its rules travel with every section.
 | Per-File Floor Rows | per-file-floor-rows.md | 14 |
 | collection.md — Collection Audit | collection-md-collection-audit.md | 85 |
 | Subagent Brief — Verification Skeptic | subagent-brief-verification-skeptic.md | 50 |
-| verification/ — Batches And Skeptic Verdict Rows | verification-batches-and-skeptic-verdict-rows.md | 132 |
+| verification/ — Batches And Skeptic Verdict Rows | verification-batches-and-skeptic-verdict-rows.md | 192 |
 | verification/affinity.md — Invariant Affinity And Consistency Audit | verification-affinity-md-invariant-affinity-and-consistency-audit.md | 40 |
 | root-cause/ — Plan, Root-Cause Rows, And Reopened Rows | root-cause-plan-root-cause-rows-and-reopened-rows.md | 160 |
 | reconciliation.md — Reconciliation Table And Pre-Output Gate | reconciliation-md-reconciliation-table-and-pre-output-gate.md | 100 |

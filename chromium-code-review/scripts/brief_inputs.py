@@ -18,6 +18,7 @@ switches, and paths named only under `Deliverables:`.
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 
 
@@ -50,12 +51,28 @@ def named_brief_inputs(brief: Path) -> set[Path]:
         if not active and not deliverables_active:
             continue
         destination = named_inputs if active else named_deliverables
-        for quoted in re.findall(r"`(/[^`]+)`", line):
-            if quoted.endswith("/"):
-                continue
-            candidate = Path(quoted)
-            if not candidate.is_dir():
-                destination.add(candidate.resolve())
+        for quoted in re.findall(r"`([^`]+)`", line):
+            # An existing literal path wins, including filenames with spaces.
+            # Otherwise recognize shell-tokenized commands whose executable
+            # exists, without treating the whole invocation as a filename.
+            literal = Path(quoted)
+            if literal.is_absolute() and literal.exists():
+                tokens = [quoted]
+            else:
+                try:
+                    shell_tokens = shlex.split(quoted)
+                except ValueError:
+                    shell_tokens = []
+                if (len(shell_tokens) == 1
+                        or (shell_tokens and Path(shell_tokens[0]).is_absolute()
+                            and Path(shell_tokens[0]).is_file())):
+                    tokens = shell_tokens
+                else:
+                    tokens = [quoted]
+            for token in tokens:
+                candidate = Path(token)
+                if candidate.is_absolute() and not token.endswith("/") and not candidate.is_dir():
+                    destination.add(candidate.resolve())
         bare_line = re.sub(r"`[^`]*`", " ", line)
         for match in absolute_path.finditer(bare_line):
             raw = match.group(1)

@@ -1595,6 +1595,50 @@ Return partial with explicit remaining scope when needed.
         )
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
+    def test_named_inputs_distinguish_commands_and_paths_with_spaces(self) -> None:
+        validator = load_review_validator()
+        executable = SCRIPTS / "build-batch-briefs.py"
+        spaced = self.review / "input with spaces.md"
+        spaced.write_text("input", encoding="utf-8")
+        missing = self.review / "missing input with spaces.md"
+        brief = self.review / "briefs" / "quoted-inputs.md"
+        brief.write_text(
+            f"Inputs: `{spaced}`, `{missing}`\n"
+            f'Procedure: run `{executable} {self.review} --phase verification`; '
+            f'read `"{spaced}"`.\n', encoding="utf-8")
+        self.assertEqual({executable.resolve(), spaced, missing}, validator.named_brief_inputs(brief))
+
+    def test_repair_own_named_artifact_authenticates_prestate_prefix(self) -> None:
+        artifact = self.review / "ledger" / "EPW.md"
+        brief = self.review / "briefs" / "EPW.md"
+        brief.write_text(brief.read_text(encoding="utf-8") + f"Inputs: {artifact}\n", encoding="utf-8")
+        self.refresh_input_manifest()
+        self.add_epw_procedural_repair(2, (1,), (1,))
+        manifest = self.review / "input-manifest.tsv"
+        with manifest.open(encoding="utf-8") as stream:
+            reader = csv.DictReader(stream, delimiter="\t")
+            columns = reader.fieldnames
+            rows = list(reader)
+        rows = [r for r in rows if not (r["work_id"] == "EPW" and r["attempt"] == "2"
+                and r["input_path"] == str(artifact) and r["role"] == "assigned")]
+        with manifest.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=columns, delimiter="\t")
+            writer.writeheader()
+            writer.writerows(rows)
+        artifact.write_text(artifact.read_text(encoding="utf-8") + "\nRepair appended evidence.\n", encoding="utf-8")
+        self.refresh_indexes()
+        validator = load_review_validator()
+        report = validator.Report()
+        superseded = validator.procedural_repair_supersessions(self.review, report, True)
+        self.assertEqual([], report.errors)
+        self.assertIn(("EPW", 1), superseded)
+        artifact.write_text("Rewritten prefix.\n" + artifact.read_text(encoding="utf-8"), encoding="utf-8")
+        self.refresh_indexes()
+        report = validator.Report()
+        superseded = validator.procedural_repair_supersessions(self.review, report, True)
+        self.assertNotIn(("EPW", 1), superseded)
+        self.assertTrue(any("prestate row is invalid" in e for e in report.errors), report.errors)
+
     def test_valid_procedural_repair_supersedes_only_historical_procedure(self) -> None:
         named_input = self.review / "historical-plan-input.md"
         named_input.write_text("# sealed input\n", encoding="utf-8")
@@ -1903,6 +1947,46 @@ Procedure: inspect {index_manifest} before collection.
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
+    def test_authenticated_repair_masks_only_historical_budget_and_tier_failures(self) -> None:
+        self.add_epw_procedural_repair(2, (1,), (1,))
+        self.add_epw_procedural_repair(3, (1, 2), (1, 2))
+        orchestration = self.review / "orchestration.tsv"
+        with orchestration.open(encoding="utf-8") as stream:
+            reader = csv.DictReader(stream, delimiter="\t")
+            columns, rows = reader.fieldnames, list(reader)
+        def write_tiers(current_tier):
+            for row in rows:
+                if row["work_id"] == "EPW":
+                    if row["attempt"] == "2":
+                        row["tier"] = "mechanical"
+                    elif row["attempt"] == "3":
+                        row["tier"] = current_tier
+            with orchestration.open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=columns, delimiter="\t")
+                writer.writeheader()
+                writer.writerows(rows)
+        write_tiers("frontier")
+        self.refresh_indexes()
+        validator = load_review_validator()
+        report = validator.Report()
+        superseded = validator.procedural_repair_supersessions(self.review, report, True)
+        self.assertEqual([], report.errors)
+        self.assertIn(("EPW", 2), superseded)
+        budgets = {"worker_input_budget_bytes": 1000000, "tier:frontier": 1000000, "tier:mechanical": 100}
+        def check(mask):
+            report = validator.Report()
+            validator.validate_input_manifest(self.review, budgets, report, mask, True)
+            validator.validate_manifest(self.review, report, False, mask)
+            return report.errors
+        self.assertFalse(any("exceeds its worker-input" in e or "dropped from tier" in e for e in check(superseded)))
+        errors = check({})
+        self.assertTrue(any("exceeds its worker-input" in e for e in errors), errors)
+        self.assertTrue(any("dropped from tier" in e for e in errors), errors)
+        write_tiers("mechanical")
+        errors = check(superseded)
+        self.assertTrue(any("exceeds its worker-input" in e for e in errors), errors)
+        self.assertTrue(any("dropped from tier" in e for e in errors), errors)
 
     def test_actual_worker_inputs_must_fit_profile_budget(self) -> None:
         assigned = self.review / "large-assigned.txt"
