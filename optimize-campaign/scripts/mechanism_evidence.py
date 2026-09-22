@@ -744,6 +744,7 @@ def validate_raw(data: dict, path: pathlib.Path) -> list[dict]:
         seen_groups = set()
         seen_suites = set()
         calls = applicable = 0.0
+        block_exclusive = block_scored = 0.0
         exclusive_shares = []
         avoidable_shares = []
         group_values = {}
@@ -787,11 +788,17 @@ def validate_raw(data: dict, path: pathlib.Path) -> list[dict]:
                 f"{path}: block {block_id}/{group_name} total_scored_cycles",
                 positive=True,
             )
-            if avoidable > exclusive or exclusive > scored:
+            if avoidable > exclusive:
                 raise EvidenceError(
                     f"{path}: block {block_id}/{group_name} requires "
-                    "avoidable <= exclusive <= total scored cycles"
+                    "avoidable <= exclusive cycles"
                 )
+            # Exclusive cycles are a sampled estimate scaled by the probe's
+            # window, so one repetition's estimate may exceed that
+            # repetition's unscaled scored total (round 70: 1 row of 90 at
+            # 1.04x); the invariant holds for the block, the reducer's unit.
+            block_exclusive += exclusive
+            block_scored += scored
             calls += group_calls
             applicable += group_applicable
             exclusive_shares.append(exclusive / scored)
@@ -800,6 +807,11 @@ def validate_raw(data: dict, path: pathlib.Path) -> list[dict]:
                 "exclusive_cycles": exclusive,
                 "total_scored_cycles": scored,
             }
+        if block_exclusive > block_scored:
+            raise EvidenceError(
+                f"{path}: block {block_id} requires exclusive <= total scored "
+                "cycles summed over the block"
+            )
         if data["variant"] == "baseline" and calls <= 0:
             raise EvidenceError(f"{path}: block {block_id} has no mechanism calls")
         if seen_suites != {data["target_story"]}:

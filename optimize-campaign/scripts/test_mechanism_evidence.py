@@ -393,6 +393,14 @@ class MechanismEvidenceTest(unittest.TestCase):
                 "trace-attest", "--capture-summary", str(summary),
                 "--capture-id", "cap-1", "--target-story", "Nope", "--out", str(out)]))
 
+    def test_exclusive_above_scored_is_judged_per_block(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            raw_path = pathlib.Path(tmp) / "raw.json"; out = pathlib.Path(tmp) / "sizing.json"
+            raw_path.write_text(json.dumps(raw(tmp, cycles=(600000, 1100, 950), totals=(100000, 103000, 98000))))
+            self.assertEqual(1, evidence.main(["summarize", "--raw", str(raw_path), "--out", str(out)]))
+            raw_path.write_text(json.dumps(raw(tmp, cycles=(104000, 1100, 950), totals=(100000, 103000, 98000))))
+            self.assertEqual(0, evidence.main(["summarize", "--raw", str(raw_path), "--out", str(out)]))
+
     def test_sizing_is_computed_from_raw_avoidable_cycles(self):
         with tempfile.TemporaryDirectory() as tmp:
             raw_path = pathlib.Path(tmp) / "raw.json"

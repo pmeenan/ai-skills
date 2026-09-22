@@ -11184,6 +11184,34 @@ def cmd_note(args):
     return 0
 
 
+def cmd_retarget(args):
+    """Move a mechanism's target story to the story its causal budget names.
+    A discovery row is targeted at the story where the counter found it; the
+    oracle can bound the effect elsewhere (round 60: #322 counted on
+    CodeMirror, bounded on TipTap). The move is allowed only to a story the
+    opportunity's budget already names, and it is recorded."""
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    opp = ledger.opp(args.opp)
+    budget = opp.get("opportunity_budget") or {}
+    budget_stories = {
+        w.get("name") for w in (budget.get("workloads") or []) if isinstance(w, dict)
+    }
+    if args.story not in budget_stories:
+        raise CampaignError(
+            f"#{opp['id']} has no causal budget on {args.story!r} "
+            f"(budget stories: {sorted(s for s in budget_stories if s)})"
+        )
+    previous = opp.get("target_story")
+    opp["target_story"] = args.story
+    opp.setdefault("notes", []).append(
+        f"retarget {previous!r} -> {args.story!r}: {args.reason}"
+    )
+    ledger.record(opp, f"retarget {previous!r} -> {args.story!r}: {args.reason}")
+    ledger.save()
+    print(f"#{opp['id']} target story {previous!r} -> {args.story!r}")
+    return 0
+
+
 def cmd_checkpoint_targets(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     stories = landed_target_stories(ledger)
@@ -13580,6 +13608,15 @@ def build_parser():
     p.add_argument("--contradicts-prior-evidence", action="store_true")
     p.add_argument("--reason", default=None, help="New evidence justifying a terminal-path retry")
     p.set_defaults(func=cmd_reopen)
+
+    p = sub.add_parser(
+        "retarget",
+        help="Move a mechanism's target story to a story its causal budget names (recorded)",
+    )
+    p.add_argument("--opp", type=int, required=True)
+    p.add_argument("--story", required=True)
+    p.add_argument("--reason", required=True)
+    p.set_defaults(func=cmd_retarget)
 
     p = sub.add_parser("note", help="Append a note to an opportunity")
     p.add_argument("--opp", type=int, required=True)
