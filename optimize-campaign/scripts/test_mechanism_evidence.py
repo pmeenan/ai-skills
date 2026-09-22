@@ -430,6 +430,51 @@ class MechanismEvidenceTest(unittest.TestCase):
             self.assertGreater(result["exclusive_cycle_reduction_pct"], 40.0)
             self.assertAlmostEqual(0.0, result["total_scored_cycle_change_pct"])
 
+    def test_compare_records_each_arms_feature_activation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = pathlib.Path(tmp) / "baseline.json"
+            candidate = pathlib.Path(tmp) / "candidate.json"
+            out = pathlib.Path(tmp) / "candidate-evidence.json"
+            baseline.write_text(json.dumps(raw(tmp)))
+            candidate.write_text(json.dumps(raw(tmp, "candidate", (500, 500, 500))))
+            self.assertEqual(0, evidence.main([
+                "compare", "--kind", "candidate", "--baseline", str(baseline),
+                "--variant", str(candidate), "--out", str(out)
+            ]))
+            result = json.loads(out.read_text())
+            self.assertEqual("", result["feature_activation"])
+            self.assertEqual("", result["baseline_feature_activation"])
+
+    def test_ingest_records_feature_activation_and_rejects_a_mixed_arm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata = raw(tmp)
+            manifest_paths = [
+                pathlib.Path(ref["path"]) for ref in metadata["capture_manifests"]
+            ]
+            for field in ("blocks", "counter_logs", "capture_manifests", "ingested_by"):
+                metadata.pop(field)
+            metadata_path = pathlib.Path(tmp) / "metadata.json"
+            metadata_path.write_text(json.dumps(metadata))
+            out = pathlib.Path(tmp) / "raw-ingested.json"
+            argv = ["ingest", "--metadata", str(metadata_path), "--out", str(out)]
+            for path in manifest_paths:
+                argv += ["--capture-manifest", str(path)]
+            self.assertEqual(0, evidence.main(argv))
+            self.assertEqual("", json.loads(out.read_text())["feature_activation"])
+            for path in manifest_paths:
+                manifest = json.loads(path.read_text())
+                manifest["command"].append("--enable-features=CandidateFeature")
+                path.write_text(json.dumps(manifest))
+            self.assertEqual(0, evidence.main(argv))
+            self.assertEqual(
+                "--enable-features=CandidateFeature",
+                json.loads(out.read_text())["feature_activation"],
+            )
+            manifest = json.loads(manifest_paths[-1].read_text())
+            manifest["command"].pop()
+            manifest_paths[-1].write_text(json.dumps(manifest))
+            self.assertEqual(1, evidence.main(argv))
+
     def test_candidate_reports_moved_work_without_denominator_inflation(self):
         with tempfile.TemporaryDirectory() as tmp:
             baseline = pathlib.Path(tmp) / "baseline.json"

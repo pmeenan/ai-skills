@@ -1476,6 +1476,14 @@ def cmd_capture(args: argparse.Namespace) -> None:
     args.out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
 
+def feature_activation(command: list[str]) -> str:
+    """The feature flags one capture command activated, as one canonical string."""
+    return " ".join(
+        arg for arg in command
+        if arg.startswith(("--enable-features=", "--disable-features="))
+    )
+
+
 def cmd_ingest(args: argparse.Namespace) -> None:
     metadata = read_json(args.metadata)
     forbidden = {
@@ -1491,6 +1499,13 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         validate_capture_manifest(ref, metadata, index)
         for index, ref in enumerate(capture_refs, 1)
     ]
+    activations = {
+        feature_activation(manifest.get("command", [])) for manifest in manifests
+    }
+    if len(activations) != 1:
+        raise EvidenceError(
+            "feature activation must be constant across one arm's captures"
+        )
     log_refs = [manifest["counter_log"] for manifest in manifests]
     nonce_by_log = {
         str(pathlib.Path(manifest["counter_log"]["path"]).resolve()):
@@ -1507,6 +1522,7 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         "minimum_running_ratio": args.minimum_running_ratio,
         "capture_manifests": capture_refs,
         "counter_logs": log_refs,
+        "feature_activation": next(iter(activations)),
         "ingested_by": INGEST_RUNNER,
         "blocks": build_blocks_from_logs(
             log_refs,
@@ -1734,11 +1750,13 @@ def cmd_compare(args: argparse.Namespace) -> None:
         )
     def flags(data):
         commands = [read_json(pathlib.Path(ref["path"]))["command"] for ref in data.get("capture_manifests", [])]
-        states = {tuple(arg for arg in cmd if arg.startswith(("--enable-features=", "--disable-features="))) for cmd in commands}
+        states = {feature_activation(cmd) for cmd in commands}
         if len(states) != 1:
             raise EvidenceError("feature activation must be constant within each arm")
         return next(iter(states))
-    flag_toggle = flags(variant) != flags(baseline)
+    baseline_flags = flags(baseline)
+    variant_flags = flags(variant)
+    flag_toggle = variant_flags != baseline_flags
     if baseline["build"]["product_tree"] == variant["build"]["product_tree"]:
         if not flag_toggle:
             raise EvidenceError("baseline and variant are bound to the same product tree")
@@ -1793,6 +1811,8 @@ def cmd_compare(args: argparse.Namespace) -> None:
         **base_output(variant, [args.baseline, args.variant]),
         "phase": phase,
         "baseline_build": baseline["build"],
+        "feature_activation": variant_flags,
+        "baseline_feature_activation": baseline_flags,
         "n_paired_blocks": len(reductions),
         "story_repetition_groups_per_block": [len(row["groups"]) for row in base_blocks],
         "exclusive_cycle_reduction_pct": reduction,

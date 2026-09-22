@@ -350,3 +350,10 @@ shared lease for the complete sequence and emits ingested `raw-A.json` and
 rejects separate baseline/candidate batches even if their block IDs match.
 For distinct binaries, schedule the same actual interleaving with matching
 instrumentation and provenance; never rebuild or retune between arms.
+
+`ingest` records each arm's feature activation from the capture commands
+(`feature_activation`, constant within an arm) and `compare` carries both
+arms' activation into its output. The review gate accepts this flag twin:
+both arms bind the staged candidate product tree and the recorded activation
+differs. A same-tree baseline without a recorded flag difference is refused,
+as is a candidate arm bound to any tree but the staged one.

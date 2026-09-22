@@ -2468,12 +2468,26 @@ def verify_candidate_build_binding(opp, evidence, repo_root):
         raise CampaignError(
             "candidate evidence is not bound to the staged reviewed product tree"
         )
-    if baseline.get("product_tree") != base_tree:
+    candidate_flags = evidence.get("feature_activation")
+    baseline_flags = evidence.get("baseline_feature_activation")
+    # One symmetrically instrumented, feature-gated binary (capture-pairs):
+    # both arms bind the staged product tree and only the recorded feature
+    # activation differs. `compare` records each arm's activation from the
+    # capture commands themselves, so a missing record is not a flag twin.
+    flag_twin = (
+        candidate.get("product_tree") == baseline.get("product_tree")
+        and isinstance(candidate_flags, str)
+        and isinstance(baseline_flags, str)
+        and candidate_flags != baseline_flags
+    )
+    if not flag_twin and baseline.get("product_tree") != base_tree:
         raise CampaignError(
-            "baseline evidence is not bound to the review-base product tree"
+            "baseline evidence is not bound to the review-base product tree "
+            "(a same-tree baseline is accepted only as a flag twin whose "
+            "recorded feature activation differs from the candidate arm)"
         )
     feature_flag_twin = (
-        candidate.get("enable_features") != baseline.get("enable_features")
+        flag_twin
         or candidate.get("product_tree") != baseline.get("product_tree")
     )
     if not feature_flag_twin:

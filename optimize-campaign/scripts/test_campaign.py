@@ -1627,6 +1627,107 @@ class CampaignTest(unittest.TestCase):
             "--evidence", "late evidence"))
 
 
+class CandidateBuildBindingTest(unittest.TestCase):
+    """The review gate binds candidate evidence to the staged tree and the
+    baseline arm either to the review base or, for one symmetric feature-gated
+    binary, to the same staged tree with a recorded flag difference."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = pathlib.Path(self.tmp.name)
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        for key, value in (("user.email", "t@example.com"), ("user.name", "T")):
+            subprocess.run(
+                ["git", "-C", str(self.repo), "config", key, value], check=True
+            )
+        (self.repo / "engine.cc").write_text("int Work() { return 1; }\n")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "base")
+        self.base_tree = self.git("rev-parse", "HEAD^{tree}")
+        (self.repo / "engine.cc").write_text("int Work() { return 2; }\n")
+        self.git("add", "-A")
+        self.staged_tree = self.git("write-tree")
+        self.assertNotEqual(self.base_tree, self.staged_tree)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, *args):
+        return subprocess.run(
+            ["git", "-C", str(self.repo), *args],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    def case(self, baseline_tree, candidate_tree, baseline_flags, candidate_flags,
+             baseline_browser="browser-a", candidate_browser="browser-a"):
+        environment = {
+            "host_name": "perfbox", "host_boot_id": "boot", "kernel_release": "k",
+            "cpu_model": "cpu",
+        }
+        build_dir = self.repo / "out" / "perf"
+        opp = {
+            "review_tree": self.staged_tree,
+            "build_receipt": {
+                "command": ["autoninja", "-C", str(build_dir), "blink_unittests"],
+                "cwd": str(self.repo),
+                "capture_environment": environment,
+            },
+            "test_receipt": {
+                "executable": {"path": str(build_dir / "blink_unittests")},
+                "capture_environment": environment,
+            },
+        }
+        evidence = {
+            "build": {
+                "product_tree": candidate_tree, "browser_sha256": candidate_browser,
+                "executable_text_sha256": "text-" + candidate_browser, **environment,
+            },
+            "baseline_build": {
+                "product_tree": baseline_tree, "browser_sha256": baseline_browser,
+                "executable_text_sha256": "text-" + baseline_browser, **environment,
+            },
+        }
+        if baseline_flags is not None:
+            evidence["baseline_feature_activation"] = baseline_flags
+        if candidate_flags is not None:
+            evidence["feature_activation"] = candidate_flags
+        return opp, evidence
+
+    def test_distinct_binaries_bind_baseline_to_review_base(self):
+        opp, evidence = self.case(
+            self.base_tree, self.staged_tree, "", "",
+            baseline_browser="browser-a", candidate_browser="browser-b",
+        )
+        campaign.verify_candidate_build_binding(opp, evidence, self.repo)
+        opp, evidence = self.case(
+            self.base_tree, self.staged_tree, "", "",
+            baseline_browser="browser-a", candidate_browser="browser-a",
+        )
+        campaign.verify_candidate_build_binding(opp, evidence, self.repo)
+
+    def test_flag_twin_binds_both_arms_to_the_staged_tree(self):
+        opp, evidence = self.case(
+            self.staged_tree, self.staged_tree, "",
+            "--enable-features=CandidateFeature",
+        )
+        campaign.verify_candidate_build_binding(opp, evidence, self.repo)
+
+    def test_same_tree_baseline_without_flag_difference_is_rejected(self):
+        for baseline_flags, candidate_flags in (("", ""), (None, None), (None, "--enable-features=X")):
+            opp, evidence = self.case(
+                self.staged_tree, self.staged_tree, baseline_flags, candidate_flags
+            )
+            with self.assertRaisesRegex(campaign.CampaignError, "review-base product tree"):
+                campaign.verify_candidate_build_binding(opp, evidence, self.repo)
+
+    def test_candidate_must_bind_the_staged_tree(self):
+        opp, evidence = self.case(
+            self.base_tree, self.base_tree, "", "--enable-features=X"
+        )
+        with self.assertRaisesRegex(campaign.CampaignError, "staged reviewed product tree"):
+            campaign.verify_candidate_build_binding(opp, evidence, self.repo)
+
+
 class EnforcementRegressionTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
