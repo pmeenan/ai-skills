@@ -32,7 +32,7 @@ preamble, so its rules travel with every section.
 | Subagent Brief — Verification Skeptic | subagent-brief-verification-skeptic.md | 50 |
 | verification/ — Batches And Skeptic Verdict Rows | verification-batches-and-skeptic-verdict-rows.md | 192 |
 | verification/affinity.md — Invariant Affinity And Consistency Audit | verification-affinity-md-invariant-affinity-and-consistency-audit.md | 40 |
-| root-cause/ — Plan, Root-Cause Rows, And Reopened Rows | root-cause-plan-root-cause-rows-and-reopened-rows.md | 160 |
+| root-cause/ — Plan, Root-Cause Rows, And Reopened Rows | root-cause-plan-root-cause-rows-and-reopened-rows.md | 168 |
 | reconciliation.md — Reconciliation Table And Pre-Output Gate | reconciliation-md-reconciliation-table-and-pre-output-gate.md | 100 |
 | synthesis/ — Bounded Index And Evidence Cards | synthesis-bounded-index-and-evidence-cards.md | 53 |
 | Exact Output Fragments, draft-parts/, And draft-assembly/ | exact-output-fragments-draft-parts-and-draft-assembly.md | 102 |

@@ -43,9 +43,11 @@ to recheck this card's quoted line/location. Input must be at most
 profile.json:/context_budget/evidence_card_budget_bytes; an
 oversized card is returned for splitting.
 
-Procedure: read, under ⟨skill-dir⟩/references/worker/synthesis-and-output/,
-the files finding-format.md, severity-calibration.md, output-format.md, and
-tone.md, plus
+Procedure: read these exact reference files:
+⟨skill-dir⟩/references/worker/synthesis-and-output/finding-format.md
+⟨skill-dir⟩/references/worker/synthesis-and-output/severity-calibration.md
+⟨skill-dir⟩/references/worker/synthesis-and-output/output-format.md
+⟨skill-dir⟩/references/worker/synthesis-and-output/tone.md
 ⟨skill-dir⟩/references/worker/verification-and-fixes/verdict-alignment-and-gerrit-output-rules.md. Draft the
 finding or question exactly from the reconciled evidence; do not re-adjudicate.
 Include the exact `Synthesis item: ⟨card-ID⟩` field and internal source-row

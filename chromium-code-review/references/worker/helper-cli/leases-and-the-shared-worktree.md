@@ -30,29 +30,34 @@ Throughout, `<skill-dir>` means the sealed snapshot at
 ## Leases and the shared worktree
 
 ```
-worktree-lease.py acquire        --review-dir DIR --holder KEY [--stale-seconds N] [--force] <lease>
+worktree-lease.py acquire        --review-dir DIR --holder KEY [--stale-seconds N] [--force] <lease-dir>
 worktree-lease.py heartbeat      [--stale-seconds N] <review-dir> <message>
 worktree-lease.py check          [--stale-seconds N] <review-dir>
 worktree-lease.py holder-of      [--stale-seconds N] <review-dir>
-worktree-lease.py holders        [--stale-seconds N] <lease>
+worktree-lease.py holders        [--stale-seconds N] <lease-dir>
 worktree-lease.py release        <review-dir> [message]
-worktree-lease.py release-token  <lease> <token> [message]
-worktree-lease.py write-state    <review-dir> <lease> <token> <holder>
+worktree-lease.py release-token  <lease-dir-or-log> <token> [message]
+worktree-lease.py write-state    <review-dir> <lease-log> <token> <holder>
 worktree-lease.py validate-state <review-dir>
 worktree-lease.py gc             --repo REPO --worktree-root ROOT --exclude EXCLUDE [--stale-seconds N]
 ```
 
-`<lease>` is the **pin lock directory**, not a review directory:
+`<lease-dir>` is the **pin lock directory**, not a review directory:
 
 ```
 <src-parent>/codereview/locks/cl-<CL>-ps<PS>/
 ```
 
 with `<src-parent>` the parent of `CHROMIUM_SRC`. That directory holds one
-append-only JSON-lines progress log per holder, `<holder>.log`, `pin.md`
-recording the initial pin, and mutable `lease-state.json` recording the
-authenticated current log path plus an unguessable owner token. The mutable
-state is operational metadata and is never a sealed worker input.
+append-only JSON-lines progress log per holder, `<holder>.log`.
+`write-state` requires that **holder log file** as `<lease-log>`:
+`<lease-dir>/<holder>.log`, using the holder passed to `acquire` and the token it returns. Passing the pin lock directory to `write-state` is invalid.
+`release-token` accepts either the pin lock directory or the holder log file.
+
+The review directory contains `pin.md` recording the initial pin and mutable
+`lease-state.json` recording the authenticated current log path plus an
+unguessable owner token. The mutable state is operational metadata and is
+never a sealed worker input.
 
 Staleness defaults to `CHROMIUM_REVIEW_LEASE_SECONDS` or 10800 s (three
 hours), chosen to exceed observed worker latency — mean 49 minutes, maximum 79

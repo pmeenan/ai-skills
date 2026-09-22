@@ -60,6 +60,15 @@ TERMINAL_STATES = frozenset({"complete", "terminated"})
 # by seal-work-unit.py and references come from the sealed skill snapshot.
 # Restamping either would forge the seal instead of detecting drift.
 SEALED_ROLES = frozenset({"brief", "reference"})
+DETERMINISTIC_INDEX_NAMES = {
+    "inventory.tsv",
+    "topology.tsv",
+    "specialist-priors.tsv",
+    "candidates.tsv",
+    "verdicts.tsv",
+    "reconciliation.tsv",
+    "manifest.json",
+}
 JOURNAL = ".work-unit-seal-transaction.json"
 GUARD_TIMEOUT_ENV = "CHROMIUM_REVIEW_GUARD_SECONDS"
 

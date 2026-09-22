@@ -162,7 +162,7 @@ the gate.
 | `cannot verify pinned worktree: <err>` | `git` failed inside the worktree. | Re-materialize with `fetch-cl.sh`. | validate-review-dir.py:853 |
 | `pin.md is missing '- Worktree:'` | No worktree line. | Regenerate `pin.md` with `fetch-cl.sh`. | validate-review-dir.py:855 |
 | `pin.md must contain both Worktree lease and Worktree lease token` | Only one of the two lease lines is present. | Re-acquire: `worktree-lease.py acquire <LEASE_DIR> --review-dir <REVIEW_DIR> --holder <KEY>`, then re-run `fetch-cl.sh` to rewrite `pin.md`. | validate-review-dir.py:860 |
-| `pin.md requires authenticated lease-state.json, but it is absent` | `pin.md` advertises a lease but `lease-state.json` is missing. | Run `worktree-lease.py write-state <REVIEW_DIR> <LEASE_DIR> <TOKEN> <HOLDER>`. | validate-review-dir.py:865 |
+| `pin.md requires authenticated lease-state.json, but it is absent` | `pin.md` advertises a lease but `lease-state.json` is missing. | Run `worktree-lease.py write-state <REVIEW_DIR> <LEASE_DIR>/<HOLDER>.log <TOKEN> <HOLDER>`. | validate-review-dir.py:865 |
 | `cannot validate authenticated mutable lease state: <err>` | `worktree-lease.py validate-state` could not run. | Run `worktree-lease.py validate-state <REVIEW_DIR>` directly. | validate-review-dir.py:872 |
 | `mutable lease state validation failed: <detail>` | `lease-state.json` does not authenticate against this review/pin. | See §7; usually re-run `worktree-lease.py write-state ...` with the real token. | validate-review-dir.py:877 |
 | `active worktree lease is required but absent from pin.md` | `--require-active-lease` was passed but `pin.md` has no lease. | Acquire a lease first, or drop `--require-active-lease`. | validate-review-dir.py:880 |
@@ -780,12 +780,12 @@ Default stale window is 3600s (`DEFAULT_STALE_SECONDS`, overridable with
 | `lease is absent; reacquire before continuing: <path>` | The lease directory is gone. | Run `worktree-lease.py acquire ...`. | worktree-lease.py:598 |
 | `lease was replaced by another review: <path>` | Token mismatch during heartbeat. | Stop; another review owns the pin. | worktree-lease.py:601 |
 | `active lease is absent: <path>` | `check` found no active lease. | Re-acquire. | worktree-lease.py:649 |
-| `lease token does not match this review: <path>` | `lease-state.json` token disagrees with the active lease. | Re-acquire, then `worktree-lease.py write-state <REVIEW_DIR> <LEASE_DIR> <TOKEN> <HOLDER>`. | worktree-lease.py:652 |
+| `lease token does not match this review: <path>` | `lease-state.json` token disagrees with the active lease. | Re-acquire, then `worktree-lease.py write-state <REVIEW_DIR> <LEASE_DIR>/<HOLDER>.log <TOKEN> <HOLDER>`. | worktree-lease.py:652 |
 | `lease is already absent: <path>` | `release` on a released lease. | Nothing; this is idempotent noise. | worktree-lease.py:615 |
 | `refusing to release another review's lease: <path>` | Release attempted from the wrong review. | Release from the owning review directory only. | worktree-lease.py:618 |
 | `active lease path still exists after release: <path>` | Release did not take effect (usually a read-only filesystem). | Move the review directory to local disk (see §8) and retry. | worktree-lease.py:622 |
 | `release archive was not created: <path>` | Archive write failed. | Check write permissions on the lease directory. | worktree-lease.py:624 |
-| `required authenticated lease state is absent: <path>` | No `lease-state.json`. | Run `worktree-lease.py write-state <REVIEW_DIR> <LEASE_DIR> <TOKEN> <HOLDER>`. | worktree-lease.py:367 |
+| `required authenticated lease state is absent: <path>` | No `lease-state.json`. | Run `worktree-lease.py write-state <REVIEW_DIR> <LEASE_DIR>/<HOLDER>.log <TOKEN> <HOLDER>`. | worktree-lease.py:367 |
 | `cannot read authenticated lease state <path>: <err>` | Unreadable/corrupt JSON. | Delete `lease-state.json` and re-run `write-state`. | worktree-lease.py:372 |
 | `<path> has an unsupported lease-state schema` | Old-format state file. | Delete it and re-run `write-state`. | worktree-lease.py:374 |
 | `<path> <field> does not authenticate against this review/pin: <a> != <b>` | The state file belongs to a different review or pin. | Re-run `write-state` from the correct review directory. | worktree-lease.py:385 |
@@ -794,7 +794,7 @@ Default stale window is 3600s (`DEFAULT_STALE_SECONDS`, overridable with
 | `<path> lease_log is not the authenticated holder/pin path` | `lease_log` points elsewhere. | Re-run `write-state`. | worktree-lease.py:406 |
 | `<path> has no valid lease token` | Token missing. | Re-run `write-state` with the token printed by `acquire`. | worktree-lease.py:408 |
 | `lease state token must be 32 lowercase hexadecimal characters` | Malformed token argument. | Pass the exact token from `acquire`; do not retype it. | worktree-lease.py:429 |
-| `lease state path does not match the requested holder and pin` | Mismatched `write-state` arguments. | Pass the same `<LEASE_DIR>`, token, and holder that `acquire` used. | worktree-lease.py:439 |
+| `lease state path does not match the requested holder and pin` | Mismatched `write-state` arguments. | Pass the holder log file `<LEASE_DIR>/<HOLDER>.log`, not the directory passed to `acquire`; use the same holder and the token returned by `acquire`. | worktree-lease.py:439 |
 | `cannot authenticate absent active lease: <path>` | No active lease to authenticate. | Re-acquire first. | worktree-lease.py:444 |
 | `lease token does not own <path>` | Wrong token. | Use the token from the current `acquire`. | worktree-lease.py:447 |
 | `lease <path> belongs to another review directory` | Cross-review token use. | Use the lease that belongs to this review. | worktree-lease.py:449 |

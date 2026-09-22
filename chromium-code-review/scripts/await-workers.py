@@ -18,7 +18,10 @@ artifact contents.
       [--no-transition] [--quiet]
 
 A unit is satisfied when its `artifact` column names a file that exists, is
-non-empty, and (unless --no-validate) passes validate-worker-artifact.py. The
+non-empty, and (unless --no-validate) passes validate-worker-artifact.py.
+A continuation with an artifact prestate must also preserve its authenticated
+prefix and append new bytes. An unchanged artifact never proves completion;
+a no-op worker must append an explicit completion attestation. The
 validator runs at most once per (path, mtime, size), so a slow validator is
 not re-run on every poll. Satisfied units move to `complete` and get a
 `collected` progress.md event unless --no-transition; units whose artifact the
@@ -39,6 +42,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -47,6 +51,9 @@ import time
 
 from orchestration_state import (
     SCRIPTS,
+    INPUT_COLUMNS,
+    digest,
+    read_rows,
     fail,
     heartbeat,
     log_progress,
@@ -72,6 +79,9 @@ class Unit:
     detail: str = ""
     elapsed: float = 0.0
     notes: list[str] = field(default_factory=list)
+    brief: Path | None = None
+    prestate: tuple[int, str] | None = None
+    prestate_error: str = ""
 
     @property
     def name(self) -> str:
@@ -131,9 +141,38 @@ def resolve(rows: list[dict[str, str]], specs: list[str]) -> list[Unit]:
             )
         units.append(Unit(
             work_id=row["work_id"], attempt=int(row["attempt"]),
-            artifact=artifact, entry_state=row["state"],
+            artifact=artifact, entry_state=row["state"], brief=Path(row["brief"]),
         ))
     return units
+
+
+def bind_prestates(root: Path, units: list[Unit]) -> None:
+    """Capture each sealed continuation baseline once, before polling."""
+    rows = read_rows(root / "input-manifest.tsv", INPUT_COLUMNS)
+    for unit in units:
+        assigned = [row for row in rows if row["work_id"] == unit.work_id
+                    and row["attempt"] == str(unit.attempt)]
+        prestates = [row for row in assigned if row["role"] == "prestate"
+                    and Path(row["input_path"]).resolve() == unit.artifact.resolve()]
+        if not prestates:
+            continue
+        self_rows = [row for row in assigned if row["role"] == "brief"
+                     and row["input_path"] == row["brief"] == str(unit.brief)]
+        try:
+            if len(prestates) != 1 or len(self_rows) != 1:
+                raise ValueError("requires exactly one artifact prestate and self brief row")
+            prestate, self_row = prestates[0], self_rows[0]
+            if prestate["brief"] != str(unit.brief):
+                raise ValueError("prestate belongs to a different brief")
+            payload = unit.brief.read_bytes()
+            if self_row["bytes"] != str(len(payload)) or self_row["sha256"] != digest(payload):
+                raise ValueError("self brief seal is stale")
+            size = int(prestate["bytes"])
+            if size < 0 or re.fullmatch(r"[0-9a-f]{64}", prestate["sha256"]) is None:
+                raise ValueError("prestate size/hash is invalid")
+            unit.prestate = (size, prestate["sha256"])
+        except (OSError, ValueError) as error:
+            unit.prestate_error = f"cannot authenticate continuation prestate: {error}"
 
 
 def validator_command() -> list[str]:
@@ -198,6 +237,9 @@ def finish(root: Path, unit: Unit, state: str, detail: str, elapsed: float,
 def poll_unit(root: Path, unit: Unit, memo: dict, do_validate: bool,
               elapsed: float, transition: bool) -> bool:
     """Return True when the unit is finished (satisfied or needs-repair)."""
+    if unit.prestate_error:
+        finish(root, unit, "needs-repair", unit.prestate_error, elapsed, transition)
+        return True
     try:
         stat = unit.artifact.stat()
     except FileNotFoundError:
@@ -206,6 +248,20 @@ def poll_unit(root: Path, unit: Unit, memo: dict, do_validate: bool,
     except OSError as error:
         unit.detail = f"cannot stat {unit.artifact}: {error}"
         return False
+    if unit.prestate is not None:
+        size, expected_hash = unit.prestate
+        try:
+            payload = unit.artifact.read_bytes()
+        except OSError as error:
+            unit.detail = f"cannot read continuation artifact: {error}"
+            return False
+        if len(payload) < size or digest(payload[:size]) != expected_hash:
+            finish(root, unit, "needs-repair", "continuation rewrote its sealed prestate prefix",
+                   elapsed, transition)
+            return True
+        if len(payload) == size:
+            unit.detail = "unchanged prestate; waiting for appended work or completion attestation"
+            return False
     if stat.st_size == 0:
         unit.detail = f"artifact is empty: {unit.artifact}"
         return False
@@ -258,6 +314,7 @@ def main() -> int:
         print("await-workers.py: nothing outstanding")
         return 0
 
+    bind_prestates(root, units)
     transition = not arguments.no_transition
     names = ", ".join(unit.name for unit in units)
     note = arguments.heartbeat or f"awaiting {len(units)} unit(s): {names}"[:200]

@@ -86,17 +86,17 @@ pointer; spawn the Challenge Collector wrapper brief only when the helper
 cannot execute. A missing shard is an incomplete round (nonzero exit), never
 a pass.
 
-If a shard is missing, repair it. If any issue exists, revise through the same
-bounded topology as Phase 7: use a targeted Draft Writer only when the complete
-input remains within its bounds; otherwise rerun only affected Finding Writers
-or the Frame Writer and reassemble. Then plan and run a new complete challenge
-round against the revised artifacts. A revision never inherits an earlier pass.
+If a shard is missing, repair it. Classify each issue as substantive or
+clerical before acting. Clerical issues are repaired and recorded by the
+challenge collector without a redraft or new round. Substantive issues may
+trigger a targeted Draft Writer, or the affected Finding Writers / Frame
+Writer and reassembly, followed by a second complete challenge round.
 
-Allow at most three content-revision cycles. If substantive disputes remain,
-preserve them in the immutable round, make one disclosure-only draft revision,
-and run a final challenger limited to proving that each dispute is accurately
-disclosed and the verdict/gate reflects it. Delivery requires this final
-disclosure challenge to pass; it does not declare the disputes resolved.
+Run at most two challenge rounds, or one when there are no promoted findings
+or `topology.max_challenge_rounds` is 1. If round two still reports substantive
+issues, record them as disclosed open questions in Verification Notes and
+deliver. Do not open a third round or an extra disclosure-only challenge;
+disclosure does not declare the disputes resolved.
 
 ## Phase 9 — Delivery
 

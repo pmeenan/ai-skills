@@ -47,6 +47,14 @@ transitions satisfied units to `complete`, and appends the `collected` event to
 `progress.md`. A heartbeat failure is reported in the summary and never aborts
 the wait. It prints one line per unit, never artifact contents.
 
+For a continuation whose manifest has a `prestate` row for its canonical
+artifact, the watcher authenticates the brief and requires an unchanged
+prestate prefix plus appended bytes before collection, even with
+`--no-validate`. An unchanged valid artifact remains outstanding; a rewritten
+prefix becomes `needs-repair`. A legitimate no-op worker must append a brief
+completion attestation naming its work ID and attempt, rather than relying
+on the prior artifact's existence. Artifact validation still applies.
+
 | Exit | Meaning | Do next |
 | --- | --- | --- |
 | 0 | every unit satisfied | proceed to the next phase |

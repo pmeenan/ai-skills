@@ -152,16 +152,12 @@ def validate_budget(root: Path, tier: str,
         context = profile.get("context_budget", {})
     except (OSError, json.JSONDecodeError) as error:
         fail(f"cannot read {profile_path}: {error}")
-    unique = {path: len(payload) for _, path, payload in inputs}
+    from input_accounting import executable_only, effective_input_limit
+    brief = next((path for role, path, _ in inputs if role == "brief"), Path())
+    unique = {path: len(payload) for role, path, payload in inputs
+              if not executable_only(root, path, brief, role, len(payload), digest(payload))}
     total = sum(unique.values())
-    limits = []
-    global_limit = context.get("worker_input_budget_bytes")
-    tier_limit = context.get("tier_worker_input_budget_bytes", {}).get(tier)
-    limit = None
-    if isinstance(tier_limit, int):
-        limit = tier_limit
-    elif isinstance(global_limit, int):
-        limit = global_limit
+    limit = effective_input_limit(context, tier)
     if limit is not None and total > limit:
         fail(f"work unit inputs exceed budget ({total} > {limit} bytes)")
     candidate_limit = context.get("candidate_packet_budget_bytes")

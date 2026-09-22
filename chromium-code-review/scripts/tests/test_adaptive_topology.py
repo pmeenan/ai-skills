@@ -455,3 +455,26 @@ class AdaptiveTopologyPlanTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChallengeTierContractTests(unittest.TestCase):
+    def test_standard_planner_and_frontier_numbered_workers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def check(work_id, tier):
+                row = dict(phase="8", work_id=work_id, attempt="1", state="complete",
+                           tier=tier, task_id="-", brief="-", artifact="-",
+                           remaining_scope="-", depends_on="-")
+                with (root / "orchestration.tsv").open("w") as stream:
+                    writer = csv.DictWriter(stream, fieldnames=VALIDATOR.MANIFEST_COLUMNS, delimiter="\t")
+                    writer.writeheader()
+                    writer.writerow(row)
+                report = VALIDATOR.Report()
+                VALIDATOR.validate_manifest(root, report, False, {})
+                return report.errors
+            self.assertEqual([], check("CHPLAN", "standard"))
+            self.assertEqual([], check("CHPLAN2", "standard"))
+            self.assertEqual([], check("CH001", "frontier"))
+            for worker in ("CH001", "CH012", "V001", "RC001"):
+                self.assertTrue(any("frontier-contract kind" in error
+                                    for error in check(worker, "standard")), worker)

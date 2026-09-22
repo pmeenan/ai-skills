@@ -10,7 +10,7 @@ preamble, so its rules travel with every section.
 
 | section | file | source lines |
 | --- | --- | --- |
-| Common Header | common-header.md | 108 |
+| Common Header | common-header.md | 111 |
 | Adaptive Topology Preflight (mechanical) | adaptive-topology-preflight-mechanical.md | 25 |
 | Brief — Context (Phase 1, always separate from inventory when spawned) | brief-context-phase-1-always-separate-from-inventory-when-spawned.md | 34 |
 | Brief — Inventory (Phase 1, unsharded) | brief-inventory-phase-1-unsharded.md | 46 |
@@ -22,11 +22,11 @@ preamble, so its rules travel with every section.
 | Brief — Collection Audit (Phase 4.5) | brief-collection-audit-phase-4-5.md | 59 |
 | Brief — Collection-Audit Shard (Phase 4.5, when indexed) | brief-collection-audit-shard-phase-4-5-when-indexed.md | 25 |
 | Brief — Collection Exact-Coverage Collector (Phase 4.5, sharded) | brief-collection-exact-coverage-collector-phase-4-5-sharded.md | 37 |
-| Brief — Verification Planner (Phase 5) | brief-verification-planner-phase-5.md | 79 |
+| Brief — Verification Planner (Phase 5) | brief-verification-planner-phase-5.md | 81 |
 | Brief — Verification-Planning Shard (Phase 5, VPLAN⟨shard⟩) | brief-verification-planning-shard-phase-5-vplan-shard.md | 37 |
 | Brief — Verification-Plan Exact Collector (Phase 5) | brief-verification-plan-exact-collector-phase-5.md | 29 |
 | Brief — Invariant Affinity Reconciler (Phase 5.25) | brief-invariant-affinity-reconciler-phase-5-25.md | 37 |
-| Brief — Root-Cause Planner (Phase 5.5) | brief-root-cause-planner-phase-5-5.md | 49 |
+| Brief — Root-Cause Planner (Phase 5.5) | brief-root-cause-planner-phase-5-5.md | 51 |
 | Brief — Root-Cause-Planning Shard (Phase 5.5, RCPLAN⟨shard⟩) | brief-root-cause-planning-shard-phase-5-5-rcplan-shard.md | 39 |
 | Brief — Root-Cause-Plan Exact Collector (Phase 5.5) | brief-root-cause-plan-exact-collector-phase-5-5.md | 29 |
 | Brief — Root-Cause Challenger (Phase 5.5, one per batch) | brief-root-cause-challenger-phase-5-5-one-per-batch.md | 52 |
@@ -34,7 +34,7 @@ preamble, so its rules travel with every section.
 | Brief — Reconciliation Shard (Phase 6, when indexed) | brief-reconciliation-shard-phase-6-when-indexed.md | 33 |
 | Brief — Reconciliation Exact-Coverage Collector (Phase 6, sharded) | brief-reconciliation-exact-coverage-collector-phase-6-sharded.md | 28 |
 | Brief — Draft Writer (Phase 7, only when bounded) | brief-draft-writer-phase-7-only-when-bounded.md | 60 |
-| Brief — Finding Writer (Phase 7, large reviews, one per card) | brief-finding-writer-phase-7-large-reviews-one-per-card.md | 36 |
+| Brief — Finding Writer (Phase 7, large reviews, one per card) | brief-finding-writer-phase-7-large-reviews-one-per-card.md | 38 |
 | Brief — Frame Writer (Phase 7, large reviews) | brief-frame-writer-phase-7-large-reviews.md | 22 |
 | Brief — Draft Assembly (Phase 7, large reviews, one per assembly node) | brief-draft-assembly-phase-7-large-reviews-one-per-assembly-node.md | 37 |
 | Brief — Synthesis Challenge Planner (Phase 8) | brief-synthesis-challenge-planner-phase-8.md | 45 |

@@ -28,6 +28,7 @@ from pathlib import Path
 
 from orchestration_state import (
     INPUT_COLUMNS,
+    DETERMINISTIC_INDEX_NAMES,
     ORCHESTRATION_COLUMNS,
     SEALED_ROLES,
     commit,
@@ -115,6 +116,9 @@ def main() -> int:
                 "matching --role"
             )
 
+        orchestration = read_rows(root / "orchestration.tsv", ORCHESTRATION_COLUMNS)
+        completed = any((row["work_id"], row["attempt"]) == key
+                        and row["state"] == "complete" for row in orchestration)
         changes = 0
         for row in selected:
             input_path = Path(row["input_path"])
@@ -123,6 +127,14 @@ def main() -> int:
                     f"manifest input no longer exists: {input_path}; restore "
                     "the file or reseal the attempt without it"
                 )
+            if (completed and input_path.parent.resolve() == (root / "indexes").resolve()
+                    and input_path.name in DETERMINISTIC_INDEX_NAMES):
+                # The gate authenticates historical index rows against the
+                # sealed brief and freshly reproduced current indexes. Keep
+                # the consumed size/hash, rather than retroactively charging
+                # growth after this attempt completed.
+                print(f"preserved historical {row['role']} {input_path} {row['bytes']} bytes")
+                continue
             try:
                 payload = input_path.read_bytes()
             except OSError as error:

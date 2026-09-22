@@ -68,6 +68,15 @@ of them take the same `fcntl.flock` guard on `<review-dir>/.orchestration.lock`
 `.work-unit-seal-transaction.json`, so an interrupted mutation is healed by the
 next one rather than leaving a torn file.
 
+Input budgets count read context, not authenticated executable implementation
+bytes: an `assigned` direct child of a read-only snapshot's `scripts/` directory
+is excluded only when executable, its actual size/hash matches both the input
+row and the immutable snapshot manifest, and the brief explicitly forbids
+reading helper script source. Arbitrary code, references, writable copies,
+and script tests remain charged. Integrity checks still apply to excluded
+tools. Sealing and validation both use the smaller global/tier limit, with
+128 KiB for an unreported concrete tier's capacity.
+
 ## Waiting for workers
 
 ```
@@ -87,6 +96,14 @@ While it waits it heartbeats the lease, stats each unit's `artifact`, runs
 transitions satisfied units to `complete`, and appends the `collected` event to
 `progress.md`. A heartbeat failure is reported in the summary and never aborts
 the wait. It prints one line per unit, never artifact contents.
+
+For a continuation whose manifest has a `prestate` row for its canonical
+artifact, the watcher authenticates the brief and requires an unchanged
+prestate prefix plus appended bytes before collection, even with
+`--no-validate`. An unchanged valid artifact remains outstanding; a rewritten
+prefix becomes `needs-repair`. A legitimate no-op worker must append a brief
+completion attestation naming its work ID and attempt, rather than relying
+on the prior artifact's existence. Artifact validation still applies.
 
 | Exit | Meaning | Do next |
 | --- | --- | --- |
@@ -115,6 +132,23 @@ of `complete` or `terminated` require `--force`. `--log` also appends the
 matching `progress.md` event (`complete` → `collected`, `running` → `spawned`,
 otherwise `note`) and heartbeats the lease.
 
+## Authenticated output history
+
+```
+archive-output-version.py <review-dir> <absolute-output-path> <historical-bytes-file>
+```
+
+Before revising a collected `draft-parts`, `gerrit-parts`, or `output-coverage`
+file, archive its old bytes with this helper (the current file itself may be
+the historical-bytes input). The bytes must exactly match an existing input
+manifest binding for that path. Archives are read-only, content-addressed
+files under `output-history/`; an already revised version can be restored
+there only when its recovered bytes match the original recorded size/hash.
+The gate may authenticate historical input/prestate rows against this archive
+without rehashing those old rows. Current output coverage and validation still
+check the current files. This exception never applies to ledgers or other
+append-only artifacts.
+
 ## Restamping prestate rows
 
 ```
@@ -130,6 +164,13 @@ instead. `--dry-run` reports the old→new deltas and changes nothing.
 
 Use this instead of a hand-written `hashlib` snippet whenever a prestate input
 grows between attempts and the gate reports a byte-count mismatch.
+
+Completed attempts retain their original deterministic-index manifest rows
+when refreshed: regenerated indexes must pass the gate's current-index check,
+while the old size remains the historical input-budget charge. Refreshing
+other mutable inputs still records their current size; it cannot recover
+original sizes already overwritten by an earlier refresh. Such historical
+procedure defects require an authenticated procedural-repair continuation.
 
 ## Sealing a work unit
 
@@ -229,29 +270,34 @@ post-mortem validation after release.
 ## Leases and the shared worktree
 
 ```
-worktree-lease.py acquire        --review-dir DIR --holder KEY [--stale-seconds N] [--force] <lease>
+worktree-lease.py acquire        --review-dir DIR --holder KEY [--stale-seconds N] [--force] <lease-dir>
 worktree-lease.py heartbeat      [--stale-seconds N] <review-dir> <message>
 worktree-lease.py check          [--stale-seconds N] <review-dir>
 worktree-lease.py holder-of      [--stale-seconds N] <review-dir>
-worktree-lease.py holders        [--stale-seconds N] <lease>
+worktree-lease.py holders        [--stale-seconds N] <lease-dir>
 worktree-lease.py release        <review-dir> [message]
-worktree-lease.py release-token  <lease> <token> [message]
-worktree-lease.py write-state    <review-dir> <lease> <token> <holder>
+worktree-lease.py release-token  <lease-dir-or-log> <token> [message]
+worktree-lease.py write-state    <review-dir> <lease-log> <token> <holder>
 worktree-lease.py validate-state <review-dir>
 worktree-lease.py gc             --repo REPO --worktree-root ROOT --exclude EXCLUDE [--stale-seconds N]
 ```
 
-`<lease>` is the **pin lock directory**, not a review directory:
+`<lease-dir>` is the **pin lock directory**, not a review directory:
 
 ```
 <src-parent>/codereview/locks/cl-<CL>-ps<PS>/
 ```
 
 with `<src-parent>` the parent of `CHROMIUM_SRC`. That directory holds one
-append-only JSON-lines progress log per holder, `<holder>.log`, `pin.md`
-recording the initial pin, and mutable `lease-state.json` recording the
-authenticated current log path plus an unguessable owner token. The mutable
-state is operational metadata and is never a sealed worker input.
+append-only JSON-lines progress log per holder, `<holder>.log`.
+`write-state` requires that **holder log file** as `<lease-log>`:
+`<lease-dir>/<holder>.log`, using the holder passed to `acquire` and the token it returns. Passing the pin lock directory to `write-state` is invalid.
+`release-token` accepts either the pin lock directory or the holder log file.
+
+The review directory contains `pin.md` recording the initial pin and mutable
+`lease-state.json` recording the authenticated current log path plus an
+unguessable owner token. The mutable state is operational metadata and is
+never a sealed worker input.
 
 Staleness defaults to `CHROMIUM_REVIEW_LEASE_SECONDS` or 10800 s (three
 hours), chosen to exceed observed worker latency — mean 49 minutes, maximum 79

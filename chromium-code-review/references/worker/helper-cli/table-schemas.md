@@ -48,3 +48,12 @@ of them take the same `fcntl.flock` guard on `<review-dir>/.orchestration.lock`
 (timeout `CHROMIUM_REVIEW_GUARD_SECONDS`, default 30) and journal through
 `.work-unit-seal-transaction.json`, so an interrupted mutation is healed by the
 next one rather than leaving a torn file.
+
+Input budgets count read context, not authenticated executable implementation
+bytes: an `assigned` direct child of a read-only snapshot's `scripts/` directory
+is excluded only when executable, its actual size/hash matches both the input
+row and the immutable snapshot manifest, and the brief explicitly forbids
+reading helper script source. Arbitrary code, references, writable copies,
+and script tests remain charged. Integrity checks still apply to excluded
+tools. Sealing and validation both use the smaller global/tier limit, with
+128 KiB for an unreported concrete tier's capacity.

@@ -392,11 +392,11 @@ review:
   review's Verification Notes.
 
 Scale this pass by evidence cards rather than by ingesting the entire record.
-The Challenge Planner assigns no more than six finding/question cards to a
-content shard and no more than 200 reconciliation rows to a structural shard,
-reducing either count whenever the assigned artifacts would exceed 35% of a
-known context window or the 128 KiB unknown-capacity fallback. Every item/row
-appears in exactly one shard.
+The Challenge Planner sizes content and structural shards by their actual
+assigned input bytes. Six finding/question cards and 200 reconciliation rows
+are starting heuristics, not hard caps. Each shard must fit 35% of a known
+context window or the 128 KiB unknown-capacity fallback, subject to its
+resolved tier's input budget. Every item/row appears in exactly one shard.
 
 For a large draft, challengers consume immutable indexed draft/Gerrit sections,
 not the whole assembled output. Content shards read only assigned sections,

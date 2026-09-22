@@ -27,25 +27,19 @@ Throughout, `<skill-dir>` means the sealed snapshot at
 `<review-dir>/skill-snapshot`, not the canonical checkout, from the moment
 `snapshot-skill.py` has run.
 
-## Restamping prestate rows
+## Authenticated output history
 
 ```
-refresh-manifest.py [-h] [--role ROLE] [--dry-run] review_dir work_id attempt
+archive-output-version.py <review-dir> <absolute-output-path> <historical-bytes-file>
 ```
 
-Recomputes `bytes` and `sha256` for that attempt's manifest rows. `--role` is
-repeatable and defaults to `prestate`. Restampable roles: `assigned`,
-`candidate-packet`, `card`, `control`, `frame`, `prestate`, `section`.
-`brief` and `reference` are refused unconditionally — they are sealed
-integrity anchors, and rehashing one would defeat the seal; reseal the attempt
-instead. `--dry-run` reports the old→new deltas and changes nothing.
-
-Use this instead of a hand-written `hashlib` snippet whenever a prestate input
-grows between attempts and the gate reports a byte-count mismatch.
-
-Completed attempts retain their original deterministic-index manifest rows
-when refreshed: regenerated indexes must pass the gate's current-index check,
-while the old size remains the historical input-budget charge. Refreshing
-other mutable inputs still records their current size; it cannot recover
-original sizes already overwritten by an earlier refresh. Such historical
-procedure defects require an authenticated procedural-repair continuation.
+Before revising a collected `draft-parts`, `gerrit-parts`, or `output-coverage`
+file, archive its old bytes with this helper (the current file itself may be
+the historical-bytes input). The bytes must exactly match an existing input
+manifest binding for that path. Archives are read-only, content-addressed
+files under `output-history/`; an already revised version can be restored
+there only when its recovered bytes match the original recorded size/hash.
+The gate may authenticate historical input/prestate rows against this archive
+without rehashing those old rows. Current output coverage and validation still
+check the current files. This exception never applies to ledgers or other
+append-only artifacts.

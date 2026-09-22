@@ -1776,13 +1776,21 @@ and file (`root-cause/RC001.md`, rows `RC001-⟨n⟩`):
 
 ````
 
-Every RC row has an exact `Root family` and `Suggested-edit decision`. An
+Every RC row has a `Root family` and `Suggested-edit decision`. Use the exact
+`RF` identity for an authoritative family; inventory and provisional-alias
+scopes use their explicit scope label and may only record an omitted decision. An
 applicable decision uses the multiline `Suggested-edit selected lines` and
 `Suggested-edit replacement` fields above; an omitted decision uses
 `omitted — <specific reason>` and has neither fence. The root-family table
 stores only `applicable — <RC-row-ID>` or the exact omitted decision. This
 keeps multiline code out of lossy table cells and gives reconciliation a
-canonical decision to copy into the evidence card.
+canonical decision to copy into the evidence card. Each family table selects
+one canonical decision: an applicable cell names its owning RC row; an omitted
+cell must match a member row's exact omission reason. Other members may repeat
+that decision or record their own scoped omission reasons. Repeated identical
+omissions select the first RC ID in lexical order; they are not extra family
+decisions. Scoped rows outside an authoritative family cannot supply a
+promoted finding's Suggested edit.
 
 Reopened candidates become canonical rows before further work. For round 1,
 challenger RC001 owns `ledger/reopened/round-1-RC001.md`:

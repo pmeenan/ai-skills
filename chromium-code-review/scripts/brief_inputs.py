@@ -25,7 +25,7 @@ from pathlib import Path
 def named_brief_inputs(brief: Path) -> set[Path]:
     """Return absolute file inputs named in a brief's input sections."""
     absolute_path = re.compile(
-        r"(?<![A-Za-z0-9_.-])(/[A-Za-z0-9_.+@{}%=/:-]+)"
+        r"(?<![A-Za-z0-9_.:/-])(/[A-Za-z0-9_.+@{}%=/:-]+)"
     )
     active = False
     deliverables_active = False

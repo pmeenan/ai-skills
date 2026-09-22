@@ -182,6 +182,27 @@ class SetWorkStateTests(Fixture):
 
 
 class RefreshManifestTests(Fixture):
+    def test_completed_index_preserves_historical_accounting(self) -> None:
+        index = self.review / "indexes/manifest.json"
+        index.parent.mkdir()
+        index.write_bytes(b"grown current deterministic index")
+        original = self.input_row("A", "1", index, "assigned", b"old")
+        self.write_manifest([
+            self.input_row("A", "1", self.brief, "brief", self.brief.read_bytes()),
+            original,
+        ])
+        self.write_orchestration([self.row("A", "1", "complete", "deliverables/A.md")])
+        before = self.manifest.read_bytes()
+        result = self.invoke(REFRESH, self.review, "A", 1, "--role", "assigned")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("preserved historical", result.stdout)
+        self.assertEqual(before, self.manifest.read_bytes())
+        self.write_orchestration([self.row("A", "1", "running", "deliverables/A.md")])
+        result = self.invoke(REFRESH, self.review, "A", 1, "--role", "assigned")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("restamped assigned", result.stdout)
+        self.assertNotEqual(before, self.manifest.read_bytes())
+
     def test_restamps_grown_prestate(self) -> None:
         self.prestate.write_text("one\ntwo\nthree\n", encoding="utf-8")
         result = self.invoke(REFRESH, self.review, "A", 1)
@@ -238,6 +259,79 @@ class AwaitWorkersTests(Fixture):
             "second diagnostic\\nthird diagnostic\\nfourth diagnostic\\n')\n"
             "raise SystemExit(1)\n",
             encoding="utf-8")
+
+    def continuation(self, *, payload=b"previous valid artifact\n") -> None:
+        self.artifact_a.write_bytes(payload)
+        self.write_orchestration([
+            self.row("A", "1", "complete", "deliverables/A.md"),
+            self.row("A", "2", "running", "deliverables/A.md"),
+        ])
+        self.write_manifest([
+            self.input_row("A", "2", self.brief, "brief", self.brief.read_bytes()),
+            self.input_row("A", "2", self.artifact_a, "prestate", payload),
+        ])
+
+    def await_continuation(self, *extra):
+        return self.invoke(AWAIT, self.review, "--work", "A:2",
+                           "--no-heartbeat", "--no-validate", "--poll-seconds", 0.05,
+                           "--timeout-seconds", 0.3, *extra)
+
+    def test_unchanged_continuation_is_not_collected(self) -> None:
+        self.continuation()
+        result = self.await_continuation()
+        self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+        self.assertIn("unchanged prestate", result.stdout)
+        self.assertEqual("running", self.cell("A", "2", "state"))
+        self.assertNotIn("collected", (self.review / "progress.md").read_text())
+
+    def test_valid_old_artifact_cannot_complete_continuation(self) -> None:
+        self.continuation()
+        acceptor = self.root / "accept.py"
+        acceptor.write_text("raise SystemExit(0)\n")
+        result = self.invoke(AWAIT, self.review, "--work", "A:2", "--no-heartbeat",
+                             "--poll-seconds", 0.05, "--timeout-seconds", 0.2,
+                             env={"CHROMIUM_REVIEW_ARTIFACT_VALIDATOR":
+                                  f"{sys.executable} {acceptor}"})
+        self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("running", self.cell("A", "2", "state"))
+
+    def test_append_attestation_allows_continuation_completion(self) -> None:
+        self.continuation()
+        original = self.artifact_a.read_bytes()
+        timer = threading.Timer(0.12, self.artifact_a.write_bytes,
+                                args=(original + b"\nA:2 complete: no semantic change required.\n",))
+        timer.start()
+        self.addCleanup(timer.cancel)
+        result = self.await_continuation()
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("complete", self.cell("A", "2", "state"))
+
+    def test_rewritten_or_truncated_prefix_requires_repair(self) -> None:
+        for payload in [b"replaced prefix with more bytes than the original", b"short"]:
+            with self.subTest(payload=payload):
+                self.continuation()
+                self.artifact_a.write_bytes(payload)
+                result = self.await_continuation()
+                self.assertEqual(3, result.returncode, result.stdout + result.stderr)
+                self.assertIn("rewrote its sealed prestate", result.stdout)
+                self.assertEqual("needs-repair", self.cell("A", "2", "state"))
+
+    def test_stale_brief_cannot_authenticate_continuation(self) -> None:
+        self.continuation()
+        self.brief.write_bytes(b"changed brief")
+        self.artifact_a.write_bytes(self.artifact_a.read_bytes() + b"append")
+        result = self.await_continuation()
+        self.assertEqual(3, result.returncode, result.stdout + result.stderr)
+        self.assertIn("self brief seal is stale", result.stdout)
+
+    def test_append_still_requires_artifact_validation(self) -> None:
+        self.continuation()
+        self.artifact_a.write_bytes(self.artifact_a.read_bytes() + b"invalid append")
+        result = self.invoke(AWAIT, self.review, "--work", "A:2",
+                             "--no-heartbeat", "--timeout-seconds", 0.3,
+                             env=self.reject_env())
+        self.assertEqual(3, result.returncode, result.stdout + result.stderr)
+        self.assertIn("bad table", result.stdout)
 
     def reject_env(self) -> dict[str, str]:
         return {

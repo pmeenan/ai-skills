@@ -1142,6 +1142,8 @@ class ReviewDirectoryValidatorTest(unittest.TestCase):
         validator = tools / "validate-review-dir.py"
         shutil.copy2(VALIDATE, validator)
         shutil.copy2(SCRIPTS / "artifact_tables.py", tools / "artifact_tables.py")
+        shutil.copy2(SCRIPTS / "orchestration_state.py", tools / "orchestration_state.py")
+        shutil.copy2(SCRIPTS / "input_accounting.py", tools / "input_accounting.py")
         helper = tools / "worktree-lease.py"
         helper.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
         helper.chmod(0o644)

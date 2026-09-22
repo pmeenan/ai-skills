@@ -76,7 +76,7 @@ the gate.
 | `cannot verify pinned worktree: <err>` | `git` failed inside the worktree. | Re-materialize with `fetch-cl.sh`. | validate-review-dir.py:853 |
 | `pin.md is missing '- Worktree:'` | No worktree line. | Regenerate `pin.md` with `fetch-cl.sh`. | validate-review-dir.py:855 |
 | `pin.md must contain both Worktree lease and Worktree lease token` | Only one of the two lease lines is present. | Re-acquire: `worktree-lease.py acquire <LEASE_DIR> --review-dir <REVIEW_DIR> --holder <KEY>`, then re-run `fetch-cl.sh` to rewrite `pin.md`. | validate-review-dir.py:860 |
-| `pin.md requires authenticated lease-state.json, but it is absent` | `pin.md` advertises a lease but `lease-state.json` is missing. | Run `worktree-lease.py write-state <REVIEW_DIR> <LEASE_DIR> <TOKEN> <HOLDER>`. | validate-review-dir.py:865 |
+| `pin.md requires authenticated lease-state.json, but it is absent` | `pin.md` advertises a lease but `lease-state.json` is missing. | Run `worktree-lease.py write-state <REVIEW_DIR> <LEASE_DIR>/<HOLDER>.log <TOKEN> <HOLDER>`. | validate-review-dir.py:865 |
 | `cannot validate authenticated mutable lease state: <err>` | `worktree-lease.py validate-state` could not run. | Run `worktree-lease.py validate-state <REVIEW_DIR>` directly. | validate-review-dir.py:872 |
 | `mutable lease state validation failed: <detail>` | `lease-state.json` does not authenticate against this review/pin. | See §7; usually re-run `worktree-lease.py write-state ...` with the real token. | validate-review-dir.py:877 |
 | `active worktree lease is required but absent from pin.md` | `--require-active-lease` was passed but `pin.md` has no lease. | Acquire a lease first, or drop `--require-active-lease`. | validate-review-dir.py:880 |

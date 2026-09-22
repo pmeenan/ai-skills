@@ -26,6 +26,8 @@ import subprocess
 import sys
 from typing import Any, Iterable
 
+from input_accounting import archived_output_matches, executable_only
+
 from artifact_tables import (
     PLAN_ROSTER_COLUMNS,
     effective_tables,
@@ -244,15 +246,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROFILE_SCRIPT = SCRIPT_DIR / "profile-review.py"
 INDEX_SCRIPT = SCRIPT_DIR / "build-review-indexes.py"
 SNAPSHOT_SCRIPT = SCRIPT_DIR / "snapshot-skill.py"
-DETERMINISTIC_INDEX_NAMES = {
-    "inventory.tsv",
-    "topology.tsv",
-    "specialist-priors.tsv",
-    "candidates.tsv",
-    "verdicts.tsv",
-    "reconciliation.tsv",
-    "manifest.json",
-}
+from orchestration_state import DETERMINISTIC_INDEX_NAMES
 
 
 class Report:
@@ -363,6 +357,7 @@ def root_suggestion_decisions(
     """Extract canonical RC-row suggestion decisions for card binding."""
     decisions: dict[str, dict[str, Any]] = {}
     family_members: dict[str, set[str]] = defaultdict(set)
+    family_choices: dict[str, list[str]] = defaultdict(list)
     root_cause = root / "root-cause"
     for path in sorted(root_cause.glob("RC*.md")) if root_cause.exists() else []:
         text = read_text(path, report)
@@ -372,7 +367,7 @@ def root_suggestion_decisions(
             end = matches[position + 1].start() if position + 1 < len(matches) else len(text)
             section = text[match.end():end]
             family_match = re.search(
-                r"(?im)^- Root family:\s*(RF\d{3,})\s*$", section
+                r"(?im)^- Root family:[ \t]*(\S[^\r\n]*)$", section
             )
             decision_match = re.search(
                 r"(?im)^- Suggested-edit decision:\s*"
@@ -425,8 +420,18 @@ def root_suggestion_decisions(
                     f"root-cause row {identifier} marks Suggested edit omitted "
                     "but contains selected/replacement fences"
                 )
+            family = family_match.group(1).strip()
+            if not re.fullmatch(r"RF\d{3,}", family):
+                # Inventory and provisional-alias scopes have row-local omission
+                # decisions, but cannot own a publishable family suggestion.
+                if status != "omitted":
+                    report.error(
+                        f"root-cause row {identifier} cannot own an applicable "
+                        "or malformed family decision without an exact RF identity"
+                    )
+                continue
             decisions[identifier] = {
-                "family": family_match.group(1),
+                "family": family,
                 "status": status,
                 "detail": detail,
                 "selected": selected or "",
@@ -442,10 +447,41 @@ def root_suggestion_decisions(
                 family_members[family].update(
                     re.findall(ROW_ID_TEXT, row.get("members", ""))
                 )
+                if re.fullmatch(r"RF\d{3,}", family):
+                    family_choices[family].append(row.get("suggested edit", "").strip())
+    canonical: dict[str, dict[str, Any]] = {}
+    for family, choices in family_choices.items():
+        if len(choices) != 1:
+            report.error(f"root family {family} requires one Root-family analysis decision")
+            continue
+        choice = choices[0]
+        applicable = re.fullmatch(r"applicable — (RC\d+-\d+)", choice)
+        members = {key: value for key, value in decisions.items()
+                   if value["family"] == family}
+        if applicable:
+            identifier = applicable.group(1)
+            decision = members.get(identifier)
+            if decision is None or decision["status"] != "applicable":
+                report.error(f"root family {family} names absent or non-applicable RC decision {identifier}")
+                continue
+        else:
+            matches = [(key, value) for key, value in members.items()
+                       if value["status"] == "omitted"
+                       and choice == f"omitted — {value['detail']}"]
+            if not matches:
+                report.error(f"root family {family} omitted decision lacks an exact matching RC row")
+                continue
+            # Repeated row-local omissions are expected for family members.
+            # Choose a stable owning row, without changing any decision text.
+            identifier, decision = sorted(matches)[0]
+        canonical[identifier] = decision
     for identifier, decision in decisions.items():
+        if decision["family"] not in family_choices:
+            report.error(f"root-cause row {identifier} lacks its Root-family analysis decision")
+    for identifier, decision in canonical.items():
         decision["members"] = family_members.get(decision["family"], set())
         decision["members"].add(identifier)
-    return decisions
+    return canonical
 
 
 def validate_suggestion_target(
@@ -1984,7 +2020,7 @@ def brief_contract_failures(text: str) -> list[str]:
 def named_brief_inputs(brief: Path) -> set[Path]:
     """Return absolute file inputs named in a brief's input sections."""
     absolute_path = re.compile(
-        r"(?<![A-Za-z0-9_.-])(/[A-Za-z0-9_.+@{}%=/:-]+)"
+        r"(?<![A-Za-z0-9_.:/-])(/[A-Za-z0-9_.+@{}%=/:-]+)"
     )
     active = False
     deliverables_active = False
@@ -2346,8 +2382,9 @@ def procedural_repair_supersessions(
                 prefix_bytes = int(prestate.get("bytes", ""))
             except ValueError:
                 prefix_bytes = -1
-            if prefix_bytes < 0 or prefix_bytes > len(payload) or prestate.get(
-                    "sha256") != hashlib.sha256(payload[:prefix_bytes]).hexdigest():
+            if not archived_output_matches(root, prestate) and (
+                    prefix_bytes < 0 or prefix_bytes > len(payload) or prestate.get(
+                    "sha256") != hashlib.sha256(payload[:prefix_bytes]).hexdigest()):
                 reasons.append("repair artifact prestate row is invalid")
 
         repair_input_paths = {
@@ -2377,7 +2414,8 @@ def procedural_repair_supersessions(
             # no duplicate full-file row or refreshed historical hash is needed.
             if (artifact is not None and required_input == artifact.resolve()
                     and len(prestate_rows) == 1
-                    and manifest_row_matches(prestate_rows[0], prefix=True)):
+                    and (manifest_row_matches(prestate_rows[0], prefix=True)
+                         or archived_output_matches(root, prestate_rows[0]))):
                 continue
             matching = [
                 (row_index, item)
@@ -2389,6 +2427,7 @@ def procedural_repair_supersessions(
             ]
             if not required_input.is_file() or not any(
                 manifest_row_matches(item)
+                or archived_output_matches(root, item)
                 or (
                     (
                         item.get("input_path", ""),
@@ -2598,7 +2637,7 @@ def validate_input_manifest(
         if row["role"] == "prestate":
             # A canonical artifact the attempt appends to: the declared bytes
             # and hash cover the immutable pre-attempt prefix.
-            if declared is not None:
+            if declared is not None and not archived_output_matches(root, row):
                 if declared > len(payload):
                     report.error(
                         f"input-manifest.tsv:{line_number}: prestate prefix "
@@ -2618,7 +2657,8 @@ def validate_input_manifest(
                 ) in append_only_versions
                 and manifest_row_matches(row, prefix=True)
             )
-            historical_deterministic = row_index in deterministic_history
+            historical_deterministic = (row_index in deterministic_history
+                                        or archived_output_matches(root, row))
             if (
                 declared is not None
                 and declared != len(payload)
@@ -2698,7 +2738,9 @@ def validate_input_manifest(
                 size = int(row["bytes"])
             except ValueError:
                 continue
-            unique[input_path] = size
+            if not executable_only(root, input_path, Path(row["brief"]),
+                                   row["role"], size, row["sha256"]):
+                unique[input_path] = size
             if row["role"] == "candidate-packet":
                 candidate_paths[input_path] = size
             if row["role"] == "card" and evidence_budget is not None \
@@ -2882,7 +2924,7 @@ def validate_manifest(
         if values != sorted(values) or len(values) != len(set(values)):
             report.error(f"manifest attempts for {work_id} are not unique and increasing")
     override = tier_override(root)
-    frontier_kinds = re.compile(r"^(?:V\d+|VTER|RC\d+|CH\w*|VPLAN\w*|RCPLAN\w*|PLAN|PR)$")
+    frontier_kinds = re.compile(r"^(?:V\d+|VTER|RC\d+|CH\d+|VPLAN\w*|RCPLAN\w*|PLAN|PR)$")
     for work_id, values in attempts.items():
         ordered = [rows_by_key[(work_id, attempt)] for attempt in sorted(values)
                    if (work_id, attempt) in rows_by_key]

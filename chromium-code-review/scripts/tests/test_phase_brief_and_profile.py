@@ -235,6 +235,22 @@ class BuildPhaseBriefTests(unittest.TestCase):
         self.assertIn("Brief — Inventory (Phase 1, unsharded)", result.stderr)
         self.assertIn("Brief — Planner (Phase 3)", result.stderr)
 
+    def test_finding_writer_manifests_each_required_reference(self) -> None:
+        shutil.rmtree(self.skill / "references")
+        shutil.copytree(REFERENCES, self.skill / "references")
+        brief = self.review / "writer.md"
+        result = run(str(BUILD_BRIEF), str(self.review), "FWF001",
+                     "Brief — Finding Writer (Phase 7, large reviews, one per card)",
+                     "--output", str(brief), "--artifact", str(self.review / "draft-parts/F001.md"),
+                     "--set", "card-ID=F001", "--set", "card-path=F001",
+                     "--set", "draft-revision=1")
+        self.assertEqual(0, result.returncode, result.stderr)
+        scanner = load_module("writer_input_scan", SCRIPTS / "brief_inputs.py")
+        named = scanner.named_brief_inputs(brief)
+        for filename in ["finding-format.md", "severity-calibration.md", "output-format.md", "tone.md"]:
+            self.assertIn(self.skill / "references/worker/synthesis-and-output" / filename, named)
+        self.assertNotIn(Path("/context_budget/evidence_card_budget_bytes"), named)
+
     def test_real_inventory_brief_has_no_unsubstituted_placeholders(self) -> None:
         shutil.rmtree(self.skill / "references")
         shutil.copytree(REFERENCES, self.skill / "references")
@@ -265,6 +281,13 @@ class NamedBriefInputsAgreementTests(unittest.TestCase):
         self.validator = load_module(
             "validate_review_dir_under_test", SCRIPTS / "validate-review-dir.py"
         )
+
+    def test_json_pointer_is_not_an_absolute_input(self) -> None:
+        brief = self.root / "pointer.md"
+        path = self.root / "actual.json"
+        brief.write_text(f"Inputs: profile.json:/context_budget/evidence_card_budget_bytes; {path}\n")
+        for module in (self.shared, self.validator):
+            self.assertEqual({path}, module.named_brief_inputs(brief))
 
     def corpus(self) -> dict[str, str]:
         root = self.root
