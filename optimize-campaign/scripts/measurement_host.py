@@ -168,7 +168,10 @@ RENDERER_PROBE_URL=('data:text/html,<script>try{var g=document.createElement("ca
 
 def probe_gpu_renderer(browser, environment, timeout=45):
     """Launch the browser once on the requested surface and read its GPU renderer string."""
-    with tempfile.TemporaryDirectory(prefix='gpu-probe-') as profile:
+    # The browser's helper processes can still be writing into the profile
+    # while it is deleted (round 74: a paired capture died in this cleanup
+    # after 3.5 blocks), so cleanup errors must not abort a capture session.
+    with tempfile.TemporaryDirectory(prefix='gpu-probe-', ignore_cleanup_errors=True) as profile:
         command=[str(browser),'--no-sandbox',f'--user-data-dir={profile}','--no-first-run','--no-default-browser-check',
                  '--disable-background-networking','--enable-logging=stderr','--v=0']
         if environment['mode']=='headless': command.append('--headless')
