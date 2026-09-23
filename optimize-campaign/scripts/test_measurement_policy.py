@@ -152,6 +152,29 @@ class IntegrationMappingTest(unittest.TestCase):
             with self.assertRaises(ValueError):campaign.integration_mapping(root,isolated,git('rev-parse','HEAD'),base)
 
 
+    def test_candidate_measured_on_campaign_setup_commit(self):
+        import campaign
+        with tempfile.TemporaryDirectory() as tmp:
+            root=pathlib.Path(tmp)
+            def git(*args):return subprocess.run(['git','-C',tmp,*args],check=True,capture_output=True,text=True).stdout.strip()
+            git('init','-q');git('config','user.name','Test');git('config','user.email','test@example.invalid')
+            (root/'a.cc').write_text('int a = 0;\n');(root/'flag.json5').write_text('{}\n')
+            git('add','.');git('commit','-qm','baseline');base=git('rev-parse','HEAD')
+            (root/'flag.json5').write_text('{flag: 1}\n');git('commit','-qam','campaign setup');setup=git('rev-parse','HEAD')
+            (root/'a.cc').write_text('int a = 1;\n');git('commit','-qam','measured');isolated=git('rev-parse','HEAD')
+            git('checkout','-q','--detach',setup)
+            (root/'a.cc').write_text('int a = 1;\n');git('commit','-qam','landed');integrated=git('rev-parse','HEAD')
+            self.assertEqual(isolated,campaign.integration_mapping(root,isolated,integrated,base)['isolated_candidate_sha'])
+            # A measured commit on a side branch that the landed commit does not contain is refused.
+            git('checkout','-q','--detach',base)
+            (root/'flag.json5').write_text('{other: 1}\n');git('commit','-qam','other setup')
+            (root/'a.cc').write_text('int a = 1;\n');git('commit','-qam','side measured');side=git('rev-parse','HEAD')
+            with self.assertRaises(ValueError):campaign.integration_mapping(root,side,integrated,base)
+            # A setup commit that does not descend from the frozen baseline is refused.
+            git('checkout','-q','--orphan','unrelated');(root/'a.cc').write_text('int a = 0;\n');git('add','.');git('commit','-qm','unrelated root')
+            (root/'a.cc').write_text('int a = 1;\n');git('commit','-qam','unrelated measured');unrelated=git('rev-parse','HEAD')
+            with self.assertRaises(ValueError):campaign.integration_mapping(root,unrelated,integrated,base)
+
 
 class HostObservationTest(unittest.TestCase):
     def rows(self):

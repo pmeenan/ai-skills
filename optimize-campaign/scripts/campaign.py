@@ -6086,8 +6086,21 @@ def integration_mapping(repo, isolated_sha, integrated_sha, baseline_sha):
     def git(*args):
         return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True).stdout
 
+    def is_ancestor(ancestor, descendant):
+        return subprocess.run(
+            ["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, descendant],
+            capture_output=True,
+        ).returncode == 0
+
     parent = git("rev-parse", isolated_sha + "^").decode().strip()
-    if parent != baseline_sha:
+    # A campaign branch may carry setup commits above the frozen baseline (the
+    # campaign flag's definition, score-window probes). A candidate measured on
+    # such a commit is still isolated when that commit descends from the frozen
+    # baseline and is part of the history the integrated commit lands on; the
+    # patch comparison below binds the content either way.
+    if parent != baseline_sha and not (
+        is_ancestor(baseline_sha, parent) and is_ancestor(parent, integrated_sha)
+    ):
         raise ValueError("isolated candidate is not based on frozen baseline")
 
     def patch(sha):
