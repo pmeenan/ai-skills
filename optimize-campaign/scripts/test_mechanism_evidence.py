@@ -345,8 +345,10 @@ class MechanismEvidenceTest(unittest.TestCase):
         decision = {"accepted": True, "by": "user", "on": "2026-09-21", "note": "point inside gate"}
         self.assertTrue(evidence.overhead_decision_accepts(
             {"overhead_pct": 0.93, "gate_pass": False, "overhead_decision": decision}))
+        self.assertTrue(evidence.overhead_decision_accepts(
+            {"overhead_pct": 1.264, "gate_pass": False, "overhead_decision": decision}))
         self.assertFalse(evidence.overhead_decision_accepts(
-            {"overhead_pct": 1.3, "gate_pass": False, "overhead_decision": decision}))
+            {"overhead_pct": 1.31, "gate_pass": False, "overhead_decision": decision}))
         self.assertFalse(evidence.overhead_decision_accepts(
             {"overhead_pct": 0.93, "gate_pass": False,
              "overhead_decision": {**decision, "note": " "}}))

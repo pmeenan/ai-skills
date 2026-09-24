@@ -278,7 +278,10 @@ def validate_instrumentation_transform(build: dict, instrumentation: dict, name:
 # calibrations of the probe-only twin read 0.93, 1.10 and 1.10 with
 # overlapping intervals; the remaining cost is the mechanisms' own
 # predicates, and with Stop() before every predicate the bias is conservative.
-OVERHEAD_DECISION_LIMIT_PCT = 1.25
+# Raised from 1.25 to 1.30 by user decision (2026-09-24, round 93): the batch-1
+# probe set plus the #231 OOF probe calibrated at 1.264% [0.72, 1.81] against
+# batch-1's accepted 1.16%; the #231 target story read -1.16 vs -1.08.
+OVERHEAD_DECISION_LIMIT_PCT = 1.30
 
 
 def overhead_decision_accepts(aa: dict) -> bool:
