@@ -574,6 +574,44 @@ def print_summary_table(results):
             print(f"  + {w}")
 
 
+def planned_extra_args(identity):
+    """The (base, experiment) Pinpoint extra args a registered plan requires.
+
+    Without `base_features` the base arm runs defaults and the experiment arm
+    enables the plan's feature. With `base_features` (a candidate measured as
+    an increment over landed work behind other flags) both arms enable the
+    base, and the experiment arm adds the feature, in ONE switch per arm:
+    Chrome keeps only the last copy of a repeated switch.
+    """
+    feature = identity["feature"]
+    base_features = list(identity.get("base_features") or [])
+    if feature in base_features:
+        raise ValueError("plan feature must not also be a base feature")
+    if not base_features:
+        return "", "--enable-features=" + feature
+    return (
+        "--enable-features=" + ",".join(base_features),
+        "--enable-features=" + ",".join(base_features + [feature]),
+    )
+
+
+def plan_invocation_matches(args, plan):
+    """Does a `run` invocation match its preregistered plan exactly?"""
+    identity = plan["identity"]
+    try:
+        base_args, experiment_args = planned_extra_args(identity)
+    except ValueError:
+        return False
+    return (
+        args.cl == identity["patchset_url"]
+        and args.base_commit == identity["baseline_sha"]
+        and args.benchmark == identity["benchmark"]
+        and args.attempts == plan["statistics"]["blocks"]
+        and args.base_extra_args == base_args
+        and args.experiment_extra_args == experiment_args
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Automate Pinpoint A/B tryjobs for optimization campaigns."
@@ -653,14 +691,8 @@ def main():
         p.add_argument("--plan", help="Immutable preregistered experiment plan JSON")
     args = parser.parse_args()
     plan = json.loads(pathlib.Path(args.plan).read_text()) if getattr(args, "plan", None) else None
-    if plan and args.subcommand == "run":
-        identity = plan["identity"]
-        if (args.cl != identity["patchset_url"] or args.base_commit != identity["baseline_sha"]
-                or args.benchmark != identity["benchmark"]
-                or args.attempts != plan["statistics"]["blocks"]
-                or args.base_extra_args
-                or args.experiment_extra_args != "--enable-features=" + identity["feature"]):
-            parser.error("fleet invocation differs from registered plan")
+    if plan and args.subcommand == "run" and not plan_invocation_matches(args, plan):
+        parser.error("fleet invocation differs from registered plan")
 
     if args.subcommand == "upload-cl":
         info = upload_try_cl(message=args.message)

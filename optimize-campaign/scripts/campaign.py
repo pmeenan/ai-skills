@@ -1718,6 +1718,19 @@ def feature_names(value):
     return {item.strip() for item in (value or "").split(",") if item.strip()}
 
 
+def opp_feature_plan(config, opp):
+    """(toggled feature, both-arms base features) for one opportunity.
+
+    By default every candidate toggles the campaign feature on a bare base.
+    A candidate measured as an increment over landed work that shares the
+    campaign flag carries its own base::Feature (`set-feature`): it toggles
+    that feature while the campaign feature stays enabled on both arms.
+    """
+    if opp and opp.get("feature"):
+        return opp["feature"], list(opp.get("base_features") or [])
+    return config["feature"], []
+
+
 def split_story_entry_key(entry_key):
     """Split a story-qualified entry key into (story, bare_entry_key).
 
@@ -2368,8 +2381,9 @@ def validate_staged_implementation(repo_root, feature):
     )
     if feature not in without_comments_strings_and_space(added_lines):
         raise CampaignError(
-            f"new executable lines do not reference campaign feature {feature!r}; "
-            "each candidate must add an explicit flag guard, and comments do not count"
+            f"new executable lines do not reference the candidate's feature "
+            f"{feature!r}; each candidate must add an explicit flag guard, and "
+            "comments do not count"
         )
     return {
         "production_files": executable_files,
@@ -6166,8 +6180,19 @@ def verify_local_score_receipt(config, path, opp, repo_root):
         raise ValueError(f"{path} is not a v4 score-runner manifest")
     if manifest.get("mode") != "ab":
         raise ValueError(f"{path} is not a feature A/B (mode={manifest.get('mode')!r})")
-    if manifest.get("feature") != config["feature"]:
-        raise ValueError(f"{path} toggled {manifest.get('feature')!r}, not the campaign feature")
+    feature, base_features = opp_feature_plan(config, opp)
+    if manifest.get("feature") != feature:
+        raise ValueError(
+            f"{path} toggled {manifest.get('feature')!r}, not "
+            + (f"#{opp['id']}'s feature {feature!r}" if opp and opp.get("feature")
+               else "the campaign feature")
+        )
+    common = feature_names(manifest.get("enable_features"))
+    if common != set(base_features):
+        raise ValueError(
+            f"{path} enabled {sorted(common)} on both arms, but "
+            f"#{(opp or {}).get('id')}'s feature plan requires {sorted(base_features)}"
+        )
     if manifest.get("benchmark") != config["benchmark"]:
         raise ValueError(f"{path} measured the wrong benchmark")
     adapter = benchmark_adapters.get_adapter(config["benchmark"])
@@ -9648,7 +9673,7 @@ def cmd_advance(args):
             capture_review_base(
                 opp,
                 repo_root,
-                ledger.data["config"]["feature"],
+                opp_feature_plan(ledger.data["config"], opp)[0],
                 args.allow_unstaged,
             )
             build_receipt, build_digest = load_command_receipt(
@@ -9702,7 +9727,7 @@ def cmd_advance(args):
             capture_review_base(
                 opp,
                 repo_root,
-                ledger.data["config"]["feature"],
+                opp_feature_plan(ledger.data["config"], opp)[0],
                 args.allow_unstaged,
             )
         else:
@@ -11208,6 +11233,55 @@ def cmd_note(args):
     opp.setdefault("notes", []).append(args.text)
     ledger.record(opp, f"note: {args.text}")
     ledger.save()
+    return 0
+
+
+FEATURE_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
+
+
+def cmd_set_feature(args):
+    """Give one candidate its own base::Feature on top of the campaign flag.
+
+    A candidate measured as an increment over a landed candidate that shares
+    the campaign feature cannot toggle that feature: the A arm would lose the
+    landed work too. It defines its own feature instead; every measurement
+    then enables the campaign feature on both arms and toggles only this one
+    (capture-pairs/remote_measure/run_ab_benchmark --enable-features,
+    Pinpoint identity base_features), and the landing gate checks exactly
+    that plan.
+    """
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    opp = ledger.opp(args.opp)
+    campaign_feature = ledger.data["config"].get("feature")
+    if not campaign_feature:
+        raise CampaignError("the campaign has no feature to build on")
+    if not FEATURE_NAME_RE.fullmatch(args.feature or ""):
+        raise CampaignError(f"{args.feature!r} is not a base::Feature name")
+    if args.feature == campaign_feature:
+        raise CampaignError(
+            f"{args.feature!r} is the campaign feature; a per-candidate feature "
+            "must be a new flag of its own"
+        )
+    if opp["status"] in ("parked",) + MECHANISM_TERMINAL:
+        raise CampaignError(
+            f"#{opp['id']} is {opp['status']}; its feature plan is frozen"
+        )
+    previous = opp_feature_plan(ledger.data["config"], opp)
+    opp["feature"] = args.feature
+    opp["base_features"] = [campaign_feature]
+    event = (
+        f"set-feature: toggle {args.feature!r} with {campaign_feature!r} "
+        f"enabled on both arms (was toggle {previous[0]!r} on "
+        f"{previous[1]!r})"
+    )
+    if args.note:
+        event += f": {args.note}"
+    ledger.record(opp, event)
+    ledger.save()
+    print(
+        f"#{opp['id']} toggles {args.feature} with {campaign_feature} enabled "
+        "on both arms"
+    )
     return 0
 
 
@@ -13644,6 +13718,16 @@ def build_parser():
     p.add_argument("--story", required=True)
     p.add_argument("--reason", required=True)
     p.set_defaults(func=cmd_retarget)
+
+    p = sub.add_parser(
+        "set-feature",
+        help="Give a candidate its own base::Feature, measured with the "
+        "campaign feature enabled on both arms (recorded)",
+    )
+    p.add_argument("--opp", type=int, required=True)
+    p.add_argument("--feature", required=True)
+    p.add_argument("--note", default=None)
+    p.set_defaults(func=cmd_set_feature)
 
     p = sub.add_parser("note", help="Append a note to an opportunity")
     p.add_argument("--opp", type=int, required=True)

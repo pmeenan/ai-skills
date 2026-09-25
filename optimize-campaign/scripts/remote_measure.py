@@ -285,11 +285,13 @@ def build_and_run_script(args, sha, sha_b=None, expected_digest=None):
         benchmark_options += f" --iteration-count={int(iteration_count)}"
     if worst_case_count is not None:
         benchmark_options += f" --worst-case-count={int(worst_case_count)}"
-    # Features applied identically to both arms (aa/ab2): without this, every
-    # flag-gated campaign commit behaves as baseline and arms cannot differ.
+    # Features applied identically to both arms (aa/ab/ab2): without this,
+    # every flag-gated campaign commit behaves as baseline and arms cannot
+    # differ. In ab mode it is the landed base the toggled feature increments
+    # on; the runner folds both into one switch per arm.
     common = (
         f" --enable-features={q(args.enable_features)}"
-        if args.mode in ("aa", "ab2") and args.enable_features
+        if args.mode in ("aa", "ab", "ab2") and args.enable_features
         else ""
     )
 
@@ -335,7 +337,8 @@ def build_and_run_script(args, sha, sha_b=None, expected_digest=None):
                 f"vpython3 {bench} --browser=out/release/chrome "
                 f"--required-build-role=release "
                 f"--feature={q(args.feature)} --blocks={blocks} "
-                f"--stories={stories} --seed={seed}{benchmark_options}{surface}"
+                f"--stories={stories} --seed={seed}{common}"
+                f"{benchmark_options}{surface}"
             )
         elif args.mode == "profile":
             features = args.enable_features if args.enable_features is not None else ""
@@ -464,6 +467,8 @@ def build_local_script(args, root, expected_digest):
         command.extend((
             f"--browser={q(browser)}", f"--feature={q(args.feature)}"
         ))
+        if args.enable_features:
+            command.append(f"--enable-features={q(args.enable_features)}")
     else:
         if not args.browser_a or not args.browser_b:
             raise ValueError(
@@ -1037,7 +1042,8 @@ def main(argv=None):
         default=None,
         help="profile mode: features for the capture (empty string = baseline). "
         "aa/ab2 modes: features enabled identically on BOTH arms — required "
-        "when bisecting flag-gated campaign commits.",
+        "when bisecting flag-gated campaign commits. ab mode: the landed base "
+        "enabled on both arms while only --feature toggles.",
     )
     parser.add_argument(
         "--share-floor-pct",
@@ -1178,9 +1184,11 @@ def main(argv=None):
         parser.error("--mode ab requires --feature")
     if args.mode == "ab" and args.opp is not None and not args.characterization:
         verify_opportunity_ready_for_ab(args.opp, args.feature)
-    if args.mode == "ab" and args.enable_features:
-        parser.error("--mode ab manages the flag itself; --enable-features "
-                     "applies only to aa/ab2/profile modes")
+    if args.mode == "ab" and args.feature in [
+        name.strip() for name in (args.enable_features or "").split(",")
+    ]:
+        parser.error("--mode ab: --feature must not also appear in "
+                     "--enable-features (the both-arms base list)")
     if args.mode == "ab2" and not (args.ref_a and args.ref_b):
         parser.error("--mode ab2 requires --ref-a and --ref-b")
     if args.mode == "ab2" and not args.enable_features:

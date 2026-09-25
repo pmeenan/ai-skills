@@ -1693,9 +1693,30 @@ def validate_interleaving(baseline, variant):
         raise EvidenceError("mechanism arm order is not balanced")
 
 
+def capture_pair_features(feature: str, common: str) -> dict[str, str]:
+    """Per-arm --enable-features values for one flag-toggle capture pair.
+
+    `common` is the both-arms base (a landed candidate's flag the toggled
+    feature increments on). Arm A runs the base alone, arm B the base plus the
+    toggled feature, folded into one switch because Chrome keeps only the
+    last copy of a repeated switch. An empty base keeps the historical
+    A="" / B=<feature> form.
+    """
+    names = [name.strip() for name in (common or "").split(",") if name.strip()]
+    if feature in names:
+        raise EvidenceError(
+            "--feature must not also appear in --enable-features (the "
+            "both-arms base list)"
+        )
+    return {"A": ",".join(names), "B": ",".join(names + [feature])}
+
+
 def cmd_capture_pairs(args):
     import random
     if args.blocks < 4 or args.blocks % 2: raise EvidenceError("paired capture blocks must be even and at least four")
+    arm_features = capture_pair_features(
+        args.feature, getattr(args, "enable_features", "")
+    )
     out = args.out_dir.resolve(); out.mkdir(parents=True,exist_ok=False)
     seed = args.seed if args.seed is not None else secrets.randbits(64)
     orders = ["AB","BA"] * (args.blocks//2); random.Random(seed).shuffle(orders)
@@ -1709,7 +1730,7 @@ def cmd_capture_pairs(args):
                 manifest = out/f"{block}-{arm}.json"
                 cmd_capture(argparse.Namespace(metadata=metadata,variant=meta["variant"],
                     benchmark=meta["benchmark"],browser=args.browser,block=block,
-                    repetitions=args.repetitions,enable_features="" if arm=="A" else args.feature,
+                    repetitions=args.repetitions,enable_features=arm_features[arm],
                     tune_host=False,out_dir=out/f"{block}-{arm}",out=manifest,
                     display=getattr(args,"display",""),display_vt=getattr(args,"display_vt",None),
                     viewport=getattr(args,"viewport",None),gpu_clock_mhz=None))
@@ -1893,6 +1914,12 @@ def parser() -> argparse.ArgumentParser:
     pairs.add_argument("--candidate-metadata", type=pathlib.Path, required=True)
     pairs.add_argument("--browser", required=True)
     pairs.add_argument("--feature", required=True)
+    pairs.add_argument(
+        "--enable-features", default="",
+        help="comma-separated features enabled on BOTH arms (the landed base "
+        "the toggled --feature increments on); arm A runs this list, arm B "
+        "this list plus --feature",
+    )
     pairs.add_argument("--blocks", type=int, default=6)
     pairs.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS_PER_BLOCK)
     pairs.add_argument("--seed", type=int)

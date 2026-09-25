@@ -447,6 +447,104 @@ class MechanismEvidenceTest(unittest.TestCase):
             self.assertEqual("", result["feature_activation"])
             self.assertEqual("", result["baseline_feature_activation"])
 
+    def test_capture_pairs_enables_base_features_on_both_arms(self):
+        from unittest import mock
+        import contextlib
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for name, variant in (("base.json", "baseline"), ("cand.json", "candidate")):
+                (root / name).write_text(json.dumps(
+                    {"variant": variant, "benchmark": "speedometer3"}
+                ))
+            captured = []
+            planned = {}
+            for common, expected in (
+                ("", {"A": "", "B": "Speedometer3MatchedRulesCache"}),
+                ("Speedometer3Optimizations", {
+                    "A": "Speedometer3Optimizations",
+                    "B": "Speedometer3Optimizations,Speedometer3MatchedRulesCache",
+                }),
+            ):
+                captured.clear()
+                out_dir = root / f"pairs-{len(planned)}"
+                argv = [
+                    "capture-pairs", "--baseline-metadata", str(root / "base.json"),
+                    "--candidate-metadata", str(root / "cand.json"),
+                    "--browser", "out/perf/chrome",
+                    "--feature", "Speedometer3MatchedRulesCache",
+                    "--blocks", "4", "--seed", "7", "--out-dir", str(out_dir),
+                ]
+                if common:
+                    argv += ["--enable-features", common]
+                with mock.patch.object(
+                    evidence, "cmd_capture",
+                    lambda ns: captured.append(
+                        (ns.out.name.split("-")[1][0], ns.enable_features)
+                    ),
+                ), mock.patch.object(evidence, "cmd_ingest", lambda ns: None), \
+                        mock.patch.object(
+                            evidence.measurement_host, "lease",
+                            contextlib.nullcontext,
+                        ), mock.patch.object(
+                            evidence, "capture_tuning_context",
+                            lambda args: contextlib.nullcontext(),
+                        ):
+                    self.assertEqual(0, evidence.main(argv))
+                self.assertEqual(8, len(captured))
+                for arm, features in captured:
+                    self.assertEqual(expected[arm], features)
+                planned[common] = json.loads(
+                    (out_dir / "plan.json").read_text()
+                )["args"]["enable_features"]
+            self.assertEqual(
+                {"": "", "Speedometer3Optimizations": "Speedometer3Optimizations"},
+                planned,
+            )
+            self.assertEqual(1, evidence.main([
+                "capture-pairs", "--baseline-metadata", str(root / "base.json"),
+                "--candidate-metadata", str(root / "cand.json"),
+                "--browser", "out/perf/chrome", "--feature", "B",
+                "--enable-features", "A,B", "--out-dir", str(root / "rejected"),
+            ]))
+            self.assertFalse((root / "rejected").exists())
+
+    def test_compare_keeps_flag_twin_arms_distinct_over_a_shared_base(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = pathlib.Path(tmp) / "baseline.json"
+            candidate = pathlib.Path(tmp) / "candidate.json"
+            out = pathlib.Path(tmp) / "candidate-evidence.json"
+            arms = {
+                "--enable-features=Speedometer3Optimizations": (baseline, raw(tmp)),
+                "--enable-features=Speedometer3Optimizations,"
+                "Speedometer3MatchedRulesCache": (
+                    candidate, raw(tmp, "candidate", (500, 500, 500))
+                ),
+            }
+            for flag, (path, data) in arms.items():
+                for ref in data["capture_manifests"]:
+                    manifest_path = pathlib.Path(ref["path"])
+                    manifest = json.loads(manifest_path.read_text())
+                    manifest["command"].append(flag)
+                    manifest_path.write_text(json.dumps(manifest))
+                    ref["sha256"] = hashlib.sha256(
+                        manifest_path.read_bytes()
+                    ).hexdigest()
+                path.write_text(json.dumps(data))
+            self.assertEqual(0, evidence.main([
+                "compare", "--kind", "candidate", "--baseline", str(baseline),
+                "--variant", str(candidate), "--out", str(out)
+            ]))
+            result = json.loads(out.read_text())
+            self.assertEqual(
+                "--enable-features=Speedometer3Optimizations",
+                result["baseline_feature_activation"],
+            )
+            self.assertEqual(
+                "--enable-features=Speedometer3Optimizations,"
+                "Speedometer3MatchedRulesCache",
+                result["feature_activation"],
+            )
+
     def test_ingest_records_feature_activation_and_rejects_a_mixed_arm(self):
         with tempfile.TemporaryDirectory() as tmp:
             metadata = raw(tmp)

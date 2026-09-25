@@ -65,6 +65,41 @@ class CampaignTest(unittest.TestCase):
         with open(self.dir / "STATUS.md") as f:
             return f.read()
 
+    def test_set_feature_records_per_candidate_plan(self):
+        opp_id = self.add_opp()
+        campaign_feature = self.ledger()["config"]["feature"]
+        self.assertEqual(1, self.run_cmd(
+            "set-feature", "--opp", str(opp_id), "--feature", campaign_feature))
+        self.assertEqual(1, self.run_cmd(
+            "set-feature", "--opp", str(opp_id), "--feature", "Not,AFeature"))
+        self.assertEqual(0, self.run_cmd(
+            "set-feature", "--opp", str(opp_id),
+            "--feature", "Speedometer3MatchedRulesCache",
+            "--note", "increment over #234"))
+        opp = self.ledger()["opportunities"][-1]
+        self.assertEqual("Speedometer3MatchedRulesCache", opp["feature"])
+        self.assertEqual([campaign_feature], opp["base_features"])
+        self.assertIn("set-feature", opp["history"][-1]["event"])
+        self.assertIn("increment over #234", opp["history"][-1]["event"])
+        self.assertEqual(
+            ("Speedometer3MatchedRulesCache", [campaign_feature]),
+            campaign.opp_feature_plan(self.ledger()["config"], opp),
+        )
+        other = self.add_opp(anchor="LayoutBlock::Layout")
+        self.assertEqual(
+            (campaign_feature, []),
+            campaign.opp_feature_plan(
+                self.ledger()["config"], self.ledger()["opportunities"][-1]
+            ),
+        )
+        for status in ("landed", "parked"):
+            data = self.ledger()
+            data["opportunities"][-1]["status"] = status
+            (self.dir / "ledger.json").write_text(json.dumps(data))
+            self.assertEqual(1, self.run_cmd(
+                "set-feature", "--opp", str(other), "--feature", "OwnFeature"))
+            self.assertNotIn("feature", self.ledger()["opportunities"][-1])
+
     def test_jetstream_init_records_adapter_and_local_execution(self):
         other = pathlib.Path(self.tmp.name) / "jetstream-campaign"
         self.assertEqual(0, campaign.main([
@@ -1992,6 +2027,95 @@ class EnforcementRegressionTest(unittest.TestCase):
         manifest, path = self.checkpoint_manifest()
         computed = campaign.validate_and_recompute_checkpoint(manifest, path)
         self.assertEqual(manifest["geometric_delta_pct"], computed["geometric_delta_pct"])
+
+    def score_receipt(self, feature, enable_features=None):
+        manifest, path = self.checkpoint_manifest(stories="default")
+        manifest["feature"] = feature
+        if enable_features is not None:
+            manifest["enable_features"] = enable_features
+        manifest["skill_tree_sha256"] = "5" * 64
+        manifest["build_provenance"] = {
+            arm: {"git_sha": "6" * 40, "build_role": "release", "symbol_level": "0"}
+            for arm in ("a", "b")
+        }
+        path.write_text(json.dumps(manifest))
+        return path
+
+    RECEIPT_CONFIG = {
+        "feature": "Speedometer3Optimizations",
+        "benchmark": "speedometer3",
+        "skill_tree_sha256": "5" * 64,
+    }
+
+    def test_local_receipt_without_per_opp_feature_keeps_campaign_toggle(self):
+        opp = {"id": 7, "target_story": TEST_STORY}
+        for enable_features in (None, ""):
+            path = self.score_receipt("Speedometer3Optimizations", enable_features)
+            receipt = campaign.verify_local_score_receipt(
+                self.RECEIPT_CONFIG, path, opp, str(self.repo)
+            )
+            self.assertEqual("6" * 40, receipt["candidate_sha"])
+            (self.repo / ("ab_evidence_" + "a" * 24)).rename(
+                self.repo / f"used-{enable_features}"
+            )
+        path = self.score_receipt(
+            "Speedometer3Optimizations", "Speedometer3MatchedRulesCache"
+        )
+        with self.assertRaisesRegex(ValueError, "enabled .* on both arms"):
+            campaign.verify_local_score_receipt(
+                self.RECEIPT_CONFIG, path, opp, str(self.repo)
+            )
+
+    def test_local_receipt_with_per_opp_feature_requires_its_plan(self):
+        opp = {
+            "id": 232, "target_story": TEST_STORY,
+            "feature": "Speedometer3MatchedRulesCache",
+            "base_features": ["Speedometer3Optimizations"],
+        }
+        self.assertEqual(
+            ("Speedometer3MatchedRulesCache", ["Speedometer3Optimizations"]),
+            campaign.opp_feature_plan(self.RECEIPT_CONFIG, opp),
+        )
+        path = self.score_receipt(
+            "Speedometer3MatchedRulesCache", " Speedometer3Optimizations"
+        )
+        receipt = campaign.verify_local_score_receipt(
+            self.RECEIPT_CONFIG, path, opp, str(self.repo)
+        )
+        self.assertEqual("6" * 40, receipt["candidate_sha"])
+        for feature, common, message in (
+            ("Speedometer3Optimizations", "", "not #232's feature"),
+            ("Speedometer3MatchedRulesCache", "", r"enabled \[\] on both arms"),
+            ("Speedometer3MatchedRulesCache",
+             "Speedometer3Optimizations,Other", "enabled .* on both arms"),
+        ):
+            (self.repo / ("ab_evidence_" + "a" * 24)).rename(
+                self.repo / f"used-{feature}-{common}"
+            )
+            path = self.score_receipt(feature, common)
+            with self.assertRaisesRegex(ValueError, message):
+                campaign.verify_local_score_receipt(
+                    self.RECEIPT_CONFIG, path, opp, str(self.repo)
+                )
+
+    def test_candidate_defining_its_own_feature_passes_staged_check(self):
+        (self.repo / "engine.cc").write_text(
+            "BASE_FEATURE(kSpeedometer3MatchedRulesCache,\n"
+            '             "Speedometer3MatchedRulesCache",\n'
+            "             base::FEATURE_DISABLED_BY_DEFAULT);\n"
+            "int Work() {\n"
+            "  return base::FeatureList::IsEnabled(kSpeedometer3MatchedRulesCache)"
+            " ? 0 : 1;\n}\n"
+        )
+        self.git("add", "-A")
+        result = campaign.validate_staged_implementation(
+            str(self.repo), "Speedometer3MatchedRulesCache"
+        )
+        self.assertEqual("Speedometer3MatchedRulesCache", result["feature"])
+        with self.assertRaisesRegex(campaign.CampaignError, "explicit flag guard"):
+            campaign.validate_staged_implementation(
+                str(self.repo), "Speedometer3Optimizations"
+            )
 
     def test_speedometer_default_checkpoint_has_twenty_workloads_and_duration_gate(self):
         manifest, path = self.checkpoint_manifest(stories="default")

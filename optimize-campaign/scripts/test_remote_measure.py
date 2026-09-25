@@ -6,6 +6,7 @@
 """Tests for remote_measure script generation, quoting, and result discovery."""
 
 import argparse
+import io
 import json
 import os
 import pathlib
@@ -76,11 +77,46 @@ class ScriptGenerationTest(unittest.TestCase):
         bench_line = [l for l in script.splitlines() if "run_ab_benchmark" in l][0]
         self.assertIn("--enable-features=Speedometer3Optimizations", bench_line)
 
-    def test_ab_mode_never_gets_common_features(self):
-        script = rm.build_and_run_script(
-            make_args(mode="ab", enable_features="ShouldNotAppear"), SHA_A)
+    def test_ab_mode_without_common_features_has_no_enable_switch(self):
+        script = rm.build_and_run_script(make_args(mode="ab"), SHA_A)
         bench_line = [l for l in script.splitlines() if "run_ab_benchmark" in l][0]
-        self.assertNotIn("ShouldNotAppear", bench_line)
+        self.assertNotIn("--enable-features", bench_line)
+
+    def test_ab_mode_passes_both_arms_base_features(self):
+        script = rm.build_and_run_script(
+            make_args(
+                mode="ab",
+                feature="Speedometer3MatchedRulesCache",
+                enable_features="Speedometer3Optimizations",
+            ),
+            SHA_A,
+        )
+        bench_line = [l for l in script.splitlines() if "run_ab_benchmark" in l][0]
+        self.assertIn("--feature=Speedometer3MatchedRulesCache", bench_line)
+        self.assertIn("--enable-features=Speedometer3Optimizations", bench_line)
+
+    def test_local_ab_mode_passes_both_arms_base_features(self):
+        args = make_args(
+            mode="ab",
+            feature="Speedometer3MatchedRulesCache",
+            enable_features="Speedometer3Optimizations",
+            benchmark="speedometer3",
+            benchmark_source="local",
+            benchmark_url=None,
+            benchmark_payload_path=None,
+            browser="out/release/chrome",
+            driver_path=None,
+            browser_a=None,
+            browser_b=None,
+            characterization=False,
+            skip_build=True,
+            iteration_count=None,
+            worst_case_count=None,
+        )
+        script = rm.build_local_script(args, pathlib.Path("/chromium"), "a" * 64)
+        bench_line = [l for l in script.splitlines() if "run_ab_benchmark" in l][0]
+        self.assertIn("--feature=Speedometer3MatchedRulesCache", bench_line)
+        self.assertIn("--enable-features=Speedometer3Optimizations", bench_line)
 
     def test_profile_mode(self):
         script = rm.build_and_run_script(
@@ -634,6 +670,16 @@ class MainValidationTest(unittest.TestCase):
     def test_score_mode_rejects_fewer_than_32_blocks(self):
         with self.assertRaises(SystemExit):
             rm.main(["--mode", "aa", "--blocks", "16"])
+
+    def test_ab_mode_rejects_toggled_feature_in_base_list(self):
+        stderr = io.StringIO()
+        with mock.patch("sys.stderr", stderr), self.assertRaises(SystemExit):
+            rm.main([
+                "--mode", "ab", "--feature", "Speedometer3MatchedRulesCache",
+                "--enable-features",
+                "Speedometer3Optimizations,Speedometer3MatchedRulesCache",
+            ])
+        self.assertIn("must not also appear", stderr.getvalue())
 
 
 if __name__ == "__main__":

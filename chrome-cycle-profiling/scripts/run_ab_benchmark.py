@@ -8,6 +8,8 @@ Modes (choose exactly one):
   --aa                        Genuine A/A calibration: identical binary and
                               identical flags on both arms.
   --feature=Name              Flag on/off A/B within one binary (--browser).
+                              --enable-features lists features enabled on
+                              both arms (the base the toggle increments on).
   --browser-a/--browser-b     Binary vs binary A/B (two build dirs). Pass
                               --enable-features to apply features identically
                               to both arms — required when the binaries differ
@@ -343,6 +345,41 @@ def check_feature_registered(cwd, feature):
     return True
 
 
+def feature_names(value):
+    """Return the non-empty, stripped names in a comma-separated list."""
+    return [name.strip() for name in (value or "").split(",") if name.strip()]
+
+
+def feature_arm_flags(feature, common, enable):
+    """Return the browser switches for one arm of a --feature A/B.
+
+    `common` is the comma-separated both-arms list. Chrome keeps only the
+    last copy of a repeated switch, so each arm gets exactly one
+    --enable-features switch: the enabled arm folds the toggled feature into
+    the common list, the disabled arm keeps the common list and disables the
+    toggled feature. With no common features the switches match the
+    historical single-switch form byte for byte.
+    """
+    common_names = feature_names(common)
+    if enable:
+        return [f"--enable-features={','.join(common_names + [feature])}"]
+    flags = []
+    if common_names:
+        flags.append(f"--enable-features={','.join(common_names)}")
+    flags.append(f"--disable-features={feature}")
+    return flags
+
+
+def feature_overlap_error(feature, common):
+    """Return an error when the toggled feature is also a both-arms feature."""
+    if feature and feature in feature_names(common):
+        return (
+            "--feature must not also appear in --enable-features: the "
+            "both-arms list would enable it on the disabled arm too."
+        )
+    return None
+
+
 def run_single_rep(browser, out_dir, stories, flag_option, state_str, rep_index,
                    block_label, cwd, *, adapter,
                    benchmark_source=None, benchmark_url=None, driver_path=None,
@@ -375,7 +412,9 @@ def run_single_rep(browser, out_dir, stories, flag_option, state_str, rep_index,
         cmd.append(f"--worst-case-count={int(worst_case_count)}")
     if adapter.benchmark_id == "jetstream3":
         cmd.append("--timeout-scale=3")
-    if flag_option:
+    if isinstance(flag_option, (list, tuple)):
+        cmd.extend(flag for flag in flag_option if flag)
+    elif flag_option:
         cmd.append(flag_option)
 
     subprocess.run(
@@ -616,9 +655,11 @@ def main():
     )
     parser.add_argument("--enable-features", default="",
                         help="Comma-separated features enabled on BOTH arms "
-                        "(aa and two-binary modes only). Required for bisecting "
-                        "flag-gated campaign commits: without it, two-binary arms "
-                        "both run baseline behavior and cannot differ.")
+                        "(all modes). Required for bisecting flag-gated "
+                        "campaign commits: without it, two-binary arms both run "
+                        "baseline behavior and cannot differ. In --feature mode "
+                        "it is the base the toggled feature increments on and "
+                        "must not contain --feature.")
     parser.add_argument("--skip-feature-check", action="store_true",
                         help="Skip verifying that --feature is defined in the source tree")
     parser.add_argument(
@@ -703,9 +744,9 @@ def main():
     if two_binary and not (args.browser_a and args.browser_b):
         print("Error: two-binary mode requires both --browser-a and --browser-b.", file=sys.stderr)
         sys.exit(1)
-    if args.enable_features and args.feature:
-        print("Error: --enable-features applies to both arms and cannot combine "
-              "with --feature mode, which manages the flag itself.", file=sys.stderr)
+    overlap_error = feature_overlap_error(args.feature, args.enable_features)
+    if overlap_error:
+        print(f"Error: {overlap_error}", file=sys.stderr)
         sys.exit(1)
 
     cwd = get_repo_root()
@@ -742,8 +783,9 @@ def main():
         if args.feature and not check_feature_registered(cwd, args.feature):
             sys.exit(2)
         # A typo here is worse than in --feature mode: both arms silently run
-        # baseline behavior and a bisect goes blind.
-        for name in filter(None, (n.strip() for n in args.enable_features.split(","))):
+        # baseline behavior and a bisect goes blind (or, in --feature mode,
+        # the increment is measured on the wrong base).
+        for name in feature_names(args.enable_features):
             if not check_feature_registered(cwd, name):
                 sys.exit(2)
 
@@ -765,6 +807,8 @@ def main():
         mode_key = "ab2"
     else:
         mode_str = f"FEATURE A/B ({args.feature})"
+        if args.enable_features:
+            mode_str += f" on top of {args.enable_features}"
         mode_key = "ab"
 
     print(f"\n=======================================================")
@@ -791,9 +835,10 @@ def main():
                 common_flags,
                 ("ARM_B" if enable else "ARM_A"),
             )
+        flags = feature_arm_flags(args.feature, args.enable_features, enable)
         return (
             args.browser,
-            (f"--enable-features={args.feature}" if enable else f"--disable-features={args.feature}"),
+            (flags[0] if len(flags) == 1 else flags),
             ("ENABLED" if enable else "DISABLED"),
         )
 

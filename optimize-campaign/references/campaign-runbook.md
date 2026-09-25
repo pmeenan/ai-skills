@@ -452,6 +452,47 @@ Keep their raw manifests and fixed plans; do not use a cumulative win to rescue
 an isolated candidate that failed its gates. Follow the calibrated sample
 budget, full workload regression family and no-selective-retest policy.
 
+### Candidates on top of landed work (per-candidate feature)
+
+Every candidate normally toggles the one campaign feature. Once a candidate
+has landed behind that flag, the next candidate cannot toggle it as well: its
+A arm would switch off the landed work too, and the measurement would be the
+sum of both. When a candidate must be measured as an increment over a landed
+candidate that shares the campaign flag:
+
+1. The host records the plan:
+   `campaign.py set-feature --opp N --feature Speedometer3MatchedRulesCache
+   [--note TEXT]`. The opportunity then toggles its own feature, with
+   `base_features = [<campaign feature>]` enabled on both arms (`show --opp N`
+   prints both). The command refuses the campaign feature itself and a
+   landed/parked/rejected/reverted opportunity.
+2. The patch defines its own `base::Feature` (default off) and guards the
+   change with it. At `-> review` the staged-diff check requires the new
+   executable lines to reference the opportunity's feature, not the campaign
+   feature.
+3. Every measurement enables the campaign feature on BOTH arms and toggles
+   only the candidate's feature:
+   - `mechanism_evidence.py capture-pairs --feature <own>
+     --enable-features=<campaign feature>` (arm A runs the campaign feature,
+     arm B the campaign feature plus its own);
+   - `remote_measure.py --mode ab --feature <own>
+     --enable-features=<campaign feature>`;
+   - `run_ab_benchmark.py --feature <own> --enable-features=<campaign
+     feature>` (the runner folds both into one `--enable-features` switch per
+     arm, because Chrome keeps only the last copy of a repeated switch);
+   - Pinpoint: the plan's `identity` carries `"feature": "<own>"` and
+     `"base_features": ["<campaign feature>"]`, and `pinpoint_measure.py run`
+     requires `--base-extra-args=--enable-features=<campaign feature>` and
+     `--experiment-extra-args=--enable-features=<campaign feature>,<own>`.
+4. The landing gate checks each local receipt against that plan: the manifest
+   toggled the opportunity's feature and enabled exactly its base features on
+   both arms. Opportunities without `set-feature` keep the old contract
+   (toggle the campaign feature, nothing enabled on both arms).
+
+Cumulative checkpoints still toggle the campaign feature only; a landed
+per-candidate feature is not part of that toggle until it is folded into the
+campaign flag.
+
 ### 7. End-of-campaign reporting, ledger tracking, and upstream CL preparation
 
 When the campaign concludes (e.g., candidate quota reached, frontier exhausted,

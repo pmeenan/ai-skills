@@ -128,5 +128,74 @@ class PinpointMeasureTest(unittest.TestCase):
         )
 
 
+class PlanInvocationTest(unittest.TestCase):
+    def plan(self, **identity):
+        return {
+            "identity": {
+                "patchset_url": "https://chromium-review.googlesource.com/c/chromium/src/+/1/2",
+                "baseline_sha": "a" * 40,
+                "benchmark": "speedometer3",
+                "feature": "Speedometer3MatchedRulesCache",
+                **identity,
+            },
+            "statistics": {"blocks": 150},
+        }
+
+    def args(self, base, experiment):
+        import argparse
+        return argparse.Namespace(
+            cl="https://chromium-review.googlesource.com/c/chromium/src/+/1/2",
+            base_commit="a" * 40, benchmark="speedometer3", attempts=150,
+            base_extra_args=base, experiment_extra_args=experiment,
+        )
+
+    def test_plan_without_base_features_keeps_single_arm_flag(self):
+        plan = self.plan()
+        self.assertTrue(pinpoint_measure.plan_invocation_matches(
+            self.args("", "--enable-features=Speedometer3MatchedRulesCache"), plan
+        ))
+        self.assertFalse(pinpoint_measure.plan_invocation_matches(
+            self.args("--enable-features=Speedometer3Optimizations",
+                      "--enable-features=Speedometer3MatchedRulesCache"), plan
+        ))
+        self.assertTrue(pinpoint_measure.plan_invocation_matches(
+            self.args("", "--enable-features=Speedometer3MatchedRulesCache"),
+            self.plan(base_features=[]),
+        ))
+
+    def test_plan_with_base_features_enables_them_on_both_arms(self):
+        plan = self.plan(base_features=["Speedometer3Optimizations"])
+        base = "--enable-features=Speedometer3Optimizations"
+        experiment = (
+            "--enable-features=Speedometer3Optimizations,"
+            "Speedometer3MatchedRulesCache"
+        )
+        self.assertEqual(
+            (base, experiment),
+            pinpoint_measure.planned_extra_args(plan["identity"]),
+        )
+        self.assertTrue(pinpoint_measure.plan_invocation_matches(
+            self.args(base, experiment), plan
+        ))
+        for wrong in (
+            ("", experiment),
+            (base, "--enable-features=Speedometer3MatchedRulesCache"),
+            (base, base),
+        ):
+            self.assertFalse(pinpoint_measure.plan_invocation_matches(
+                self.args(*wrong), plan
+            ))
+
+    def test_plan_feature_listed_as_base_is_refused(self):
+        plan = self.plan(base_features=["Speedometer3MatchedRulesCache"])
+        with self.assertRaises(ValueError):
+            pinpoint_measure.planned_extra_args(plan["identity"])
+        self.assertFalse(pinpoint_measure.plan_invocation_matches(
+            self.args("--enable-features=Speedometer3MatchedRulesCache",
+                      "--enable-features=Speedometer3MatchedRulesCache,"
+                      "Speedometer3MatchedRulesCache"), plan
+        ))
+
+
 if __name__ == "__main__":
     unittest.main()

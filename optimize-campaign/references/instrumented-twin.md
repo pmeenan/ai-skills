@@ -351,6 +351,14 @@ rejects separate baseline/candidate batches even if their block IDs match.
 For distinct binaries, schedule the same actual interleaving with matching
 instrumentation and provenance; never rebuild or retune between arms.
 
+Candidates on top of landed work (per-candidate feature): when the candidate
+is an increment over a landed candidate behind the campaign flag (the host ran
+`campaign.py set-feature`), pass `--feature <candidate's own feature>
+--enable-features=<campaign feature>`. Arm A captures with the campaign
+feature enabled, arm B with the campaign feature plus the candidate's; the
+toggled feature must not also be in the both-arms list. See the runbook
+section of the same name.
+
 `ingest` records each arm's feature activation from the capture commands
 (`feature_activation`, constant within an arm) and `compare` carries both
 arms' activation into its output. The review gate accepts this flag twin:

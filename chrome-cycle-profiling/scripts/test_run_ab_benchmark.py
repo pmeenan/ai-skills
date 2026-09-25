@@ -212,5 +212,67 @@ class SuiteDiffTest(unittest.TestCase):
         self.assertAlmostEqual(math.log(1.1), diffs[0])
 
 
+class FeatureArmFlagsTest(unittest.TestCase):
+    def test_without_common_features_matches_single_switch_form(self):
+        self.assertEqual(
+            ["--enable-features=Speedometer3Optimizations"],
+            ab.feature_arm_flags("Speedometer3Optimizations", "", True),
+        )
+        self.assertEqual(
+            ["--disable-features=Speedometer3Optimizations"],
+            ab.feature_arm_flags("Speedometer3Optimizations", "", False),
+        )
+
+    def test_common_features_fold_into_one_enable_switch_per_arm(self):
+        enabled = ab.feature_arm_flags(
+            "Speedometer3MatchedRulesCache", "Speedometer3Optimizations", True
+        )
+        disabled = ab.feature_arm_flags(
+            "Speedometer3MatchedRulesCache", " Speedometer3Optimizations ",
+            False,
+        )
+        self.assertEqual(
+            ["--enable-features=Speedometer3Optimizations,"
+             "Speedometer3MatchedRulesCache"],
+            enabled,
+        )
+        self.assertEqual(
+            ["--enable-features=Speedometer3Optimizations",
+             "--disable-features=Speedometer3MatchedRulesCache"],
+            disabled,
+        )
+        for flags in (enabled, disabled):
+            self.assertEqual(
+                1, sum(f.startswith("--enable-features=") for f in flags)
+            )
+
+    def test_toggled_feature_in_common_list_is_rejected(self):
+        self.assertIsNone(ab.feature_overlap_error("B", "A"))
+        self.assertIsNone(ab.feature_overlap_error("", "A"))
+        self.assertIn(
+            "must not also appear",
+            ab.feature_overlap_error("B", "A, B"),
+        )
+
+    def test_run_single_rep_appends_every_arm_switch(self):
+        calls = []
+        original = ab.subprocess.run
+        ab.subprocess.run = lambda cmd, **kwargs: calls.append(cmd)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                ab.run_single_rep(
+                    "out/chrome", "res", None,
+                    ["--enable-features=A", "--disable-features=B"],
+                    "DISABLED", 0, "B1_A", tmp,
+                    adapter=ab.benchmark_adapters.SPEEDOMETER_3,
+                    display_environment={"mode": "headless"},
+                )
+        finally:
+            ab.subprocess.run = original
+        self.assertEqual(
+            ["--enable-features=A", "--disable-features=B"], calls[0][-2:]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
