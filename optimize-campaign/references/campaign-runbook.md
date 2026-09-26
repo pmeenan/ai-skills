@@ -555,3 +555,20 @@ Stop and report when any condition holds:
 Never claim aggregate improvement when the confidence interval crosses zero.
 Report the point estimate, 95% CI, MDE, blocks, seed, SHAs, payload, workload
 inventory, and build provenance. Run `campaign.py audit` before a final claim.
+
+## Sharing the measurement host with other agents (`~/.hostlock`)
+
+When the measurement host also runs other agents' heavy work (docker builds,
+compiles, test suites), measurements need the machine to themselves. The
+`~/.hostlock` protocol is a machine-wide reader/writer lock: everyday heavy
+work runs under a shared hold (`hostlock shared --label <what> -- <command>`),
+and a measurement takes the exclusive hold. The exclusive side first closes a
+gate so no new shared job starts, waits for the running shared jobs to finish,
+measures alone, and reopens the gate. `measurement_host.lease()` (and so every
+score runner, capture and capture-pairs session) takes the exclusive hold
+automatically whenever the lock directory exists (`$HOSTLOCK_DIR`, default
+`~/.hostlock`), waits with a progress line every minute, and exports
+`HOSTLOCK_HELD` so nested leases and child processes do not re-lock. A
+measurement started inside a shared hold is refused (it would wait for itself).
+Wrap campaign builds and unit-test runs in `hostlock shared` too, so a waiting
+measurement on the same host sees them.

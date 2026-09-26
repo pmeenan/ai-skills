@@ -4,6 +4,7 @@
 import json
 import hashlib
 import os
+os.environ["HOSTLOCK_DIR"] = "/nonexistent/hostlock-disabled-for-tests"  # never take the real machine lock in unit tests
 import pathlib
 import subprocess
 import tempfile

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Transactional tuning tests against in-memory sysfs, never the real host."""
+import os
+os.environ["HOSTLOCK_DIR"] = "/nonexistent/hostlock-disabled-for-tests"  # never take the real machine lock in unit tests
 import contextlib
 import json
 import pathlib

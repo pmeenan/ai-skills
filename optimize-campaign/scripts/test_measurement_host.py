@@ -86,3 +86,52 @@ class HostObservationTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class HostExclusiveTest(unittest.TestCase):
+    def setUp(self):
+        import os
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = pathlib.Path(self.tmp.name) / "hostlock"
+        self.dir.mkdir()
+        self.env = mock.patch.dict(os.environ, {"HOSTLOCK_DIR": str(self.dir)})
+        self.env.start()
+        os.environ.pop("HOSTLOCK_HELD", None)
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def test_disabled_without_lock_dir(self):
+        import os
+        with mock.patch.dict(os.environ, {"HOSTLOCK_DIR": str(self.dir / "missing")}):
+            with host.host_exclusive():
+                self.assertNotIn("HOSTLOCK_HELD", os.environ)
+
+    def test_waits_for_shared_holder_and_closes_gate(self):
+        import subprocess, time
+        holder = subprocess.Popen(["flock", "-s", str(self.dir / "main.lock"), "sleep", "2"])
+        time.sleep(0.3)
+        start = time.monotonic()
+        with host.host_exclusive("test"):
+            self.assertGreaterEqual(time.monotonic() - start, 1.2)
+            gate_probe = subprocess.run(["flock", "-x", "-n", str(self.dir / "gate.lock"), "true"])
+            self.assertNotEqual(0, gate_probe.returncode)
+        holder.wait()
+        gate_probe = subprocess.run(["flock", "-x", "-n", str(self.dir / "gate.lock"), "true"])
+        self.assertEqual(0, gate_probe.returncode)
+
+    def test_nested_and_child_holds_do_not_relock(self):
+        import os
+        with host.host_exclusive("outer"):
+            self.assertTrue(os.environ["HOSTLOCK_HELD"].startswith("exclusive:"))
+            with host.host_exclusive("inner"):
+                pass
+        self.assertNotIn("HOSTLOCK_HELD", os.environ)
+
+    def test_refuses_inside_shared_hold(self):
+        import os
+        with mock.patch.dict(os.environ, {"HOSTLOCK_HELD": "shared:1"}):
+            with self.assertRaises(RuntimeError):
+                with host.host_exclusive():
+                    pass

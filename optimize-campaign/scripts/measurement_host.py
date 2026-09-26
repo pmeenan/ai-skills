@@ -24,8 +24,109 @@ SOFTWARE_RENDERERS = ('swiftshader', 'llvmpipe', 'softpipe', 'subzero')
 CHROME_PROCESS_NAMES = ('chrome', 'chromium', 'content_shell', 'headless_shell')
 
 
+HOSTLOCK_REPORT_EVERY = 60
+_host_exclusive_depth = 0
+
+
+def hostlock_dir():
+    return pathlib.Path(os.environ.get('HOSTLOCK_DIR', str(pathlib.Path.home() / '.hostlock')))
+
+
+def _hostlock_holders(lock_dir, mode=None):
+    out = []
+    for f in sorted((lock_dir / 'holders').glob('*.json')):
+        try:
+            import json
+            h = json.loads(f.read_text())
+            os.kill(int(h.get('pid', 0)), 0)
+        except (OSError, ValueError):
+            continue
+        if mode is None or h.get('mode') == mode:
+            out.append(f"{h.get('mode')} pid {h.get('pid')} '{h.get('label', '')}' ({h.get('state')})")
+    return '; '.join(out) or 'none'
+
+
+def _hostlock_wait(fd, op, what):
+    start = time.monotonic()
+    last = -HOSTLOCK_REPORT_EVERY
+    while True:
+        try:
+            fcntl.flock(fd, op | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            waited = time.monotonic() - start
+            if waited - last >= HOSTLOCK_REPORT_EVERY:
+                print(f'hostlock: measurement waiting {int(waited)}s for {what()}', flush=True)
+                last = waited
+            time.sleep(1)
+
+
+@contextlib.contextmanager
+def host_exclusive(label='measurement'):
+    """Machine-wide exclusive hold for a measurement (the ~/.hostlock protocol
+    of the `hostlock` tool): close the gate so no new shared job starts, wait
+    for running shared jobs (docker builds, compiles) to finish, then measure
+    alone. Active only when the lock directory exists; nested holds in this
+    process or its children (HOSTLOCK_HELD) do not re-lock."""
+    global _host_exclusive_depth
+    lock_dir = hostlock_dir()
+    held = os.environ.get('HOSTLOCK_HELD', '')
+    if _host_exclusive_depth or held.startswith('exclusive') or not lock_dir.is_dir():
+        _host_exclusive_depth += 1
+        try:
+            yield
+        finally:
+            _host_exclusive_depth -= 1
+        return
+    if held.startswith('shared'):
+        raise RuntimeError('a measurement cannot run inside a shared hostlock hold '
+                           '(it would wait for itself); run it outside the shared job')
+    (lock_dir / 'holders').mkdir(parents=True, exist_ok=True)
+    gate = os.open(lock_dir / 'gate.lock', os.O_CREAT | os.O_RDWR, 0o644)
+    main = os.open(lock_dir / 'main.lock', os.O_CREAT | os.O_RDWR, 0o644)
+    record = lock_dir / 'holders' / f'{os.getpid()}.json'
+    import json
+    def register(state):
+        tmp = record.with_suffix('.tmp')
+        tmp.write_text(json.dumps({'pid': os.getpid(), 'mode': 'exclusive', 'label': label,
+                                   'state': state, 'since': time.strftime('%Y-%m-%dT%H:%M:%S'),
+                                   'cwd': os.getcwd()}))
+        tmp.replace(record)
+    previous = os.environ.get('HOSTLOCK_HELD')
+    try:
+        register('waiting')
+        _hostlock_wait(gate, fcntl.LOCK_EX, lambda: 'the gate (another measurement: '
+                       + _hostlock_holders(lock_dir, 'exclusive') + ')')
+        _hostlock_wait(main, fcntl.LOCK_EX, lambda: 'running shared jobs to finish: '
+                       + _hostlock_holders(lock_dir, 'shared'))
+        register('held')
+        os.environ['HOSTLOCK_HELD'] = f'exclusive:{os.getpid()}'
+        _host_exclusive_depth += 1
+        yield
+    finally:
+        if _host_exclusive_depth:
+            _host_exclusive_depth -= 1
+        if previous is None:
+            os.environ.pop('HOSTLOCK_HELD', None)
+        else:
+            os.environ['HOSTLOCK_HELD'] = previous
+        try:
+            record.unlink()
+        except OSError:
+            pass
+        os.close(main)
+        os.close(gate)
+
+
 @contextlib.contextmanager
 def lease(path=LOCK_FILE):
+    with host_exclusive():
+        with _measurement_lease(path):
+            yield
+
+
+@contextlib.contextmanager
+def _measurement_lease(path=LOCK_FILE):
     """Use the wrapper's inherited flock when present; otherwise acquire it.
 
     A duplicate of an inherited open file description shares its flock. Never
