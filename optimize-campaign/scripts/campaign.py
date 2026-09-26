@@ -11122,10 +11122,14 @@ def cmd_reject(args):
 
 
 def cmd_park(args):
+    # An implementing candidate can be parked too: its patch, tests or
+    # diagnostics may show the sized work is not reachable by a safe change
+    # yet (round 105, #232) without ruling the mechanism out, which is what
+    # `reject` records.
     return _close(
         args,
         "parked",
-        allowed_statuses={"candidate", "investigating", "sized"},
+        allowed_statuses={"candidate", "investigating", "sized", "implementing"},
     )
 
 

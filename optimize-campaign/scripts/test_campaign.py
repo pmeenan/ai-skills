@@ -1605,6 +1605,23 @@ class CampaignTest(unittest.TestCase):
             "--reason", "fresh counter disproves the earlier assumption"))
         self.assertEqual("candidate", self.ledger()["opportunities"][0]["status"])
 
+    def test_park_from_implementing_and_reopen(self):
+        opp = self.add_opp()
+        ledger = campaign.Ledger(self.dir).load()
+        ledger.opp(opp)["status"] = "implementing"
+        ledger.save()
+        self.assertEqual(0, self.run_cmd(
+            "park", "--opp", str(opp), "--reason",
+            "sized work not reachable by a safe change yet"))
+        self.assertEqual("parked", self.ledger()["opportunities"][0]["status"])
+        self.assertEqual(0, self.run_cmd("reopen", "--opp", str(opp)))
+        self.assertEqual("candidate", self.ledger()["opportunities"][0]["status"])
+        ledger = campaign.Ledger(self.dir).load()
+        ledger.opp(opp)["status"] = "review"
+        ledger.save()
+        self.assertEqual(1, self.run_cmd(
+            "park", "--opp", str(opp), "--reason", "review is not parkable"))
+
     def test_review_only_in_review_state(self):
         opp = self.add_opp()
         self.assertEqual(1, self.run_cmd(
