@@ -11318,6 +11318,21 @@ def cmd_note(args):
 FEATURE_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 
 
+def landed_base_features(ledger_data, campaign_feature, exclude=None):
+    """Features that must be on in both arms: the campaign feature, then the
+    own features of landed candidates in landing order (landed work behind
+    its own flag is part of the base a later candidate is measured over)."""
+    landed = sorted(
+        (o for o in ledger_data.get("opportunities", [])
+         if o.get("status") == "landed" and o.get("feature") and o.get("id") != exclude),
+        key=lambda o: o.get("runtime_change_sequence") or 0)
+    base = [campaign_feature]
+    for o in landed:
+        if o["feature"] not in base:
+            base.append(o["feature"])
+    return base
+
+
 def cmd_set_feature(args):
     """Give one candidate its own base::Feature on top of the campaign flag.
 
@@ -11346,10 +11361,13 @@ def cmd_set_feature(args):
             f"#{opp['id']} is {opp['status']}; its feature plan is frozen"
         )
     previous = opp_feature_plan(ledger.data["config"], opp)
+    base = landed_base_features(ledger.data, campaign_feature, exclude=opp["id"])
+    if args.feature in base:
+        raise CampaignError(f"{args.feature!r} already belongs to landed work")
     opp["feature"] = args.feature
-    opp["base_features"] = [campaign_feature]
+    opp["base_features"] = base
     event = (
-        f"set-feature: toggle {args.feature!r} with {campaign_feature!r} "
+        f"set-feature: toggle {args.feature!r} with {', '.join(base)} "
         f"enabled on both arms (was toggle {previous[0]!r} on "
         f"{previous[1]!r})"
     )
@@ -11358,7 +11376,7 @@ def cmd_set_feature(args):
     ledger.record(opp, event)
     ledger.save()
     print(
-        f"#{opp['id']} toggles {args.feature} with {campaign_feature} enabled "
+        f"#{opp['id']} toggles {args.feature} with {', '.join(base)} enabled "
         "on both arms"
     )
     return 0

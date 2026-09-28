@@ -2934,5 +2934,18 @@ class SkillLineageTest(unittest.TestCase):
         self.assertFalse(ok(".agents/skills/optimize-campaign/scripts/remote_measure.py"))
 
 
+class LandedBaseFeaturesTest(unittest.TestCase):
+
+    def test_landed_own_features_join_the_base_in_order(self):
+        data = {"opportunities": [
+            {"id": 2, "status": "landed", "feature": "B", "runtime_change_sequence": 5},
+            {"id": 1, "status": "landed", "feature": "A", "runtime_change_sequence": 4},
+            {"id": 3, "status": "review", "feature": "C"},
+            {"id": 4, "status": "landed"},
+        ]}
+        self.assertEqual(["Camp", "A", "B"], campaign.landed_base_features(data, "Camp"))
+        self.assertEqual(["Camp", "A"], campaign.landed_base_features(data, "Camp", exclude=2))
+
+
 if __name__ == "__main__":
     unittest.main()
