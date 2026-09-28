@@ -6235,8 +6235,12 @@ def measurement_display_identity(manifest):
     return display_identity(environment.get("display"))
 
 
-def verify_fleet_receipt(config, path):
-    """A Pinpoint analysis summary from pinpoint_measure.py for the campaign bot."""
+def verify_fleet_receipt(config, path, strict=True):
+    """A Pinpoint analysis summary from pinpoint_measure.py for the campaign bot.
+
+    With strict=False (a recorded user fleet override) any bot and verdict is
+    accepted and recorded as disclosed evidence rather than as a pass.
+    """
     path = pathlib.Path(path)
     try:
         summary = json.loads(path.read_text())
@@ -6245,9 +6249,9 @@ def verify_fleet_receipt(config, path):
     for field in ("job_id", "cl_url", "bot", "verdict", "metrics"):
         if not summary.get(field):
             raise ValueError(f"{path} lacks {field}; use pinpoint_measure.py analyze output")
-    if config.get("fleet_bot") and summary["bot"] != config["fleet_bot"]:
+    if strict and config.get("fleet_bot") and summary["bot"] != config["fleet_bot"]:
         raise ValueError(f"{path} ran on {summary['bot']!r}, not the campaign bot {config['fleet_bot']!r}")
-    if summary["verdict"] != "IMPROVEMENT":
+    if strict and summary["verdict"] != "IMPROVEMENT":
         raise ValueError(f"{path} fleet verdict is {summary['verdict']}, not IMPROVEMENT")
     return {
         "stage": "fleet", "path": str(path.resolve()), "sha256": sha256_file(path),
@@ -6256,13 +6260,27 @@ def verify_fleet_receipt(config, path):
     }
 
 
-def verify_performance_evidence(config, opp, paths, repo_root, unexpected=False):
+FLEET_OVERRIDE_MIN_CHARS = 40
+
+
+def verify_performance_evidence(config, opp, paths, repo_root, unexpected=False,
+                                fleet_override=None):
     """Landing evidence: local fixed-plan IMPROVEMENT(s) plus the fleet bot.
 
     Runner-owned manifests are recomputed from their raw block results and
     digest-bound here; there is no signature layer. An unexpected win needs
     a second local run with a different seed that confirms it.
+
+    `fleet_override` is a user's recorded decision to land without a fleet
+    IMPROVEMENT on the campaign bot (e.g. a platform-specific win). It never
+    relaxes the local gate; the fleet summaries passed with it are verified,
+    kept as disclosed evidence whatever their bot or verdict, and at least one
+    is still required so the decision rests on fleet data.
     """
+    if fleet_override is not None and len(fleet_override.strip()) < FLEET_OVERRIDE_MIN_CHARS:
+        raise ValueError(
+            f"--fleet-override must state the user's decision and why "
+            f"(at least {FLEET_OVERRIDE_MIN_CHARS} characters)")
     receipts = {"local": [], "fleet": []}
     for path in paths or []:
         try:
@@ -6272,7 +6290,8 @@ def verify_performance_evidence(config, opp, paths, repo_root, unexpected=False)
         if probe.get("runner") == SCORE_MANIFEST_RUNNER:
             receipts["local"].append(verify_local_score_receipt(config, path, opp, repo_root))
         elif "bot" in probe and "metrics" in probe:
-            receipts["fleet"].append(verify_fleet_receipt(config, path))
+            receipts["fleet"].append(
+                verify_fleet_receipt(config, path, strict=fleet_override is None))
         else:
             raise ValueError(f"{path} is neither a score-runner manifest nor a Pinpoint summary")
     local = receipts["local"]
@@ -6293,6 +6312,12 @@ def verify_performance_evidence(config, opp, paths, repo_root, unexpected=False)
     elif len(improvements) != len(local):
         verdicts = ", ".join(f"{pathlib.Path(r['path']).name}: {r['verdict']}" for r in local)
         raise ValueError("every local receipt must be a fixed-plan IMPROVEMENT (" + verdicts + ")")
+    if fleet_override is not None:
+        if not receipts["fleet"]:
+            raise ValueError("a fleet override still needs the Pinpoint summaries it overrides")
+        return {"candidate_sha": next(iter(candidate_shas)), "local": local,
+                "fleet": receipts["fleet"],
+                "fleet_override": {"decision": fleet_override.strip(), "recorded_at": utc_now()}}
     if config.get("require_fleet", True) and not receipts["fleet"]:
         raise ValueError(f"a Pinpoint IMPROVEMENT on {config.get('fleet_bot')} is required before landing")
     return {"candidate_sha": next(iter(candidate_shas)), "local": local, "fleet": receipts["fleet"]}
@@ -9753,6 +9778,8 @@ def cmd_advance(args):
             )
         opp["rework_rounds"] = opp.get("rework_rounds", 0) + 1
         opp["reviews"] = {}
+    if getattr(args, "fleet_override", None) is not None and dst != "landed":
+        raise CampaignError("--fleet-override applies only to -> landed")
     if dst == "landed":
         if not args.commit:
             raise CampaignError("-> landed requires --commit <sha>")
@@ -9774,6 +9801,7 @@ def cmd_advance(args):
                 evidence = verify_performance_evidence(
                     ledger.data["config"], opp, args.performance_receipt, repo_root,
                     unexpected=args.unexpected_win,
+                    fleet_override=getattr(args, "fleet_override", None),
                 )
                 opp["performance_receipts"] = evidence
                 opp["integration_mapping"] = integration_mapping(
@@ -13656,6 +13684,10 @@ def build_parser():
                    "(they are excluded from the reviewed tree)")
     add_gate_challenge_arguments(p)
     p.add_argument("--unexpected-win", action="store_true", help="Require independent confirmation of a newly preregistered endpoint")
+    p.add_argument("--fleet-override", default=None,
+                   help="Landing only: the user's recorded decision to land without a fleet IMPROVEMENT on the "
+                        "campaign bot; the local gate still applies and the passed Pinpoint summaries are kept as "
+                        "disclosed evidence")
     p.add_argument("--performance-receipt", action="append", help="Local score-runner A/B manifest and Pinpoint analysis summary for the candidate; repeat per file")
     p.set_defaults(func=cmd_advance)
 

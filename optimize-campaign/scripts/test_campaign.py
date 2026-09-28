@@ -2845,6 +2845,45 @@ class DisplayPolicyTest(unittest.TestCase):
                          "gpu_renderer": "SwiftShader"}, "run")
         campaign.require_campaign_display({}, {"mode": "headless"}, "legacy")
 
+class FleetOverrideTest(unittest.TestCase):
+
+    def _run(self, fleet_summaries, override):
+        import json, tempfile, pathlib
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            paths = []
+            local = pathlib.Path(d) / "manifest.json"
+            local.write_text(json.dumps({"runner": campaign.SCORE_MANIFEST_RUNNER}))
+            paths.append(str(local))
+            for i, (bot, verdict) in enumerate(fleet_summaries):
+                f = pathlib.Path(d) / f"fleet{i}.json"
+                f.write_text(json.dumps({"job_id": "j", "cl_url": "u", "bot": bot,
+                                         "verdict": verdict, "metrics": {"Score": {}}}))
+                paths.append(str(f))
+            receipt = {"verdict": "IMPROVEMENT", "candidate_sha": "c", "display": {},
+                       "seed": 1, "path": str(local)}
+            with mock.patch.object(campaign, "verify_local_score_receipt", return_value=receipt):
+                return campaign.verify_performance_evidence(
+                    {"fleet_bot": "mac-m1_mini_2020-perf-pgo"}, {"id": 1}, paths, d,
+                    fleet_override=override)
+
+    def test_without_override_non_improvement_fleet_blocks(self):
+        with self.assertRaises(ValueError):
+            self._run([("mac-m1_mini_2020-perf-pgo", "INCONCLUSIVE")], None)
+
+    def test_override_records_disclosed_fleet_evidence(self):
+        decision = "User decision: land on the local win; fleet shows no Mac effect."
+        ev = self._run([("mac-m1_mini_2020-perf-pgo", "INCONCLUSIVE"),
+                        ("win-11-perf-pgo", "INCONCLUSIVE")], decision)
+        self.assertEqual(decision, ev["fleet_override"]["decision"])
+        self.assertEqual(["INCONCLUSIVE", "INCONCLUSIVE"], [r["verdict"] for r in ev["fleet"]])
+
+    def test_override_needs_reason_and_fleet_data(self):
+        with self.assertRaises(ValueError):
+            self._run([("mac-m1_mini_2020-perf-pgo", "INCONCLUSIVE")], "ok")
+        with self.assertRaises(ValueError):
+            self._run([], "User decision: land on the local win without any fleet data at all.")
+
 
 if __name__ == "__main__":
     unittest.main()
