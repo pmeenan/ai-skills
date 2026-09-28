@@ -2885,5 +2885,54 @@ class FleetOverrideTest(unittest.TestCase):
             self._run([], "User decision: land on the local win without any fleet data at all.")
 
 
+class SkillLineageTest(unittest.TestCase):
+
+    def _tree(self, root, files):
+        import pathlib, remote_measure
+        for skill_dir in remote_measure.SKILL_DIRS:
+            (pathlib.Path(root) / skill_dir).mkdir(parents=True, exist_ok=True)
+        for rel, text in files.items():
+            p = pathlib.Path(root) / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text)
+        return campaign.skill_manifest_digest(campaign.skill_tree_manifest(root))
+
+    def _check(self, changed_rel):
+        import json, pathlib, tempfile
+        base = {".agents/skills/optimize-campaign/scripts/campaign.py": "gate v1",
+                ".agents/skills/optimize-campaign/scripts/run_ab_benchmark.py": "runner v1"}
+        with tempfile.TemporaryDirectory() as old, tempfile.TemporaryDirectory() as new, \
+                tempfile.TemporaryDirectory() as camp:
+            old_digest = self._tree(old, base)
+            newer = dict(base); newer[changed_rel] = "changed"
+            new_digest = self._tree(new, newer)
+            rec = pathlib.Path(camp) / "tree.json"
+            rec.write_text(json.dumps({"manifest": campaign.skill_tree_manifest(old)}))
+            config = {"skill_tree_sha256": new_digest, "skill_tree_manifests": {
+                old_digest: {"path": str(rec), "sha256": campaign.sha256_file(rec), "commit": "c"}}}
+            return campaign.check_skill_lineage(config, old_digest, new, "m.json")
+
+    def test_gate_only_change_is_accepted(self):
+        lineage = self._check(".agents/skills/optimize-campaign/scripts/campaign.py")
+        self.assertEqual([".agents/skills/optimize-campaign/scripts/campaign.py"],
+                         lineage["changed_files"])
+
+    def test_measurement_change_is_refused(self):
+        with self.assertRaises(ValueError):
+            self._check(".agents/skills/optimize-campaign/scripts/run_ab_benchmark.py")
+
+    def test_unrecorded_tree_is_refused(self):
+        with self.assertRaises(ValueError):
+            campaign.check_skill_lineage({"skill_tree_sha256": "b" * 64}, "a" * 64, ".", "m.json")
+
+    def test_allowed_paths(self):
+        ok = campaign.skill_lineage_change_allowed
+        self.assertTrue(ok(".agents/skills/optimize-campaign/scripts/pinpoint_measure.py"))
+        self.assertTrue(ok(".agents/skills/optimize-campaign/scripts/test_campaign.py"))
+        self.assertTrue(ok(".agents/skills/optimize-speedometer/SKILL.md"))
+        self.assertFalse(ok(".agents/skills/optimize-campaign/scripts/statistics_policy.py"))
+        self.assertFalse(ok(".agents/skills/optimize-campaign/scripts/remote_measure.py"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6198,8 +6198,7 @@ def verify_local_score_receipt(config, path, opp, repo_root):
     adapter = benchmark_adapters.get_adapter(config["benchmark"])
     if manifest.get("stories") != adapter.default_workload_selector:
         raise ValueError(f"{path} must measure the full default workload set for its regression family")
-    if manifest.get("skill_tree_sha256") != config.get("skill_tree_sha256"):
-        raise ValueError(f"{path} was produced by a different skill tree")
+    lineage = check_skill_lineage(config, manifest.get("skill_tree_sha256"), repo_root, path)
     if not isinstance(manifest.get("blocks"), int) or manifest["blocks"] < MIN_SCORE_BLOCKS:
         raise ValueError(f"{path} has fewer than {MIN_SCORE_BLOCKS} blocks")
     provenance = manifest.get("build_provenance") or {}
@@ -6227,6 +6226,7 @@ def verify_local_score_receipt(config, path, opp, repo_root):
         "regressions": decision["regressions"],
         "unresolved_regression_bounds": decision["unresolved_regression_bounds"],
         "display": measurement_display_identity(manifest),
+        **({"skill_lineage": lineage} if lineage else {}),
     }
 
 
@@ -6380,6 +6380,53 @@ def cmd_rebind_skills(args):
     ledger.data["config"]["skill_tree_sha256"] = new_digest
     ledger.save()
     print(f"campaign rebound to skill tree {new_digest[:16]} (was {str(old_digest)[:16]}): {note}")
+    return 0
+
+
+def cmd_record_skill_lineage(args):
+    """Record the per-file manifest of an earlier skill tree of this campaign.
+
+    Rebuilds the tree from an ai-skills commit with `git archive`, and records
+    it only when its digest is one this campaign was bound to (current tree or
+    any rebind endpoint). Local receipts produced under that tree can then be
+    accepted when only lineage-allowed files (the gate, the fleet driver,
+    tests, prose) changed since.
+    """
+    import tarfile as _tarfile
+    import tempfile as _tempfile
+    import remote_measure
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    repo_root = find_repo_root(pathlib.Path.cwd())
+    skills_repo = subprocess.run(
+        ["git", "-C", str((repo_root / remote_measure.SKILL_DIRS[0]).resolve()),
+         "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True, check=True).stdout.strip()
+    with _tempfile.TemporaryDirectory() as tmp:
+        for skill_dir in remote_measure.SKILL_DIRS:
+            name = pathlib.PurePosixPath(skill_dir).name
+            dest = pathlib.Path(tmp) / pathlib.PurePosixPath(skill_dir).parent
+            dest.mkdir(parents=True, exist_ok=True)
+            archive = subprocess.run(
+                ["git", "-C", skills_repo, "archive", args.commit, name],
+                capture_output=True, check=True).stdout
+            with _tarfile.open(fileobj=__import__("io").BytesIO(archive)) as tar:
+                tar.extractall(dest, filter="data")
+        entries = skill_tree_manifest(tmp)
+    digest = skill_manifest_digest(entries)
+    if digest not in skill_lineage_digests(ledger.data):
+        raise CampaignError(
+            f"ai-skills {args.commit} builds skill tree {digest[:12]}, which this campaign "
+            "was never bound to")
+    out_dir = ledger.dir / "skill-trees"
+    out_dir.mkdir(exist_ok=True)
+    out = out_dir / f"{digest}.json"
+    out.write_text(json.dumps({"digest": digest, "commit": args.commit,
+                               "manifest": entries}, indent=0) + "\n")
+    ledger.data["config"].setdefault("skill_tree_manifests", {})[digest] = {
+        "path": str(out.resolve()), "sha256": sha256_file(out), "commit": args.commit,
+        "recorded_at": utc_now()}
+    ledger.save()
+    print(f"recorded skill tree {digest[:16]} from ai-skills {args.commit} ({len(entries)} files)")
     return 0
 
 
@@ -11735,6 +11782,92 @@ def current_skill_tree_digest(repo_root):
         raise CampaignError(f"Cannot compute current skill-tree digest: {exc}") from exc
 
 
+# Files whose change between skill trees cannot alter how a local score
+# manifest was produced or what it contains: the gate itself (it re-verifies
+# receipts with the current code), the fleet driver, tests and prose.
+SKILL_LINEAGE_ALLOWED_SUFFIXES = (
+    "/optimize-campaign/scripts/campaign.py",
+    "/optimize-campaign/scripts/pinpoint_measure.py",
+)
+
+
+def skill_lineage_change_allowed(rel):
+    name = rel.rsplit("/", 1)[-1]
+    return (
+        rel.endswith(SKILL_LINEAGE_ALLOWED_SUFFIXES)
+        or name.startswith("test_")
+        or "/tests/" in rel
+        or name.endswith(".md")
+    )
+
+
+def skill_tree_manifest(root):
+    """(relative path, sha256) pairs covered by remote_measure.skills_digest."""
+    import fnmatch as _fnmatch
+    import remote_measure
+    root = pathlib.Path(root)
+    entries = []
+    for skill_dir in remote_measure.SKILL_DIRS:
+        base = root / skill_dir
+        if not base.is_dir():
+            raise CampaignError(f"skill directory missing: {base}")
+        for dirpath, dirnames, filenames in os.walk(base, followlinks=True):
+            dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+            for name in filenames:
+                if any(_fnmatch.fnmatch(name, g) for g in remote_measure.IGNORED_FILE_GLOBS):
+                    continue
+                full = pathlib.Path(dirpath) / name
+                entries.append((f"{skill_dir}/{full.relative_to(base)}",
+                                hashlib.sha256(full.read_bytes()).hexdigest()))
+    entries.sort()
+    return entries
+
+
+def skill_manifest_digest(entries):
+    return hashlib.sha256("".join(f"{h}  {rel}\n" for rel, h in entries).encode()).hexdigest()
+
+
+def skill_lineage_digests(ledger_data):
+    config = ledger_data.get("config", {})
+    known = {config.get("skill_tree_sha256")}
+    for rebind in ledger_data.get("skill_rebinds", []):
+        known.update((rebind.get("from"), rebind.get("to")))
+    return {d for d in known if d}
+
+
+def check_skill_lineage(config, receipt_digest, repo_root, path):
+    """Accept a receipt from an earlier tree of this campaign's rebind chain
+    when only lineage-allowed files differ from the current tree."""
+    current = config.get("skill_tree_sha256")
+    if receipt_digest == current:
+        return None
+    record = (config.get("skill_tree_manifests") or {}).get(receipt_digest)
+    if not record:
+        raise ValueError(
+            f"{path} was produced by a different skill tree ({str(receipt_digest)[:12]}); "
+            "record its lineage with `campaign.py record-skill-lineage --commit <ai-skills sha>` "
+            "or re-measure")
+    manifest_path = pathlib.Path(record["path"])
+    data = json.loads(manifest_path.read_text())
+    if sha256_file(manifest_path) != record["sha256"]:
+        raise ValueError(f"skill-tree manifest {manifest_path} changed since it was recorded")
+    old = [tuple(e) for e in data["manifest"]]
+    if skill_manifest_digest(old) != receipt_digest:
+        raise ValueError(f"skill-tree manifest {manifest_path} does not reproduce {receipt_digest[:12]}")
+    live = skill_tree_manifest(repo_root)
+    if skill_manifest_digest(live) != current:
+        raise ValueError("the skill files on disk differ from the campaign's bound tree; rebind first")
+    old_map, new_map = dict(old), dict(live)
+    changed = sorted(p for p in set(old_map) | set(new_map) if old_map.get(p) != new_map.get(p))
+    blocked = [p for p in changed if not skill_lineage_change_allowed(p)]
+    if blocked:
+        raise ValueError(
+            f"{path} was produced by skill tree {receipt_digest[:12]}; measurement files changed since: "
+            + ", ".join(blocked[:5]) + ("" if len(blocked) <= 5 else f" (+{len(blocked) - 5} more)"))
+    return {"receipt_tree": receipt_digest, "current_tree": current,
+            "commit": record.get("commit"), "changed_files": changed}
+
+
 def require_clean_skill_repository(script_path=None):
     """Refuse copied, untracked, or locally modified enforcement code."""
     script = pathlib.Path(script_path or __file__).resolve()
@@ -13836,6 +13969,13 @@ def build_parser():
     )
     p.add_argument("--note", required=True, help="What changed in the skills and why")
     p.set_defaults(func=cmd_rebind_skills)
+
+    p = sub.add_parser(
+        "record-skill-lineage",
+        help="Record an earlier bound skill tree's file manifest from its ai-skills commit",
+    )
+    p.add_argument("--commit", required=True, help="ai-skills commit that produced the tree")
+    p.set_defaults(func=cmd_record_skill_lineage)
 
     p = sub.add_parser("hold", help="Show, set or release the pre-sizing review hold")
     p.add_argument("--set", action="store_true", help="Block sizing/implementation until released")
