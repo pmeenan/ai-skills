@@ -141,12 +141,13 @@ class PlanInvocationTest(unittest.TestCase):
             "statistics": {"blocks": 150},
         }
 
-    def args(self, base, experiment):
+    def args(self, base, experiment, base_patch=""):
         import argparse
         return argparse.Namespace(
             cl="https://chromium-review.googlesource.com/c/chromium/src/+/1/2",
             base_commit="a" * 40, benchmark="speedometer3", attempts=150,
             base_extra_args=base, experiment_extra_args=experiment,
+            base_patch=base_patch,
         )
 
     def test_plan_without_base_features_keeps_single_arm_flag(self):
@@ -174,8 +175,12 @@ class PlanInvocationTest(unittest.TestCase):
             (base, experiment),
             pinpoint_measure.planned_extra_args(plan["identity"]),
         )
-        self.assertTrue(pinpoint_measure.plan_invocation_matches(
+        self.assertFalse(pinpoint_measure.plan_invocation_matches(
             self.args(base, experiment), plan
+        ))
+        self.assertTrue(pinpoint_measure.plan_invocation_matches(
+            self.args(base, experiment,
+                      plan["identity"]["patchset_url"]), plan
         ))
         for wrong in (
             ("", experiment),
@@ -249,6 +254,46 @@ class PlanInvocationTest(unittest.TestCase):
                 bot="android-pixel6-perf-pgo", base_commit="a" * 40, target="bundle_x")
         self.assertEqual("bundle_x", sent["target"])
         self.assertEqual("android-pixel6-perf-pgo", sent["configuration"])
+
+    def test_unpatched_base_with_base_args_is_refused(self):
+        with mock.patch.object(pinpoint_measure, "get_auth_token", return_value=None):
+            with self.assertRaises(ValueError):
+                pinpoint_measure.start_pinpoint_job(
+                    "https://chromium-review.googlesource.com/c/chromium/src/+/1/2",
+                    base_commit="a" * 40, target="t",
+                    base_extra_args="--enable-features=Base",
+                    experiment_extra_args="--enable-features=Base,New")
+
+    def test_base_patch_is_sent(self):
+        sent = {}
+
+        class Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b'{"jobId": "abc", "jobUrl": "u"}'
+
+        def fake_urlopen(req, *a, **k):
+            sent.update(dict(__import__("urllib.parse").parse.parse_qsl(req.data.decode(), keep_blank_values=True)))
+            return Resp()
+
+        cl = "https://chromium-review.googlesource.com/c/chromium/src/+/1/2"
+        with mock.patch.object(pinpoint_measure, "get_auth_token", return_value=None), \
+             mock.patch.object(pinpoint_measure.urllib.request, "urlopen", fake_urlopen):
+            pinpoint_measure.start_pinpoint_job(
+                cl, base_commit="a" * 40, target="t", base_patch=cl,
+                base_extra_args="--enable-features=Base",
+                experiment_extra_args="--enable-features=Base,New")
+        self.assertEqual(cl, sent["base_patch"])
+        self.assertEqual(cl, sent["experiment_patch"])
+
+    def test_android_plan_wraps_switches_for_telemetry(self):
+        plan = self.plan(base_features=["Speedometer3Optimizations"],
+                         bot="android-pixel6-perf-pgo")
+        self.assertEqual(
+            ("--extra-browser-args=--enable-features=Speedometer3Optimizations",
+             "--extra-browser-args=--enable-features=Speedometer3Optimizations,"
+             "Speedometer3MatchedRulesCache"),
+            pinpoint_measure.planned_extra_args(plan["identity"]))
 
 
 if __name__ == "__main__":

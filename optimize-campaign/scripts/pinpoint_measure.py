@@ -163,6 +163,14 @@ def resolve_target(bot, target=None, repo_root=None):
     asking for the wrong one fails the job with BuildIsolateNotFound. The
     tester's isolate is read from the Chromium checkout's perf config unless
     `target` names it explicitly.
+
+    Caveat (2026-09-28): Pinpoint launches only some Android isolates through
+    Telemetry. At older revisions the Android PGO builder produces only
+    performance_test_suite_android_trichrome_chrome_google_64_32_bundle,
+    which Pinpoint runs as a non-Telemetry executable and every run fails;
+    jobs that work use performance_test_suite_android_chrome_google_bundle,
+    which only newer revisions build. Check a recent successful job on the
+    bot before relying on the resolved name.
     """
     if target:
         return target
@@ -193,12 +201,28 @@ def start_pinpoint_job(
     base_extra_args="",
     experiment_extra_args="",
     target=None,
+    base_patch="",
+    allow_unpatched_base=False,
 ):
-    """Start an A/B Pinpoint tryjob comparing an immutable base and patchset."""
+    """Start an A/B Pinpoint tryjob comparing an immutable base and patchset.
+
+    A candidate measured as an increment over work behind other flags needs
+    that work in BOTH arms, so the base arm must build the same patchset
+    (`base_patch`). Base extra args on an unpatched base usually name
+    features the base build does not have, which silently turns the job into
+    "all patched work vs upstream"; that is refused unless explicitly allowed.
+    """
     if not re.fullmatch(r"[0-9a-f]{40}", base_commit):
         raise ValueError("Pinpoint requires a full immutable baseline commit")
     if not re.fullmatch(r"https://chromium-review.googlesource.com/c/chromium/src/\+/\d+/\d+", cl_url):
         raise ValueError("Pinpoint requires a Gerrit URL including the patchset number")
+    if base_patch and not re.fullmatch(r"https://chromium-review.googlesource.com/c/chromium/src/\+/\d+/\d+", base_patch):
+        raise ValueError("base patch must be a Gerrit URL including the patchset number")
+    if base_extra_args and not base_patch and not allow_unpatched_base:
+        raise ValueError(
+            "base extra args on an unpatched base arm: the base build lacks the patch's features, "
+            "so the job would measure the whole patch, not the increment; pass --base-patch "
+            "(normally the same patchset) or --allow-unpatched-base")
     payload = {
         "comparison_mode": "try",
         "benchmark": benchmark,
@@ -208,7 +232,7 @@ def start_pinpoint_job(
         "initial_attempt_count": str(attempts),
         "base_git_hash": base_commit if base_commit.startswith("-") else f"-{base_commit}",
         "end_git_hash": base_commit if base_commit.startswith("-") else f"-{base_commit}",
-        "base_patch": "",
+        "base_patch": base_patch,
         "experiment_patch": cl_url,
         "base_extra_args": base_extra_args,
         "experiment_extra_args": experiment_extra_args,
@@ -618,12 +642,23 @@ def planned_extra_args(identity):
     base_features = list(identity.get("base_features") or [])
     if feature in base_features:
         raise ValueError("plan feature must not also be a base feature")
+    # Android bots run Telemetry, which takes browser switches only through
+    # --extra-browser-args (and merges repeated --enable-features itself).
+    wrap = ("--extra-browser-args=" if str(identity.get("bot", "")).startswith("android")
+            else "")
     if not base_features:
-        return "", "--enable-features=" + feature
+        return "", wrap + "--enable-features=" + feature
     return (
-        "--enable-features=" + ",".join(base_features),
-        "--enable-features=" + ",".join(base_features + [feature]),
+        wrap + "--enable-features=" + ",".join(base_features),
+        wrap + "--enable-features=" + ",".join(base_features + [feature]),
     )
+
+
+def planned_base_patch(identity):
+    """The base-arm patch a registered plan requires: the experiment patchset
+    itself when the plan has base features (both arms must contain the
+    work those features switch on), otherwise none."""
+    return identity["patchset_url"] if identity.get("base_features") else ""
 
 
 def plan_invocation_matches(args, plan):
@@ -640,6 +675,7 @@ def plan_invocation_matches(args, plan):
         and args.attempts == plan["statistics"]["blocks"]
         and args.base_extra_args == base_args
         and args.experiment_extra_args == experiment_args
+        and (getattr(args, "base_patch", "") or "") == planned_base_patch(identity)
     )
 
 
@@ -662,6 +698,11 @@ def main():
     p_start.add_argument("--story", default=DEFAULT_STORY, help="Story to run (default: Speedometer3).")
     p_start.add_argument("--base-commit", default="HEAD", help="Base commit hash (default: HEAD).")
     p_start.add_argument("--bug", default=None, help="Optional bug ID.")
+    p_start.add_argument("--base-patch", default="",
+                         help="Gerrit patchset URL for the base arm (use the experiment patchset "
+                              "when base extra args enable features that the patch adds).")
+    p_start.add_argument("--allow-unpatched-base", action="store_true",
+                         help="Allow base extra args with an unpatched base arm.")
     p_start.add_argument("--target", default=None,
                          help="Isolate to build (default: the bot's tester isolate from "
                               "tools/perf/core/perf_data_generator.py).")
@@ -701,6 +742,10 @@ def main():
     p_run.add_argument("--story", default=DEFAULT_STORY, help="Story to run (default: Speedometer3).")
     p_run.add_argument("--base-commit", default="HEAD", help="Base commit hash (default: HEAD).")
     p_run.add_argument("--bug", default=None, help="Optional bug ID.")
+    p_run.add_argument("--base-patch", default="",
+                       help="Gerrit patchset URL for the base arm (see start).")
+    p_run.add_argument("--allow-unpatched-base", action="store_true",
+                       help="Allow base extra args with an unpatched base arm.")
     p_run.add_argument("--target", default=None,
                        help="Isolate to build (default: the bot's tester isolate from "
                             "tools/perf/core/perf_data_generator.py).")
@@ -748,6 +793,8 @@ def main():
             base_extra_args=args.base_extra_args,
             experiment_extra_args=args.experiment_extra_args,
             target=args.target,
+            base_patch=args.base_patch,
+            allow_unpatched_base=args.allow_unpatched_base,
         )
         print(json.dumps(info, indent=2))
         return 0
@@ -836,6 +883,8 @@ def main():
             base_extra_args=args.base_extra_args,
             experiment_extra_args=args.experiment_extra_args,
             target=args.target,
+            base_patch=args.base_patch,
+            allow_unpatched_base=args.allow_unpatched_base,
         )
         job_id = job_info["job_id"]
 
