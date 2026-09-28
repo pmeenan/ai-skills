@@ -196,6 +196,60 @@ class PlanInvocationTest(unittest.TestCase):
                       "Speedometer3MatchedRulesCache"), plan
         ))
 
+    def test_resolve_target_reads_tester_isolate(self):
+        import tempfile, pathlib
+        with tempfile.TemporaryDirectory() as root:
+            gen = pathlib.Path(root) / pinpoint_measure.PERF_DATA_GENERATOR
+            gen.parent.mkdir(parents=True)
+            gen.write_text(
+                "TESTERS = {\n"
+                "  'mac-m1_mini_2020-perf-pgo': {\n"
+                "    'tests': [{\n"
+                "        'isolate': 'performance_test_suite',\n"
+                "    }],\n"
+                "  },\n"
+                "  'android-pixel6-perf-pgo': {\n"
+                "    'tests': [\n"
+                "      {\n"
+                "        'isolate': 'performance_test_suite_android_trichrome_chrome_google_64_32_bundle',\n"
+                "      }\n"
+                "    ],\n"
+                "  },\n"
+                "}\n")
+            self.assertEqual(
+                "performance_test_suite_android_trichrome_chrome_google_64_32_bundle",
+                pinpoint_measure.resolve_target("android-pixel6-perf-pgo", repo_root=root))
+            self.assertEqual(
+                "performance_test_suite",
+                pinpoint_measure.resolve_target("mac-m1_mini_2020-perf-pgo", repo_root=root))
+            self.assertEqual(
+                "custom", pinpoint_measure.resolve_target("android-pixel6-perf-pgo", "custom", root))
+            self.assertEqual(
+                pinpoint_measure.DEFAULT_TARGET,
+                pinpoint_measure.resolve_target("linux-perf-pgo", repo_root=root))
+            with self.assertRaises(ValueError):
+                pinpoint_measure.resolve_target("android-pixel4-perf-pgo", repo_root=root)
+
+    def test_start_job_sends_resolved_target(self):
+        sent = {}
+
+        class Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b'{"jobId": "abc", "jobUrl": "u"}'
+
+        def fake_urlopen(req, *a, **k):
+            sent.update(dict(__import__("urllib.parse").parse.parse_qsl(req.data.decode())))
+            return Resp()
+
+        with mock.patch.object(pinpoint_measure, "get_auth_token", return_value=None), \
+             mock.patch.object(pinpoint_measure.urllib.request, "urlopen", fake_urlopen):
+            pinpoint_measure.start_pinpoint_job(
+                "https://chromium-review.googlesource.com/c/chromium/src/+/1/2",
+                bot="android-pixel6-perf-pgo", base_commit="a" * 40, target="bundle_x")
+        self.assertEqual("bundle_x", sent["target"])
+        self.assertEqual("android-pixel6-perf-pgo", sent["configuration"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -53,6 +53,8 @@ DEFAULT_BOT = "mac-m1_mini_2020-perf-pgo"
 DEFAULT_BENCHMARK = "speedometer3"
 DEFAULT_STORY = "Speedometer3"
 DEFAULT_ATTEMPTS = 150
+DEFAULT_TARGET = "performance_test_suite"
+PERF_DATA_GENERATOR = pathlib.Path("tools/perf/core/perf_data_generator.py")
 
 
 def run_cmd(cmd, cwd=None, check=True):
@@ -152,6 +154,34 @@ def abandon_cl(cl_ref, reason="Abandoned candidate try CL", cwd=None):
         return False
 
 
+def resolve_target(bot, target=None, repo_root=None):
+    """The isolate Pinpoint must build for `bot`.
+
+    Desktop testers run `performance_test_suite`, but Android testers need
+    their own bundle (e.g. the Pixel 6 PGO tester runs
+    `performance_test_suite_android_trichrome_chrome_google_64_32_bundle`);
+    asking for the wrong one fails the job with BuildIsolateNotFound. The
+    tester's isolate is read from the Chromium checkout's perf config unless
+    `target` names it explicitly.
+    """
+    if target:
+        return target
+    root = pathlib.Path(repo_root) if repo_root else pathlib.Path.cwd()
+    try:
+        text = (root / PERF_DATA_GENERATOR).read_text()
+    except OSError:
+        text = ""
+    block = re.search(r"\n  '" + re.escape(bot) + r"': \{\n(.*?)\n  \},", text, re.S)
+    isolate = block and re.search(r"'isolate':\s*'([^']+)'", block.group(1))
+    if isolate:
+        return isolate.group(1)
+    if bot.startswith("android"):
+        raise ValueError(
+            f"cannot find the Pinpoint isolate for {bot} in {root / PERF_DATA_GENERATOR}; "
+            "run from the Chromium src root or pass --target")
+    return DEFAULT_TARGET
+
+
 def start_pinpoint_job(
     cl_url,
     benchmark=DEFAULT_BENCHMARK,
@@ -162,6 +192,7 @@ def start_pinpoint_job(
     bug=None,
     base_extra_args="",
     experiment_extra_args="",
+    target=None,
 ):
     """Start an A/B Pinpoint tryjob comparing an immutable base and patchset."""
     if not re.fullmatch(r"[0-9a-f]{40}", base_commit):
@@ -184,7 +215,7 @@ def start_pinpoint_job(
         "project": "chromium",
         "bug_id": str(bug or ""),
         "batch_id": "",
-        "target": "performance_test_suite",
+        "target": resolve_target(bot, target),
         "try": "on",
     }
 
@@ -631,6 +662,9 @@ def main():
     p_start.add_argument("--story", default=DEFAULT_STORY, help="Story to run (default: Speedometer3).")
     p_start.add_argument("--base-commit", default="HEAD", help="Base commit hash (default: HEAD).")
     p_start.add_argument("--bug", default=None, help="Optional bug ID.")
+    p_start.add_argument("--target", default=None,
+                         help="Isolate to build (default: the bot's tester isolate from "
+                              "tools/perf/core/perf_data_generator.py).")
 
     # Subcommand: wait
     p_wait = subparsers.add_parser("wait", help="Wait for a Pinpoint job to finish.")
@@ -667,6 +701,9 @@ def main():
     p_run.add_argument("--story", default=DEFAULT_STORY, help="Story to run (default: Speedometer3).")
     p_run.add_argument("--base-commit", default="HEAD", help="Base commit hash (default: HEAD).")
     p_run.add_argument("--bug", default=None, help="Optional bug ID.")
+    p_run.add_argument("--target", default=None,
+                       help="Isolate to build (default: the bot's tester isolate from "
+                            "tools/perf/core/perf_data_generator.py).")
     p_run.add_argument("--out", default=None, help="Path to write JSON summary.")
     p_run.add_argument("--raw-out", default=None, help="Path to write raw HTML results.")
     p_run.add_argument("--poll-interval", type=int, default=30, help="Polling interval in seconds.")
@@ -710,6 +747,7 @@ def main():
             bug=args.bug,
             base_extra_args=args.base_extra_args,
             experiment_extra_args=args.experiment_extra_args,
+            target=args.target,
         )
         print(json.dumps(info, indent=2))
         return 0
@@ -797,6 +835,7 @@ def main():
             bug=args.bug,
             base_extra_args=args.base_extra_args,
             experiment_extra_args=args.experiment_extra_args,
+            target=args.target,
         )
         job_id = job_info["job_id"]
 
