@@ -6396,7 +6396,7 @@ def cmd_record_skill_lineage(args):
     import tempfile as _tempfile
     import remote_measure
     ledger = Ledger(args.dir or default_campaign_dir()).load()
-    repo_root = find_repo_root(pathlib.Path.cwd())
+    repo_root = pathlib.Path(find_repo_root(pathlib.Path.cwd()))
     skills_repo = subprocess.run(
         ["git", "-C", str((repo_root / remote_measure.SKILL_DIRS[0]).resolve()),
          "rev-parse", "--show-toplevel"],
