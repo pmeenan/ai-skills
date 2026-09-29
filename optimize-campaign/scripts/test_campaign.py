@@ -2947,5 +2947,50 @@ class LandedBaseFeaturesTest(unittest.TestCase):
         self.assertEqual(["Camp", "A"], campaign.landed_base_features(data, "Camp", exclude=2))
 
 
+class LocalSanityPassTest(unittest.TestCase):
+
+    def _run(self, local_verdict, fleet, override=None, regressions=(), serial=False, primary_lo=3.0):
+        import json, tempfile, pathlib
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            local = pathlib.Path(d) / "manifest.json"
+            local.write_text(json.dumps({"runner": campaign.SCORE_MANIFEST_RUNNER}))
+            paths = [str(local)]
+            for i, (bot, verdict) in enumerate(fleet):
+                f = pathlib.Path(d) / f"fleet{i}.json"
+                f.write_text(json.dumps({"job_id": "j", "cl_url": "u", "bot": bot,
+                                         "verdict": verdict, "metrics": {"Score": {}}}))
+                paths.append(str(f))
+            receipt = {"verdict": local_verdict, "candidate_sha": "c", "display": {}, "seed": 1,
+                       "path": str(local), "plan": {"minimum_effect_pct": 0.3},
+                       "primary": {"ci_pct": [primary_lo, primary_lo + 0.2]},
+                       "regressions": list(regressions), "serial_dependence": serial,
+                       "unresolved_regression_bounds": ["Story"] if local_verdict == "INCONCLUSIVE" else []}
+            with mock.patch.object(campaign, "verify_local_score_receipt", return_value=receipt):
+                return campaign.verify_performance_evidence(
+                    {"fleet_bot": "mac"}, {"id": 1}, paths, d, fleet_override=override)
+
+    def test_width_only_inconclusive_passes_with_campaign_bot_win(self):
+        ev = self._run("INCONCLUSIVE", [("mac", "IMPROVEMENT")])
+        self.assertEqual("sanity-pass", ev["local"][0]["local_role"])
+
+    def test_needs_campaign_bot_improvement(self):
+        with self.assertRaises(ValueError):
+            self._run("INCONCLUSIVE", [("win", "IMPROVEMENT")],
+                      override="User decision: land on Windows only, for this test case here.")
+        with self.assertRaises(ValueError):
+            self._run("INCONCLUSIVE", [("mac", "INCONCLUSIVE")])
+
+    def test_regression_serial_or_weak_primary_blocks(self):
+        with self.assertRaises(ValueError):
+            self._run("INCONCLUSIVE", [("mac", "IMPROVEMENT")], regressions=["Story"])
+        with self.assertRaises(ValueError):
+            self._run("INCONCLUSIVE", [("mac", "IMPROVEMENT")], serial=True)
+        with self.assertRaises(ValueError):
+            self._run("INCONCLUSIVE", [("mac", "IMPROVEMENT")], primary_lo=0.1)
+        with self.assertRaises(ValueError):
+            self._run("REGRESSION", [("mac", "IMPROVEMENT")])
+
+
 if __name__ == "__main__":
     unittest.main()

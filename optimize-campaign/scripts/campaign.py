@@ -6225,6 +6225,7 @@ def verify_local_score_receipt(config, path, opp, repo_root):
         "primary": decision["primary"],
         "regressions": decision["regressions"],
         "unresolved_regression_bounds": decision["unresolved_regression_bounds"],
+        "serial_dependence": decision["serial_dependence"],
         "display": measurement_display_identity(manifest),
         **({"skill_lineage": lineage} if lineage else {}),
     }
@@ -6261,6 +6262,21 @@ def verify_fleet_receipt(config, path, strict=True):
 
 
 FLEET_OVERRIDE_MIN_CHARS = 40
+
+
+def local_sanity_pass(receipt):
+    """INCONCLUSIVE only because regression bounds are wider than the margin."""
+    plan = receipt.get("plan") or {}
+    primary = receipt.get("primary") or {}
+    ci = primary.get("ci_pct") or [None]
+    return (
+        receipt.get("verdict") == "INCONCLUSIVE"
+        and not receipt.get("regressions")
+        and bool(receipt.get("unresolved_regression_bounds"))
+        and receipt.get("serial_dependence") is False
+        and ci[0] is not None
+        and ci[0] >= plan.get("minimum_effect_pct", float("inf"))
+    )
 
 
 def verify_performance_evidence(config, opp, paths, repo_root, unexpected=False,
@@ -6306,12 +6322,29 @@ def verify_performance_evidence(config, opp, paths, repo_root, unexpected=False,
     if len({r["seed"] for r in local}) != len(local):
         raise ValueError("local receipts reuse a seed; each run needs its own randomized schedule")
     improvements = [r for r in local if r["verdict"] == "IMPROVEMENT"]
+    sanity = [r for r in local if local_sanity_pass(r)]
+    campaign_bot_win = any(
+        r["verdict"] == "IMPROVEMENT"
+        and (not config.get("fleet_bot") or r["bot"] == config["fleet_bot"])
+        for r in receipts["fleet"])
     if unexpected:
         if len(local) < 2 or not improvements or local[-1]["verdict"] != "IMPROVEMENT":
             raise ValueError("an unexpected win needs a separately seeded confirmation run that is an IMPROVEMENT")
     elif len(improvements) != len(local):
-        verdicts = ", ".join(f"{pathlib.Path(r['path']).name}: {r['verdict']}" for r in local)
-        raise ValueError("every local receipt must be a fixed-plan IMPROVEMENT (" + verdicts + ")")
+        # A local run is a second-platform sanity check; the campaign bot's
+        # Pinpoint is the ground truth (user decision 2026-09-29). A local run
+        # that is INCONCLUSIVE only because some regression bounds are wider
+        # than the margin (no regression, primary cleared, no serial
+        # dependence) passes as a sanity check when the campaign bot shows a
+        # real IMPROVEMENT; a fleet override cannot stand in for that.
+        others = [r for r in local if r not in improvements and r not in sanity]
+        if others or not campaign_bot_win or fleet_override is not None:
+            verdicts = ", ".join(f"{pathlib.Path(r['path']).name}: {r['verdict']}" for r in local)
+            raise ValueError(
+                "every local receipt must be a fixed-plan IMPROVEMENT, or INCONCLUSIVE only on "
+                "regression-bound width with a campaign-bot Pinpoint IMPROVEMENT (" + verdicts + ")")
+        for r in sanity:
+            r["local_role"] = "sanity-pass"
     if fleet_override is not None:
         if not receipts["fleet"]:
             raise ValueError("a fleet override still needs the Pinpoint summaries it overrides")
