@@ -836,6 +836,11 @@ def enforce_freshness_for_landing(ledger):
     profiles = ledger.data.get("profile_runs", [])
     if not profiles:
         raise CampaignError("Landing is blocked until an exact-scored profile is recorded")
+    epochs = ledger.data.get("baseline_epochs") or []
+    if epochs and len(profiles) <= epochs[-1].get("profile_runs_before", 0):
+        raise CampaignError(
+            "Landing is blocked until an exact-scored profile is recorded on the new "
+            f"baseline {epochs[-1]['to_base'][:12]}")
     profile_sequence = profiles[-1].get("sequence", 0)
     if landings_since_sequence(ledger, profile_sequence) >= MAX_LANDINGS_WITHOUT_PROFILE:
         raise CampaignError(
@@ -6147,6 +6152,10 @@ def fixed_plan(config, primary, blocks=None):
     """
     base = dict(config.get("statistics") or DEFAULT_STATISTICS)
     calibration = config.get("calibration") or {}
+    if config.get("baseline_epoch") and not calibration:
+        raise ValueError(
+            "the campaign was re-baselined; record an A/A calibration on the new baseline "
+            "(`campaign.py calibrate`) before any fixed-plan measurement")
     minimum = float(base["minimum_effect_pct"])
     if primary == "suite":
         if calibration.get("suite_mde_pct") is not None:
@@ -6460,6 +6469,94 @@ def cmd_record_skill_lineage(args):
         "recorded_at": utc_now()}
     ledger.save()
     print(f"recorded skill tree {digest[:16]} from ai-skills {args.commit} ({len(entries)} files)")
+    return 0
+
+
+def map_rebased_commits(landed, new_commits, overrides=None):
+    """Map each landed opportunity's commit onto the rebased branch.
+
+    `landed` is [(opp_id, old_sha, old_subject)], `new_commits` is
+    [(new_sha, subject)] for new_base..tip. Explicit overrides win; otherwise
+    the subject must match exactly one rebased commit.
+    """
+    overrides = dict(overrides or {})
+    mapping, problems = {}, []
+    for opp_id, old, subject in landed:
+        if old in overrides:
+            mapping[opp_id] = {"old": old, "new": overrides[old], "subject": subject}
+            continue
+        hits = [sha for sha, subj in new_commits if subj == subject]
+        if len(hits) != 1:
+            problems.append(f"#{opp_id} {old[:12]} '{subject}': {len(hits)} matching rebased commits")
+        else:
+            mapping[opp_id] = {"old": old, "new": hits[0], "subject": subject}
+    if problems:
+        raise CampaignError("cannot map landed commits onto the rebased branch: " + "; ".join(problems)
+                            + " (pass --map OLD=NEW)")
+    return mapping
+
+
+def cmd_rebase_baseline(args):
+    """Move the campaign onto a new frozen baseline (e.g. Chrome ToT).
+
+    Records a baseline epoch (old/new base and tips, branch, landed-commit
+    mapping, note), repoints landed opportunities at their rebased commits,
+    and retires the old calibration: fixed-plan measurements refuse until an
+    A/A calibration is recorded on the new base, and landing refuses until a
+    profile is recorded after the epoch.
+    """
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    note = (args.note or "").strip()
+    if len(note) < 20:
+        raise CampaignError("--note must say why the campaign is re-baselined")
+    config = ledger.data["config"]
+    repo_root = pathlib.Path(find_repo_root(pathlib.Path.cwd()))
+    rev = lambda ref: git_output(repo_root, "rev-parse", ref + "^{commit}").strip()
+    new_base, tip = rev(args.to), rev(args.tip)
+    if subprocess.run(["git", "-C", str(repo_root), "merge-base", "--is-ancestor", new_base, tip]).returncode:
+        raise CampaignError(f"{new_base[:12]} is not an ancestor of {tip[:12]}")
+    old_base = config["baseline_sha"]
+    if new_base == old_base:
+        raise CampaignError("the new baseline equals the current one")
+    log = git_output(repo_root, "log", "--format=%H%x09%s", f"{new_base}..{tip}").strip().splitlines()
+    new_commits = [tuple(line.split("\t", 1)) for line in log if line]
+    landed = []
+    for opp in ledger.landed():
+        subject = git_output(repo_root, "log", "-1", "--format=%s", opp["commit"]).strip()
+        landed.append((opp["id"], rev(opp["commit"]), subject))
+    overrides = {}
+    for item in args.map or []:
+        old, _, new = item.partition("=")
+        overrides[rev(old)] = rev(new)
+    mapping = map_rebased_commits(landed, new_commits, overrides)
+    try:
+        old_tip = rev(config.get("branch") or "HEAD")
+    except Exception:
+        old_tip = None
+    epochs = ledger.data.setdefault("baseline_epochs", [])
+    epoch = {
+        "ts": utc_now(), "from_base": old_base, "to_base": new_base,
+        "from_branch": config.get("branch"), "to_branch": args.branch,
+        "from_tip": old_tip, "to_tip": tip,
+        "mapping": {str(k): v for k, v in mapping.items()},
+        "note": note,
+        "previous_calibration": config.get("calibration"),
+        "profile_runs_before": len(ledger.data.get("profile_runs", [])),
+    }
+    epochs.append(epoch)
+    config["baseline_sha"] = new_base
+    if args.branch:
+        config["branch"] = args.branch
+    config["baseline_epoch"] = len(epochs)
+    config["calibration"] = None
+    for opp in ledger.landed():
+        m = mapping[opp["id"]]
+        opp.setdefault("commit_history", []).append(m["old"])
+        opp["commit"] = m["new"]
+        ledger.record(opp, f"rebase-baseline epoch {len(epochs)}: commit {m['old'][:12]} -> {m['new'][:12]} on {new_base[:12]}")
+    ledger.save()
+    print(f"campaign re-baselined to {new_base[:12]} (was {old_base[:12]}), epoch {len(epochs)}; "
+          f"{len(mapping)} landed commit(s) remapped; recalibrate and re-profile before measuring")
     return 0
 
 
@@ -14020,6 +14117,17 @@ def build_parser():
     )
     p.add_argument("--note", required=True, help="What changed in the skills and why")
     p.set_defaults(func=cmd_rebind_skills)
+
+    p = sub.add_parser(
+        "rebase-baseline",
+        help="Move the campaign onto a new frozen baseline and remap landed commits",
+    )
+    p.add_argument("--to", required=True, help="New baseline commit (e.g. Chrome ToT)")
+    p.add_argument("--tip", required=True, help="Tip of the rebased campaign branch")
+    p.add_argument("--branch", default=None, help="Campaign branch name on the new baseline")
+    p.add_argument("--map", action="append", help="OLD=NEW commit override for a landed opportunity")
+    p.add_argument("--note", required=True, help="Why the campaign is re-baselined")
+    p.set_defaults(func=cmd_rebase_baseline)
 
     p = sub.add_parser(
         "record-skill-lineage",

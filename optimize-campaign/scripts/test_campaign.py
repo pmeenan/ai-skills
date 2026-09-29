@@ -2992,5 +2992,30 @@ class LocalSanityPassTest(unittest.TestCase):
             self._run("REGRESSION", [("mac", "IMPROVEMENT")])
 
 
+class RebaseBaselineTest(unittest.TestCase):
+
+    def test_maps_by_subject_and_override(self):
+        landed = [(234, "a" * 40, "Narrow X"), (317, "b" * 40, "Cache Y")]
+        new = [("c" * 40, "Setup"), ("d" * 40, "Narrow X"), ("e" * 40, "Cache Y")]
+        m = campaign.map_rebased_commits(landed, new)
+        self.assertEqual("d" * 40, m[234]["new"])
+        self.assertEqual("e" * 40, m[317]["new"])
+        m = campaign.map_rebased_commits(landed, [("d" * 40, "Narrow X")], {"b" * 40: "f" * 40})
+        self.assertEqual("f" * 40, m[317]["new"])
+
+    def test_missing_or_ambiguous_mapping_refused(self):
+        with self.assertRaises(campaign.CampaignError):
+            campaign.map_rebased_commits([(1, "a" * 40, "S")], [])
+        with self.assertRaises(campaign.CampaignError):
+            campaign.map_rebased_commits([(1, "a" * 40, "S")], [("b" * 40, "S"), ("c" * 40, "S")])
+
+    def test_fixed_plan_refuses_until_recalibrated(self):
+        config = {"baseline_epoch": 1, "calibration": None}
+        with self.assertRaises(ValueError):
+            campaign.fixed_plan(config, ["Editor-TipTap"], 64)
+        config["calibration"] = {"story_mde_pct": {"Editor-TipTap": 0.5}}
+        self.assertEqual(0.5, campaign.fixed_plan(config, ["Editor-TipTap"], 64)["minimum_effect_pct"])
+
+
 if __name__ == "__main__":
     unittest.main()
