@@ -780,7 +780,8 @@ def main():
         sys.exit(1)
 
     if not args.skip_feature_check:
-        if args.feature and not check_feature_registered(cwd, args.feature):
+        if args.feature and not all(
+                check_feature_registered(cwd, name) for name in feature_names(args.feature)):
             sys.exit(2)
         # A typo here is worse than in --feature mode: both arms silently run
         # baseline behavior and a bisect goes blind (or, in --feature mode,

@@ -1184,9 +1184,9 @@ def main(argv=None):
         parser.error("--mode ab requires --feature")
     if args.mode == "ab" and args.opp is not None and not args.characterization:
         verify_opportunity_ready_for_ab(args.opp, args.feature)
-    if args.mode == "ab" and args.feature in [
-        name.strip() for name in (args.enable_features or "").split(",")
-    ]:
+    if args.mode == "ab" and set(
+        name.strip() for name in args.feature.split(",") if name.strip()
+    ) & set(name.strip() for name in (args.enable_features or "").split(",")):
         parser.error("--mode ab: --feature must not also appear in "
                      "--enable-features (the both-arms base list)")
     if args.mode == "ab2" and not (args.ref_a and args.ref_b):

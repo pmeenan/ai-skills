@@ -12124,8 +12124,15 @@ def cmd_checkpoint(args):
             raise CampaignError(
                 "Checkpoint used the wrong benchmark payload source"
             )
-        if summary.get("feature") != ledger.data["config"]["feature"]:
-            raise CampaignError("Checkpoint toggled the wrong feature")
+        landed_set = set(landed_base_features(ledger.data, ledger.data["config"]["feature"]))
+        toggled = {n.strip() for n in str(summary.get("feature") or "").split(",") if n.strip()}
+        if toggled not in ({ledger.data["config"]["feature"]}, landed_set):
+            raise CampaignError(
+                "Checkpoint toggled the wrong feature set; a cumulative checkpoint toggles the "
+                "campaign feature plus every landed candidate's own feature together: "
+                + ",".join(sorted(landed_set)))
+        if summary.get("enable_features"):
+            raise CampaignError("A cumulative checkpoint must not keep features on in both arms")
         if (
             not isinstance(summary.get("blocks"), int)
             or summary["blocks"] < MIN_SCORE_BLOCKS
