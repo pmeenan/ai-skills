@@ -657,7 +657,9 @@ class CampaignTest(unittest.TestCase):
         self.assertEqual(0, self.run_cmd(
             "park", "--opp", "2", "--reason", "not recurrent in prior capture"))
         follow_on = self.record_profile("profile-2")[0]
-        rediscovered = dict(child, anchor="Rule collector moved", share_pct=0.9)
+        rediscovered = dict(child, anchor="Rule collector moved", share_pct=0.9,
+                            reopen_evidence="follow-on profile moved the anchor and "
+                                            "doubled the share after the park")
         self.assertEqual(0, self.decompose(follow_on, [rediscovered]))
         mechanism = self.ledger()["opportunities"][1]
         self.assertEqual("candidate", mechanism["status"])
@@ -666,6 +668,22 @@ class CampaignTest(unittest.TestCase):
         self.assertEqual(0.9, mechanism["share_pct"])
         self.assertEqual("Rule collector moved", mechanism["anchor"])
         self.assertIn(mechanism, campaign.Ledger(self.dir).load().children(follow_on))
+
+    def test_follow_on_profile_without_new_evidence_keeps_mechanism_parked(self):
+        first = self.record_profile("profile-1")[0]
+        child = {
+            "anchor": "Rule collector", "mechanism_key": "style/cache-rule-match",
+            "share_pct": 0.35,
+        }
+        self.assertEqual(0, self.decompose(first, [child]))
+        self.assertEqual(0, self.run_cmd(
+            "park", "--opp", "2", "--reason", "oracle showed no score gain"))
+        follow_on = self.record_profile("profile-2")[0]
+        self.assertEqual(0, self.decompose(follow_on, [dict(child, share_pct=0.9)]))
+        mechanism = self.ledger()["opportunities"][1]
+        self.assertEqual("parked", mechanism["status"])
+        self.assertEqual("oracle showed no score gain", mechanism["reason"])
+        self.assertIn(follow_on, mechanism["discovery_ids"])
 
     def test_parked_child_cannot_be_hidden_when_it_becomes_a_root(self):
         first = self.record_profile(
@@ -1170,7 +1188,12 @@ class CampaignTest(unittest.TestCase):
             "decompose", "--opp", str(discovery),
             "--children", str(decomposition)))
         owner = campaign.Ledger(self.dir).load().opp(owner_id)
-        self.assertEqual("candidate", owner["status"])
+        # A covered-by row links the parked owner but cannot reopen it.
+        self.assertEqual("parked", owner["status"])
+        self.assertEqual(0, self.run_cmd(
+            "reopen", "--opp", str(owner_id), "--reason",
+            "covered wrapper recurs with new profile evidence"))
+        owner = campaign.Ledger(self.dir).load().opp(owner_id)
         self.assertIn(discovery, owner["discovery_ids"])
         self.assertIn("profile-1", owner["source_profile_ids"])
         self.assertEqual(discovery, owner["observations"][-1]["discovery_id"])

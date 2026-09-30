@@ -6271,6 +6271,10 @@ def verify_fleet_receipt(config, path, strict=True):
 
 
 FLEET_OVERRIDE_MIN_CHARS = 40
+# A decomposition row that rediscovers a parked mechanism reopens it only with
+# evidence gathered after the park that contradicts the parking reason
+# (runbook: never retry parked mechanisms without contradictory evidence).
+REOPEN_EVIDENCE_MIN_CHARS = 40
 
 
 def local_sanity_pass(receipt):
@@ -10792,14 +10796,23 @@ def cmd_decompose(args):
             opp["discovery_ids"].append(parent["id"])
         record_mechanism_observation(opp, parent, path_item)
         if opp["status"] == "parked":
-            opp["status"] = "candidate"
-            opp["status_since"] = utc_now()
-            opp["reason"] = None
-            ledger.record(
-                opp,
-                f"automatically reopened because profile {profile_id} "
-                "rediscovered the parked mechanism",
-            )
+            evidence = (path_item.get("reopen_evidence") or "").strip()
+            if len(evidence) >= REOPEN_EVIDENCE_MIN_CHARS:
+                opp["status"] = "candidate"
+                opp["status_since"] = utc_now()
+                opp["reason"] = None
+                ledger.record(
+                    opp,
+                    f"reopened: profile {profile_id} rediscovered the parked "
+                    f"mechanism with new evidence: {evidence}",
+                )
+            else:
+                ledger.record(
+                    opp,
+                    f"rediscovered in profile {profile_id} under discovery "
+                    f"#{parent['id']:03d}; stays parked (no reopen_evidence; "
+                    f"parked because: {opp.get('reason') or 'see history'})",
+                )
     for opp, path_item in accounted_known:
         profile_id = parent.get("profile_id")
         if profile_id and profile_id not in opp.setdefault("source_profile_ids", []):
@@ -10856,13 +10869,11 @@ def cmd_decompose(args):
                     covered_priority, owner.get("measured_priority_pct") or 0.0
                 )
         if owner["status"] == "parked":
-            owner["status"] = "candidate"
-            owner["status_since"] = utc_now()
-            owner["reason"] = None
             ledger.record(
                 owner,
-                f"automatically reopened because profile {profile_id} "
-                "rediscovered the mechanism through a covered-by wrapper",
+                f"rediscovered through a covered-by wrapper in profile {profile_id}; "
+                "stays parked (a covered-by row cannot reopen its owner; reopen "
+                "through the owner's own known row with reopen_evidence)",
             )
         ledger.record(
             owner,
