@@ -5113,21 +5113,18 @@ def _site_code(campaign_dir, packet):
         return tuple(line for line in lines
                      if not line.startswith(("@@", "index ")))
 
-    site_hunks, header = [], ()
+    # Every file whose diff names the site is compared whole: a counter's
+    # predicate may sit in a hunk that does not repeat its name (round 142:
+    # the dispatch probe's SetApplicable calls).
+    site_files, header = [], ()
     chunks = patch.read_text(errors="replace").split("diff --git ")
     for chunk in (chunks[1:] if len(chunks) > 1 else chunks):
         lines = chunk.splitlines()
         if lines and "redundancy_probe.h" in lines[0]:
             header = normalize(lines)
-        hunk = []
-        for line in lines + ["@@"]:
-            if line.startswith("@@"):
-                if any(f'"{site}"' in h for h in hunk):
-                    site_hunks.append(normalize(hunk))
-                hunk = [line]
-            else:
-                hunk.append(line)
-    value = (tuple(site_hunks), header) if site_hunks else None
+        if f'"{site}"' in chunk:
+            site_files.append(normalize(lines))
+    value = (tuple(site_files), header) if site_files else None
     _SITE_CODE_CACHE[key] = value
     return value
 
@@ -5136,7 +5133,7 @@ _MEASURED_CACHE = {}
 
 
 def _log_measured(log):
-    """{(site, story)} with calls in a browser log's rows."""
+    """{(site, story, build id)} with calls in a browser log's rows."""
     import redundancy_evidence
     try:
         stat = log.stat()
@@ -5147,7 +5144,8 @@ def _log_measured(log):
         found = set()
         for row in redundancy_evidence.parse_rows(log):
             if row.get("site") and int(row.get("calls", 0) or 0) > 0:
-                found.add((row["site"], redundancy_evidence.story_of(row.get("group", ""))))
+                found.add((row["site"], redundancy_evidence.story_of(row.get("group", "")),
+                           str(row.get("build_id") or "")))
         _MEASURED_CACHE[key] = found
     return _MEASURED_CACHE[key]
 
@@ -5181,8 +5179,22 @@ def site_story_newest_build(campaign_dir):
             logs_of.setdefault(build, set()).add(log if log.is_absolute() else root / log)
     for build, logs in logs_of.items():
         for log in logs:
-            for site, story in _log_measured(log):
-                measured.add((site, story, build))
+            for site, story, row_build in _log_measured(log):
+                measured.add((site, story, row_build or build))
+    # A run whose log no packet cites still ran: every in-epoch log under
+    # evidence/ counts by the build id its rows carry (round 142 reviews).
+    # Older logs are left out; before a re-baseline they would all be read.
+    if epoch:
+        cited = {log.resolve() for logs in logs_of.values() for log in logs if log.exists()}
+        for log in sorted((root / "evidence").glob("*.log")):
+            try:
+                if log.resolve() in cited or log.stat().st_mtime < epoch:
+                    continue
+            except OSError:
+                continue
+            for site, story, row_build in _log_measured(log):
+                if row_build in order:
+                    measured.add((site, story, row_build))
 
     def compatible(site, build):
         head = newest.get(site)

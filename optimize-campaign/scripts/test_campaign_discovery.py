@@ -1774,8 +1774,16 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
                           build_id="n" * 40)
         age("new", 2_000_000)
         self.assertIn("a/s", campaign.story_site_packets(self.dir, STORY, None))
-        # An older build from before the current baseline epoch never speaks.
+        # A newer run of the story whose log no packet cites still ran.
         ledger = json.loads((self.dir / "ledger.json").read_text())
+        ledger["baseline_epochs"] = [{"ts": "1970-01-02T00:00:00+00:00"}]
+        (self.dir / "ledger.json").write_text(json.dumps(ledger))
+        uncited = self.dir / "evidence" / "uncited.log"
+        uncited.write_text(f"[SP3_REDUNDANCY_ROW] {json.dumps(dict(row, group=f'run|{STORY}'))}\n")
+        os.utime(uncited, (2_000_000, 2_000_000))
+        self.assertNotIn("a/s", campaign.story_site_packets(self.dir, STORY, None))
+        uncited.unlink()
+        # An older build from before the current baseline epoch never speaks.
         ledger["baseline_epochs"] = [{"ts": "1970-01-13T00:00:00+00:00"}]  # 1,036,800 s: after "old", before "new"
         (self.dir / "ledger.json").write_text(json.dumps(ledger))
         self.assertNotIn("a/s", campaign.story_site_packets(self.dir, STORY, None))
