@@ -251,8 +251,15 @@ inline uint64_t HashBytes(const void* data, size_t length) {
   return hash ? hash : 1;  // zero is the empty-slot sentinel below
 }
 
+inline uint64_t Mix64(uint64_t x) {
+  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+  return x ^ (x >> 31);
+}
+
 inline uint64_t HashCombine(uint64_t a, uint64_t b) {
-  a ^= b + 0x9e3779b97f4a7c15ULL + (a << 6) + (a >> 2);
+  a ^= Mix64(b) + 0x9e3779b97f4a7c15ULL + (a << 6) + (a >> 2);
+  a = Mix64(a);
   return a ? a : 1;
 }
 
@@ -309,7 +316,7 @@ inline std::vector<RedundancyCounter*>& RedundancyRegistry() {
 class RedundancyCounter {
  public:
   // Fixed-capacity open-addressing set; sized for one repetition of one story.
-  static constexpr size_t kCapacityLog2 = 17;  // 131072 slots
+  static constexpr size_t kCapacityLog2 = 19;  // 524288 slots
   static constexpr size_t kCapacity = size_t{1} << kCapacityLog2;
 
   struct Stats {
