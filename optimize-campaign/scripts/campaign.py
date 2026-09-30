@@ -5198,10 +5198,14 @@ def site_story_newest_build(campaign_dir):
 
     def compatible(site, build):
         head = newest.get(site)
-        if build == head:
-            return True
+        # Nothing from before the current baseline epoch speaks for a story,
+        # the site's newest build included: a counter never re-run on the new
+        # baseline is re-measured before a row binds it (round 142 reviews:
+        # 394 pairs resolved to pre-rebase builds).
         if order.get(build, 0.0) < epoch:
             return False
+        if build == head:
+            return True
         here = placements.get((site, build))
         if not here or here != placements.get((site, head)):
             return False

@@ -1787,6 +1787,13 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         ledger["baseline_epochs"] = [{"ts": "1970-01-13T00:00:00+00:00"}]  # 1,036,800 s: after "old", before "new"
         (self.dir / "ledger.json").write_text(json.dumps(ledger))
         self.assertNotIn("a/s", campaign.story_site_packets(self.dir, STORY, None))
+        # ... nor does the site's newest build when it predates the epoch.
+        self.write_packet("new-story", applicable=0.1, repeat=0.0, site="a/s", symbol="Fn", build_id="n" * 40)
+        age("new-story", 2_000_000)
+        ledger["baseline_epochs"] = [{"ts": "1970-01-25T00:00:00+00:00"}]  # 2,073,600 s: after both
+        (self.dir / "ledger.json").write_text(json.dumps(ledger))
+        self.assertNotIn("a/s", campaign.story_site_packets(self.dir, STORY, None))
+        (self.dir / "evidence" / "new-story.json").unlink()
         ledger["baseline_epochs"] = []
         (self.dir / "ledger.json").write_text(json.dumps(ledger))
         # The newer build changed the counter's code (same function name).
