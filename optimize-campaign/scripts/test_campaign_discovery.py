@@ -1763,6 +1763,32 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         self.assertEqual({"n" * 40}, {pk["build_id"] for pk, _ in
                                       campaign.story_site_packets(self.dir, STORY, None)["a/s"]})
         (self.dir / "evidence" / "new-story.json").unlink()
+        # The newer build's log ran the story, but nobody reduced it there:
+        # the old readings do not come back.
+        log = self.dir / "logs" / "new.log"
+        row = json.loads(log.read_text().split("[SP3_REDUNDANCY_ROW] ", 1)[1].splitlines()[0])
+        log.write_text(log.read_text() + f"[SP3_REDUNDANCY_ROW] {json.dumps(dict(row, group=f'run|{STORY}'))}\n")
+        age("new", 2_000_000)
+        self.assertNotIn("a/s", campaign.story_site_packets(self.dir, STORY, None))
+        self.write_packet("new", story="Other", applicable=0.1, repeat=0.0, site="a/s", symbol="Fn",
+                          build_id="n" * 40)
+        age("new", 2_000_000)
+        self.assertIn("a/s", campaign.story_site_packets(self.dir, STORY, None))
+        # An older build from before the current baseline epoch never speaks.
+        ledger = json.loads((self.dir / "ledger.json").read_text())
+        ledger["baseline_epochs"] = [{"ts": "1970-01-13T00:00:00+00:00"}]  # 1,036,800 s: after "old", before "new"
+        (self.dir / "ledger.json").write_text(json.dumps(ledger))
+        self.assertNotIn("a/s", campaign.story_site_packets(self.dir, STORY, None))
+        ledger["baseline_epochs"] = []
+        (self.dir / "ledger.json").write_text(json.dumps(ledger))
+        # The newer build changed the counter's code (same function name).
+        patch = self.dir / "evidence" / "probes.patch"
+        (self.dir / "evidence" / "probes-new.patch").write_text(
+            patch.read_text().replace('"a/s");', '"a/s");\n+  key = Other();'))
+        self.write_packet("new", story="Other", applicable=0.1, repeat=0.0, site="a/s", symbol="Fn",
+                          build_id="n" * 40, patch_name="probes-new.patch")
+        age("new", 2_000_000)
+        self.assertNotIn("a/s", campaign.story_site_packets(self.dir, STORY, None))
         # The newer build moved the counter: the old placement's readings go.
         self.write_packet("new", story="Other", applicable=0.1, repeat=0.0, site="a/s", symbol="Moved",
                           build_id="n" * 40)

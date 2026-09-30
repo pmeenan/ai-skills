@@ -5075,30 +5075,135 @@ def _site_placements(campaign_dir):
     return placements
 
 
+def _epoch_start(campaign_dir):
+    """Seconds since the epoch at which the current baseline epoch began (0
+    when the campaign never re-baselined)."""
+    try:
+        data = json.loads((pathlib.Path(campaign_dir) / "ledger.json").read_text())
+        epochs = data.get("baseline_epochs") or []
+        if epochs:
+            return datetime.datetime.fromisoformat(str(epochs[-1]["ts"])).timestamp()
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return 0.0
+
+
+_SITE_CODE_CACHE = {}
+
+
+def _site_code(campaign_dir, packet):
+    """The probe code a packet's counter ran: the patch hunks that name its
+    site and the probe header's diff, line numbers dropped. None when the
+    patch is missing."""
+    patch = pathlib.Path(str(packet.get("patch") or ""))
+    if not str(packet.get("patch") or ""):
+        return None
+    if not patch.is_absolute():
+        patch = pathlib.Path(campaign_dir) / patch
+    site = packet["site"]
+    try:
+        stat = patch.resolve().stat()
+    except OSError:
+        return None
+    key = (str(patch.resolve()), stat.st_mtime_ns, site)
+    if key in _SITE_CODE_CACHE:
+        return _SITE_CODE_CACHE[key]
+
+    def normalize(lines):
+        return tuple(line for line in lines
+                     if not line.startswith(("@@", "index ")))
+
+    site_hunks, header = [], ()
+    chunks = patch.read_text(errors="replace").split("diff --git ")
+    for chunk in (chunks[1:] if len(chunks) > 1 else chunks):
+        lines = chunk.splitlines()
+        if lines and "redundancy_probe.h" in lines[0]:
+            header = normalize(lines)
+        hunk = []
+        for line in lines + ["@@"]:
+            if line.startswith("@@"):
+                if any(f'"{site}"' in h for h in hunk):
+                    site_hunks.append(normalize(hunk))
+                hunk = [line]
+            else:
+                hunk.append(line)
+    value = (tuple(site_hunks), header) if site_hunks else None
+    _SITE_CODE_CACHE[key] = value
+    return value
+
+
+_MEASURED_CACHE = {}
+
+
+def _log_measured(log):
+    """{(site, story)} with calls in a browser log's rows."""
+    import redundancy_evidence
+    try:
+        stat = log.stat()
+    except OSError:
+        return set()
+    key = (str(log.resolve()), stat.st_mtime_ns, stat.st_size)
+    if key not in _MEASURED_CACHE:
+        found = set()
+        for row in redundancy_evidence.parse_rows(log):
+            if row.get("site") and int(row.get("calls", 0) or 0) > 0:
+                found.add((row["site"], redundancy_evidence.story_of(row.get("group", ""))))
+        _MEASURED_CACHE[key] = found
+    return _MEASURED_CACHE[key]
+
+
 def site_story_newest_build(campaign_dir):
     """(site, story) -> the newest build that measured the site in that story.
 
     A build that never ran a story does not supersede that story's readings
     (round 142: a one-story React-Redux build replaced the TipTap and jQuery
     readings of the round-139 build, so the imported #333 and #404 no longer
-    passed). The site's newest build still decides where the counter sits: an
-    older build speaks for a story only when its packets name the same function
-    and scope as the newest build's, and within a story the newest build that
-    ran it always wins."""
+    passed). An older build speaks for a story only when all of these hold:
+    it ran inside the current baseline epoch; its patch carries the same code
+    for the site (the hunks that name it and the probe header, not only the
+    function the operator typed) as the site's newest build; and no newer such
+    build's logs show the site with calls in that story. The last is decided
+    from the logs, not from which packets were reduced: leaving a story
+    unreduced on a newer build does not bring its old readings back (round
+    142 reviews)."""
     order = build_order(campaign_dir)
     newest = site_newest_build(campaign_dir)
     placements = _site_placements(campaign_dir)
-    out = {}
+    epoch = _epoch_start(campaign_dir)
+    root = pathlib.Path(campaign_dir)
+    logs_of, code_of, measured = {}, {}, set()
     for _, packet in _evidence_packets(campaign_dir):
-        site, build, story = packet["site"], packet["build_id"], packet.get("target_story")
-        if build != newest.get(site):
-            here = placements.get((site, build))
-            if not here or here != placements.get((site, newest.get(site))):
-                continue
+        site, build = packet["site"], packet["build_id"]
+        measured.add((site, packet.get("target_story"), build))
+        code_of.setdefault((site, build), _site_code(campaign_dir, packet))
+        for source in packet.get("sources") or []:
+            log = pathlib.Path(str(source.get("path", "")))
+            logs_of.setdefault(build, set()).add(log if log.is_absolute() else root / log)
+    for build, logs in logs_of.items():
+        for log in logs:
+            for site, story in _log_measured(log):
+                measured.add((site, story, build))
+
+    def compatible(site, build):
+        head = newest.get(site)
+        if build == head:
+            return True
+        if order.get(build, 0.0) < epoch:
+            return False
+        here = placements.get((site, build))
+        if not here or here != placements.get((site, head)):
+            return False
+        code = code_of.get((site, build))
+        return code is not None and code == code_of.get((site, head))
+
+    latest = {}
+    for site, story, build in measured:
+        if site not in newest or not compatible(site, build):
+            continue
         key = (site, story)
-        if key not in out or order.get(build, 0.0) >= order.get(out[key], 0.0):
-            out[key] = build
-    return out
+        if key not in latest or order.get(build, 0.0) >= order.get(latest[key], 0.0):
+            latest[key] = build
+    return latest
 
 
 def all_site_symbols(campaign_dir):
