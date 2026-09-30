@@ -4102,12 +4102,12 @@ def story_probe_symbols(campaign_dir, story):
     callee, not the frame it is filed under; it stands nowhere on a stack
     (round 34: OutOfFlowLayoutPart::Run's scope times LayoutOOFNode, and the
     rows under Run are CalculateOffset's)."""
-    newest = site_newest_build(campaign_dir)
+    newest = site_story_newest_build(campaign_dir)
     symbols = set()
     for _, packet in _evidence_packets(campaign_dir):
         if packet.get("target_story") != story or packet.get("scope_symbol"):
             continue
-        if packet["build_id"] != newest.get(packet["site"]):
+        if packet["build_id"] != newest.get((packet["site"], story)):
             continue  # a site's older packets are superseded, their scope with them
         symbol = packet.get("probe_symbol")
         if isinstance(symbol, str) and symbol.strip():
@@ -4988,11 +4988,12 @@ def story_site_packets(campaign_dir, story, build_id):
     the round-16 to round-18 out-of-flow packets at a tenth of Run)."""
     out = {}
     root = pathlib.Path(campaign_dir)
-    newest = site_newest_build(campaign_dir) if build_id is None else None
+    newest = site_story_newest_build(campaign_dir) if build_id is None else None
     for path, packet in _evidence_packets(campaign_dir):
         if build_id is not None and packet.get("build_id") != build_id:
             continue
-        if build_id is None and packet.get("build_id") != newest.get(packet.get("site")):
+        if build_id is None and packet.get("build_id") != newest.get(
+                (packet.get("site"), packet.get("target_story"))):
             continue
         if packet.get("target_story") != story or not packet.get("site"):
             continue
@@ -5061,6 +5062,43 @@ def site_newest_build(campaign_dir):
         if site not in newest or order.get(build, 0.0) >= order.get(newest[site], 0.0):
             newest[site] = build
     return newest
+
+
+def _site_placements(campaign_dir):
+    """(site, build) -> the (probe_symbol, scope_symbol) pairs its packets name."""
+    placements = {}
+    for _, packet in _evidence_packets(campaign_dir):
+        symbol = str(packet.get("probe_symbol") or "").strip()
+        if symbol:
+            placements.setdefault((packet["site"], packet["build_id"]), set()).add(
+                (symbol, str(packet.get("scope_symbol") or "").strip()))
+    return placements
+
+
+def site_story_newest_build(campaign_dir):
+    """(site, story) -> the newest build that measured the site in that story.
+
+    A build that never ran a story does not supersede that story's readings
+    (round 142: a one-story React-Redux build replaced the TipTap and jQuery
+    readings of the round-139 build, so the imported #333 and #404 no longer
+    passed). The site's newest build still decides where the counter sits: an
+    older build speaks for a story only when its packets name the same function
+    and scope as the newest build's, and within a story the newest build that
+    ran it always wins."""
+    order = build_order(campaign_dir)
+    newest = site_newest_build(campaign_dir)
+    placements = _site_placements(campaign_dir)
+    out = {}
+    for _, packet in _evidence_packets(campaign_dir):
+        site, build, story = packet["site"], packet["build_id"], packet.get("target_story")
+        if build != newest.get(site):
+            here = placements.get((site, build))
+            if not here or here != placements.get((site, newest.get(site))):
+                continue
+        key = (site, story)
+        if key not in out or order.get(build, 0.0) >= order.get(out[key], 0.0):
+            out[key] = build
+    return out
 
 
 def all_site_symbols(campaign_dir):
@@ -5134,12 +5172,16 @@ def enforce_sites_named(paths, bound_rows, story, campaign_dir):
 def _enforce_sites_named_on_build(build, logs, story, campaign_dir):
     import redundancy_evidence
     symbols = build_site_symbols(campaign_dir, build)
+    # A site ran when it has calls in the story, as the reducer counts it: a
+    # site whose rows all read zero cannot be reduced for this story, and a
+    # one-story build may have no other story to reduce it in (round 142).
     ran = set()
     for log in logs:
         if not log.is_file():
             continue
         for row in redundancy_evidence.parse_rows(log):
-            if redundancy_evidence.story_of(row.get("group", "")) == story and row.get("site"):
+            if (redundancy_evidence.story_of(row.get("group", "")) == story and row.get("site")
+                    and int(row.get("calls", 0) or 0) > 0):
                 ran.add(row["site"])
     missing = sorted(site for site in ran if site not in symbols)
     if missing:

@@ -1744,6 +1744,49 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         (self.dir / "evidence" / "two.json").write_text(_json.dumps(two))
         campaign.enforce_sites_named(rows, [(1, rows[0])], STORY, self.dir)
 
+    def test_a_build_that_never_ran_a_story_does_not_supersede_it(self):
+        """Round 142: a one-story build made every other story's readings of
+        the same counters stale. A story keeps its newest build that ran it,
+        unless the newer build moved the counter to another function."""
+        import os
+        def age(name, when):
+            os.utime(self.dir / "logs" / f"{name}.log", (when, when))
+        self.write_packet("old", applicable=0.1, repeat=0.0, site="a/s", symbol="Fn", build_id="o" * 40)
+        self.write_packet("new", story="Other", applicable=0.1, repeat=0.0, site="a/s", symbol="Fn",
+                          build_id="n" * 40)
+        age("old", 1_000_000); age("new", 2_000_000)
+        packets = campaign.story_site_packets(self.dir, STORY, None)
+        self.assertEqual("o" * 40, packets["a/s"][0][0]["build_id"])
+        # The newer build ran the story too: it wins.
+        self.write_packet("new-story", applicable=0.1, repeat=0.0, site="a/s", symbol="Fn", build_id="n" * 40)
+        age("new-story", 2_000_000)
+        self.assertEqual({"n" * 40}, {pk["build_id"] for pk, _ in
+                                      campaign.story_site_packets(self.dir, STORY, None)["a/s"]})
+        (self.dir / "evidence" / "new-story.json").unlink()
+        # The newer build moved the counter: the old placement's readings go.
+        self.write_packet("new", story="Other", applicable=0.1, repeat=0.0, site="a/s", symbol="Moved",
+                          build_id="n" * 40)
+        age("new", 2_000_000)
+        self.assertNotIn("a/s", campaign.story_site_packets(self.dir, STORY, None))
+
+    def test_a_site_with_zero_calls_in_the_story_need_not_be_named(self):
+        """Round 142: the reducer refuses a site that never ran in the story's
+        scored window, so a zero-call row must not demand a reduction."""
+        one = self.write_packet("one", applicable=0.1, repeat=0.0, site="a/one", symbol="One")
+        log = self.dir / "logs" / "one.log"
+        row = json.loads(log.read_text().split("[SP3_REDUNDANCY_ROW] ", 1)[1].splitlines()[0])
+        row.update({"site": "a/idle", "calls": 0, "applicable_calls": 0, "distinct_inputs": 0,
+                    "repeated_inputs": 0, "timed_calls": 0, "total_ns": 0, "applicable_ns": 0,
+                    "repeated_ns": 0})
+        log.write_text(log.read_text() + f"[SP3_REDUNDANCY_ROW] {json.dumps(row)}\n")
+        import redundancy_evidence
+        patch = self.dir / "evidence" / "probes.patch"
+        pk = redundancy_evidence.build_packet([log], "a/one", STORY, probe_symbol="One", patch=patch)
+        (self.dir / "evidence" / "one.json").write_text(json.dumps(pk))
+        one = {"path": "evidence/one.json", "sha256": campaign.sha256_file(self.dir / "evidence" / "one.json")}
+        rows = [{"anchor": "One(int)", "disposition": "mandatory", "redundancy_evidence": one}]
+        campaign.enforce_sites_named(rows, [(1, rows[0])], STORY, self.dir)
+
     def test_an_expression_predicate_that_always_held_is_a_finding(self):
         """Round 28: `applicable = (FastGetAttribute(name) == value)` true on
         every call is 100% same-value sets, not a probe that measured
