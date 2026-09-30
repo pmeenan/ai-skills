@@ -2632,6 +2632,288 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
                 campaign._INCLUSIVE_CACHE_DIR = saved
         self.assertEqual(own, {"blink::B()": 30.0, "blink::C()": 50.0})
 
+    # ---------------- decompose-draft ----------------
+
+    DRAFT_BUILD = "d" * 40
+    # site -> (probed function, class, calls/rep, ns per call, applicable, repeat)
+    DRAFT_SITES = {
+        "events/dispatch": ("blink::Dispatch", "notification-fanout", 100, 800, 0.001, 0.0),
+        "layout/box": ("blink::Box", "unchanged-input", 100, 400, 0.0, 0.0),
+        "style/recalc": ("blink::Style", "unchanged-input", 100, 300, 0.5, 0.0),
+        "dom/idle": ("blink::Idle", "no-op-mutation", 0, 0, 0.0, 0.0),
+    }
+
+    def draft_fixture(self, sites=None, patch_sites=None):
+        """A discovery on blink::Root() with a profile, a twin log of one
+        build carrying every site (one with zero calls in the story) and
+        the probe patch that defines them."""
+        sites = dict(self.DRAFT_SITES if sites is None else sites)
+        story_dir = self.dir / "results" / "analysis" / "stories" / STORY
+        story_dir.mkdir(parents=True, exist_ok=True)
+        artifact = story_dir / "candidate_frontier.json"
+        artifact.write_text("{}")
+        (story_dir / "profile.collapsed").write_text(
+            "main;blink::Root();blink::Dispatch();blink::Handler();blink::Box() 40\n"
+            "main;blink::Root();blink::Dispatch();blink::Handler();blink::Style();blink::Cascade() 30\n"
+            "main;blink::Root();blink::Dispatch();blink::Handler() 9.5\n"
+            "main;blink::Root();blink::Other() 20\n"
+            "main;blink::Root();blink::Small() 0.5\n")
+        rows = {
+            "@root": ("blink::Root()", 100.0),
+            "function:blink::Box()": ("blink::Box()", 40.0),
+            "function:blink::Style()": ("blink::Style()", 30.0),
+            "function:blink::Cascade()": ("blink::Cascade()", 30.0),
+            "function:blink::Other()": ("blink::Other()", 20.0),
+            "function:blink::Small()": ("blink::Small()", 0.5),
+        }
+        entry = f"story:{STORY}/function:blink::Root()"
+        refs = [{"capture_id": "c1", "entry_key": entry, "hotspot_key": key,
+                 "semantic_key": f"function:{name}", "measured_share_pct": share}
+                for key, (name, share) in rows.items()]
+        ledger = campaign.Ledger(self.dir).load()
+        ledger.data["config"]["calibration"] = {"story_mde_pct": {STORY: 0.5}, "suite_mde_pct": 0.5}  # floor 1.0%
+        ledger.data["profile_runs"] = [{"id": "p", "capture_provenance": [{
+            "capture_id": "c1", "story_frontiers": [{"story": STORY, "artifact": str(artifact)}]}]}]
+        opp_id = ledger.data["next_id"]
+        ledger.data["next_id"] = opp_id + 1
+        ledger.data["opportunities"].append({
+            "id": opp_id, "kind": "discovery", "status": "investigating",
+            "anchor": f"{STORY}/blink::Root()", "area_key": "draft-root", "mechanism_key": None,
+            "profile_id": "p", "target_story": STORY, "expected_work_refs": refs, "history": []})
+        ledger.save()
+        for site, (_, cls, *_rest) in sites.items():
+            campaign.main(["--dir", str(self.dir), "register-site", "--site", site, "--class", cls,
+                           "--note", "test fixture: the key names the row's input"])
+        lines = []
+        for site, (symbol, _, calls, ns, applicable, repeat) in sites.items():
+            for _ in range(4):
+                total = calls * ns
+                lines.append(json.dumps({
+                    "schema_version": 1, "site": site, "group": f"run|{STORY}", "calls": calls,
+                    "applicable_calls": round(applicable * calls), "distinct_inputs": calls,
+                    "repeated_inputs": round(repeat * calls), "overflow": 0, "timed_calls": calls,
+                    "total_ns": total, "applicable_ns": round(applicable * total),
+                    "repeated_ns": round(repeat * total), "build_id": self.DRAFT_BUILD,
+                    "timing": "exclusive", "nested_calls": 0}))
+        log = self.dir / "evidence" / "redundancy_r7_twin.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("".join(f"[SP3_REDUNDANCY_ROW] {line}\n" for line in lines))
+        patch = self.dir / "evidence" / "probes-r7.patch"
+        patch.write_text("".join(f'+  new RedundancyCounter(\n+      "{site}");\n'
+                                 for site in (sites if patch_sites is None else patch_sites)))
+        return opp_id
+
+    def draft_symbols(self, sites=None):
+        out = []
+        for site, (symbol, *_rest) in (self.DRAFT_SITES if sites is None else sites).items():
+            out += ["--symbol", f"{site}={symbol}"]
+        return out
+
+    def run_draft(self, opp_id, *extra, out="draft.json"):
+        import contextlib, io
+        buffer, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(errors):
+            code = campaign.main(["--dir", str(self.dir), "decompose-draft", "--opp", str(opp_id),
+                                  "--browser-log", "evidence/redundancy_r7_twin.log",
+                                  "--patch", "evidence/probes-r7.patch",
+                                  "--out", str(self.dir / out), *extra])
+        return code, buffer.getvalue() + errors.getvalue()
+
+    def test_decompose_draft_reduces_every_called_site_and_closes_by_count(self):
+        opp_id = self.draft_fixture()
+        code, output = self.run_draft(opp_id, *self.draft_symbols())
+        self.assertEqual(0, code, output)
+        evidence = self.dir / "evidence"
+        slug = campaign.draft_slug(STORY)
+        # Every site with calls in the story is reduced with its registered
+        # class, the same bytes redundancy_evidence.py writes; the zero-call
+        # site is skipped.
+        import redundancy_evidence
+        for site in ("events/dispatch", "layout/box", "style/recalc"):
+            path = evidence / f"probe_r7_{slug}__{campaign.draft_site_slug(site)}.json"
+            packet = json.loads(path.read_text())
+            self.assertEqual(self.DRAFT_SITES[site][1], packet["hypothesis_class"])
+            self.assertEqual(self.DRAFT_SITES[site][0], packet["probe_symbol"])
+            self.assertEqual("evidence/probes-r7.patch", packet["patch"])
+            expected = redundancy_evidence.build_packet(
+                [evidence / "redundancy_r7_twin.log"], site, STORY, probe_symbol=self.DRAFT_SITES[site][0],
+                patch=evidence / "probes-r7.patch", hypothesis_class=self.DRAFT_SITES[site][1])
+            expected["patch"] = "evidence/probes-r7.patch"
+            self.assertEqual(json.dumps(expected, indent=2, sort_keys=True) + "\n", path.read_text())
+            campaign.verify_packet_provenance(packet, path, self.dir)
+        self.assertFalse((evidence / f"probe_r7_{slug}__dom_idle.json").exists())
+        self.assertIn("zero-call sites skipped: ['dom/idle']", output)
+        draft = json.loads((self.dir / "draft.json").read_text())
+        todo = json.loads((self.dir / "draft.todo.json").read_text())
+        self.assertEqual(["dom/idle"], todo["zero_call_sites"])
+        rows = draft["paths"]
+        by_anchor = {row["anchor"]: (index, row) for index, row in enumerate(rows, 1)}
+        # The root row's anchor is a frame, not `<story>/<function>`.
+        self.assertIn("blink::Root()", by_anchor)
+        disposition = {row["anchor"]: row["disposition"] for row in rows}
+        self.assertEqual("mandatory", disposition["blink::Root()"])       # nearest: Dispatch at 0.1%
+        self.assertEqual("mandatory", disposition["blink::Box()"])        # own counter at 0
+        self.assertEqual("", disposition["blink::Style()"])               # own counter at 15%: a candidate
+        self.assertEqual("", disposition["blink::Cascade()"])             # nearest Style refuses mandatory
+        self.assertEqual("", disposition["blink::Other()"])               # no packet on its stacks
+        self.assertEqual("below-floor", disposition["blink::Small()"])
+        # Cost packets for the rows at/above the floor, the cost-packet command's bytes.
+        import cost_evidence
+        for index, row in enumerate(rows, 1):
+            if row["disposition"] == "below-floor":
+                self.assertNotIn("cost_evidence", row)
+                continue
+            rel = row["cost_evidence"]["path"]
+            self.assertEqual(f"evidence/cost_{opp_id}_r{index}.json", rel)
+            built = cost_evidence.build_cost_packet(
+                [self.dir / "results" / "analysis" / "stories" / STORY / "profile.collapsed"], row["anchor"], STORY, "p")
+            self.assertEqual(json.dumps(built, indent=2, sort_keys=True) + "\n", (self.dir / rel).read_text())
+        # Mandatory rows: packets bound, evidence from the numbers, the gate's
+        # row-text rule satisfied.
+        ledger = campaign.Ledger(self.dir).load()
+        parent = ledger.opp(opp_id)
+        shares = campaign.request_shares(ledger, parent, draft)
+        for anchor in ("blink::Root()", "blink::Box()"):
+            index, row = by_anchor[anchor]
+            packet = json.loads((self.dir / row["redundancy_evidence"]["path"]).read_text())
+            self.assertEqual(campaign.sha256_file(self.dir / row["redundancy_evidence"]["path"]),
+                             row["redundancy_evidence"]["sha256"])
+            self.assertIn(f"{packet['calls_per_repetition_mean']:.1f} calls/rep", row["evidence"])
+            self.assertIn("below the 1.000% story floor", row["evidence"])
+            self.assertIn(f"Profile: results/analysis/stories/{STORY}/candidate_frontier.json", row["evidence"])
+            self.assertEqual([], campaign.row_text_number_problems(row, packet, shares[index], 1.0))
+        bound = [(i, r) for i, r in enumerate(rows, 1) if r["disposition"] == "mandatory"]
+        campaign.enforce_row_text_numbers(rows, bound, shares, ledger.data["config"], 0.1, STORY, self.dir)
+        self.assertIn("layout_box", by_anchor["blink::Box()"][1]["redundancy_evidence"]["path"])
+        self.assertIn("events_dispatch", by_anchor["blink::Root()"][1]["redundancy_evidence"]["path"])
+        # The candidate row binds its own counter and is left to the operator.
+        self.assertIn("style_recalc", by_anchor["blink::Style()"][1]["redundancy_evidence"]["path"])
+        self.assertNotIn("redundancy_evidence", by_anchor["blink::Cascade()"][1])
+        # No judgement is written.
+        for row in rows:
+            for field in campaign.DRAFT_JUDGEMENT_FIELDS:
+                self.assertNotIn(field, row)
+        self.assertIn(campaign.DRAFT_TODO_MARKER, draft["accounting_evidence"])
+        self.assertIn("1 below-floor", draft["accounting_evidence"])
+        with self.assertRaisesRegex(campaign.CampaignError, "OPERATOR-TODO"):
+            campaign.refuse_draft_markers(draft)
+        # The sidecar lists what the operator writes.
+        todo_rows = {r["anchor"]: r for r in todo["rows"]}
+        self.assertTrue(todo_rows["blink::Root()"]["todo"][0].startswith("invariant"))
+        self.assertTrue(any(t.startswith("investigation") for t in todo_rows["blink::Box()"]["todo"]))
+        self.assertFalse(any(t.startswith("investigation") for t in todo_rows["blink::Root()"]["todo"]))
+        for anchor in ("blink::Style()", "blink::Cascade()", "blink::Other()"):
+            self.assertIsNone(todo_rows[anchor]["disposition"])
+            self.assertTrue(todo_rows[anchor]["todo"][0].startswith("disposition"))
+        self.assertEqual([], todo_rows["blink::Small()"]["todo"])
+        self.assertEqual("blink::Style", todo_rows["blink::Style()"]["candidate_functions"][0]["function"])
+
+    def test_decompose_draft_binds_what_explain_accepts(self):
+        import contextlib, io
+        opp_id = self.draft_fixture()
+        self.assertEqual(0, self.run_draft(opp_id, *self.draft_symbols())[0])
+        draft = json.loads((self.dir / "draft.json").read_text())
+        mandatory = [(i, r) for i, r in enumerate(draft["paths"], 1) if r["disposition"] == "mandatory"]
+        self.assertTrue(mandatory)
+        for index, row in mandatory:
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                self.assertEqual(0, campaign.main(["--dir", str(self.dir), "explain", "--opp", str(opp_id),
+                                                   "--children", str(self.dir / "draft.json"), "--path", str(index)]))
+            self.assertIn(f"mandatory on {row['redundancy_evidence']['path']}", buffer.getvalue())
+
+    def test_decompose_draft_refuses_unregistered_sites_and_unknown_symbols(self):
+        sites = dict(self.DRAFT_SITES)
+        opp_id = self.draft_fixture(sites=sites)
+        # An unregistered site with calls in the story.
+        log = self.dir / "evidence" / "redundancy_r7_twin.log"
+        row = json.loads(log.read_text().splitlines()[0].split("] ", 1)[1])
+        row["site"] = "x/unregistered"
+        log.write_text(log.read_text() + f"[SP3_REDUNDANCY_ROW] {json.dumps(row)}\n")
+        patch = self.dir / "evidence" / "probes-r7.patch"
+        patch.write_text(patch.read_text() + '+  new RedundancyCounter("x/unregistered");\n')
+        code, output = self.run_draft(opp_id, *self.draft_symbols(), "--symbol", "x/unregistered=blink::X")
+        self.assertEqual(1, code)
+        self.assertIn("no registered hypothesis class: ['x/unregistered']", output)
+        self.assertIn("register-site", output)
+        self.assertEqual([], list((self.dir / "evidence").glob("probe_*.json")))
+        # Registered, but no build ever placed the counters: --symbol is required.
+        campaign.main(["--dir", str(self.dir), "register-site", "--site", "x/unregistered", "--class",
+                       "unchanged-input", "--note", "test fixture: the key names the row's input"])
+        code, output = self.run_draft(opp_id)
+        self.assertEqual(1, code)
+        self.assertIn("no known probe function", output)
+        for site in ("events/dispatch", "layout/box", "style/recalc", "x/unregistered"):
+            self.assertIn(site, output)
+        self.assertNotIn("dom/idle", output)  # zero calls: never reduced, never asked for
+        self.assertFalse(list((self.dir / "evidence").glob("probe_*.json")))
+        # Once a build with the same probe code placed them, the placement is reused.
+        self.assertEqual(0, self.run_draft(opp_id, *self.draft_symbols(), "--symbol", "x/unregistered=blink::X")[0])
+        code, output = self.run_draft(opp_id, "--tag", "r8", out="again.json")
+        self.assertEqual(0, code, output)
+        slug = campaign.draft_slug(STORY)
+        self.assertEqual("blink::X", json.loads(
+            (self.dir / "evidence" / f"probe_r8_{slug}__x_unregistered.json").read_text())["probe_symbol"])
+
+    def test_decompose_draft_is_idempotent_and_never_overwrites(self):
+        opp_id = self.draft_fixture()
+        code, output = self.run_draft(opp_id, *self.draft_symbols())
+        self.assertEqual(0, code, output)
+        before = {p.name: p.read_bytes() for p in list((self.dir / "evidence").glob("*.json")) + [
+            self.dir / "draft.json", self.dir / "draft.todo.json"]}
+        code, output = self.run_draft(opp_id, *self.draft_symbols())
+        self.assertEqual(0, code, output)
+        self.assertIn("0 packet(s) written", output)
+        after = {p.name: p.read_bytes() for p in list((self.dir / "evidence").glob("*.json")) + [
+            self.dir / "draft.json", self.dir / "draft.todo.json"]}
+        self.assertEqual(before, after)
+        # A packet with other bytes is never replaced.
+        slug = campaign.draft_slug(STORY)
+        packet = self.dir / "evidence" / f"probe_r7_{slug}__layout_box.json"
+        packet.write_text(packet.read_text() + " ")
+        code, output = self.run_draft(opp_id, *self.draft_symbols())
+        self.assertEqual(1, code)
+        self.assertIn("exist with other contents", output)
+        self.assertTrue(packet.read_text().endswith(" "))
+        packet.write_text(packet.read_text()[:-1])
+        # ... nor is a draft the operator already edited.
+        draft = json.loads((self.dir / "draft.json").read_text())
+        draft["paths"][0]["invariant"] = "operator text"
+        (self.dir / "draft.json").write_text(json.dumps(draft))
+        code, output = self.run_draft(opp_id, *self.draft_symbols())
+        self.assertEqual(1, code)
+        self.assertIn("exists and differs from this draft", output)
+        self.assertIn("operator text", (self.dir / "draft.json").read_text())
+
+    def test_explain_reads_a_raw_scaffold_while_decompose_stays_strict(self):
+        import contextlib, io
+        opp_id = self.draft_fixture()
+        # Packets for the story exist (a probe run), the scaffold is unfilled.
+        self.assertEqual(0, self.run_draft(opp_id, *self.draft_symbols())[0])
+        scaffold = self.dir / "scaffold.json"
+        self.assertEqual(0, campaign.main(["--dir", str(self.dir), "decompose-scaffold", "--opp", str(opp_id),
+                                           "--out", str(scaffold)]))
+        raw = json.loads(scaffold.read_text())
+        self.assertEqual("", raw["accounting_evidence"])
+        self.assertEqual(f"{STORY}/blink::Root()", raw["paths"][0]["anchor"])
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.assertEqual(0, campaign.main(["--dir", str(self.dir), "explain", "--opp", str(opp_id),
+                                               "--children", str(scaffold), "--path", "1"]))
+        text = buffer.getvalue()
+        self.assertIn("Path 1: blink::Root()", text)
+        self.assertIn(f"build {self.DRAFT_BUILD[:12]}", text)
+        self.assertIn("NEAREST", text)
+        self.assertIn("mandatory on evidence/probe_r7_", text)
+        # decompose and the pre-check read the same file strictly.
+        with self.assertRaisesRegex(campaign.CampaignError, "requires accounting_evidence"):
+            campaign.load_decomposition(scaffold)
+        raw["accounting_evidence"] = "filled"
+        scaffold.write_text(json.dumps(raw))
+        with self.assertRaisesRegex(campaign.CampaignError, "invalid disposition ''"):
+            campaign.load_decomposition(scaffold)
+        self.assertEqual(len(raw["paths"]), len(campaign.load_decomposition(scaffold, draft=True)["paths"]))
+
 
 if __name__ == "__main__":
     unittest.main()

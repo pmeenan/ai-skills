@@ -9808,6 +9808,20 @@ def cmd_decompose_scaffold(args):
     """
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     discovery = ledger.opp(args.opp)
+    scaffold = decomposition_scaffold(ledger, discovery)
+    out = pathlib.Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(scaffold, indent=2) + "\n")
+    print(
+        f"Scaffolded {len(scaffold['paths'])} path row(s) for discovery "
+        f"#{discovery['id']:03d} ({scaffold['area_key']}) -> {out}"
+    )
+    return 0
+
+
+def decomposition_scaffold(ledger, discovery):
+    """The decompose-scaffold skeleton for one discovery (decompose-draft
+    starts from the same rows)."""
     if discovery.get("kind") != "discovery":
         raise CampaignError("decompose-scaffold takes a discovery opportunity id")
     refs = discovery.get("expected_work_refs") or []
@@ -9884,14 +9898,7 @@ def cmd_decompose_scaffold(args):
         "ledger_mechanisms_for_area": ledger_mechanisms,
         "paths": paths,
     }
-    out = pathlib.Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(scaffold, indent=2) + "\n")
-    print(
-        f"Scaffolded {len(paths)} path row(s) for discovery "
-        f"#{discovery['id']:03d} ({area_key}) -> {out}"
-    )
-    return 0
+    return scaffold
 
 
 def cmd_add(args):
@@ -10177,7 +10184,12 @@ def cmd_advance(args):
     return 0
 
 
-def load_decomposition(path):
+def load_decomposition(path, draft=False):
+    """Read and validate a decomposition file. `draft` (explain and the
+    inspection commands only) also reads an unfilled scaffold or a
+    decompose-draft output: no accounting_evidence, blank dispositions and
+    blank evidence are allowed there; every other check still runs.
+    `decompose` and the pre-check read strictly."""
     try:
         with open(path) as f:
             result = json.load(f)
@@ -10185,7 +10197,7 @@ def load_decomposition(path):
         raise CampaignError(f"Cannot read decomposition JSON {path}: {exc}") from exc
     if not isinstance(result, dict):
         raise CampaignError("Decomposition JSON must be an object")
-    if not result.get("accounting_evidence"):
+    if not result.get("accounting_evidence") and not draft:
         raise CampaignError("Decomposition requires accounting_evidence")
     paths = result.get("paths")
     if not isinstance(paths, list) or not paths:
@@ -10195,7 +10207,9 @@ def load_decomposition(path):
         if not isinstance(path_item, dict):
             raise CampaignError(f"Path {index} must be a JSON object")
         disposition = path_item.get("disposition")
-        if disposition not in (
+        if draft and not disposition:
+            pass  # undecided: the operator's to fill
+        elif disposition not in (
             "novel", "known", "covered-by", "mandatory", "below-floor",
             "out-of-scope", "no-qualifying-mechanism", "algorithmic"
         ):
@@ -10216,7 +10230,7 @@ def load_decomposition(path):
             missing.append("anchor")
         if path_item.get("share_pct") is None:
             missing.append("share_pct")
-        if not isinstance(path_item.get("evidence"), str) or not path_item["evidence"].strip():
+        if (not isinstance(path_item.get("evidence"), str) or not path_item["evidence"].strip()) and not draft:
             missing.append("evidence")
         if disposition in ("novel", "known", "algorithmic") and not path_item.get("mechanism_key"):
             missing.append("mechanism_key")
@@ -10563,6 +10577,7 @@ def cmd_decompose(args):
         campaign_dir=ledger.dir,
     )
     result = load_decomposition(args.children)
+    refuse_draft_markers(result)
     carried = carried_rows(parent, result["paths"]) if revising_failed_decomposition else set()
     if carried and not getattr(args, "carry_unchanged", False):
         carried = set()
@@ -13459,7 +13474,7 @@ def parse_row_list(text):
 def cmd_rows(args):
     """One line per row of a decomposition file: share, disposition, wrapper,
     covered-by, mechanism, fraction, bound packet, anchor."""
-    result = load_decomposition(args.children)
+    result = load_decomposition(args.children, draft=True)
     shares = {}
     if args.opp:
         ledger = Ledger(args.dir or default_campaign_dir()).load()
@@ -13566,8 +13581,11 @@ def cmd_explain(args):
     relevance, weight ratio, coverage and closing bound; the nearest; the
     rows beneath it a wrapper list could name; the mechanism rows that
     could cover it; and which dispositions the gate would accept. The same
-    code the gate runs, printed instead of refused."""
-    result = load_decomposition(args.children)
+    code the gate runs, printed instead of refused. The file may be an
+    unfilled scaffold (blank dispositions, no accounting_evidence, the root
+    row's anchor still carrying its story prefix): explain reads it the way
+    decompose-draft does, while decompose and the pre-check stay strict."""
+    result = load_decomposition(args.children, draft=True)
     count = len(result["paths"])
     if str(args.path).strip().lower() == "all":
         rows = list(range(1, count + 1))
@@ -13583,16 +13601,220 @@ def cmd_explain(args):
     return 0
 
 
-def explain_row(args, index):
+def row_anchor_for_story(anchor, story):
+    """A row's anchor as a stack frame. The scaffold's root row carries the
+    discovery's anchor, `<story>/<function>`, which is no frame in the
+    story's stacks (operators stripped the prefix by hand to make explain
+    and cost-packet read the row)."""
+    anchor = str(anchor or "")
+    if story and anchor.startswith(f"{story}/"):
+        return anchor[len(story) + 1:]
+    return anchor
+
+
+def story_newest_packet_build(campaign_dir, story):
+    """The newest build (by the run order of its logs) with a packet for the
+    story, or None."""
+    order = build_order(campaign_dir)
+    builds = {pk.get("build_id") for _, pk in _evidence_packets(campaign_dir)
+              if pk.get("target_story") == story and pk.get("build_id")}
+    return max(builds, key=lambda b: (order.get(b, 0.0), str(b))) if builds else None
+
+
+def explain_packet_view(campaign_dir, profile, story, build, anchors):
+    """What explain reads for rows of one story on one build: the story's
+    packets by probed function, every packet's time coverage against the
+    story's reference, and one pass over the stacks for the given anchors.
+    None when the story has no stacks or no packets on the build."""
+    story_packets = story_site_packets(campaign_dir, story, build)
+    by_symbol = {}
+    for site, entries in story_packets.items():
+        for packet, rel in entries:
+            symbol = str(packet.get("probe_symbol") or "").strip()
+            if symbol:
+                by_symbol.setdefault(symbol, []).append((site, packet, rel))
+    files = collapsed_stack_files(profile, story)
+    if not files or not by_symbol:
+        return None
+    # Coverage of every packet against the story's reference.
+    coverage_rows, reference = packet_time_coverage(
+        [{"anchor": pk.get("probe_symbol"), "redundancy_evidence": {"path": rel}}
+         for entries in story_packets.values() for pk, rel in entries],
+        [(i, {"anchor": pk.get("probe_symbol"), "redundancy_evidence": {"path": rel}})
+         for i, (pk, rel) in enumerate((pr for entries in story_packets.values() for pr in entries), 1)],
+        profile, story, campaign_dir)
+    coverage = {row["packet"]: row["coverage"] for row in coverage_rows if row["coverage"] is not None}
+    anchor_w, symbol_w, both_w, nearest_w = anchor_symbol_weights(files, set(anchors), set(by_symbol), with_nearest=True)
+    return {"story_packets": story_packets, "by_symbol": by_symbol, "files": files, "coverage": coverage,
+            "anchor_w": anchor_w, "symbol_w": symbol_w, "both_w": both_w, "nearest_w": nearest_w,
+            "build": build, "story": story}
+
+
+def explain_row_candidates(view, anchor, campaign_dir):
+    """Every packet of the view against one row: (symbol, site, rel,
+    row_side, probe_side, weight ratio, coverage, bound, relevant, distance,
+    packet), the relevant ones, the nearest sites and the row's own probed
+    functions. The relevance, nearest and positional rules are the gate's
+    (enforce_packet_relevance, enforce_nearest_packet)."""
     import math
-    import redundancy_evidence
+    by_symbol, coverage = view["by_symbol"], view["coverage"]
+    anchor_w, symbol_w, both_w, nearest_w = view["anchor_w"], view["symbol_w"], view["both_w"], view["nearest_w"]
+    row_w = anchor_w.get(anchor, 0.0)
+    own = [sym for sym in by_symbol if symbol_matches(anchor, sym)]
+    candidates = []
+    for symbol, entries in by_symbol.items():
+        weight = symbol_w.get(symbol, 0.0)
+        shared = both_w.get((anchor, symbol), 0.0)
+        row_side = shared / row_w if row_w else 0.0
+        probe_side = shared / weight if weight else 0.0
+        relevant = max(row_side, probe_side) >= PACKET_RELEVANCE
+        distance = abs(math.log(weight / row_w)) if weight > 0 and row_w > 0 else float("inf")
+        for site, packet, rel in entries:
+            supported = packet_supported(packet, campaign_dir) or 0.0
+            counted = scope_counted_fraction(packet, anchor, coverage, rel)
+            candidates.append((symbol, site, rel, row_side, probe_side, weight / row_w if row_w else 0.0,
+                               coverage.get(rel), supported * counted, relevant, distance, packet))
+    relevant = [c for c in candidates if c[8]]
+    best = min((c[9] for c in relevant), default=None)
+    nearest = {c[1] for c in relevant if best is not None and c[9] <= best + math.log(PACKET_NEAREST_TOLERANCE)}
+    # a probe that is the nearest frame in >= 80% of the row's samples is nearest too
+    positional = {c[1] for c in relevant if row_w > 0 and nearest_w.get((anchor, c[0]), 0.0) >= COVERED_BY_SAMPLE_IDENTITY * row_w}
+    nearest |= positional
+    return {"row_w": row_w, "own": own, "candidates": candidates, "relevant": relevant,
+            "nearest": nearest, "positional": positional}
+
+
+def explain_row_options(view, rc, anchor, share, floor, profile, story, campaign_dir):
+    """What the gate would accept for one row on its own counters or its
+    nearest packet: one dict per packet with `kind` (mandatory, candidate,
+    neither, needs-nearer, refused), the packet, its bound and the line
+    explain prints."""
+    by_symbol, coverage, symbol_w = view["by_symbol"], view["coverage"], view["symbol_w"]
+    row_w = rc["row_w"]
+    options = []
+    if rc["own"]:
+        for symbol in rc["own"]:
+            for site, packet, rel in by_symbol[symbol]:
+                supported = packet_supported(packet, campaign_dir) or 0.0
+                counted = scope_counted_fraction(packet, anchor, coverage, rel)
+                upper = share * supported * counted
+                option = {"symbol": symbol, "site": site, "rel": rel, "packet": packet, "own": True,
+                          "supported": supported * counted, "upper": upper}
+                if upper < floor:
+                    remainder = share * (1.0 - counted)
+                    if counted < 1.0 and remainder >= floor:
+                        option.update(kind="neither", text=(
+                            f"on {rel}: neither; the scope counts {counted:.2f} of the function and the "
+                            f"other {remainder:.3f}% is uncounted (a counter on the rest)"))
+                    else:
+                        option.update(kind="mandatory", text=f"mandatory on {rel} ({upper:.3f}% < floor)")
+                else:
+                    fi = mechanism_function_impact(
+                        {"anchor": anchor, "redundancy_evidence": {"path": rel}}, supported * counted, profile, story, campaign_dir)
+                    option.update(kind="candidate", function_impact=fi, text=(
+                        f"known/novel on {rel} at fraction <= {supported * counted:.4f} "
+                        f"(row impact {upper:.3f}%" + (f"; function share {fi[0]:.2f}% x fraction = {fi[1]:.3f}%" if fi else "") + ")"))
+                options.append(option)
+    else:
+        near = [c for c in rc["relevant"] if c[1] in rc["nearest"]]
+        for symbol, site, rel, rs, ps, ratio, cov, bound, ok, distance, packet in near:
+            upper = share * bound
+            option = {"symbol": symbol, "site": site, "rel": rel, "packet": packet, "own": False,
+                      "supported": bound, "upper": upper, "distance": distance,
+                      "positional": site in rc["positional"]}
+            if upper < floor:
+                calls = float(packet.get("calls_per_repetition_mean") or 0.0)
+                if symbol_w.get(symbol, 0.0) > row_w and row_w / symbol_w[symbol] < UPDATE_UNIT_MIN_FRACTION \
+                        and calls <= UPDATE_UNIT_MAX_CALLS:
+                    option.update(kind="needs-nearer", text=(
+                        f"{rel} is nearest but a per-update count and the row is "
+                        f"{row_w / symbol_w[symbol]:.0%} of it: needs a counter nearer"))
+                else:
+                    option.update(kind="mandatory", text=f"mandatory on {rel} ({upper:.3f}% < floor)")
+            else:
+                option.update(kind="refused", text=(
+                    f"mandatory on {rel} is refused ({upper:.3f}% >= floor); the row is not the probed "
+                    "function, so it is covered-by that function's mechanism row (identity below) or a wrapper"))
+            options.append(option)
+    return options
+
+
+def explain_row_union(view, rc, item, index, share, floor, story, campaign_dir, build):
+    """The probed callers that each carry part of a row, and whether the row
+    closes on their union (split_row_union, the rule the gate runs): the
+    lines explain prints and, when the union holds, the site to bind."""
+    candidates = rc["candidates"]
+    above = sorted({(c[3], c[0], c[1], c[7]) for c in candidates
+                    if 0.05 <= c[3] < PACKET_RELEVANCE and c[4] < COVERED_BY_SAMPLE_IDENTITY}, reverse=True)
+    if not above:
+        return None
+    lines = ["probed callers carrying part of this row (share of its samples; their bound): "
+             + ", ".join(f"{site} {rs:.0%} (x{b:.3f})" for rs, _, site, b in above[:8])]
+    largest = above[0][1]
+    union = split_row_union(item, index, largest, view["files"], story, campaign_dir, above[0][0], build=build)
+    info = {"above": above, "union": union, "lines": lines}
+    if union is not None:
+        largest_sites = sorted({c[1] for c in candidates if c[0] == largest})
+        bounds = {}
+        for c in candidates:
+            if c[0] in union["parts"]:
+                bounds[c[0]] = max(bounds.get(c[0], 0.0), c[7])
+        worst = max(share * frac * bounds.get(sym, 0.0) for sym, frac in union["parts"].items())
+        info.update(site=largest_sites[0], symbol=largest, worst=worst, closes=worst < floor)
+        lines.append(
+            f"the nearest probed caller, sample by sample, covers {union['covered']:.0%} of the row: "
+            f"bind {largest_sites[0]!r} and the row closes on the callers' union"
+            + (f" (largest part x bound {worst:.3f}% < floor)" if worst < floor else
+               f" only if every part clears the floor (largest part x bound {worst:.3f}% >= floor: that part is a candidate)")
+            + "; a packet above these callers is refused as farther")
+    else:
+        lines.append("the nearest probed callers cover less than 80% of the row's samples: no union; "
+                     "the row needs a counter on its own work or beneath it")
+    return info
+
+
+def covered_by_candidates(ledger, paths, anchor, files, rows=None):
+    """Mechanism rows in the file or on the ledger whose anchor shares at
+    least a fifth of a row's samples: [(key, identity, owner anchor)], most
+    shared first. `rows` maps several anchors at once (one pass)."""
+    owners = {}
+    for p in paths:
+        if p.get("disposition") in ("novel", "known") and p.get("mechanism_key"):
+            owners.setdefault(p["mechanism_key"], set()).add(p["anchor"])
+    for o in ledger.data["opportunities"]:
+        if o.get("kind") == "mechanism" and o.get("mechanism_key") and o.get("anchor"):
+            owners.setdefault(o["mechanism_key"], set()).add(o["anchor"])
+    anchors = [anchor] if rows is None else list(rows)
+    pairs = {(a, owner_anchor): key for a in anchors for key, anchors_ in owners.items()
+             for owner_anchor in anchors_ if owner_anchor != a}
+    out = {a: [] for a in anchors}
+    if not pairs:
+        return out if rows is not None else []
+    totals = sample_identity(files, set(pairs))
+    best = {}
+    for pair, key in pairs.items():
+        total, shared = totals.get(pair, (0.0, 0.0))
+        frac = shared / total if total else 0.0
+        if frac > best.get((pair[0], key), (-1.0, None))[0]:
+            best[(pair[0], key)] = (frac, pair[1])
+    for (a, key), (frac, owner_anchor) in best.items():
+        if frac >= 0.2:
+            out[a].append((key, frac, owner_anchor))
+    for a in out:
+        out[a].sort(key=lambda entry: -entry[1])
+    return out if rows is not None else out[anchor]
+
+
+def explain_row(args, index):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     parent = ledger.opp(args.opp)
     story = parent["target_story"]
     profile = ledger.profile(parent["profile_id"])
-    result = load_decomposition(args.children)
+    result = load_decomposition(args.children, draft=True)
     shares = request_shares(ledger, parent, result)
     paths = result["paths"]
+    for p in paths:
+        p["anchor"] = row_anchor_for_story(p.get("anchor"), story)
     item = paths[index - 1]
     share = shares.get(index)
     _cfg = area_config(ledger.data["config"], parent)
@@ -13609,56 +13831,22 @@ def explain_row(args, index):
     bound_rows = [(i, p) for i, p in enumerate(paths, 1) if (p.get("redundancy_evidence") or {}).get("path")]
     build, _ = request_build_and_logs(paths, bound_rows, ledger.dir)
     if not build:
-        builds = sorted({pk.get("build_id") for pk in
-                         (redundancy_evidence.load_packet(f) for f in pathlib.Path(ledger.dir, "evidence").glob("probe_*.json"))
-                         if pk.get("build_id")}, key=str)
-        build = args.build or (builds[-1] if builds else None)
+        # Nothing bound yet (a raw scaffold): the newest build that ran the
+        # story, not the lexically largest build id of any story.
+        build = args.build or story_newest_packet_build(ledger.dir, story)
     if not build:
         print("  no build: bind one packet in the file, or pass --build")
         return 0
-    story_packets = story_site_packets(ledger.dir, story, build)
-    by_symbol = {}
-    for site, entries in story_packets.items():
-        for packet, rel in entries:
-            symbol = str(packet.get("probe_symbol") or "").strip()
-            if symbol:
-                by_symbol.setdefault(symbol, []).append((site, packet, rel))
-    files = collapsed_stack_files(profile, story)
-    if not files or not by_symbol:
+    view = explain_packet_view(ledger.dir, profile, story, build, {anchor})
+    if view is None:
         print(f"  no stacks or no packets for {story} on build {str(build)[:12]}")
         return 0
-    # Coverage of every packet against the story's reference.
-    coverage_rows, reference = packet_time_coverage(
-        [{"anchor": pk.get("probe_symbol"), "redundancy_evidence": {"path": rel}}
-         for entries in story_packets.values() for pk, rel in entries],
-        [(i, {"anchor": pk.get("probe_symbol"), "redundancy_evidence": {"path": rel}})
-         for i, (pk, rel) in enumerate((pr for entries in story_packets.values() for pr in entries), 1)],
-        profile, story, ledger.dir)
-    coverage = {row["packet"]: row["coverage"] for row in coverage_rows if row["coverage"] is not None}
-    anchor_w, symbol_w, both_w, nearest_w = anchor_symbol_weights(files, {anchor}, set(by_symbol), with_nearest=True)
-    row_w = anchor_w.get(anchor, 0.0)
-    own = [sym for sym in by_symbol if symbol_matches(anchor, sym)]
+    by_symbol, files = view["by_symbol"], view["files"]
+    rc = explain_row_candidates(view, anchor, ledger.dir)
+    own, candidates, nearest = rc["own"], rc["candidates"], rc["nearest"]
     print(f"  build {str(build)[:12]}; packets for the story: {sum(len(v) for v in by_symbol.values())}; "
           f"own function probed: {own or 'no'}")
     print(f"  {'site':44} {'row_side':>8} {'probe_side':>10} {'weight':>7} {'cover':>6} {'bound':>6} {'share x bound':>13} verdict")
-    candidates = []
-    for symbol, entries in by_symbol.items():
-        weight = symbol_w.get(symbol, 0.0)
-        shared = both_w.get((anchor, symbol), 0.0)
-        row_side = shared / row_w if row_w else 0.0
-        probe_side = shared / weight if weight else 0.0
-        relevant = max(row_side, probe_side) >= PACKET_RELEVANCE
-        distance = abs(math.log(weight / row_w)) if weight > 0 and row_w > 0 else float("inf")
-        for site, packet, rel in entries:
-            supported = packet_supported(packet, ledger.dir) or 0.0
-            counted = scope_counted_fraction(packet, anchor, coverage, rel)
-            candidates.append((symbol, site, rel, row_side, probe_side, weight / row_w if row_w else 0.0,
-                               coverage.get(rel), supported * counted, relevant, distance, packet))
-    relevant = [c for c in candidates if c[8]]
-    best = min((c[9] for c in relevant), default=None)
-    nearest = {c[1] for c in relevant if best is not None and c[9] <= best + math.log(PACKET_NEAREST_TOLERANCE)}
-    # a probe that is the nearest frame in >= 80% of the row's samples is nearest too
-    nearest |= {c[1] for c in relevant if row_w > 0 and nearest_w.get((anchor, c[0]), 0.0) >= COVERED_BY_SAMPLE_IDENTITY * row_w}
     for symbol, site, rel, rs, ps, ratio, cov, bound, ok, distance, packet in sorted(candidates, key=lambda c: c[9]):
         verdict = []
         if not ok:
@@ -13679,60 +13867,12 @@ def explain_row(args, index):
               f"{bound:6.3f} {share * bound:13.3f} {'; '.join(verdict)}")
     # Candidate dispositions.
     print("  what the gate would accept for this row:")
-    if own:
-        for symbol in own:
-            for site, packet, rel in by_symbol[symbol]:
-                supported = packet_supported(packet, ledger.dir) or 0.0
-                counted = scope_counted_fraction(packet, anchor, coverage, rel)
-                upper = share * supported * counted
-                if upper < floor:
-                    remainder = share * (1.0 - counted)
-                    if counted < 1.0 and remainder >= floor:
-                        print(f"    - on {rel}: neither; the scope counts {counted:.2f} of the function and the "
-                              f"other {remainder:.3f}% is uncounted (a counter on the rest)")
-                    else:
-                        print(f"    - mandatory on {rel} ({upper:.3f}% < floor)")
-                else:
-                    fi = mechanism_function_impact(
-                        {"anchor": anchor, "redundancy_evidence": {"path": rel}}, supported * counted, profile, story, ledger.dir)
-                    print(f"    - known/novel on {rel} at fraction <= {supported * counted:.4f} "
-                          f"(row impact {upper:.3f}%" + (f"; function share {fi[0]:.2f}% x fraction = {fi[1]:.3f}%" if fi else "") + ")")
-    else:
-        near = [c for c in relevant if c[1] in nearest]
-        for symbol, site, rel, rs, ps, ratio, cov, bound, ok, distance, packet in near:
-            upper = share * bound
-            if upper < floor:
-                calls = float(packet.get("calls_per_repetition_mean") or 0.0)
-                if symbol_w.get(symbol, 0.0) > row_w and row_w / symbol_w[symbol] < UPDATE_UNIT_MIN_FRACTION \
-                        and calls <= UPDATE_UNIT_MAX_CALLS:
-                    print(f"    - {rel} is nearest but a per-update count and the row is "
-                          f"{row_w / symbol_w[symbol]:.0%} of it: needs a counter nearer")
-                else:
-                    print(f"    - mandatory on {rel} ({upper:.3f}% < floor)")
-            else:
-                print(f"    - mandatory on {rel} is refused ({upper:.3f}% >= floor); the row is not the probed "
-                      "function, so it is covered-by that function's mechanism row (identity below) or a wrapper")
+    for option in explain_row_options(view, rc, anchor, share, floor, profile, story, ledger.dir):
+        print(f"    - {option['text']}")
     # covered-by: mechanism rows in the file or on the ledger for this area.
-    owners = {}
-    for p in paths:
-        if p.get("disposition") in ("novel", "known") and p.get("mechanism_key") and p["anchor"] != anchor:
-            owners.setdefault(p["mechanism_key"], set()).add(p["anchor"])
-    for o in ledger.data["opportunities"]:
-        if o.get("kind") == "mechanism" and o.get("mechanism_key") and o.get("anchor") and o["anchor"] != anchor:
-            owners.setdefault(o["mechanism_key"], set()).add(o["anchor"])
-    pairs = {(anchor, owner_anchor): key for key, anchors_ in owners.items() for owner_anchor in anchors_}
-    if pairs:
-        totals = sample_identity(files, set(pairs))
-        best_by_key = {}
-        for pair, key in pairs.items():
-            total, shared = totals.get(pair, (0.0, 0.0))
-            frac = shared / total if total else 0.0
-            if frac > best_by_key.get(key, (-1.0, None))[0]:
-                best_by_key[key] = (frac, pair[1])
-        for key, (frac, owner_anchor) in sorted(best_by_key.items(), key=lambda kv: -kv[1][0]):
-            if frac >= 0.2:
-                print(f"    - covered-by {key} (owner {owner_anchor[:50]}): identity {frac:.0%} "
-                      f"({'passes' if frac >= COVERED_BY_SAMPLE_IDENTITY else 'below 80%, refused'})")
+    for key, frac, owner_anchor in covered_by_candidates(ledger, paths, anchor, files):
+        print(f"    - covered-by {key} (owner {owner_anchor[:50]}): identity {frac:.0%} "
+              f"({'passes' if frac >= COVERED_BY_SAMPLE_IDENTITY else 'below 80%, refused'})")
     # wrapper candidates: rows beneath this one.
     others = {p["anchor"] for i, p in enumerate(paths, 1) if i != index and p["anchor"] != anchor}
     if others:
@@ -13776,28 +13916,898 @@ def explain_row(args, index):
                   + "; a wrapper binds one of them (redundancy_evidence on the wrapper) to cover "
                   "what its named rows do not, closing that part at share x fraction x bound < floor")
     # A split row: probed callers that each carry part of its samples.
-    above = sorted({(c[3], c[0], c[1], c[7]) for c in candidates
-                    if 0.05 <= c[3] < PACKET_RELEVANCE and c[4] < COVERED_BY_SAMPLE_IDENTITY}, reverse=True)
-    if above:
-        print("    - probed callers carrying part of this row (share of its samples; their bound): "
-              + ", ".join(f"{site} {rs:.0%} (x{b:.3f})" for rs, _, site, b in above[:8]))
-        largest = above[0][1]
-        union = split_row_union(item, index, largest, files, story, ledger.dir, above[0][0], build=build)
-        if union is not None:
-            largest_sites = sorted({c[1] for c in candidates if c[0] == largest})
-            bounds = {}
-            for c in candidates:
-                if c[0] in union["parts"]:
-                    bounds[c[0]] = max(bounds.get(c[0], 0.0), c[7])
-            worst = max(share * frac * bounds.get(sym, 0.0) for sym, frac in union["parts"].items())
-            print(f"    - the nearest probed caller, sample by sample, covers {union['covered']:.0%} of the row: "
-                  f"bind {largest_sites[0]!r} and the row closes on the callers' union"
-                  + (f" (largest part x bound {worst:.3f}% < floor)" if worst < floor else
-                     f" only if every part clears the floor (largest part x bound {worst:.3f}% >= floor: that part is a candidate)")
-                  + "; a packet above these callers is refused as farther")
+    union = explain_row_union(view, rc, item, index, share, floor, story, ledger.dir, build)
+    if union is not None:
+        for line in union["lines"]:
+            print(f"    - {line}")
+    return 0
+
+
+RULE_SKIPPED = "skipped-by-precheck"
+RULE_PATH_RE = re.compile(r"Path (\d+)")
+
+
+def run_rule_all(problems, rule, paths, *args, limit=60, **kwargs):
+    """Run a row-loop rule until it stops refusing. A rule raises at its first
+    violating row; here that row is neutralized for the next pass (its
+    disposition replaced by a value every rule skips) so every violating row
+    surfaces in one pass instead of one per staging round (round 34: 37
+    revisions of one file). Mechanism rows are not neutralized: rows covered
+    by them would refuse for that reason alone. The pre-check and
+    decompose-draft drive the gate's rules with it."""
+    work = list(paths)
+    seen = set()
+    for _ in range(limit):
+        try:
+            return rule(work, *args, **kwargs)
+        except CampaignError as exc:
+            message = str(exc)
+            problems.append(message)
+            match = RULE_PATH_RE.search(message)
+            if not match:
+                return None
+            index = int(match.group(1))
+            if index in seen or not 1 <= index <= len(work):
+                return None
+            row = work[index - 1]
+            if row.get("disposition") in ("novel", "known", "algorithmic"):
+                return None
+            seen.add(index)
+            neutral = dict(row)
+            neutral["disposition"] = RULE_SKIPPED
+            neutral.pop("wrapper_of", None)
+            neutral.pop("redundancy_evidence", None)
+            work[index - 1] = neutral
+    return None
+
+
+DRAFT_TODO_MARKER = "OPERATOR-TODO"
+DRAFT_UNDECIDED = "undecided-in-draft"
+DRAFT_JUDGEMENT_FIELDS = ("invariant", "existing_mechanism", "investigation", "mechanism_key",
+                          "estimated_avoidable_fraction")
+DRAFT_MAX_ROUNDS = 6
+
+
+def refuse_draft_markers(result):
+    """A decompose-draft file still carrying its operator marker is not
+    finished: the V8 hand-off and mechanism narrative were never written."""
+    texts = [("accounting_evidence", result.get("accounting_evidence"))]
+    for index, item in enumerate(result.get("paths") or [], 1):
+        if isinstance(item, dict):
+            texts.extend((f"path {index}", text) for text in row_text_strings(item))
+    marked = [where for where, text in texts if isinstance(text, str) and DRAFT_TODO_MARKER in text]
+    if marked:
+        raise CampaignError(
+            f"The decomposition still carries decompose-draft's {DRAFT_TODO_MARKER} marker "
+            f"({', '.join(marked[:6])}): write what it asks for (the V8 hand-off and "
+            "mechanism narrative) and delete the marker before the gate reads the file."
+        )
+
+
+def draft_slug(text):
+    """The story slug of a probe packet's file name (`probe_<tag>_<story>__<site>`)."""
+    out = []
+    for ch in str(text).lower():
+        if ch.isalnum():
+            out.append(ch)
+        elif out and out[-1] != "_":
+            out.append("_")
+    return "".join(out).strip("_")
+
+
+def draft_site_slug(site):
+    return str(site).replace("/", "_").replace("-", "_")
+
+
+def campaign_input_path(campaign_dir, raw):
+    """A --browser-log or --patch argument: relative to the campaign
+    directory when it resolves there, else to the working directory."""
+    path = pathlib.Path(raw)
+    if path.is_absolute():
+        return path
+    joined = pathlib.Path(campaign_dir) / path
+    if joined.exists():
+        return pathlib.Path(os.path.abspath(joined))
+    return pathlib.Path(os.path.abspath(path))
+
+
+def campaign_relative(campaign_dir, path):
+    """`path` relative to the campaign directory when it is inside it (as
+    the packets record their patch), else as given."""
+    try:
+        return str(pathlib.Path(os.path.abspath(path)).relative_to(os.path.abspath(campaign_dir)))
+    except ValueError:
+        return str(path)
+
+
+def campaign_citation(campaign_dir, recorded):
+    """A profile artifact as the rows cite it: `measurements/...` when that
+    path resolves under the campaign, else the recorded path; None when it
+    resolves nowhere."""
+    text = str(recorded or "")
+    marker = text.find("measurements/")
+    if marker >= 0 and (pathlib.Path(campaign_dir) / text[marker:]).exists():
+        return text[marker:]
+    if text and pathlib.Path(text).exists():
+        return campaign_relative(campaign_dir, text)
+    return None
+
+
+def draft_site_placement(campaign_dir, site, patch_rel):
+    """(probe_symbol, scope_symbol) of a site on the newest in-epoch build
+    whose probe code for it (the patch files that name the site and the
+    probe header, `_site_code`) is identical to the new patch's; None when
+    no such build exists or its packets disagree. Also returns the newest
+    in-epoch placement whatever its code, as a hint for --symbol."""
+    order = build_order(campaign_dir)
+    epoch = _epoch_start(campaign_dir)
+    placements = _site_placements(campaign_dir)
+    new_code = _site_code(campaign_dir, {"patch": patch_rel, "site": site})
+    by_build = {}
+    for _, packet in _evidence_packets(campaign_dir):
+        if packet["site"] == site:
+            by_build.setdefault(packet["build_id"], packet)
+    hint = None
+    for build in sorted(by_build, key=lambda b: (order.get(b, 0.0), b), reverse=True):
+        if order.get(build, 0.0) < epoch:
+            continue
+        here = placements.get((site, build)) or set()
+        if hint is None and len(here) == 1:
+            hint = (next(iter(here))[0], build)
+        if new_code is None or _site_code(campaign_dir, by_build[build]) != new_code:
+            continue
+        if len(here) != 1:
+            return None, hint
+        return next(iter(here)), hint
+    return None, hint
+
+
+def draft_source_definitions(repository_root, sha, functions):
+    """{function: "file:line"} for each function with exactly one
+    definition-looking line (column 0, a return type or nothing before the
+    qualified name, not a statement) in the checkout's .cc/.mm/.cpp files,
+    read at `sha` when that commit is in the repository. Functions whose
+    definition is not unique, or that are templates or in an anonymous
+    namespace, are left out. Returns ({...}, the revision read or None)."""
+    root = str(repository_root or "")
+    if not root or not pathlib.Path(root, ".git").exists():
+        return {}, None
+    wanted = {}
+    for function in functions:
+        if not function or any(ch in function for ch in "<( "):
+            continue
+        parts = function.split("::")
+        if len(parts) < 2:
+            continue
+        wanted.setdefault("::".join(parts[-2:]) + "(", []).append(function)
+    if not wanted:
+        return {}, None
+    revision = None
+    if sha and subprocess.run(["git", "-C", root, "cat-file", "-e", f"{sha}^{{commit}}"],
+                              capture_output=True).returncode == 0:
+        revision = sha
+    command = ["git", "-C", root, "grep", "-n", "-F"]
+    for needle in sorted(wanted):
+        command += ["-e", needle]
+    if revision:
+        command.append(revision)
+    command += ["--", "*.cc", "*.mm", "*.cpp"]
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode not in (0, 1):
+        return {}, None
+    hits = {function: set() for functions_ in wanted.values() for function in functions_}
+    for line in result.stdout.splitlines():
+        if revision:
+            if not line.startswith(revision + ":"):
+                continue
+            line = line[len(revision) + 1:]
+        path, _, rest = line.partition(":")
+        number, _, text = rest.partition(":")
+        if (not text or text[:1].isspace() or text.rstrip().endswith(";")
+                or text.startswith(("//", "#", "return ", "else ", "new ", "delete "))):
+            continue
+        for needle, functions_ in wanted.items():
+            position = text.find(needle)
+            if position < 0:
+                continue
+            head = text[:position]
+            qualifiers = re.search(r"((?:[A-Za-z_]\w*::)*)$", head).group(1)
+            return_type = head[:len(head) - len(qualifiers)]
+            if return_type and not re.fullmatch(r"[\w:<>,\*&\s]*[\s\*&]", return_type):
+                continue
+            quals = [q for q in qualifiers.split("::") if q]
+            for function in functions_:
+                outer = function.split("::")[:-2]
+                if quals and outer[len(outer) - len(quals):] != quals:
+                    continue
+                hits[function].add(f"{path}:{number}")
+    return {function: next(iter(found)) for function, found in hits.items() if len(found) == 1}, revision
+
+
+def format_row_list(rows):
+    """[1, 2, 3, 5] -> "1-3, 5"."""
+    rows = sorted(set(rows))
+    out = []
+    for row in rows:
+        if out and row == out[-1][1] + 1:
+            out[-1][1] = row
         else:
-            print("    - the nearest probed callers cover less than 80% of the row's samples: no union; "
-                  "the row needs a counter on its own work or beneath it")
+            out.append([row, row])
+    return ", ".join(f"{a}-{b}" if a != b else f"{a}" for a, b in out) or "none"
+
+
+def draft_gate_check(rows, shares, config, base_floor, story, campaign_dir, profile, ledger):
+    """The gate's row rules, in decompose's order, over a draft whose
+    undecided rows carry a disposition every rule skips. Returns (problems,
+    {row: [messages]}, bound rows): the rows a rule refused and why."""
+    problems = []
+    coverage_map = packet_coverage_map(rows, profile, story, campaign_dir)
+    run_rule_all(problems, lambda w: enforce_packet_relevance(
+        w, [(i, p) for i, p in enumerate(w, 1) if p.get("redundancy_evidence") and p.get("wrapper_of") is None],
+        profile, story, campaign_dir), rows)
+    bound = run_rule_all(problems, enforce_measured_dispositions, rows, shares, config, base_floor, story,
+                         campaign_dir, coverage=coverage_map, profile=profile, ledger=ledger) or set()
+    relevance_rows = [(i, p) for i, p in enumerate(rows, 1)
+                      if i in bound or (p.get("disposition") in ("novel", "known", "mandatory", "no-qualifying-mechanism")
+                                        and p.get("redundancy_evidence"))]
+    for check in (
+        lambda: enforce_build_consistency(rows, campaign_dir),
+        lambda: enforce_evidence_provenance(
+            campaign_dir, request_build_and_logs(rows, relevance_rows, campaign_dir)[0]),
+    ):
+        try:
+            check()
+        except CampaignError as exc:
+            problems.append(str(exc))
+    site_symbols = None
+    try:
+        site_symbols = enforce_sites_named(rows, relevance_rows, story, campaign_dir)
+    except CampaignError as exc:
+        problems.append(str(exc))
+    live = lambda w: [(i, p) for i, p in relevance_rows if w[i - 1].get("disposition") != RULE_SKIPPED]
+    run_rule_all(problems, lambda w: enforce_own_counters(
+        w, shares, config, base_floor, story, campaign_dir, live(w), site_symbols, coverage=coverage_map), rows)
+    run_rule_all(problems, lambda w: enforce_nearest_packet(
+        w, shares, config, base_floor, story, campaign_dir, live(w), profile, coverage=coverage_map), rows)
+    try:
+        enforce_packet_time_coverage(rows, relevance_rows, profile, story, campaign_dir)
+    except CampaignError as exc:
+        problems.append(str(exc))
+    run_rule_all(problems, lambda w: enforce_row_text_numbers(
+        w, live(w), shares, config, base_floor, story, campaign_dir), rows)
+    refused = {}
+    for message in problems:
+        for part in message.split("\n - "):
+            match = RULE_PATH_RE.search(part)
+            if match:
+                refused.setdefault(int(match.group(1)), []).append(part)
+                continue
+            listed = re.search(r"\(rows \[([\d, ]+)", part)
+            if listed and part.startswith("Packet "):
+                for index in listed.group(1).split(","):
+                    if index.strip():
+                        refused.setdefault(int(index), []).append(part)
+    return problems, refused, bound
+
+
+def probed_function_impacts(view, campaign_dir):
+    """{probed function: (inclusive share %, largest supported fraction over
+    the story's packets on it, their product)} for the functions of an
+    explain view: what each probed function would be worth as a candidate
+    in the story (mechanism_function_impact, at the largest reading)."""
+    symbols = set(view["by_symbol"])
+    total, inclusive = symbol_inclusive_shares(view["files"], symbols)
+    out = {}
+    for symbol, entries in view["by_symbol"].items():
+        share = 100.0 * inclusive.get(symbol, 0.0) / total if total else 0.0
+        best = max((packet_supported(packet, campaign_dir) or 0.0) for _, packet, _ in entries)
+        out[symbol] = (share, best, share * best)
+    return out
+
+
+def draft_mandatory_evidence(item, choice, share, floor, story, source, citations):
+    """The mechanical evidence of a row closed by count: where its function
+    is defined, the bound packet's numbers and the profile artifacts. Each
+    sentence is kept only if the gate's row-text check accepts its numbers
+    (row_text_number_problems), so nothing here is typed."""
+    packet, rel = choice["packet"], choice["rel"]
+    name = pathlib.Path(rel).name
+    symbol = str(packet.get("probe_symbol") or "").strip()
+    function = anchor_function(item["anchor"])
+    calls = float(packet.get("calls_per_repetition_mean") or 0.0)
+    applicable = float(packet.get("applicable_time_fraction") or 0.0)
+    repeat = float(packet.get("repeat_time_fraction") or 0.0)
+    supported = float(choice["supported"])
+    if choice["kind"] == "union":
+        parts = choice["union"]["parts"]
+        shown = {sym: frac for sym, frac in parts.items() if frac >= 0.005}
+        relation = (f"the nearest probed caller of {function}; the row closes on its probed callers' union ("
+                    + ", ".join(f"{sym} on {frac:.2f} of its samples" for sym, frac in shown.items())
+                    + (f", and {len(parts) - len(shown)} smaller" if len(parts) > len(shown) else "") + ")")
+    elif choice["own"]:
+        relation = f"the row's own function {function}"
+    else:
+        relation = f"the nearest probed function on the stacks of {function}"
+    sentences = []
+    if source:
+        sentences.append(f"{source} defines {function}.")
+    sentences.append(f"Bound packet {name}: site {packet.get('site')} in {symbol}, {relation}; "
+                     f"build {str(packet.get('build_id'))[:12]}, {calls:.1f} calls/rep over "
+                     f"{packet.get('repetitions')} repetitions.")
+    sentences.append(f"Applicable time {100.0 * applicable:.3f}% and repeat time {100.0 * repeat:.3f}% "
+                     "of the probed function's time.")
+    if choice["kind"] == "union":
+        closing = [f"Every caller's part x that caller's bound is below the {floor:.3f}% story floor of {story}."]
+    else:
+        closing = [f"Share {share:.3f}% x supported fraction {100.0 * supported:.3f}% = "
+                   f"{share * supported:.3f}% of {story}, below the {floor:.3f}% story floor.",
+                   f"Share {share:.3f}% x the packet's supported fraction is below the "
+                   f"{floor:.3f}% story floor of {story}."]
+    if citations:
+        tail = "Profile: " + ", ".join(citations) + "."
+    else:
+        tail = None
+    kept = []
+    for sentence in sentences:
+        if not row_text_number_problems({"evidence": sentence, "redundancy_evidence": {"path": rel}},
+                                        packet, share, floor):
+            kept.append(sentence)
+    for sentence in closing:
+        if not row_text_number_problems({"evidence": sentence, "redundancy_evidence": {"path": rel}},
+                                        packet, share, floor):
+            kept.append(sentence)
+            break
+    if tail:
+        kept.append(tail)
+    return " ".join(kept)
+
+
+def cmd_decompose_draft(args):
+    """Draft a discovery's decomposition from a probe run: reduce every
+    called site in the story, write the rows' cost packets, bind each row to
+    the packet the gate accepts, close what the counts close and leave the
+    judgement to the operator (OUT.todo.json)."""
+    import copy
+    import cost_evidence
+    import redundancy_evidence
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    root = pathlib.Path(ledger.dir)
+    parent = ledger.opp(args.opp)
+    if parent.get("kind") != "discovery":
+        raise CampaignError(f"#{parent['id']:03d} is a mechanism; decompose-draft takes a discovery")
+    if parent.get("scope") == "efficiency":
+        raise CampaignError(
+            f"#{parent['id']:03d} is an efficiency area: its rows are algorithmic or "
+            "no-qualifying-mechanism, which are judgement; decompose-draft drafts rows closed by count")
+    story = parent.get("target_story")
+    if not story:
+        raise CampaignError(f"#{parent['id']:03d} has no target story")
+    profile = ledger.profile(parent.get("profile_id"))
+    config = area_config(ledger.data["config"], parent)
+    ledger.data["config"] = config
+    base_floor = float(config["share_floor_pct"])
+    story_floor, floor_basis = story_floor_pct(config, story)
+    floor = max(story_floor, base_floor)
+    files = collapsed_stack_files(profile, story)
+    if not files:
+        raise CampaignError(f"no profile.collapsed for {story!r} beside the analyzer artifacts of profile {profile.get('id')!r}")
+
+    # ---- inputs ----
+    logs = [campaign_input_path(root, raw) for raw in args.browser_log]
+    missing = [str(log) for log in logs if not log.is_file()]
+    patch = campaign_input_path(root, args.patch)
+    if not patch.is_file():
+        missing.append(str(patch))
+    if missing:
+        raise CampaignError(f"not found: {', '.join(missing)}")
+    patch_rel = campaign_relative(root, patch)
+    tag = args.tag
+    if not tag:
+        for log in logs:
+            match = re.search(r"(?:^|[_.-])(r\d+)(?=[_.-]|$)", log.name)
+            if match:
+                tag = match.group(1)
+                break
+    if not tag or not re.fullmatch(r"[A-Za-z0-9]+", tag):
+        raise CampaignError("pass --tag rNNN (letters and digits): it names the packets "
+                            "evidence/probe_<tag>_<story>__<site>.json")
+    overrides = {}
+    for raw in args.symbol or []:
+        site, sep, function = str(raw).partition("=")
+        if not sep or not site.strip() or not function.strip():
+            raise CampaignError(f"--symbol {raw!r} is not SITE=FUNCTION")
+        overrides[site.strip()] = function.strip()
+
+    # ---- (a) reduce every site with calls in the story ----
+    rows = []
+    try:
+        for log in logs:
+            rows.extend(redundancy_evidence.parse_rows(log))
+    except redundancy_evidence.RedundancyError as exc:
+        raise CampaignError(str(exc)) from exc
+    called, seen, builds = {}, set(), set()
+    for row in rows:
+        if redundancy_evidence.story_of(row.get("group", "")) != story or not row.get("site"):
+            continue
+        seen.add(row["site"])
+        calls = int(row.get("calls", 0) or 0)
+        if calls > 0:
+            called[row["site"]] = called.get(row["site"], 0) + calls
+            if row.get("build_id"):
+                builds.add(str(row["build_id"]))
+    if not called:
+        raise CampaignError(f"the browser log(s) carry no site with calls in {story!r}")
+    if len(builds) != 1:
+        raise CampaignError(
+            f"the rows for {story!r} name {len(builds)} builds ({sorted(builds)}): reduce one "
+            "build's log(s) at a time, from a twin built with the current redundancy_probe.h")
+    build = next(iter(builds))
+    zero_call = sorted(seen - set(called))
+    # A symbol table for the whole patch is fine: sites with no calls here
+    # are not reduced (a misspelt site shows up as a site still missing one).
+    stray = sorted(set(overrides) - set(called))
+    registry = site_class_registry(ledger)
+    patch_text = patch.read_text(errors="replace")
+    problems = []
+    not_in_patch = sorted(site for site in called if not counter_site_re(site).search(patch_text))
+    if not_in_patch:
+        problems.append(f"{len(not_in_patch)} site(s) with calls in {story!r} have no RedundancyCounter in "
+                        f"{patch_rel}: {not_in_patch}. The log and the patch are not one build's.")
+    unregistered = sorted(site for site in called if not registry.get(site))
+    if unregistered:
+        problems.append(f"{len(unregistered)} site(s) with calls in {story!r} have no registered hypothesis "
+                        f"class: {unregistered}. The host records each (campaign.py register-site --site <site> "
+                        "--class <class> --note <what the key and predicate test>) before they are reduced.")
+    placements, unknown = {}, []
+    for site in sorted(called):
+        if site in overrides:
+            placements[site] = (overrides[site], None)
+            continue
+        placement, hint = draft_site_placement(root, site, patch_rel)
+        if placement:
+            placements[site] = (placement[0], placement[1] or None)
+        else:
+            unknown.append(f"{site}" + (f" (was {hint[0]!r} on build {hint[1][:12]}, whose probe code differs)"
+                                        if hint else ""))
+    if unknown:
+        problems.append(f"{len(unknown)} site(s) have no known probe function (no in-epoch build with the same "
+                        f"probe code reduced them): {unknown}. Pass --symbol SITE=FUNCTION for each (the "
+                        "demangled function the counter sits in, as a profile.collapsed frame prefix).")
+    if problems:
+        raise CampaignError("\n".join(problems))
+    story_slug = draft_slug(story)
+    planned = {}
+    probe_rels = {}
+    for site in sorted(called):
+        symbol, scope = placements[site]
+        try:
+            packet = redundancy_evidence.build_packet(
+                logs, site, story, probe_symbol=symbol, patch=patch, scope_symbol=scope,
+                hypothesis_class=registry[site])
+        except ValueError as exc:
+            raise CampaignError(f"{site}: {exc}") from exc
+        packet["patch"] = patch_rel  # as the packets record it: relative to the campaign
+        rel = f"evidence/probe_{tag}_{story_slug}__{draft_site_slug(site)}.json"
+        planned[rel] = json.dumps(packet, indent=2, sort_keys=True) + "\n"
+        probe_rels[site] = rel
+
+    # ---- (b) cost packets for the rows at or above the floor ----
+    scaffold = decomposition_scaffold(ledger, parent)
+    paths = scaffold["paths"]
+    for item in paths:
+        item["anchor"] = row_anchor_for_story(item["anchor"], story)
+        item.pop("estimated_avoidable_fraction", None)
+    shares = request_shares(ledger, parent, scaffold)
+    measured = {tuple(r[k] for k in ("capture_id", "entry_key", "hotspot_key")): r.get("measured_share_pct", 0.0)
+                for r in parent.get("expected_work_refs", [])}
+    max_shares = {}
+    for index, item in enumerate(paths, 1):
+        primary = [tuple(r[k] for k in ("capture_id", "entry_key", "hotspot_key"))
+                   for r in item.get("work_refs", []) if r.get("accounting") == "primary"]
+        if primary and all(key in measured for key in primary):
+            max_shares[index] = max(measured[key] for key in primary)
+    at_floor = {index for index, share in max_shares.items() if share >= floor}
+    cost_rels, cost_notes = {}, {}
+    for index, item in enumerate(paths, 1):
+        if index not in at_floor or item["anchor"] in cost_rels or item["anchor"] in cost_notes:
+            continue
+        try:
+            packet = cost_evidence.build_cost_packet(files, item["anchor"], story, profile.get("id"))
+        except ValueError as exc:
+            cost_notes[item["anchor"]] = str(exc)
+            continue
+        rel = f"evidence/cost_{parent['id']}_r{index}.json"
+        planned[rel] = json.dumps(packet, indent=2, sort_keys=True) + "\n"
+        cost_rels[item["anchor"]] = rel
+
+    conflicts = []
+    for rel, text in planned.items():
+        target = root / rel
+        if target.exists() and target.read_bytes() != text.encode():
+            conflicts.append(rel)
+    if conflicts:
+        raise CampaignError(
+            f"{len(conflicts)} evidence file(s) exist with other contents: {conflicts[:12]}. "
+            "decompose-draft never overwrites evidence; pick another --tag, or have the host "
+            "decide which reduction is the evidence.")
+    written, unchanged = [], []
+    for rel, text in planned.items():
+        target = root / rel
+        if target.exists():
+            unchanged.append(rel)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+        written.append(rel)
+    digests = {rel: sha256_file(root / rel) for rel in planned}
+
+    # ---- (c) bind every row to the packet the gate accepts ----
+    view = explain_packet_view(root, profile, story, build, {item["anchor"] for item in paths})
+    if view is None:
+        raise CampaignError(f"no stacks or no packets for {story} on build {build[:12]}")
+    ours = set(probe_rels.values())
+
+    def prefer(entries):
+        """One option per site: this run's packet when the site has several."""
+        best = {}
+        for option in entries:
+            current = best.get(option["site"])
+            if current is None or (option["rel"] in ours and current["rel"] not in ours):
+                best[option["site"]] = option
+        return [option for option in entries if best.get(option["site"]) is option]
+
+    state = {}
+    for index, item in enumerate(paths, 1):
+        share = shares.get(index)
+        entry = {"row": index, "anchor": item["anchor"], "share_pct": share, "notes": [], "tries": [],
+                 "options": [], "bind": None, "state": "undecided"}
+        state[index] = entry
+        if share is None:
+            entry["notes"].append("no primary work ref: the row carries no share the gate can judge")
+            continue
+        if index not in at_floor:
+            entry["state"] = "below-floor"
+            continue
+        rc = explain_row_candidates(view, item["anchor"], root)
+        options = prefer(explain_row_options(view, rc, item["anchor"], share, floor, profile, story, root))
+        entry["options"] = options
+        if rc["own"]:
+            open_ = [o for o in options if o["kind"] != "mandatory"]
+            ranked = sorted(options, key=lambda o: (-o["upper"], o["rel"] not in ours, o["rel"]))
+            if open_:
+                entry["bind"] = max(open_, key=lambda o: (o["upper"], o["rel"] in ours))
+                entry["notes"].extend(o["text"] for o in open_)
+            else:
+                entry["tries"] = ranked
+            continue
+        # The nearest by weight first (explain's order; the stack-position
+        # nearest breaks ties), and among the sites on one function the
+        # largest reading (the gate closes on the largest of them whichever
+        # is bound).
+        tries = sorted([o for o in options if o["kind"] == "mandatory"],
+                       key=lambda o: (o["distance"], not o["positional"], -o["upper"], o["rel"] not in ours, o["rel"]))
+        entry["notes"].extend(o["text"] for o in options if o["kind"] != "mandatory")
+        union = explain_row_union(view, rc, item, index, share, floor, story, root, build)
+        if union is not None:
+            entry["notes"].extend(union["lines"][1:])
+            if union.get("union") is not None and union.get("closes"):
+                site = union["site"]
+                rel = probe_rels.get(site) or next(
+                    (c[2] for c in rc["candidates"] if c[1] == site), None)
+                packet = next((c[10] for c in rc["candidates"] if c[2] == rel), None)
+                if rel and packet is not None:
+                    tries.append({"kind": "union", "site": site, "rel": rel, "packet": packet, "own": False,
+                                  "symbol": union["symbol"], "supported": packet_supported(packet, root) or 0.0,
+                                  "upper": union["worst"], "union": union["union"],
+                                  "text": union["lines"][-1]})
+        if not options and union is None:
+            entry["notes"].append("no packet on the build shares 80% of its samples with this row and no probed "
+                                  "callers' union covers it: the row needs a counter on its own work or beneath it")
+        entry["tries"] = tries
+
+    # A row whose function, whose nearest probed function or whose covering
+    # ledger mechanism's function is a qualifying candidate in the story (the
+    # function's share x its largest supported fraction clears the
+    # qualification floor, the gate's function-share qualification) is not
+    # closed here: its own count may sit below the floor while the function's
+    # rows together are a candidate (round 143: blink::BlockNode::Layout,
+    # 9.55% of Editor-CodeMirror at 0.52, under #242 and #322). The operator
+    # reconciles it.
+    qualification_floor = max(qualification_floor_pct(config, story)[0], base_floor)
+    impacts = probed_function_impacts(view, root)
+    covered = covered_by_candidates(ledger, [], None, files, rows={paths[i - 1]["anchor"] for i in at_floor})
+    owner_symbols = {}
+
+    def owner_symbol(key, owner_anchor):
+        if key not in owner_symbols:
+            owner = ledger.mechanism(parent["area_key"], key) or {}
+            owner_symbols[key] = (
+                str(((owner.get("redundancy_summary") or {}).get("probe_symbol")) or "").strip()
+                or mechanism_probe_symbol(ledger, key, root)
+                or next((sym for sym in impacts if symbol_matches(owner_anchor, sym)), None))
+        return owner_symbols[key]
+
+    for index, entry in state.items():
+        if index not in at_floor or entry["share_pct"] is None:
+            continue
+        anchor = paths[index - 1]["anchor"]
+        functions = {o["symbol"] for o in entry["options"] if o.get("own")}
+        if entry["tries"]:
+            functions.add(entry["tries"][0]["symbol"])
+        owners = []
+        for key, frac, owner_anchor in covered.get(anchor, []):
+            if frac < COVERED_BY_SAMPLE_IDENTITY:
+                continue
+            symbol = owner_symbol(key, owner_anchor)
+            if symbol:
+                functions.add(symbol)
+                owners.append((key, symbol))
+        qualifying = sorted((sym for sym in functions if impacts.get(sym) and impacts[sym][2] >= qualification_floor),
+                            key=lambda sym: -impacts[sym][2])
+        if not qualifying:
+            continue
+        for sym in qualifying:
+            share_, fraction_, impact_ = impacts[sym]
+            via = [key for key, s in owners if s == sym]
+            entry["notes"].append(
+                f"{sym} (" + ("this row's function" if any(o.get("own") and o["symbol"] == sym for o in entry["options"])
+                              else f"covering mechanism {', '.join(via)}" if via else "its nearest probed function")
+                + f"): function share {share_:.3f}% x its largest supported fraction {fraction_:.4f} = "
+                f"{impact_:.3f}%, at/above the {qualification_floor:.3f}% qualification floor; that function's "
+                "rows together are a candidate, so this row is reconciled by the operator (known/novel on the "
+                "function, covered-by its mechanism, or mandatory with the reason) rather than closed by its own count")
+        entry["qualifying_functions"] = qualifying
+        if entry["tries"] and not entry["bind"] and any(o.get("own") for o in entry["options"]):
+            own_best = max((o for o in entry["options"] if o.get("own")), key=lambda o: (o["upper"], o["rel"] in ours))
+            entry["bind"] = own_best
+        entry["tries"] = []
+    source_of, revision = draft_source_definitions(
+        profile.get("repository_root"), profile.get("sha") or profile.get("resolved_sha"),
+        sorted({anchor_function(item["anchor"]) for item in paths}))
+    citations = []
+    for capture in profile.get("capture_provenance", []) or []:
+        for frontier in capture.get("story_frontiers", []) or []:
+            if frontier.get("story") == story and frontier.get("artifact"):
+                cited = campaign_citation(root, frontier["artifact"])
+                if cited and cited not in citations:
+                    citations.append(cited)
+    lens = profile.get("lens") or {}
+    lens_rel = None
+    lens_coverage = None
+    for recorded in (lens.get("source_path"), lens.get("path")):
+        cited = campaign_citation(root, recorded) if recorded else None
+        if cited:
+            lens_rel = cited
+            try:
+                data = json.loads((root / cited if not pathlib.Path(cited).is_absolute() else pathlib.Path(cited)).read_text())
+                lens_coverage = ((data.get("stories") or {}).get(story) or {}).get("mean", {}).get("coverage")
+            except (OSError, ValueError, AttributeError):
+                lens_coverage = None
+            break
+    if lens_rel:
+        citations.append(lens_rel)
+
+    def source_for(item):
+        location = source_of.get(anchor_function(item["anchor"]))
+        if not location:
+            return None
+        return f"{location} @ {revision[:12]}" if revision else location
+
+    def ref(rel):
+        return {"path": rel, "sha256": sha256_file(root / rel)}
+
+    def compose(final=False):
+        """The draft rows: mandatory rows bound and evidenced, below-floor
+        rows evidenced, undecided rows left blank (or, for the gate check,
+        given a disposition every rule skips)."""
+        out = []
+        for index, item in enumerate(paths, 1):
+            row = copy.deepcopy(item)
+            entry = state[index]
+            if entry["state"] == "mandatory":
+                choice = entry["tries"][0]
+                row["disposition"] = "mandatory"
+                row["redundancy_evidence"] = ref(choice["rel"])
+                row["evidence"] = draft_mandatory_evidence(
+                    row, choice, shares[index], floor, story, source_for(row), citations)
+            elif entry["state"] == "below-floor":
+                row["disposition"] = "below-floor"
+                row["evidence"] = (
+                    f"The row's largest share over the captures' primary work refs is "
+                    f"{max_shares[index]:.3f}% of {story}, below the {floor:.3f}% story floor."
+                    + (" Profile: " + ", ".join(citations) + "." if citations else ""))
+            else:
+                row["disposition"] = "" if final else DRAFT_UNDECIDED
+                if entry["bind"]:
+                    row["redundancy_evidence"] = ref(entry["bind"]["rel"])
+            if row["anchor"] in cost_rels and index in at_floor:
+                row["cost_evidence"] = ref(cost_rels[row["anchor"]])
+            out.append(row)
+        return out
+
+    for index, entry in state.items():
+        if entry["tries"]:
+            entry["state"] = "mandatory"
+    # The gate's own rules judge each choice; a refused row falls back to its
+    # next acceptable packet, and to the operator when none is left.
+    for _ in range(DRAFT_MAX_ROUNDS):
+        gate_problems, refused, bound = draft_gate_check(
+            compose(), shares, config, base_floor, story, root, profile, ledger)
+        changed = False
+        for index, messages in sorted(refused.items()):
+            entry = state.get(index)
+            if not entry or entry["state"] != "mandatory":
+                continue
+            rejected = entry["tries"].pop(0)
+            entry["notes"].append(f"the gate refused {rejected['rel']}: " + " | ".join(messages)[:600])
+            if not entry["tries"]:
+                entry["state"] = "undecided"
+            changed = True
+        if not changed:
+            break
+    else:
+        gate_problems, refused, bound = draft_gate_check(
+            compose(), shares, config, base_floor, story, root, profile, ledger)
+    global_problems = [p for p in gate_problems if not RULE_PATH_RE.search(p)]
+
+    # ---- (d)-(e) what the operator still writes ----
+    draft_rows = compose(final=True)
+    judged = compose()
+    need_investigation = set()
+    work = [dict(row) for row in judged]
+    for _ in range(len(work)):
+        try:
+            enforce_large_mandatory_rows(work, shares, profile, story, None)
+            break
+        except CampaignError as exc:
+            match = RULE_PATH_RE.search(str(exc))
+            if not match or int(match.group(1)) in need_investigation:
+                break
+            index = int(match.group(1))
+            need_investigation.add(index)
+            work[index - 1] = dict(work[index - 1], investigation={
+                "hypotheses": ["-"], "falsifications": ["0"], "stop_reason": "-"})
+    mechanisms_by_function = {}
+    for opp in ledger.data["opportunities"]:
+        if opp.get("kind") == "mechanism" and opp.get("mechanism_key") and opp.get("anchor"):
+            mechanisms_by_function.setdefault(anchor_function(row_anchor_for_story(opp["anchor"], story)), []).append(opp)
+    todo_rows = []
+    for index, entry in state.items():
+        item = draft_rows[index - 1]
+        todo = []
+        bound_rel = (item.get("redundancy_evidence") or {}).get("path")
+        record = {"row": index, "anchor": entry["anchor"], "share_pct": entry["share_pct"],
+                  "disposition": item["disposition"] or None, "redundancy_evidence": bound_rel,
+                  "cost_evidence": (item.get("cost_evidence") or {}).get("path")}
+        if entry["state"] == "mandatory":
+            choice = entry["tries"][0]
+            record.update(bound_kind=choice["kind"] if choice["kind"] == "union" else ("own" if choice["own"] else "nearest"),
+                          site=choice["site"], probe_symbol=choice["packet"].get("probe_symbol"),
+                          supported_fraction=choice["supported"], bound_pct=choice["upper"],
+                          floor_pct=floor)
+            if index in bound:
+                todo.append("invariant: what the step dirties, what this function does with it and the "
+                            "code that does it (a symbol or file that exists), quoting one of the bound "
+                            "packet's numbers as a percentage")
+            if index in need_investigation:
+                todo.append("investigation: the Layer 3/4 hypotheses tried, each falsification quoting a "
+                            "child or leaf fraction of the row's cost packet, and the stop reason")
+        elif entry["state"] == "undecided":
+            functions = mechanisms_by_function.get(anchor_function(entry["anchor"]), [])
+            record["ledger_mechanisms"] = sorted(
+                ({"id": m["id"], "mechanism_key": m["mechanism_key"], "status": m.get("status"),
+                  "anchor": m.get("anchor"), "why": "anchor is this row's function"} for m in functions),
+                key=lambda m: m["id"])
+            keys = {m["mechanism_key"] for m in record["ledger_mechanisms"]}
+            for m in scaffold.get("ledger_mechanisms_for_area") or []:
+                if m["mechanism_key"] not in keys:
+                    record["ledger_mechanisms"].append(dict(m, why="ledger_mechanisms_for_area"))
+            if entry.get("qualifying_functions"):
+                record["candidate_functions"] = [
+                    {"function": sym, "function_share_pct": impacts[sym][0],
+                     "largest_supported_fraction": impacts[sym][1], "impact_pct": impacts[sym][2],
+                     "qualification_floor_pct": qualification_floor}
+                    for sym in entry["qualifying_functions"]]
+            record["covered_by_candidates"] = [
+                {"mechanism_key": key, "sample_identity": round(frac, 4), "owner_anchor": owner}
+                for key, frac, owner in covered.get(entry["anchor"], [])]
+            record["options"] = [
+                {"kind": o["kind"], "packet": o["rel"], "site": o["site"],
+                 "supported_fraction": o["supported"], "bound_pct": o["upper"]}
+                for o in entry["options"]]
+            if entry["bind"]:
+                record.update(bound_kind="own", site=entry["bind"]["site"], supported_fraction=entry["bind"]["supported"],
+                              bound_pct=entry["bind"]["upper"], floor_pct=floor)
+            todo.append("disposition: novel or known (mechanism_key, estimated_avoidable_fraction at most the "
+                        "bound packet's supported fraction, packet_hypothesis; a novel row also states "
+                        "existing_mechanism), covered-by (covered_by: the owner's mechanism_key), or "
+                        "wrapper_of; `explain --path " + str(index) + "` prints what the gate accepts")
+            todo.append("evidence")
+        if refused.get(index):
+            record["gate_problems"] = refused[index]
+        if entry["notes"]:
+            record["notes"] = entry["notes"]
+        record["todo"] = todo
+        todo_rows.append(record)
+
+    # ---- (e) accounting_evidence from computed facts ----
+    counts = {}
+    for index, entry in state.items():
+        counts.setdefault(entry["state"], []).append(index)
+    bound_rels = sorted({(row.get("redundancy_evidence") or {}).get("path") for row in draft_rows} - {None})
+    cost_bound = sorted({(row.get("cost_evidence") or {}).get("path") for row in draft_rows} - {None})
+    accounting = (
+        f"decompose-draft of #{parent['id']} ({parent['area_key']}) in {story}, profile {profile.get('id')}: "
+        f"{len(paths)} scaffold rows; story floor {floor:.3f}% ({floor_basis}). "
+        f"Closed by count: {len(counts.get('mandatory', []))} mandatory (rows {format_row_list(counts.get('mandatory', []))}); "
+        f"{len(counts.get('below-floor', []))} below-floor (rows {format_row_list(counts.get('below-floor', []))}); "
+        f"left for the operator: {len(counts.get('undecided', []))} (rows {format_row_list(counts.get('undecided', []))}). "
+        f"Probe run: build {build}, patch {patch_rel} sha256={sha256_file(patch)}, logs "
+        + ", ".join(campaign_relative(root, log) for log in logs)
+        + f"; {len(probe_rels)} sites with calls in {story} reduced"
+        + (f", {len(zero_call)} with zero calls skipped ({', '.join(zero_call)})" if zero_call else "")
+        + ". Bound redundancy packets: "
+        + ("; ".join(f"{rel} sha256={digests.get(rel) or sha256_file(root / rel)}" for rel in bound_rels) or "none")
+        + ". Cost packets: " + (", ".join(cost_bound) or "none") + "."
+        + (f" {lens_rel} stories.{story}.mean.coverage: "
+           + ", ".join(f"{key}={value}" for key, value in sorted(lens_coverage.items())) + "."
+           if lens_rel and isinstance(lens_coverage, dict) else "")
+        + f" {DRAFT_TODO_MARKER}: add the V8 hand-off and mechanism narrative (where the story's time under "
+        "this area goes, what the bound packets show, why the rows close) and delete this marker."
+    )
+    draft = dict(scaffold)
+    draft["accounting_evidence"] = accounting
+    draft["paths"] = draft_rows
+    todo_doc = {
+        "opp": parent["id"], "story": story, "area_key": parent["area_key"], "profile_id": profile.get("id"),
+        "floor_pct": floor, "floor_basis": floor_basis, "build_id": build, "patch": patch_rel,
+        "browser_logs": [campaign_relative(root, log) for log in logs], "tag": tag,
+        "probe_packets": {site: probe_rels[site] for site in sorted(probe_rels)},
+        "zero_call_sites": zero_call,
+        "cost_packets": {anchor: rel for anchor, rel in cost_rels.items()},
+        "cost_packet_problems": cost_notes,
+        "source_revision": revision,
+        "accounting_evidence": (f"replace the {DRAFT_TODO_MARKER} sentence with the V8 hand-off and mechanism "
+                                "narrative; the rest is computed"),
+        "gate_problems": global_problems,
+        "judgement_fields_left_absent": list(DRAFT_JUDGEMENT_FIELDS),
+        "rows": todo_rows,
+    }
+    out = pathlib.Path(args.out)
+    todo_path = out.with_name(out.name[:-len(".json")] + ".todo.json" if out.name.endswith(".json")
+                              else out.name + ".todo.json")
+    outputs = {out: json.dumps(draft, indent=2) + "\n", todo_path: json.dumps(todo_doc, indent=2) + "\n"}
+    for target, text in outputs.items():
+        if target.exists() and target.read_text() != text:
+            raise CampaignError(
+                f"{target} exists and differs from this draft (an operator's edits?); move it or "
+                "pick another --out. The evidence packets above are written and unchanged by a rerun.")
+    for target, text in outputs.items():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+
+    print(f"#{parent['id']:03d} {story}: build {build[:12]}, floor {floor:.3f}%; "
+          f"{len(probe_rels)} site(s) reduced ({len(written)} packet(s) written, {len(unchanged)} unchanged)"
+          + (f"; zero-call sites skipped: {zero_call}" if zero_call else ""))
+    if stray:
+        print(f"--symbol ignored for site(s) with no calls in {story}: {stray}")
+    print(f"{'row':>3} {'share':>8} {'bound':>8}  {'packet':44} {'disposition / TODO':24} anchor")
+    for record in todo_rows:
+        share = record["share_pct"]
+        bound_pct = record.get("bound_pct")
+        packet = (record.get("redundancy_evidence") or "-").split("/")[-1]
+        status = record["disposition"] or "TODO: disposition"
+        if record["disposition"] == "mandatory" and record["todo"]:
+            status = "mandatory; TODO: " + "+".join(t.split(":")[0] for t in record["todo"])
+        print(f"{record['row']:3d} {(f'{share:7.3f}%' if share is not None else '      ?'):>8} "
+              f"{(f'{bound_pct:7.3f}%' if bound_pct is not None else '      -'):>8}  {packet[-44:]:44} "
+              f"{status:24} {str(record['anchor'])[:70]}")
+    if global_problems:
+        print("gate problems not tied to a row:")
+        for problem in global_problems:
+            print(f" - {problem[:400]}")
+    print(out)
+    print(todo_path)
     return 0
 
 
@@ -14359,6 +15369,23 @@ def build_parser():
     p.add_argument("--path", required=True, help="1-based row index, a list (2,8,12-15), or all")
     p.add_argument("--build", help="build id when the file binds no packet yet")
     p.set_defaults(func=cmd_explain)
+    p = sub.add_parser(
+        "decompose-draft",
+        help="From a probe run: reduce every called site in the discovery's story, write the rows' cost "
+             "packets, bind each row to the packet the gate accepts, close the rows the counts close and "
+             "list what the operator still writes (OUT.todo.json)")
+    p.add_argument("--opp", type=int, required=True, help="Discovery opportunity id")
+    p.add_argument("--browser-log", action="append", required=True,
+                   help="Twin browser log(s) of one build (relative to the campaign directory or the cwd)")
+    p.add_argument("--patch", required=True, help="The probe patch the build carries")
+    p.add_argument("--out", required=True, help="Draft decomposition JSON; the sidecar is <out>.todo.json")
+    p.add_argument("--symbol", action="append", default=[], metavar="SITE=FUNCTION",
+                   help="The function a site's counter sits in, when no in-epoch build with the same "
+                        "probe code reduced the site")
+    p.add_argument("--tag", default=None,
+                   help="Packet name tag, evidence/probe_<tag>_<story>__<site>.json (default: the log "
+                        "name's rNNN)")
+    p.set_defaults(func=cmd_decompose_draft)
     p = sub.add_parser("depth-audit", help="Rows at/above the floor closed by an ancestor's count, per story and "
                                            "phase, with the hypothesis classes never probed there (references/hypotheses.md)")
     p.add_argument("--story", default=None)

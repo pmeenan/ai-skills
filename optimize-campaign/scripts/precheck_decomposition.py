@@ -18,41 +18,14 @@ SCRIPTS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 import campaign, redundancy_evidence
 
-SKIPPED = "skipped-by-precheck"
-PATH_RE = re.compile(r"Path (\d+)")
+SKIPPED = campaign.RULE_SKIPPED
 
 
 def run_all(problems, rule, paths, *args, limit=60, **kwargs):
-    """Run a row-loop rule until it stops refusing. A rule raises at its first
-    violating row; here that row is neutralized for the next pass (its
-    disposition replaced by a value every rule skips) so every violating row
-    surfaces in one pre-check instead of one per staging round (round 34: 37
-    revisions of one file). Mechanism rows are not neutralized: rows covered
-    by them would refuse for that reason alone."""
-    work = list(paths)
-    seen = set()
-    for _ in range(limit):
-        try:
-            return rule(work, *args, **kwargs)
-        except campaign.CampaignError as exc:
-            message = str(exc)
-            problems.append(message)
-            match = PATH_RE.search(message)
-            if not match:
-                return None
-            index = int(match.group(1))
-            if index in seen or not 1 <= index <= len(work):
-                return None
-            row = work[index - 1]
-            if row.get("disposition") in ("novel", "known", "algorithmic"):
-                return None
-            seen.add(index)
-            neutral = dict(row)
-            neutral["disposition"] = SKIPPED
-            neutral.pop("wrapper_of", None)
-            neutral.pop("redundancy_evidence", None)
-            work[index - 1] = neutral
-    return None
+    """Run a row-loop rule until it stops refusing, every violating row
+    reported in one pass (campaign.run_rule_all, which decompose-draft
+    drives too)."""
+    return campaign.run_rule_all(problems, rule, paths, *args, limit=limit, **kwargs)
 
 
 def main(campaign_dir, opp_id, children):
@@ -61,6 +34,9 @@ def main(campaign_dir, opp_id, children):
     ledger.data["config"] = campaign.area_config(ledger.data["config"], parent)  # a suite area's floor is the suite floor
     result = campaign.load_decomposition(children)
     profile = ledger.profile(parent["profile_id"])
+    marker_problems = []
+    try: campaign.refuse_draft_markers(result)
+    except campaign.CampaignError as e: marker_problems.append(str(e))
     if result.get("area_key") != parent["area_key"] or result.get("profile_id") != parent.get("profile_id"):
         print(f"PROBLEMS:\n - the file's area_key/profile_id ({result.get('area_key')!r}, {result.get('profile_id')!r}) are not #{parent['id']}'s "
               f"({parent['area_key']!r}, {parent.get('profile_id')!r}); decompose refuses it. Scaffold the area again (decompose-scaffold --opp {parent['id']}).")
@@ -79,7 +55,7 @@ def main(campaign_dir, opp_id, children):
             shares[i] = min(measured[k] for k in prim)
     story = parent["target_story"]
     floor = ledger.data["config"]["share_floor_pct"]
-    problems = []
+    problems = list(marker_problems)
     judged = campaign.carried_view(result["paths"], carried) if carried else result["paths"]
     judged_owners = campaign.carried_view(result["paths"], carried, keep_owners=True) if carried else result["paths"]
     story_floor = max(campaign.story_floor_pct(ledger.data["config"], story)[0], floor)

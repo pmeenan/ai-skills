@@ -35,7 +35,7 @@ profile and mechanism paths remain fail-closed pending end-to-end verification.
 | calibrate | two `remote_measure.py --mode aa` sessions hours apart, then `campaign.py calibrate --manifest A --manifest B` | `gate_pass`, per-story MDE table printed; floors now 2 × MDE |
 | profile | two `remote_measure.py --mode profile --repetitions 32` | `stories_scope: main-thread`, `display.gpu_renderer` not SwiftShader, 100+ nominal samples per story |
 | investigate | redundancy probe on the site, `redundancy_evidence.py` | packet `applicable_fraction` / `repeat_fraction` support the claimed avoidable fraction |
-| decompose | `campaign.py decompose --children paths.json` | no floor or redundancy rejection; reviews cite artifacts and numbers |
+| decompose | `campaign.py decompose-draft`, the TODO fields, `precheck_decomposition.py`, then `campaign.py decompose --children paths.json` | pre-check `no gate problems`; no floor or redundancy rejection; reviews cite artifacts and numbers |
 | size | `mechanism_evidence.py capture` × 3+ blocks per arm, `summarize`, `advance --to sized` | avoidable-share lower bound above the story floor |
 | implement | `command_evidence.py` build and test receipts, local code review | receipts bound to the staged tree, review PASS |
 | measure | `remote_measure.py --mode ab --opp <id>` | family-adjusted story flags; fixed-plan verdict from `statistics_policy.py` |
@@ -297,11 +297,43 @@ Enumerate concrete paths using `decomposition.md`, and propose one testable
 invariant per novel mechanism. Have the adversary challenge profile grounding,
 semantics, lifecycle safety, and avoidable-work reasoning.
 
+The recipe is four steps, and only the third is typed by hand:
+
+1. **Probe run.** Build the twin with the probe patch and run the target
+   story; save the browser log under `evidence/` and the patch beside it.
+2. **`decompose-draft`.** One command reduces every site with calls in the
+   story (`evidence/probe_<tag>_<story>__<site>.json`, the site's registered
+   class, the function from `--symbol` or from an in-epoch build with the
+   same probe code), writes a cost packet per row at or above the floor
+   (`evidence/cost_<opp>_r<row>.json`), binds each row to the packet the
+   gate accepts (its own counter, else the nearest or the callers' union, as
+   `explain` computes it, then checked by the gate's own rules), closes the
+   rows the counts close (`mandatory`, `below-floor`) with evidence generated
+   from the packet and profile numbers, and writes `accounting_evidence`
+   from computed facts. It refuses an unregistered site (the host runs
+   `register-site`), a site with no known function (pass `--symbol
+   SITE=FUNCTION`), and any evidence file that exists with other bytes; a
+   rerun with the same inputs writes the same files.
+3. **The operator writes only what `<out>.todo.json` lists:** the
+   `invariant` of each mandatory row, an `investigation` where a large row
+   needs one, the disposition of each undecided row (`novel`/`known`/
+   `covered-by`/`wrapper_of`, with its key, fraction and text), and the V8
+   hand-off and mechanism narrative in place of the `OPERATOR-TODO` sentence
+   in `accounting_evidence` (the gate refuses a file that still carries it).
+   No glue script, no typed number, no table of sites.
+4. **`precheck_decomposition.py`** until it prints `no gate problems`, then
+   the two reviews and `decompose`.
+
 ```bash
 python3 .agents/skills/optimize-campaign/scripts/campaign.py advance \
   --opp <discovery> --to investigating
-python3 .agents/skills/optimize-campaign/scripts/campaign.py decompose-scaffold \
-  --opp <discovery> --out <paths.json>
+python3 .agents/skills/optimize-campaign/scripts/campaign.py decompose-draft \
+  --opp <discovery> --browser-log evidence/<twin.log> --patch evidence/<probes.patch> \
+  --out <paths.json> [--tag rNNN] [--symbol <site>=<function> ...]
+# fill what <paths.todo.json> lists; `explain --opp <discovery> --children <paths.json>
+# --path <row>` prints what the gate accepts for any row
+python3 .agents/skills/optimize-campaign/scripts/precheck_decomposition.py \
+  <campaign dir> <discovery> <paths.json>
 # two independent reviewers, each from its own scaffold, after paths.json is final:
 python3 .agents/skills/optimize-campaign/scripts/campaign.py decompose-review-scaffold \
   --opp <discovery> --role skeptic --children <paths.json> --out <decomposition-skeptic.json>

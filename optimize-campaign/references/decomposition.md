@@ -1,7 +1,9 @@
 # Shared discovery decomposition contract
 
-Use `decompose-scaffold`; fill its existing rows instead of creating a new
-shape. Every profiler root/hotspot must have exactly one `primary` owner.
+Start from `decompose-draft` after the probe run (below, "Drafting from a
+probe run"); it fills `decompose-scaffold`'s rows, and the operator writes
+only the judgement it leaves. Never create a new shape. Every profiler
+root/hotspot must have exactly one `primary` owner.
 
 ## 4-Layer Architectural Investigation Framework
 
@@ -309,8 +311,9 @@ space, font, sheet list) and `applicable` states the condition under which
 the work could be skipped. When the arithmetic does not clear the floor the
 row is a `novel` candidate at that fraction, or the probe is re-keyed; it is
 never closed by prose. Every site with calls in the request's story on the request's build has a
-packet for that story on that build (`redundancy_evidence.py --target-story
-<story> --symbol <its function>` per site, one script for all of them): the
+packet for that story on that build (`decompose-draft` reduces every one of
+them, `redundancy_evidence.py --target-story <story> --symbol <its
+function>` per site underneath): the
 nearest-packet rule, the callers' union and the coverage reference see only
 the packets that exist, and a site reduced in one story leaves every other
 story's checks blind. A packet closes only the work it measured: it
@@ -572,8 +575,10 @@ one of three ways, and `decompose` refuses the row otherwise:
   repeat fraction, or the row's share of the story, quoted again, falsifies
   nothing and is refused.
 
-`campaign.py cost-packet --opp <id> --children <file> --path <row> --out
-evidence/cost_<key>.json` reduces the story's collapsed stacks for the
+`decompose-draft` writes and binds one per row at or above the floor
+(`evidence/cost_<opp>_r<row>.json`, one file per anchor); `campaign.py
+cost-packet --opp <id> --children <file> --path <row> --out
+evidence/cost_<key>.json` is the same reduction for one row. It reduces the story's collapsed stacks for the
 row's anchor into its time by direct child and by leaf frame (share of the
 story and fraction of the row). An `algorithmic` row names the frames the
 cheaper algorithm would not run; their summed fraction bounds the claim.
@@ -720,6 +725,65 @@ a wrapper could name, and what the gate would accept. A refusal from the
 pre-check names the `explain` command for its rows. Nobody types Python at
 the host: a question the commands cannot answer is a missing command, and
 the report says so.
+
+## Drafting from a probe run
+
+Every mechanical part of a decomposition comes from `campaign.py
+decompose-draft --opp N --browser-log <log> [--browser-log <log>...] --patch
+<patch> --out <paths.json> [--symbol SITE=FUNCTION ...] [--tag rNNN]`, which
+runs no browser and builds nothing. Before it, operators decomposed by
+hand (round 142: a reducer loop with its own table of sites, functions and
+classes beside the host's registry, a cost-packet loop, and a script that
+typed every row), and the typed parts were where files went wrong (the
+first #330, #333 and #404 files cite a `report.json` the profile never
+wrote). The
+draft:
+
+- reduces every site with calls in the discovery's story from the logs and
+  the patch, with the site's registered class (`site_class_registry`; an
+  unregistered site is refused with the list for `register-site`) and the
+  function from `--symbol` or from the newest in-epoch build whose probe
+  code for the site is identical (else refused with the list that needs
+  `--symbol`). Zero-call sites are skipped. Packets go to
+  `evidence/probe_<tag>_<story>__<site>.json`, the tag defaulting to the
+  log name's `rNNN`;
+- writes a cost packet for each row at or above the floor;
+- binds each row to the packet `explain` says the gate accepts (the row's
+  own counter, else the nearest, else the callers' union) and runs the
+  gate's rules on the choice (relevance, the measured bound, every counter
+  on the function, the nearest packet, time coverage, row-text numbers,
+  sites named, provenance); a refused choice falls back to the next, and to
+  the operator when none is left;
+- closes a row as `mandatory` when `share × supported < floor` and as
+  `below-floor` when its largest capture share is below the floor, with
+  `evidence` generated from the packet (calls per repetition, applicable and
+  repeat time, the bound and the floor), the function's unique definition
+  in the profiled revision when there is one, and the profile artifacts
+  (each capture's `candidate_frontier.json`, the profile's lens); every
+  sentence passes the row-text number rule or is dropped;
+- leaves a row undecided (blank disposition) when a count does not close
+  it, when no packet on the build measures it, or when a probed function it
+  belongs to (its own, its nearest, or a covering ledger mechanism's)
+  qualifies as a candidate in the story by the function's share times its
+  largest supported fraction (round 143: `BlockNode::Layout`, 9.55% of
+  Editor-CodeMirror at 0.52 under #242 and #322, whose rows each read
+  below the floor);
+- writes `accounting_evidence` from computed facts (counts per
+  disposition, the rows left, the build, patch, logs and packets, the lens
+  coverage fields by name) ending in an `OPERATOR-TODO` sentence that
+  `decompose` and the pre-check refuse until it is replaced;
+- never writes `invariant`, `existing_mechanism`, `investigation`,
+  `mechanism_key` or `estimated_avoidable_fraction`.
+
+`<paths>.todo.json` lists, per row, what is still to write (the invariant of
+each mandatory row at or above the floor, an investigation where a large
+row needs one, the disposition of each undecided row) with the row's
+numbers, its options, the ledger mechanisms on its function and the
+mechanisms whose anchors share its samples. The draft never overwrites an
+evidence file or an edited draft with other bytes, and a rerun with the same
+inputs writes the same bytes. `explain` and `rows` read a raw scaffold or a
+draft (blank dispositions, no `accounting_evidence`, the root row's
+`<story>/` prefix); `decompose` and the pre-check read strictly.
 
 ## A decomposition without a count is open work
 
