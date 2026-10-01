@@ -2772,6 +2772,31 @@ class CalibrationFloorTest(unittest.TestCase):
         self.assertEqual((0.5, "campaign share floor (no calibrated MDE for this story)"),
                          campaign.story_floor_pct(config, "Unknown"))
 
+    def test_calibrate_pools_session_mdes_by_rms_unless_max(self):
+        import math
+        paths = []
+        for session, noise in (("one", 0.002), ("two", 0.006), ("three", 0.004)):
+            path = self.dir / f"aa-{session}.json"
+            path.write_text(json.dumps(self.aa_manifest(session, noise)))
+            paths.append(path)
+        manifests = [json.loads(p.read_text()) for p in paths]
+        import statistics_policy
+        per_session = [r["Noisy"]["mde_80_pct"] for r in statistics_policy.calibrate(
+            manifests, 5, 10)["results"]]
+        args = ["--dir", str(self.dir), "calibrate", "--tolerance-pct", "5", "--max-mde-pct", "10"]
+        for p in paths:
+            args += ["--manifest", str(p)]
+        self.assertEqual(0, campaign.main(args))
+        calibration = json.loads((self.dir / "ledger.json").read_text())["config"]["calibration"]
+        self.assertEqual("rms", calibration["mde_pooling"])
+        rms = math.sqrt(sum(v * v for v in per_session) / 3)
+        self.assertAlmostEqual(rms, calibration["story_mde_pct"]["Noisy"])
+        self.assertLess(calibration["story_mde_pct"]["Noisy"], max(per_session))
+        self.assertEqual(0, campaign.main(args + ["--pooling", "max"]))
+        calibration = json.loads((self.dir / "ledger.json").read_text())["config"]["calibration"]
+        self.assertEqual("max", calibration["mde_pooling"])
+        self.assertAlmostEqual(max(per_session), calibration["story_mde_pct"]["Noisy"])
+
     def test_calibrate_refuses_failed_gate_and_wrong_surface(self):
         bad = self.dir / "aa-bad.json"
         bad.write_text(json.dumps(self.aa_manifest("bad", 0.2)))

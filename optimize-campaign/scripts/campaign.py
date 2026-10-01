@@ -9200,15 +9200,21 @@ def cmd_calibrate(args):
         )
     except ValueError as exc:
         raise CampaignError(f"A/A calibration rejected: {exc}") from exc
-    story_mde = {}
-    suite_mde = None
+    # Pool the sessions' MDEs. A single session's story MDE varies by about
+    # +/-20% by chance (four clean ToT sessions on one binary: Svelte 0.84 to
+    # 1.21), so the largest of two sessions inflates the floor; the RMS pools
+    # the sessions' variances (user decision 2026-10-01). "max" keeps the old
+    # rule.
+    by_name = {}
     for session in result["results"]:
         for name, summary in session.items():
-            mde = float(summary["mde_80_pct"])
-            if name == "@suite":
-                suite_mde = mde if suite_mde is None else max(suite_mde, mde)
-            else:
-                story_mde[name] = max(story_mde.get(name, 0.0), mde)
+            by_name.setdefault(name, []).append(float(summary["mde_80_pct"]))
+    def pooled(values):
+        if args.pooling == "max":
+            return max(values)
+        return math.sqrt(sum(v * v for v in values) / len(values))
+    suite_mde = pooled(by_name.pop("@suite")) if "@suite" in by_name else None
+    story_mde = {name: pooled(values) for name, values in by_name.items()}
     if not result["gate_pass"]:
         raise CampaignError(
             "A/A calibration failed the equivalence/precision gate "
@@ -9226,10 +9232,11 @@ def cmd_calibrate(args):
         "max_abs_lag1": args.max_abs_lag1,
         "suite_mde_pct": suite_mde,
         "story_mde_pct": story_mde,
+        "mde_pooling": args.pooling,
         "mde_floor_multiplier": MDE_FLOOR_MULTIPLIER,
     }
     ledger.save()
-    print(f"Recorded A/A calibration from {len(manifests)} sessions")
+    print(f"Recorded A/A calibration from {len(manifests)} sessions (MDE pooling: {args.pooling})")
     print(f"  suite MDE (80% power): {suite_mde:.3f}%")
     print("  story qualification floors (max(share floor, 2 x MDE)):")
     for name in sorted(story_mde, key=lambda n: -story_mde[n]):
@@ -16203,6 +16210,9 @@ def build_parser():
     p.add_argument("--max-mde-pct", type=float, default=3.0,
                    help="Reject a session whose story MDE exceeds this")
     p.add_argument("--max-abs-lag1", type=float, default=0.4)
+    p.add_argument("--pooling", choices=("rms", "max"), default="rms",
+                   help="How the sessions' MDEs combine: rms pools their variances (default); "
+                        "max takes the noisiest session")
     p.set_defaults(func=cmd_calibrate)
 
     p = sub.add_parser(
