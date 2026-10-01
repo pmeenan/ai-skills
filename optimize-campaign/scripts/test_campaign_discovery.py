@@ -478,6 +478,15 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         named_packet = self.dir / "evidence" / "named.json"; named_packet.write_text(json.dumps(renamed))
         campaign.verify_packet_provenance(renamed, named_packet, self.dir)
         self.assertIn("Node::Query(", campaign.patch_hunk_before_counter(named.read_text(), "probe/site"))
+        # ... and with the variable name wrapped onto the next diff line (round 147).
+        wrapped = self.dir / "evidence" / "wrapped.patch"
+        wrapped.write_text('@@ -1,2 +1,4 @@ void Node::Query() {\n+  static thread_local perf_instrumentation::RedundancyCounter\n'
+                           '+      query_counter("probe/site");\n')
+        rewrapped = dict(renamed, patch=str(wrapped), patch_sha256=campaign.sha256_file(wrapped))
+        wrapped_packet = self.dir / "evidence" / "wrapped.json"; wrapped_packet.write_text(json.dumps(rewrapped))
+        campaign.verify_packet_provenance(rewrapped, wrapped_packet, self.dir)
+        import redundancy_evidence
+        self.assertEqual(1, redundancy_evidence.count_counter_declarations(wrapped.read_text(), "probe/site"))
         (self.dir / "evidence" / "other.patch").write_text('+  new RedundancyCounter("x/y");\n')
         refused(lambda d: d.update(patch="evidence/other.patch",
                                    patch_sha256=campaign.sha256_file(self.dir / "evidence" / "other.patch")),

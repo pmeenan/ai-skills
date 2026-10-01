@@ -2927,11 +2927,11 @@ def verify_packet_provenance(packet, packet_path, campaign_dir):
 def counter_site_re(site):
     """The line (or two lines of a unified diff) that constructs the site's
     counter: `new RedundancyCounter("site")`, a named `static thread_local
-    RedundancyCounter name("site")`, or either with the string on the next
-    diff line behind its "+" marker. The site string is the proof; the
+    RedundancyCounter name("site")`, or either broken across unified-diff lines
+    behind their "+" markers (the name or the string on the next line; round 147). The site string is the proof; the
     variable name between the type and the parenthesis is not."""
     return re.compile(
-        r'RedundancyCounter(?:\s+[A-Za-z_]\w*)?\s*\(\s*(?:[+ ]\s*)?"' + re.escape(site) + '"')
+        r'RedundancyCounter(?:(?:\s|\n[+ ])+[A-Za-z_]\w*)?(?:\s|\n[+ ])*\((?:\s|\n[+ ])*"' + re.escape(site) + '"')
 
 
 _PATCH_TEXT_CACHE = {}

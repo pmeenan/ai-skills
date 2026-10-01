@@ -149,7 +149,7 @@ def count_counter_declarations(patch_text: str, site: str) -> int:
     HarfBuzzShaper::Shape overloads under one site name read a third of the
     function's time because every row counted as a repetition)."""
     pattern = re.compile(
-        r'RedundancyCounter(?:\s+[A-Za-z_]\w*)?\s*\(\s*(?:[+ ]\s*)?"' + re.escape(site) + '"')
+        r'RedundancyCounter(?:(?:\s|\n[+ ])+[A-Za-z_]\w*)?(?:\s|\n[+ ])*\((?:\s|\n[+ ])*"' + re.escape(site) + '"')
     return len(pattern.findall(patch_text or ""))
 
 
