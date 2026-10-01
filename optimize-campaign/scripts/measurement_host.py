@@ -25,7 +25,50 @@ CHROME_PROCESS_NAMES = ('chrome', 'chromium', 'content_shell', 'headless_shell')
 
 
 HOSTLOCK_REPORT_EVERY = 60
+DEFAULT_QUIET_LOAD15 = 1.0
+QUIET_POLL_SECONDS = 5
 _host_exclusive_depth = 0
+
+
+def quiet_load15_threshold():
+    """The 15-minute load average a measurement waits below, holding the
+    exclusive lock, before it starts (HOSTLOCK_QUIET_LOAD15; 0 disables).
+    The `hostlock exclusive` CLI applies the same wait."""
+    raw = os.environ.get('HOSTLOCK_QUIET_LOAD15', '')
+    try:
+        return float(raw) if raw.strip() else DEFAULT_QUIET_LOAD15
+    except ValueError:
+        return DEFAULT_QUIET_LOAD15
+
+
+def load15():
+    try:
+        return float(pathlib.Path('/proc/loadavg').read_text().split()[2])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def wait_for_quiet():
+    """Wait until recent heavy work (a build that just finished) has drained
+    from the 15-minute load average. Called with the exclusive lock held, so
+    no new shared job starts meanwhile."""
+    threshold = quiet_load15_threshold()
+    if threshold <= 0:
+        return
+    start = time.monotonic()
+    last = None
+    while True:
+        value = load15()
+        if value is None or value < threshold:
+            if last is not None:
+                print(f'hostlock: 15-minute load {value} < {threshold}; starting', flush=True)
+            return
+        waited = time.monotonic() - start
+        if last is None or waited - last >= HOSTLOCK_REPORT_EVERY:
+            print(f'hostlock: holding the exclusive lock until the 15-minute load drops below '
+                  f'{threshold} (now {value}, waited {int(waited)}s)', flush=True)
+            last = waited
+        time.sleep(QUIET_POLL_SECONDS)
 
 
 def hostlock_dir():
@@ -66,8 +109,10 @@ def host_exclusive(label='measurement'):
     """Machine-wide exclusive hold for a measurement (the ~/.hostlock protocol
     of the `hostlock` tool): close the gate so no new shared job starts, wait
     for running shared jobs (docker builds, compiles) to finish, then measure
-    alone. Active only when the lock directory exists; nested holds in this
-    process or its children (HOSTLOCK_HELD) do not re-lock."""
+    alone once the 15-minute load average is below the quiet threshold.
+    Active only when the lock directory exists; nested holds in this process
+    or its children (HOSTLOCK_HELD) do not re-lock or re-wait (the
+    `hostlock exclusive` CLI applies the same quiet wait)."""
     global _host_exclusive_depth
     lock_dir = hostlock_dir()
     held = os.environ.get('HOSTLOCK_HELD', '')
@@ -99,6 +144,8 @@ def host_exclusive(label='measurement'):
                        + _hostlock_holders(lock_dir, 'exclusive') + ')')
         _hostlock_wait(main, fcntl.LOCK_EX, lambda: 'running shared jobs to finish: '
                        + _hostlock_holders(lock_dir, 'shared'))
+        register('quieting')
+        wait_for_quiet()
         register('held')
         os.environ['HOSTLOCK_HELD'] = f'exclusive:{os.getpid()}'
         _host_exclusive_depth += 1

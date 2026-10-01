@@ -94,7 +94,8 @@ class HostExclusiveTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = pathlib.Path(self.tmp.name) / "hostlock"
         self.dir.mkdir()
-        self.env = mock.patch.dict(os.environ, {"HOSTLOCK_DIR": str(self.dir)})
+        self.env = mock.patch.dict(os.environ, {"HOSTLOCK_DIR": str(self.dir),
+                                                "HOSTLOCK_QUIET_LOAD15": "0"})
         self.env.start()
         os.environ.pop("HOSTLOCK_HELD", None)
 
@@ -128,6 +129,35 @@ class HostExclusiveTest(unittest.TestCase):
             with host.host_exclusive("inner"):
                 pass
         self.assertNotIn("HOSTLOCK_HELD", os.environ)
+
+    def test_waits_for_quiet_load_while_holding_the_gate(self):
+        import os, subprocess
+        loads = iter([3.0, 1.5, 0.9])
+        probes = []
+        def fake_load():
+            probes.append(subprocess.run(["flock", "-x", "-n", str(self.dir / "gate.lock"), "true"]).returncode)
+            return next(loads)
+        with mock.patch.dict(os.environ, {"HOSTLOCK_QUIET_LOAD15": "1.0"}), \
+                mock.patch.object(host, "load15", fake_load), \
+                mock.patch.object(host, "QUIET_POLL_SECONDS", 0):
+            with host.host_exclusive("quiet"):
+                pass
+        self.assertEqual(3, len(probes))
+        self.assertTrue(all(code != 0 for code in probes))  # gate stayed closed while waiting
+
+    def test_quiet_wait_disabled_by_zero_threshold(self):
+        import os
+        with mock.patch.dict(os.environ, {"HOSTLOCK_QUIET_LOAD15": "0"}), \
+                mock.patch.object(host, "load15", side_effect=AssertionError("must not poll")):
+            with host.host_exclusive("off"):
+                pass
+
+    def test_nested_hold_does_not_rewait(self):
+        import os
+        with mock.patch.dict(os.environ, {"HOSTLOCK_HELD": "exclusive:1", "HOSTLOCK_QUIET_LOAD15": "1.0"}), \
+                mock.patch.object(host, "load15", side_effect=AssertionError("must not poll")):
+            with host.host_exclusive("child"):
+                pass
 
     def test_refuses_inside_shared_hold(self):
         import os
