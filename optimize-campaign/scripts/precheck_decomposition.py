@@ -2,8 +2,9 @@
 """Host-side pre-check for a decomposition review request: runs the same
 row rules the gate runs (measured dispositions, covered-by sample identity,
 candidate packet bounds by hypothesis, packet relevance, build consistency,
-evidence provenance on the build, anchors, sites named, own counters, nearest packet, packet time coverage, row-text numbers, symbols
-in the tree, large rows, below-floor per capture, covered-by probe identity,
+evidence provenance on the build, anchors, sites named, own counters, nearest packet, packet time coverage, row-text numbers, row-text sources
+(every number and file:line citation the operator wrote comes from a file),
+symbols in the tree, large rows, below-floor per capture, covered-by probe identity,
 nearest-probe) and prints the rows a reviewer has to open. One problem per
 rule: the gate stops at the first row a rule refuses, so fix and rerun.
 
@@ -21,11 +22,12 @@ import campaign, redundancy_evidence
 SKIPPED = campaign.RULE_SKIPPED
 
 
-def run_all(problems, rule, paths, *args, limit=60, **kwargs):
+def run_all(problems, rule, paths, *args, limit=60, neutralize_mechanisms=False, **kwargs):
     """Run a row-loop rule until it stops refusing, every violating row
     reported in one pass (campaign.run_rule_all, which decompose-draft
     drives too)."""
-    return campaign.run_rule_all(problems, rule, paths, *args, limit=limit, **kwargs)
+    return campaign.run_rule_all(problems, rule, paths, *args, limit=limit,
+                                 neutralize_mechanisms=neutralize_mechanisms, **kwargs)
 
 
 def main(campaign_dir, opp_id, children):
@@ -145,6 +147,10 @@ def main(campaign_dir, opp_id, children):
     run_all(problems, lambda w: campaign.enforce_row_text_numbers(
         w, [(i, p) for i, p in relevance_rows if w[i - 1].get("disposition") != SKIPPED], shares, ledger.data["config"], floor, story, campaign_dir),
         judged)
+    text_sources = campaign.row_text_sources(ledger, parent, profile, result, shares, ledger.data["config"], floor, campaign_dir)
+    # Judged per row once: every row and then accounting_evidence are listed.
+    run_all(problems, lambda w: campaign.enforce_row_text_sources(w, text_sources), judged,
+            limit=len(judged) + 2, neutralize_mechanisms=True)
     measured_rows = {i for i, p in enumerate(result["paths"], 1)
                      if p["disposition"] in ("mandatory", "no-qualifying-mechanism")
                      and shares.get(i, 0.0) >= story_floor and p.get("redundancy_evidence")}
@@ -228,6 +234,7 @@ def efficiency_precheck(ledger, parent, result, shares, story, story_floor, camp
     """An efficiency area's rules: the row is algorithmic (cost packet,
     avoided frames, fraction, suite impact) or no-qualifying-mechanism (an
     investigation quoting the cost packet)."""
+    judged = result["paths"]
     try: campaign.enforce_anchor_names_its_work(result["paths"])
     except campaign.CampaignError as e: problems.append(str(e))
     for i, p in enumerate(judged, 1):

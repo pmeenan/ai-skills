@@ -2200,6 +2200,145 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         with self.assertRaisesRegex(campaign.CampaignError, "measured 15.0 calls per repetition"):
             campaign.enforce_row_text_numbers([item], bound, {1: 10.0}, config, 0.1, STORY, self.dir)
 
+    def text_sources_fixture(self):
+        """A checkout with Element::MovedFrom at line 10 and
+        Element::RecalcStyle at line 21 of element.cc, a redundancy packet
+        and a cost packet for the RecalcStyle row, and the story's lens."""
+        import subprocess
+        repo = self.dir / "repo"
+        source = repo / "third_party" / "blink" / "renderer" / "core" / "dom" / "element.cc"
+        source.parent.mkdir(parents=True)
+        lines = ["// element.cc"] * 9 + ["void Element::MovedFrom(ContainerNode& old_parent) {", "}"]
+        lines += [""] * 9 + ["void Element::RecalcStyle(const StyleRecalcChange change) {",
+                             "  ResolveStyle();", "}"]
+        source.write_text("\n".join(lines) + "\n")
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com",
+                        "commit", "-qm", "fixture"], check=True)
+        sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True,
+                             text=True, check=True).stdout.strip()
+        packet = self.write_packet("recalc", applicable=0.3, repeat=0.0, applicable_time=0.2, repeat_time=0.0,
+                                   calls=820, site="style/recalc", symbol="blink::Element::RecalcStyle")
+        cost = {"kind": "cost-evidence", "schema_version": 1, "anchor": "blink::Element::RecalcStyle()",
+                "target_story": STORY, "row_share_pct": 21.9556,
+                "children": [{"frame": "blink::StyleResolver::ResolveStyle()", "fraction_of_row": 0.801565,
+                              "share_pct": 17.5988}],
+                "leaves": [{"frame": "blink::SelectorChecker::MatchSelector()", "fraction_of_row": 0.105073,
+                            "share_pct": 2.3069}]}
+        (self.dir / "evidence" / "cost_1_r1.json").write_text(json.dumps(cost))
+        lens = self.dir / "measurements" / "lens.json"
+        lens.parent.mkdir(parents=True, exist_ok=True)
+        lens.write_text(json.dumps({"stories": {STORY: {"mean": {
+            "coverage": {"handoff_pct": 77.91},
+            "ownership_self": {"v8-builtin": 37.986, "jit-js": 22.973, "blink": 18.142}}}}}))
+        config = {"share_floor_pct": 1.0, "calibration": {"story_mde_pct": {STORY: 1.147}}}
+        profile = {"repository_root": str(repo), "sha": sha, "lens": {"source_path": str(lens)}}
+        row = {"anchor": "blink::Element::RecalcStyle()", "disposition": "mandatory", "share_pct": 22.134782,
+               "redundancy_evidence": packet, "cost_evidence": {"path": "evidence/cost_1_r1.json"},
+               "evidence": "Bound packet evidence/recalc.json."}
+
+        def sources(paths, accounting=None, ledger=None):
+            return campaign.RowTextSources(
+                paths, self.dir, story=STORY, config=config, base_floor=1.0,
+                story_shares={1: 21.770705}, capture_shares={1: [22.134782, 21.770705]},
+                profile=profile, ledger=ledger, accounting_evidence=accounting)
+        return row, sources
+
+    def test_row_text_numbers_come_from_the_files_the_row_binds(self):
+        row, sources = self.text_sources_fixture()
+        # Packet values as stored, x100 and their complements, the capture
+        # shares, the floor and the MDE are quotable at their printed precision.
+        row["invariant"] = ("blink::Element::RecalcStyle resolves style for 820 calls/rep; ResolveStyle is "
+                            "0.801565 of the row (17.5988% of the story), applicable time 20.00% (80.000% "
+                            "not), share 22.13% in one capture and 21.77% in the other, floor 2.294% "
+                            "= 2 x MDE 1.147%.")
+        campaign.enforce_row_text_sources([row], sources([row]))
+        # A product of two of them: share x supported fraction, a child's
+        # fraction x the cost packet's row share.
+        row["invariant"] = ("Share 22.13% x supported fraction 0.2000 = 4.427% of the story; ResolveStyle "
+                            "0.801565 x 21.9556 = 17.599%.")
+        campaign.enforce_row_text_sources([row], sources([row]))
+        # A number typed from memory, or from another revision, is refused
+        # with the row, the field, the number and what was checked.
+        row["invariant"] = "ResolveStyle is 0.819742 of the row; repeat time 0.2162."
+        with self.assertRaisesRegex(campaign.CampaignError,
+                                    r"(?s)Path 1 .*`invariant` quotes 0\.819742, which is in none of the files.*"
+                                    r"evidence/cost_1_r1\.json.*story floor 2\.294%.*`invariant` quotes 0\.2162"):
+            campaign.enforce_row_text_sources([row], sources([row]))
+        # Identifiers, hashes, round numbers, ids, dates and line numbers are not figures.
+        row["invariant"] = ("Round 147 on build 56477b140493 (#389, 2026-09-30, r147) at element.cc:21 "
+                            "names blink::Element::RecalcStyle.")
+        campaign.enforce_row_text_sources([row], sources([row]))
+        # Another row's packet is quotable only by a row that cites it.
+        other = {"anchor": "blink::Element::Other()", "disposition": "mandatory", "share_pct": 3.5,
+                 "evidence": "Child ResolveStyle is 0.801565 of the parent's row."}
+        with self.assertRaisesRegex(campaign.CampaignError, r"Path 2 .*quotes 0\.801565"):
+            campaign.enforce_row_text_sources([row, other], sources([row, other]))
+        other["evidence"] = "Under row 1, ResolveStyle is 0.801565 of the parent's row."
+        row["invariant"] = "blink::Element::RecalcStyle at element.cc:21 resolves style."
+        campaign.enforce_row_text_sources([row, other], sources([row, other]))
+        # A ledger record named by #id, thousands separators read.
+        import types
+        ledger = types.SimpleNamespace(data={"opportunities": [
+            {"id": 322, "reason": "of 8,190 BlockNode::Layout calls only 28 reach it", "share_pct": 3.2519,
+             "reviews": {"skeptic": {"notes": "refused: 0.819742 is typed"}}}]})
+        row["invariant"] = "Sibling #322 reached 28 of 8190 entries at 3.2519% of the story."
+        campaign.enforce_row_text_sources([row], sources([row], ledger=ledger))
+        row["invariant"] = "Sibling #322 measured 0.819742."  # a reviewer's quote is not a source
+        with self.assertRaisesRegex(campaign.CampaignError, "quotes 0\\.819742"):
+            campaign.enforce_row_text_sources([row], sources([row], ledger=ledger))
+        # The pre-check lists every row, a mechanism row included.
+        row["disposition"], row["mechanism_key"] = "known", "css/recalc"
+        other["evidence"] = "Typed 0.123456."
+        problems = []
+        campaign.run_rule_all(problems, lambda w: campaign.enforce_row_text_sources(w, sources([row, other])),
+                              [row, other], neutralize_mechanisms=True)
+        self.assertEqual(["Path 1", "Path 2"], [p[:6] for p in problems])
+
+    def test_row_text_citations_point_at_the_code_they_name(self):
+        row, sources = self.text_sources_fixture()
+        # A line within 3 of the named method's line is accepted: the full
+        # path, or a basename unique under third_party/blink, cc or base.
+        for text in ("third_party/blink/renderer/core/dom/element.cc:21 @ deadbeef00 defines "
+                     "blink::Element::RecalcStyle.",
+                     "blink::Element::RecalcStyle in element.cc:19 resolves style.",
+                     "The recalc (blink::Element::RecalcStyle, element.cc:22-23) resolves style.",
+                     "Style is resolved inside blink::Element::RecalcStyle (element.cc:22).",
+                     "The header comment (element.cc:3) says nothing."):
+            row["invariant"] = text
+            campaign.enforce_row_text_sources([row], sources([row]))
+        # The line of another function is refused, naming what is there and
+        # where the method is.
+        row["invariant"] = "blink::Element::RecalcStyle in third_party/blink/renderer/core/dom/element.cc:10 resolves style."
+        with self.assertRaisesRegex(
+                campaign.CampaignError,
+                r"Path 1 .*`invariant` cites third_party/blink/renderer/core/dom/element\.cc:10 for "
+                r"blink::Element::RecalcStyle, but line 10 of .*'void Element::MovedFrom\(ContainerNode& "
+                r"old_parent\) \{'.*RecalcStyle is at third_party/blink/renderer/core/dom/element\.cc:21"):
+            campaign.enforce_row_text_sources([row], sources([row]))
+        row["invariant"] = "element.cc:17 defines blink::Element::RecalcStyle."  # 4 lines off
+        with self.assertRaisesRegex(campaign.CampaignError, "cites element.cc:17"):
+            campaign.enforce_row_text_sources([row], sources([row]))
+        row["invariant"] = "The comment at element.cc:240 says nothing."
+        with self.assertRaisesRegex(campaign.CampaignError, "has 23 lines"):
+            campaign.enforce_row_text_sources([row], sources([row]))
+        row["invariant"] = "blink::Node::Clone in node.cc:12 clones."
+        with self.assertRaisesRegex(campaign.CampaignError, "no file 'node.cc' is in the tree"):
+            campaign.enforce_row_text_sources([row], sources([row]))
+
+    def test_accounting_evidence_quotes_lens_fields_and_bound_packets(self):
+        row, sources = self.text_sources_fixture()
+        accounting = ("Per measurements/lens.json, 77.910% of the story is JS hand-off with 60.959% V8 self "
+                      "time (v8-builtin 37.986%, jit-js 22.973%) and 18.142% Blink; RecalcStyle closes at "
+                      "22.13% x 0.2000 = 4.427% of the story (cost_1_r1.json: ResolveStyle 0.801565).")
+        campaign.enforce_row_text_sources([row], sources([row], accounting))
+        accounting = accounting.replace("60.959%", "73.563%")
+        with self.assertRaisesRegex(campaign.CampaignError,
+                                    "accounting_evidence states what no file says: `accounting_evidence` "
+                                    "quotes 73\\.563"):
+            campaign.enforce_row_text_sources([row], sources([row], accounting))
+
     def test_novel_rows_name_the_existing_mechanism(self):
         item = {"anchor": "blink::InlineNode::PrepareLayout", "disposition": "novel"}
         with self.assertRaisesRegex(campaign.CampaignError, "existing_mechanism"):
@@ -2816,6 +2955,73 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             self.assertTrue(todo_rows[anchor]["todo"][0].startswith("disposition"))
         self.assertEqual([], todo_rows["blink::Small()"]["todo"])
         self.assertEqual("blink::Style", todo_rows["blink::Style()"]["candidate_functions"][0]["function"])
+
+    def test_decompose_draft_sidecar_gives_the_operator_the_facts(self):
+        opp_id = self.draft_fixture()
+        code, output = self.run_draft(opp_id, *self.draft_symbols())
+        self.assertEqual(0, code, output)
+        draft = json.loads((self.dir / "draft.json").read_text())
+        todo = {r["anchor"]: r for r in json.loads((self.dir / "draft.todo.json").read_text())["rows"]}
+        # Rows with nothing left to write carry no facts.
+        self.assertNotIn("facts", todo["blink::Small()"])
+        # A mandatory row: its packets' numbers exactly as stored, its
+        # capture shares, the floor and the MDE.
+        root = todo["blink::Root()"]
+        facts = root["facts"]
+        packet = json.loads((self.dir / root["redundancy_evidence"]).read_text())
+        rp = facts["redundancy_packet"]
+        self.assertEqual(root["redundancy_evidence"], rp["path"])
+        for key in ("site", "probe_symbol", "calls_per_repetition_mean", "repetitions", "calls_total",
+                    "applicable_fraction", "repeat_fraction", "applicable_time_fraction",
+                    "repeat_time_fraction", "nested_calls_fraction"):
+            self.assertEqual(packet[key], rp[key], key)
+        import redundancy_evidence
+        self.assertEqual(redundancy_evidence.supported_avoidable_fraction(packet), rp["supported_fraction"])
+        self.assertEqual(redundancy_evidence.hypothesis_bound(packet, "repeat"), rp["repeat_bound"])
+        cost = json.loads((self.dir / root["cost_evidence"]).read_text())
+        self.assertEqual(root["cost_evidence"], facts["cost_packet"]["path"])
+        self.assertEqual(cost["row_share_pct"], facts["cost_packet"]["row_share_pct"])
+        for table in ("children", "leaves"):
+            self.assertEqual([{k: e[k] for k in ("frame", "fraction_of_row", "share_pct")}
+                              for e in cost[table][:campaign.DRAFT_FACTS_TOP]], facts["cost_packet"][table])
+        self.assertEqual({"c1": 100.0}, facts["capture_shares_pct"])
+        self.assertEqual(100.0, facts["share_pct"])
+        self.assertAlmostEqual(1.0, facts["floor_pct"])
+        self.assertEqual(0.5, facts["calibrated_mde_pct"])
+        self.assertNotIn("function_impact", facts)  # closed by count, not a candidate
+        # A candidate row: the function share x supported fraction.
+        style = todo["blink::Style()"]["facts"]
+        impact = style["function_impact"]
+        self.assertEqual("blink::Style", impact["function"])
+        self.assertAlmostEqual(30.0, impact["function_share_pct"])
+        self.assertEqual(style["redundancy_packet"]["supported_fraction"], impact["supported_fraction"])
+        self.assertAlmostEqual(impact["function_share_pct"] * impact["supported_fraction"], impact["impact_pct"])
+        # Every number in `facts` is one the gate's row-text sources rule
+        # accepts for that row, and the draft's own text passes it.
+        ledger = campaign.Ledger(self.dir).load()
+        parent = ledger.opp(opp_id)
+        config = campaign.area_config(ledger.data["config"], parent)
+        result = campaign.load_decomposition(self.dir / "draft.json", draft=True)
+        sources = campaign.row_text_sources(ledger, parent, ledger.profile("p"), result, {}, config,
+                                            config["share_floor_pct"], self.dir)
+        index = {row["anchor"]: i for i, row in enumerate(draft["paths"], 1)}
+
+        def numbers(value):
+            if isinstance(value, bool) or isinstance(value, str) or value is None:
+                return []
+            if isinstance(value, (int, float)):
+                return [float(value)]
+            items = value.values() if isinstance(value, dict) else value
+            return [n for item in items for n in numbers(item)]
+        checked = 0
+        for anchor in ("blink::Root()", "blink::Box()", "blink::Style()"):
+            sets, _ = sources.text_values(index[anchor], "")
+            for value in numbers(todo[anchor]["facts"]):
+                for decimals in (2, 4, 6):
+                    checked += 1
+                    self.assertTrue(any(s.allows(value, decimals) for s in sets), (anchor, value, decimals))
+        self.assertGreater(checked, 50)
+        campaign.enforce_row_text_sources(result["paths"], sources)
 
     def test_decompose_draft_binds_what_explain_accepts(self):
         import contextlib, io

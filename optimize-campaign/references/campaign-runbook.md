@@ -320,7 +320,14 @@ The recipe is four steps, and only the third is typed by hand:
    `covered-by`/`wrapper_of`, with its key, fraction and text), and the V8
    hand-off and mechanism narrative in place of the `OPERATOR-TODO` sentence
    in `accounting_evidence` (the gate refuses a file that still carries it).
-   No glue script, no typed number, no table of sites.
+   No glue script, no typed number, no table of sites. Each row's `facts`
+   in `<out>.todo.json` carries the numbers and the anchor's `file:line`
+   read from the bound files: operator text quotes numbers only from
+   `facts` (or the files the row binds) and cites `file:line` only from
+   `facts` (or the tree at the profiled revision). The gate refuses any
+   other number or a citation whose line does not hold the code the
+   sentence names (`decomposition.md`, "Every number and citation in
+   operator text comes from a file").
 4. **`precheck_decomposition.py`** until it prints `no gate problems`, then
    the two reviews and `decompose`.
 

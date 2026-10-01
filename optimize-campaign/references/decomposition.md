@@ -779,11 +779,83 @@ draft:
 each mandatory row at or above the floor, an investigation where a large
 row needs one, the disposition of each undecided row) with the row's
 numbers, its options, the ledger mechanisms on its function and the
-mechanisms whose anchors share its samples. The draft never overwrites an
+mechanisms whose anchors share its samples. Each row with something to
+write carries a `facts` block read from the files the draft bound, exactly
+as stored: the redundancy packet's calls per repetition, applicable and
+repeat fractions of calls and of time, nested calls, supported fraction and
+per-hypothesis bounds; the cost packet's row share and its top children and
+leaves with `fraction_of_row` and story `share_pct`; the row's share in each
+capture and its `share_pct`; the story floor, its basis and the calibrated
+MDE; the anchor's definition as `file:line @ revision` (found the way the
+draft finds it for `evidence`); and, for an undecided row that may become a
+candidate, the probed function's share x the supported fraction. The draft never overwrites an
 evidence file or an edited draft with other bytes, and a rerun with the same
 inputs writes the same bytes. `explain` and `rows` read a raw scaffold or a
 draft (blank dispositions, no `accounting_evidence`, the root row's
 `<story>/` prefix); `decompose` and the pre-check read strictly.
+
+## Every number and citation in operator text comes from a file
+
+The operator writes `invariant`, `investigation` (hypotheses,
+falsifications, stop reason), `existing_mechanism`, `rationale`, the
+narrative of `accounting_evidence`, and the `evidence` of the rows the
+draft left. Those fields may only quote numbers from the row's `facts`
+(or from the files it binds) and cite `file:line` from `facts` (or from
+the tree at the profiled revision); nothing is typed from memory, an
+earlier revision or another row. Round 147 (#389): 83 of 97 six-decimal
+cost figures were in none of the row's packets (row 24 quoted ResolveStyle
+at 0.819742 where `evidence/cost_389_r24.json` says 0.801565), a repeat
+time of 0.2162 stood where the packet says 0.0, and 98 of 253 `file:line`
+citations named the wrong line (`element.cc:4396` is `Element::MovedFrom`;
+`Element::RecalcStyle` is at 5296), all in operator-written text; every
+draft-generated citation was right.
+
+`enforce_row_text_sources` (in `decompose` and the pre-check, beside the
+row-text number rule) reads every decimal with two or more places and every
+integer of four or more digits that is not part of an identifier, hash,
+`file:line`, date, round number or `#NNN` id. Each must print, rounded or
+truncated at its precision, as one of:
+
+- a value anywhere in the row's bound redundancy or cost packet, or that
+  value x100; a redundancy packet's fractions and bounds also as their
+  complements (the non-applicable time);
+- the row's share in either capture, or its `share_pct`;
+- the story floor, the share floor, the qualification floor or the
+  calibrated MDE (and twice it);
+- the probed function's inclusive share of the story (the function share a
+  candidate qualifies by) for each packet the row binds or names;
+- a share x fraction product of those (share x supported fraction, a
+  child's fraction x the row's share, the function share x a packet
+  fraction);
+- the sum of two to four other numbers its clause quotes, each from a file
+  (`73.563% pure V8 self time (v8-builtin 37.986%, jit-js 22.973%, v8-cpp
+  12.604%)`, #387's lens fields);
+- a number the probe patch a bound packet records states (`524288-slot
+  RedundancyCounter`, #404; the overlap predicate's `0.9`, #333);
+- a value of a probe or cost packet the text names by file name, of the
+  lens when the text names it, and of a ledger record the text names by
+  `#id` (its numeric fields, and the numbers in its `notes`, `landed_note`
+  and `reason`, thousands separators read: #322's "8,190 BlockNode::Layout
+  calls"; not its reviews or history, which quote the numbers a reviewer
+  refused);
+- for `accounting_evidence` and for a row that cites another row (`row N`,
+  `rows N-M`, `wrapper_of`, the `covered_by` owner): the cited rows' own
+  values, every packet bound anywhere in the file, every row's shares and
+  the story's lens fields.
+
+A `path.ext:N` citation must resolve to one file at the profiled revision
+(the path from the Chromium root, a unique path suffix, or a basename
+unique under `third_party/blink`, `cc` or `base`), every listed line must
+exist, and when the sentence names code next to the citation (`X at
+file:N`, `X (file:N)`, `X and Y at file:N`, `file:N defines X`, `file:N ->
+X`; template arguments skipped, a runtime feature `X` matched as
+`XEnabled`) line N within 3 must hold one of those names, or, when the
+sentence places the line inside that code (`called from X at file:N`,
+`serves X at file:N`, `inside X (file:N)`), N must lie in X's body. A bare
+line list after a citation (`... at 1085,1132,1162`) is lines of that
+file. A citation with no code word next to it is checked for its file and
+line count. The refusal names the row, the field, the number or citation,
+what was checked and what the cited line actually holds.
 
 ## A decomposition without a count is open work
 

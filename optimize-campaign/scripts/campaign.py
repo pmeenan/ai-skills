@@ -4506,10 +4506,11 @@ def row_text_strings(item):
     return out
 
 
-def row_text_number_problems(item, packet, share, floor):
-    """Percentages, calls-per-repetition figures and packet names a row's
-    text quotes must be the bound packet's. A number typed from memory, or
-    left over from an earlier packet, is not the count."""
+def redundancy_packet_fractions(packet):
+    """The fractions a row may quote from a redundancy packet: its call and
+    time fractions, nested calls, and the bounds the gate derives from them
+    (supported, per hypothesis). Their complements (the non-applicable time)
+    are quotable too."""
     import redundancy_evidence
     fractions = [
         packet.get("applicable_fraction"), packet.get("repeat_fraction"),
@@ -4519,7 +4520,14 @@ def row_text_number_problems(item, packet, share, floor):
         redundancy_evidence.hypothesis_bound(packet, "applicable"),
         redundancy_evidence.hypothesis_bound(packet, "repeat"),
     ]
-    fractions = [float(f) for f in fractions if isinstance(f, (int, float))]
+    return [float(f) for f in fractions if isinstance(f, (int, float)) and not isinstance(f, bool)]
+
+
+def row_text_number_problems(item, packet, share, floor):
+    """Percentages, calls-per-repetition figures and packet names a row's
+    text quotes must be the bound packet's. A number typed from memory, or
+    left over from an earlier packet, is not the count."""
+    fractions = redundancy_packet_fractions(packet)
     allowed = set()
     for fraction in fractions:
         allowed.add(100.0 * fraction)
@@ -4586,6 +4594,803 @@ def enforce_row_text_numbers(paths, bound_rows, story_shares, config, base_floor
                 "share x fraction) and names that packet; text carried over from "
                 "another packet or another revision is not this row's count."
             )
+
+
+# ---- every number and source citation in operator text comes from a file ----
+
+ROW_TEXT_SOURCE_FIELDS = ("invariant", "existing_mechanism", "rationale", "investigation", "evidence",
+                          "falsification", "falsifications", "notes", "summary")
+SOURCED_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+SOURCED_NUMBER_UNITS = frozenset({"x", "ms", "ns", "us", "s", "k", "kb", "mb"})
+SOURCED_NUMBER_SKIP_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}\b"                              # a date
+    r"|#\d+"                                              # a ledger id
+    r"|\brounds?\s+\d+(?:\s*(?:[-\u2013,]|and|to)\s*\d+)*"  # a round number
+    r"|\blines?\s+\d+(?:\s*[-\u2013,]\s*\d+)*",            # a line named without its file
+    re.I)
+SOURCE_CITATION_RE = re.compile(
+    r"(?<![\w/.+-])((?:[\w.+-]+/)*[\w+-][\w.+-]*\.(?:cc|h|mm|cpp|c|hh|inc|idl|json5|mojom|pdl|py|js|ts|gni?))"
+    r":(\d+)(?:\s*[-\u2013]\s*(\d+))?((?:\s*,\s*\d+(?:\s*[-\u2013]\s*\d+)?)*)")
+SOURCE_LINE_LIST_RE = re.compile(r"\bat\s+(\d+(?:\s*,\s*\d+)+)\b")
+SOURCE_CITATION_REVISION_RE = re.compile(r"\s*@\s*([0-9a-f]{7,40})\b")
+SOURCE_CITATION_WINDOW = 3
+SOURCE_CITATION_TREES = ("third_party/blink/", "cc/", "base/")
+SOURCE_CLAUSE_END_RE = re.compile(r";|[.!?](?=\s|$)|\n")
+ROW_TEXT_CITED_ROWS_RE = re.compile(
+    r"\b(?:rows?|paths?)\s+(\d+(?:\s*(?:[-\u2013]|\.\.|,|and)\s*\d+)*)", re.I)
+ROW_TEXT_NAMED_FILE_RE = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)*(?:probe|cost)_[\w.-]+?\.json)\b")
+ROW_TEXT_LEDGER_SKIPPED_KEYS = ("reviews", "history", "gate_challenges")
+ROW_TEXT_LEDGER_TEXT_KEYS = ("notes", "landed_note", "reason")
+
+
+def row_text_fields(item):
+    """(field, text) for every string of a row's operator-written text; a
+    nested investigation string is named by its path in the row."""
+    out = []
+
+    def walk(label, value):
+        if isinstance(value, str):
+            out.append((label, value))
+        elif isinstance(value, list):
+            for position, entry in enumerate(value):
+                walk(f"{label}[{position}]", entry)
+        elif isinstance(value, dict):
+            for key, entry in value.items():
+                walk(f"{label}.{key}", entry)
+
+    for field in ROW_TEXT_SOURCE_FIELDS:
+        if field in item:
+            walk(field, item[field])
+    return out
+
+
+def row_text_scoped_numbers(text):
+    """The numbers a sentence states that the source rule reads: every
+    decimal with at least two digits after the point and every integer of
+    four or more digits, except those inside an identifier, a hash, a
+    `file:line` citation, a date, a round number or a `#NNN` id.
+    Returns [(token, value, decimals, offset)]."""
+    skip = [match.span() for match in SOURCE_CITATION_RE.finditer(text)]
+    if skip:  # a bare line list after a citation (`... at 1085,1132,1162`) is lines of that file
+        skip += [match.span() for match in SOURCE_LINE_LIST_RE.finditer(text, skip[0][0])]
+    skip += [match.span() for match in SOURCED_NUMBER_SKIP_RE.finditer(text)]
+    out = []
+    for match in SOURCED_NUMBER_RE.finditer(text):
+        start, end = match.span()
+        if any(a <= start < b for a, b in skip):
+            continue
+        before = text[start - 1] if start else ""
+        if before.isalnum() or before == "_":
+            continue  # an identifier or a hash (r147, v8, 56477b...)
+        if before == "." and start >= 2 and text[start - 2].isdigit():
+            continue  # a dotted version
+        after = text[end:end + 1]
+        if after == "." and text[end + 1:end + 2].isdigit():
+            continue
+        if after.isalpha() or after == "_":
+            word = re.match(r"[A-Za-z_]+", text[end:]).group(0)
+            tail = text[end + len(word):end + len(word) + 1]
+            if word.lower() not in SOURCED_NUMBER_UNITS or tail.isalnum() or tail == "_":
+                continue  # a hash or an identifier (1648f1d0, 4234833d)
+        token = match.group(0)
+        whole, _, decimals = token.partition(".")
+        if len(decimals) >= 2 or (not decimals and len(whole) >= 4):
+            out.append((token, float(token), len(decimals), start))
+    return out
+
+
+def numeric_leaves(value, skip_keys=()):
+    """Every number in a JSON value (booleans are not numbers)."""
+    out = []
+    stack = [value]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, bool):
+            continue
+        if isinstance(node, (int, float)):
+            if math.isfinite(node):
+                out.append(float(node))
+        elif isinstance(node, dict):
+            stack.extend(v for k, v in node.items() if k not in skip_keys)
+        elif isinstance(node, list):
+            stack.extend(node)
+    return out
+
+
+def string_leaves(value):
+    out = []
+    stack = [value]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, str):
+            out.append(node)
+        elif isinstance(node, dict):
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return out
+
+
+def _printed_window(value, decimals):
+    """The exact values that print as `value` at `decimals` places, rounded
+    or truncated: [value - half a unit, value + a unit)."""
+    unit = 10.0 ** -decimals
+    eps = 1e-9 * max(1.0, value)
+    return value - 0.5 * unit - eps, value + unit
+
+
+def _any_in(values, lo, hi):
+    import bisect
+    position = bisect.bisect_left(values, lo)
+    return position < len(values) and values[position] < hi
+
+
+class TextNumberSet:
+    """Values a row's text may quote, with what they came from. `direct`
+    values are quoted as they are; a `share` times a `fraction` (share x
+    supported fraction, a child's fraction of the row x the row's share)
+    is quoted as a product."""
+
+    def __init__(self):
+        self.direct, self.shares, self.fractions, self.sources = set(), set(), set(), []
+
+    def add(self, values, source=None, *, scaled=False, share=False, fraction=False, complement=False):
+        values = [abs(float(v)) for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)
+                  and math.isfinite(v)]
+        if not values:
+            return self
+        for value in values:
+            self.direct.add(value)
+            if scaled:
+                self.direct.add(100.0 * value)
+            if share:
+                self.shares.add(value)
+            if fraction and value <= 1.0:
+                self.fractions.add(value)
+                if complement:
+                    self.direct.update((1.0 - value, 100.0 * (1.0 - value)))
+                    self.fractions.add(1.0 - value)
+        if source and source not in self.sources:
+            self.sources.append(source)
+        return self
+
+    def update(self, other):
+        self.direct |= other.direct
+        self.shares |= other.shares
+        self.fractions |= other.fractions
+        for source in other.sources:
+            if source not in self.sources:
+                self.sources.append(source)
+        return self
+
+    def freeze(self):
+        self._direct = sorted(self.direct)
+        self._fractions = sorted(self.fractions)
+        self._shares = sorted(s for s in self.shares if s > 0)
+        return self
+
+    def allows(self, value, decimals):
+        if not hasattr(self, "_direct"):
+            self.freeze()
+        value = abs(value)
+        lo, hi = _printed_window(value, decimals)
+        if _any_in(self._direct, lo, hi):
+            return True
+        return any(_any_in(self._fractions, lo / share, hi / share) for share in self._shares)
+
+
+class SourceTree:
+    """The Chromium checkout the rows cite, read at the profiled revision."""
+    _cache = {}
+
+    def __init__(self, root, revision=None):
+        self.root = str(root or "")
+        self.revision = revision
+        self._lines = {}
+        self._resolved = {}
+
+    @classmethod
+    def at(cls, root, revision):
+        key = (str(root or ""), revision)
+        if key not in cls._cache:
+            cls._cache[key] = cls(root, revision)
+        return cls._cache[key]
+
+    def usable(self):
+        return bool(self.root) and pathlib.Path(self.root, ".git").exists()
+
+    def has_commit(self, sha):
+        return subprocess.run(["git", "-C", self.root, "cat-file", "-e", f"{sha}^{{commit}}"],
+                              capture_output=True).returncode == 0
+
+    def files(self):
+        if not hasattr(self, "_files"):
+            command = (["git", "-C", self.root, "ls-tree", "-r", "--name-only", self.revision]
+                       if self.revision else ["git", "-C", self.root, "ls-files"])
+            result = subprocess.run(command, capture_output=True, text=True)
+            self._files = set(result.stdout.splitlines()) if result.returncode == 0 else set()
+            self._by_name = {}
+            for path in self._files:
+                if path.startswith(SOURCE_CITATION_TREES):
+                    self._by_name.setdefault(path.rsplit("/", 1)[-1], []).append(path)
+        return self._files
+
+    def resolve(self, cited):
+        """The tree paths a cited file names: the path from the root, a
+        unique path suffix, or a basename under third_party/blink, cc or base."""
+        if cited not in self._resolved:
+            files = self.files()
+            cited_ = cited[2:] if cited.startswith("./") else cited
+            if cited_ in files:
+                found = [cited_]
+            elif "/" in cited_:
+                found = sorted(path for path in files if path.endswith("/" + cited_))
+            else:
+                found = sorted(self._by_name.get(cited_, []))
+            self._resolved[cited] = found
+        return self._resolved[cited]
+
+    def lines(self, path):
+        if path not in self._lines:
+            if self.revision:
+                result = subprocess.run(["git", "-C", self.root, "show", f"{self.revision}:{path}"],
+                                        capture_output=True)
+                text = result.stdout.decode(errors="replace") if result.returncode == 0 else ""
+            else:
+                try:
+                    text = pathlib.Path(self.root, path).read_text(errors="replace")
+                except OSError:
+                    text = ""
+            self._lines[path] = text.splitlines()
+        return self._lines[path]
+
+
+def source_clause(text, start, end):
+    """The sentence or clause around a span: from the previous `;`, sentence
+    end or newline to the next."""
+    lo = 0
+    for match in SOURCE_CLAUSE_END_RE.finditer(text, 0, start):
+        lo = match.end()
+    following = SOURCE_CLAUSE_END_RE.search(text, end)
+    return lo, following.start() if following else len(text)
+
+
+SOURCE_CITATION_CONNECTORS = frozenset({
+    "at", "in", "and", "or", "of", "via", "from", "the", "its", "inside", "defines", "defined", "is",
+    "see", "by", "on", "(", ")", ",", "/", ":", "-", ">", "->", "@", "[", "]"})
+SOURCE_WORD_RE = re.compile(r"[A-Za-z_~][\w~]*(?:::[A-Za-z_~][\w~]*)*|->|\S")
+SOURCE_HEX_RE = re.compile(r"[0-9a-f]{7,40}")
+SOURCE_LOCATING_WORDS = frozenset({"inside", "within", "from", "serves", "serve", "served"})
+
+
+def source_code_word(token):
+    """A token that names code: a qualified name, a snake_case member, a
+    CamelCase or lowerCamel identifier. A plain word is not code."""
+    if not token or not (token[0].isalpha() or token[0] in "_~"):
+        return False
+    if "::" in token or "_" in token.strip("_"):
+        return True
+    if token.endswith("_"):
+        return True
+    return sum(ch.isupper() for ch in token) >= 2 or (token[0].islower() and any(ch.isupper() for ch in token))
+
+
+def _strip_templates(text):
+    previous = None
+    while previous != text:
+        previous = text
+        text = re.sub(r"<[^<>]*>", " ", text)
+    return text
+
+
+def citation_identifiers(text, match, citations):
+    """The code a citation is for: the code words the sentence names next
+    to it, read outwards from the citation over connecting words (`X at
+    file:N`, `X (file:N)`, `X and Y at file:N`, `file:N defines X`,
+    `file:N -> X`) up to the first plain word, the clause end or another
+    citation. Template arguments are skipped (`CollectionItemsCache<...>
+    (file:N)` names CollectionItemsCache). `the curly-quote fast path
+    (file:N)` names no code. Returns (names, located): `located` when the
+    sentence places the line inside the code it names (`called from X at
+    file:N`, `serves X at file:N`, `inside X (file:N)`) rather than naming
+    X there (`X in file:N`, `file:N defines X`)."""
+    lo, hi = source_clause(text, match.start(), match.end())
+    masked = list(text)
+    for other in citations:
+        if other is not match:
+            for position in range(other.start(), other.end()):
+                masked[position] = " "
+            if lo <= other.start() < hi:
+                masked[other.start()] = "\x00"
+    masked = "".join(masked)
+    names = []
+    before = [t.group(0) for t in SOURCE_WORD_RE.finditer(_strip_templates(masked[lo:match.start()]))]
+    after = [t.group(0) for t in SOURCE_WORD_RE.finditer(_strip_templates(masked[match.end():hi]))]
+    located = False
+    for run, ahead in ((list(reversed(before)), False), (after, True)):
+        for position, token in enumerate(run):
+            if token == "\x00" or (ahead and token in (",", ";")):
+                break  # after a citation, `, X 318-324` is the next item's
+            if source_code_word(token):
+                names.append(token)
+                if not ahead:
+                    located = position + 1 < len(run) and run[position + 1].lower() in SOURCE_LOCATING_WORDS
+            elif token.lower() in SOURCE_CITATION_CONNECTORS or SOURCE_HEX_RE.fullmatch(token):
+                continue
+            else:
+                break
+    return names, located
+
+
+def line_in_function_body(lines, method, number, reach=2000):
+    """Whether line `number` (1-based) is inside the body of the nearest
+    definition of `method` at or before it: its name, then `{` before any
+    `;`, then the matching `}` at or after the line. #333 cites
+    `HarfBuzzGetNominalGlyphs at harfbuzz_face.cc:447`, a line in that
+    function's body 65 lines below its name."""
+    pattern = re.compile(rf"\b{re.escape(method)}\s*\(")
+    for start in range(min(number, len(lines)), max(0, number - reach), -1):
+        found = pattern.search(lines[start - 1])
+        if not found:
+            continue
+        depth, opened = 0, False
+        for position in range(start, len(lines) + 1):
+            text = lines[position - 1]
+            if position == start:
+                text = text[found.start():]
+            text = re.sub(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'', "", text.split("//", 1)[0])
+            for ch in text:
+                if ch == ";" and not opened:
+                    break
+                if ch == "{":
+                    depth, opened = depth + 1, True
+                elif ch == "}" and opened:
+                    depth -= 1
+                    if depth == 0:
+                        return start <= number <= position
+            else:
+                continue
+            break  # a declaration or a call: look further up
+    return False
+
+
+def citation_problems(text, tree):
+    """Refusals for the `path.ext:N` citations in one string: the file does
+    not resolve (uniquely) in the tree, a line is past its end, or none of
+    the code words the sentence names next to it (citation_identifiers) is
+    within SOURCE_CITATION_WINDOW lines of N. A citation with no code word
+    next to it is checked for its file and line count only."""
+    problems = []
+    citations = list(SOURCE_CITATION_RE.finditer(text))
+    for match in citations:
+        cited, first = match.group(1), int(match.group(2))
+        last = int(match.group(3) or first)
+        if last < first:
+            last = first
+        more = [(int(a), int(b or a)) for a, b in re.findall(r"(\d+)(?:\s*[-–]\s*(\d+))?", match.group(4) or "")]
+        where = tree
+        pinned = SOURCE_CITATION_REVISION_RE.match(text, match.end())
+        if pinned and pinned.group(1) != (tree.revision or "")[:len(pinned.group(1))]:
+            if tree.has_commit(pinned.group(1)):
+                where = SourceTree.at(tree.root, pinned.group(1))
+        rev = (where.revision or "the working tree")[:12]
+        candidates = where.resolve(cited)
+        label = match.group(0).strip()
+        if not candidates:
+            problems.append(f"cites {label}, but no file {cited!r} is in the tree at {rev}")
+            continue
+        if len(candidates) > 1:
+            problems.append(
+                f"cites {label}, but {cited!r} names {len(candidates)} files at {rev} "
+                f"({', '.join(candidates[:3])}{', ...' if len(candidates) > 3 else ''}); cite the "
+                "path from the Chromium root")
+            continue
+        path = candidates[0]
+        lines = where.lines(path)
+        lo, hi = source_clause(text, match.start(), match.end())
+        listed = SOURCE_LINE_LIST_RE.search(text, match.end(), hi)
+        if listed:
+            more += [(int(n), int(n)) for n in re.findall(r"\d+", listed.group(1))]
+        past = [f"{a}" for a, b in [(first, last)] + more if not 1 <= a <= b <= len(lines)]
+        if past:
+            problems.append(f"cites {label}, but {path} has {len(lines)} lines at {rev} (line {', '.join(past)})")
+            continue
+        names, located = citation_identifiers(text, match, citations)
+        if not names:
+            continue
+        window = range(max(1, first - SOURCE_CITATION_WINDOW), min(len(lines), last + SOURCE_CITATION_WINDOW) + 1)
+        # A runtime feature X is tested as RuntimeEnabledFeatures::XEnabled()
+        # and a base::Feature as kX.
+        words = [re.compile(rf"\bk?{re.escape(name.rsplit('::', 1)[-1].lstrip('~'))}(?:Enabled)?\b") for name in names]
+        if any(word.search(lines[number - 1]) for word in words for number in window):
+            continue
+        if located and any(line_in_function_body(lines, name.rsplit("::", 1)[-1].lstrip("~"), first)
+                           for name in names):
+            continue  # `called from X at file:N`: a line inside X's body
+        shown = names[0]
+        method = shown.rsplit("::", 1)[-1].lstrip("~")
+        owner = shown.rsplit("::", 2)
+        qualified = re.compile(rf"\b{re.escape(owner[-2])}::{re.escape(method)}\s*\(") if len(owner) >= 2 else None
+        found = next((number for number, line in enumerate(lines, 1) if qualified and qualified.search(line)), None)
+        if found is None:
+            found = next((number for number, line in enumerate(lines, 1) if words[0].search(line)), None)
+        problems.append(
+            f"cites {label} for {' / '.join(names[:3])}, but line {first} of {path} at {rev} is "
+            f"{lines[first - 1].strip()[:90]!r} and none of them is within {SOURCE_CITATION_WINDOW} lines of it"
+            + (f" ({method} is at {path}:{found})" if found else f" (`{method}` is not in {path})"))
+    return problems
+
+
+def clause_sum_allows(text, numbers, allowed, position, most=4):
+    """A number that is the sum of two to `most` other numbers its clause
+    quotes, each of them from a file, shows its arithmetic: "73.563% pure V8
+    self time (v8-builtin 37.986%, jit-js 22.973%, v8-cpp 12.604%)" (#387,
+    the lens's three ownership fields). The sum is checked at the printed
+    precision of the total and its addends."""
+    import itertools
+    _, value, decimals, offset = numbers[position]
+    lo, hi = source_clause(text, offset, offset)
+    addends = [(v, d) for i, (_, v, d, at) in enumerate(numbers)
+               if i != position and allowed[i] and lo <= at < hi]
+    unit = 10.0 ** -decimals
+    for size in range(2, min(most, len(addends)) + 1):
+        for chosen in itertools.combinations(addends, size):
+            slack = sum(10.0 ** -d for _, d in chosen)
+            total = sum(v for v, _ in chosen)
+            if value - 0.5 * unit - slack <= total < value + unit + slack:
+                return True
+    return False
+
+
+class RowTextSources:
+    """What the numbers and citations of a decomposition's text may come
+    from: per row, its bound redundancy and cost packets (every value, x100,
+    and the redundancy fractions' complements), the numbers its probe patch
+    states, the probed function's share of the story, its share in each
+    capture and its share_pct, the story floor and calibrated MDE, and the
+    products share x fraction of those; for accounting_evidence and for a
+    row that cites another row, also every packet bound anywhere in the
+    file, the story's lens fields and the cited rows' own values; for any
+    text, the files it names (a probe or cost packet, the lens), the ledger
+    records it names by #id, and the sum of other sourced numbers its
+    clause quotes. Citations are read in the repository the profile was
+    captured from, at its revision."""
+
+    def __init__(self, paths, campaign_dir, *, story, config, base_floor, story_shares=None,
+                 capture_shares=None, profile=None, ledger=None, accounting_evidence=None):
+        self.paths = paths
+        self.dir = pathlib.Path(campaign_dir)
+        self.story = story
+        self.config = config or {}
+        self.base_floor = float(base_floor or 0.0)
+        self.story_shares = story_shares or {}
+        self.capture_shares = capture_shares or {}
+        self.profile = profile or {}
+        self.ledger = ledger
+        self.accounting_evidence = accounting_evidence
+        self._files = {}
+        self._rows = {}
+        self._file_wide = None
+        self._ledger = {}
+        self._checked = {}
+        self._function_shares = None
+        self._cited = {}
+        self._lens_names = set()
+        root = self.profile.get("repository_root")
+        self.repository_root = root
+        revision = self.profile.get("sha") or self.profile.get("resolved_sha")
+        tree = SourceTree.at(root, None)
+        self.tree = None
+        if tree.usable():
+            self.tree = SourceTree.at(root, revision) if revision and tree.has_commit(revision) else tree
+
+    # -- files --
+    def _resolve_file(self, rel):
+        path = pathlib.Path(str(rel))
+        if path.is_absolute():
+            return path if path.is_file() else None
+        for candidate in (self.dir / path, self.dir / "evidence" / path.name):
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def file_values(self, rel):
+        """TextNumberSet of one packet file the text binds or names."""
+        if rel in self._files:
+            return self._files[rel]
+        values = TextNumberSet()
+        path = self._resolve_file(rel)
+        data = None
+        if path is not None:
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, ValueError):
+                data = None
+        if isinstance(data, dict):
+            name = str(rel)
+            values.add(numeric_leaves(data), f"{name} (every value, and x100)", scaled=True)
+            if data.get("kind") == "redundancy-evidence":
+                values.add(redundancy_packet_fractions(data), None, scaled=True, fraction=True, complement=True)
+                values.update(self.patch_values(data.get("patch")))
+                symbol = str(data.get("probe_symbol") or "").strip()
+                values.add([self.function_share(symbol)] if symbol else [],
+                           f"{symbol}'s inclusive share of the story", share=True)
+            elif data.get("kind") == "cost-evidence":
+                values.add([data.get("row_share_pct")], None, share=True)
+                for table in ("children", "leaves"):
+                    values.add([entry.get("fraction_of_row") for entry in data.get(table) or []
+                                if isinstance(entry, dict)], None, fraction=True)
+        self._files[rel] = values
+        return values
+
+    def function_share(self, symbol):
+        """The probed function's inclusive share of the story's stacks (the
+        share a candidate qualifies by; the gate's symbol_inclusive_shares),
+        computed once for every packet the file binds."""
+        if self._function_shares is None:
+            symbols = set()
+            for item in self.paths:
+                rel = (item.get("redundancy_evidence") or {}).get("path") if isinstance(
+                    item.get("redundancy_evidence"), dict) else None
+                path = self._resolve_file(rel) if rel else None
+                try:
+                    packet = json.loads(path.read_text()) if path else {}
+                except (OSError, ValueError):
+                    packet = {}
+                if isinstance(packet, dict) and str(packet.get("probe_symbol") or "").strip():
+                    symbols.add(str(packet["probe_symbol"]).strip())
+            self._function_shares = self._inclusive_shares(symbols)
+        if symbol not in self._function_shares:
+            self._function_shares.update(self._inclusive_shares({symbol}))
+        return self._function_shares.get(symbol)
+
+    def _inclusive_shares(self, symbols):
+        if not symbols or not self.profile:
+            return {}
+        try:
+            files = collapsed_stack_files(self.profile, self.story)
+            if not files:
+                return {}
+            total, inclusive = symbol_inclusive_shares(files, symbols)
+        except (CampaignError, OSError, ValueError, KeyError, TypeError):
+            return {}
+        return {symbol: 100.0 * inclusive[symbol] / total for symbol in symbols} if total else {}
+
+    def patch_values(self, rel):
+        """The numbers the probe patch a packet binds states (its counter's
+        capacity, `524288 slots`, #404)."""
+        key = ("patch", rel)
+        if key not in self._files:
+            values = TextNumberSet()
+            path = self._resolve_file(rel) if rel else None
+            if path is not None:
+                try:
+                    text = path.read_text(errors="replace")
+                except OSError:
+                    text = ""
+                values.add([float(n) for n in re.findall(r"(?<![\w.])\d+(?:\.\d+)?(?![\w])", text)],
+                           f"{rel} (its text)")
+            self._files[key] = values
+        return self._files[key]
+
+    def lens_values(self):
+        if "lens" not in self._files:
+            values = TextNumberSet()
+            lens = self.profile.get("lens") or {}
+            for recorded in (lens.get("source_path"), lens.get("path")):
+                cited = campaign_citation(self.dir, recorded) if recorded else None
+                if not cited:
+                    continue
+                path = pathlib.Path(cited) if pathlib.Path(cited).is_absolute() else self.dir / cited
+                try:
+                    data = json.loads(path.read_text())
+                except (OSError, ValueError):
+                    continue
+                story = ((data.get("stories") or {}).get(self.story)) if isinstance(data, dict) else None
+                values.add(numeric_leaves(story), f"{cited} stories.{self.story}")
+                self._lens_names = {cited, pathlib.Path(cited).name}
+                break
+            self._files["lens"] = values
+        return self._files["lens"]
+
+    def ledger_values(self, opp_id):
+        if opp_id not in self._ledger:
+            values = TextNumberSet()
+            record = None
+            if self.ledger is not None:
+                record = next((opp for opp in self.ledger.data.get("opportunities", [])
+                               if opp.get("id") == opp_id), None)
+            if record is not None:
+                values.add(numeric_leaves(record, ROW_TEXT_LEDGER_SKIPPED_KEYS), f"ledger #{opp_id:03d}")
+                for key in ROW_TEXT_LEDGER_TEXT_KEYS:
+                    for text in string_leaves(record.get(key)):
+                        values.add([number[1] for number in row_text_scoped_numbers(
+                            re.sub(r"(?<=\d),(?=\d{3}\b)", "", text))])
+            self._ledger[opp_id] = values
+        return self._ledger[opp_id]
+
+    def floors(self):
+        values = TextNumberSet()
+        floor, _ = story_floor_pct(self.config, self.story)
+        qualification, _ = qualification_floor_pct(self.config, self.story)
+        mde = ((self.config.get("calibration") or {}).get("story_mde_pct") or {}).get(self.story)
+        values.add([self.base_floor, floor, max(floor, self.base_floor), qualification,
+                    max(qualification, self.base_floor)], f"story floor {max(floor, self.base_floor):.3f}%")
+        if isinstance(mde, (int, float)):
+            values.add([mde, MDE_FLOOR_MULTIPLIER * float(mde)], f"calibrated MDE {float(mde):.3f}%")
+        return values
+
+    def row_values(self, index):
+        """Values row `index` binds: its packets, shares, the floors."""
+        if index in self._rows:
+            return self._rows[index]
+        item = self.paths[index - 1]
+        values = TextNumberSet()
+        for field in ("redundancy_evidence", "cost_evidence"):
+            rel = (item.get(field) or {}).get("path") if isinstance(item.get(field), dict) else None
+            if rel:
+                values.update(self.file_values(rel))
+        shares = list(self.capture_shares.get(index, []))
+        shares += [item.get("share_pct"), self.story_shares.get(index)]
+        values.add(shares, "the row's capture shares and share_pct", share=True)
+        values.add([item.get("estimated_avoidable_fraction")], None, fraction=True)
+        values.update(self.floors())
+        self._rows[index] = values.freeze()
+        return self._rows[index]
+
+    def file_wide(self):
+        """Every packet bound anywhere in the file, every row's shares, the lens."""
+        if self._file_wide is None:
+            values = TextNumberSet()
+            for index in range(1, len(self.paths) + 1):
+                values.direct |= self.row_values(index).direct
+            values.update(self.lens_values())
+            values.sources = ["every packet bound in the file", "every row's shares"] + self.lens_values().sources
+            self._file_wide = values.freeze()
+        return self._file_wide
+
+    def cited_rows(self, index, text):
+        item = self.paths[index - 1] if index else {}
+        rows = set()
+        for match in ROW_TEXT_CITED_ROWS_RE.finditer(text):
+            for part in re.split(r"\s*(?:,|and)\s*", match.group(1)):
+                bounds = [int(b) for b in re.split(r"\s*(?:[-\u2013]|\.\.)\s*", part) if b.strip().isdigit()]
+                if len(bounds) == 2 and bounds[0] <= bounds[1] and bounds[1] - bounds[0] < 1000:
+                    rows.update(range(bounds[0], bounds[1] + 1))
+                elif bounds:
+                    rows.add(bounds[0])
+        wrapped = item.get("wrapper_of")
+        if isinstance(wrapped, (list, tuple)):
+            rows.update(int(t) for t in wrapped if isinstance(t, int) or str(t).isdigit())
+        elif isinstance(wrapped, int):
+            rows.add(wrapped)
+        owner = item.get("covered_by")
+        if owner:
+            rows.update(i for i, other in enumerate(self.paths, 1) if other.get("mechanism_key") == owner)
+        return {row for row in rows if 1 <= row <= len(self.paths) and row != index}
+
+    def text_values(self, index, text):
+        """(TextNumberSet list, wide) for one string: the row's values, and
+        what the string itself names or cites."""
+        sets = [self.row_values(index)] if index else []
+        named = TextNumberSet()
+        for match in ROW_TEXT_NAMED_FILE_RE.finditer(text):
+            named.update(self.file_values(match.group(1)))
+        lens = self.lens_values()
+        if any(name in text for name in self._lens_names):
+            named.update(lens)
+        for match in re.finditer(r"#(\d+)", text):
+            named.update(self.ledger_values(int(match.group(1))))
+        sets.append(named.freeze())
+        if index and index not in self._cited:
+            self._cited[index] = self.cited_rows(
+                index, " ".join(text for _, text in row_text_fields(self.paths[index - 1])))
+        cited = self._cited[index] if index else set()
+        sets.extend(self.row_values(row) for row in sorted(cited))
+        wide = index is None or bool(cited)
+        if wide:
+            sets.append(self.file_wide())
+            if index is None:
+                sets.extend(self.row_values(row) for row in range(1, len(self.paths) + 1))
+        return sets, wide
+
+    def problems(self, index, field, text):
+        out = []
+        sets, wide = self.text_values(index, text)
+        numbers = row_text_scoped_numbers(text)
+        allowed = [any(values.allows(value, decimals) for values in sets)
+                   for _, value, decimals, _ in numbers]
+        for position, (token, value, decimals, offset) in enumerate(numbers):
+            if allowed[position] or clause_sum_allows(text, numbers, allowed, position):
+                continue
+            sources = []
+            for values in sets[:3]:
+                sources.extend(s for s in values.sources if s not in sources)
+            out.append(
+                f"`{field}` quotes {token}, which is in none of the files it may come from "
+                f"(checked at its printed precision against: {'; '.join(sources[:8]) or 'nothing bound'}"
+                + ("; every packet bound in the file and the lens" if wide else "")
+                + "; and share x fraction products of those)")
+        if self.tree is not None:
+            out.extend(f"`{field}` {problem}" for problem in citation_problems(text, self.tree))
+        elif SOURCE_CITATION_RE.search(text):
+            out.append(f"`{field}` cites {SOURCE_CITATION_RE.search(text).group(0)!r}, but the profile's "
+                       f"repository_root {self.repository_root!r} is not a git checkout on this host; "
+                       "the gate cannot read the line it cites")
+        return out
+
+    def row_problems(self, index):
+        if index not in self._checked:
+            item = self.paths[index - 1]
+            found = []
+            for field, text in row_text_fields(item):
+                found.extend(self.problems(index, field, text))
+            self._checked[index] = found
+        return self._checked[index]
+
+    def accounting_problems(self):
+        if "accounting" not in self._checked:
+            text = self.accounting_evidence
+            self._checked["accounting"] = (self.problems(None, "accounting_evidence", text)
+                                           if isinstance(text, str) else [])
+        return self._checked["accounting"]
+
+
+def row_text_sources(ledger, parent, profile, result, story_shares, config, base_floor, campaign_dir):
+    """The RowTextSources of a decomposition under review (decompose and
+    the pre-check build it the same way)."""
+    measured = {tuple(ref[k] for k in ("capture_id", "entry_key", "hotspot_key")): ref.get("measured_share_pct")
+                for ref in parent.get("expected_work_refs", [])}
+    capture_shares = {}
+    for index, item in enumerate(result["paths"], 1):
+        for ref in item.get("work_refs") or []:
+            key = tuple(ref.get(k) for k in ("capture_id", "entry_key", "hotspot_key"))
+            if ref.get("accounting") == "primary" and measured.get(key) is not None:
+                capture_shares.setdefault(index, []).append(measured[key])
+    return RowTextSources(
+        result["paths"], campaign_dir, story=parent.get("target_story"), config=config,
+        base_floor=base_floor, story_shares=story_shares, capture_shares=capture_shares,
+        profile=profile, ledger=ledger, accounting_evidence=result.get("accounting_evidence"))
+
+
+def enforce_row_text_sources(paths, sources):
+    """Every number and every source citation in a row's text comes from a
+    file.
+
+    The operator writes the invariant, the investigation, the existing
+    mechanism, the rationale and the narrative of `accounting_evidence`;
+    `decompose-draft` writes the rest from files. Round 147 (#389): 83 of
+    97 six-decimal cost figures were in none of the row's packets (row 24
+    quoted ResolveStyle at 0.819742 where its cost packet says 0.801565), a
+    repeat time of 0.2162 where the packet says 0.0, and 98 of 253
+    `file:line` citations named the wrong line, all in operator-written
+    text. A number (two or more decimals, or an integer of four or more
+    digits) must print, rounded or truncated at its precision, as a value
+    of the sources RowTextSources lists; a citation must resolve to one
+    file whose line N (within 3) holds the method the clause names. The
+    first violating row is refused; the pre-check lists every one.
+    """
+    skipped = (RULE_SKIPPED, CARRIED_ROW_DISPOSITION, DRAFT_UNDECIDED)
+    for index, item in enumerate(paths, 1):
+        if item.get("disposition") in skipped:
+            continue
+        problems = sources.row_problems(index)
+        if problems:
+            anchor = str(sources.paths[index - 1].get("anchor") or "")
+            raise CampaignError(
+                f"Path {index} ({anchor[:80]!r}) text states what no file says: "
+                + "; ".join(problems[:4])
+                + (f"; and {len(problems) - 4} more" if len(problems) > 4 else "")
+                + ". Quote numbers from the row's `facts` in <paths>.todo.json or from the "
+                "files it binds (decompose-draft, `campaign.py packet <path>`), and cite "
+                "`file:line` from `facts` or from the tree at the profiled revision.")
+    problems = sources.accounting_problems()
+    if problems:
+        raise CampaignError(
+            "accounting_evidence states what no file says: " + "; ".join(problems[:6])
+            + (f"; and {len(problems) - 6} more" if len(problems) > 6 else "")
+            + ". Its numbers come from the bound packets, the rows' shares, the lens and "
+            "the ledger records it names by #id.")
 
 
 ROW_TEXT_TEMPLATE_RE = re.compile(
@@ -10847,6 +11652,8 @@ def cmd_decompose(args):
             judged, relevance_rows, story_shares, ledger.data["config"],
             floor, parent.get("target_story"), ledger.dir,
         )
+        enforce_row_text_sources(judged, row_text_sources(
+            ledger, parent, source_profile, result, story_shares, ledger.data["config"], floor, ledger.dir))
         enforce_mandatory_invariants(
             judged, bound)
         enforce_row_text_distinct(result["paths"])
@@ -13927,14 +14734,16 @@ RULE_SKIPPED = "skipped-by-precheck"
 RULE_PATH_RE = re.compile(r"Path (\d+)")
 
 
-def run_rule_all(problems, rule, paths, *args, limit=60, **kwargs):
+def run_rule_all(problems, rule, paths, *args, limit=60, neutralize_mechanisms=False, **kwargs):
     """Run a row-loop rule until it stops refusing. A rule raises at its first
     violating row; here that row is neutralized for the next pass (its
     disposition replaced by a value every rule skips) so every violating row
     surfaces in one pass instead of one per staging round (round 34: 37
     revisions of one file). Mechanism rows are not neutralized: rows covered
-    by them would refuse for that reason alone. The pre-check and
-    decompose-draft drive the gate's rules with it."""
+    by them would refuse for that reason alone; a rule that judges each row
+    on its own (the row-text sources rule) passes neutralize_mechanisms so
+    every row is listed. The pre-check and decompose-draft drive the gate's
+    rules with it."""
     work = list(paths)
     seen = set()
     for _ in range(limit):
@@ -13950,7 +14759,7 @@ def run_rule_all(problems, rule, paths, *args, limit=60, **kwargs):
             if index in seen or not 1 <= index <= len(work):
                 return None
             row = work[index - 1]
-            if row.get("disposition") in ("novel", "known", "algorithmic"):
+            if row.get("disposition") in ("novel", "known", "algorithmic") and not neutralize_mechanisms:
                 return None
             seen.add(index)
             neutral = dict(row)
@@ -14260,6 +15069,64 @@ def draft_mandatory_evidence(item, choice, share, floor, story, source, citation
     if tail:
         kept.append(tail)
     return " ".join(kept)
+
+
+DRAFT_FACTS_TOP = 6
+
+
+def draft_row_facts(row, capture_shares, floor, floor_basis, mde, definition, campaign_dir,
+                    function_share=None):
+    """The numbers and the code location a row's operator text may quote,
+    read from the files the draft bound (exactly as stored) and from the
+    ledger: the redundancy packet's counts, fractions and bounds, the cost
+    packet's top children and leaves, the row's share in each capture, the
+    floor and MDE, the anchor's definition as `file:line`, and for a row
+    that may become a candidate the function share x supported fraction.
+    Every number here passes the row-text sources rule
+    (enforce_row_text_sources) when it is quoted."""
+    import redundancy_evidence
+    facts = {"share_pct": row.get("share_pct"), "capture_shares_pct": dict(capture_shares),
+             "floor_pct": floor, "floor_basis": floor_basis}
+    if mde is not None:
+        facts["calibrated_mde_pct"] = mde
+    if definition:
+        facts["definition"] = definition
+    rel = (row.get("redundancy_evidence") or {}).get("path")
+    packet = None
+    if rel:
+        try:
+            packet = redundancy_evidence.load_packet(pathlib.Path(campaign_dir) / rel)
+        except (ValueError, OSError):
+            packet = None
+    if packet is not None:
+        supported = redundancy_evidence.supported_avoidable_fraction(packet)
+        facts["redundancy_packet"] = {
+            "path": rel,
+            **{key: packet.get(key) for key in (
+                "site", "probe_symbol", "calls_per_repetition_mean", "repetitions", "calls_total",
+                "applicable_fraction", "repeat_fraction", "applicable_time_fraction",
+                "repeat_time_fraction", "nested_calls_fraction")},
+            "supported_fraction": supported,
+            "applicable_bound": redundancy_evidence.hypothesis_bound(packet, "applicable"),
+            "repeat_bound": redundancy_evidence.hypothesis_bound(packet, "repeat"),
+        }
+        if function_share is not None and supported is not None:
+            facts["function_impact"] = {
+                "function": packet.get("probe_symbol"), "function_share_pct": function_share,
+                "supported_fraction": supported, "impact_pct": function_share * float(supported)}
+    rel = (row.get("cost_evidence") or {}).get("path")
+    if rel:
+        try:
+            cost = json.loads((pathlib.Path(campaign_dir) / rel).read_text())
+        except (OSError, ValueError):
+            cost = None
+        if isinstance(cost, dict):
+            facts["cost_packet"] = {
+                "path": rel, "row_share_pct": cost.get("row_share_pct"),
+                **{table: [{key: entry.get(key) for key in ("frame", "fraction_of_row", "share_pct")}
+                           for entry in (cost.get(table) or [])[:DRAFT_FACTS_TOP]]
+                   for table in ("children", "leaves")}}
+    return facts
 
 
 def cmd_decompose_draft(args):
@@ -14587,6 +15454,8 @@ def cmd_decompose_draft(args):
     if lens_rel:
         citations.append(lens_rel)
 
+    story_mde = ((config.get("calibration") or {}).get("story_mde_pct") or {}).get(story)
+
     def source_for(item):
         location = source_of.get(anchor_function(item["anchor"]))
         if not location:
@@ -14728,6 +15597,22 @@ def cmd_decompose_draft(args):
         if entry["notes"]:
             record["notes"] = entry["notes"]
         record["todo"] = todo
+        if todo:
+            captures = {}
+            for ref in item.get("work_refs") or []:
+                key = tuple(ref.get(k) for k in ("capture_id", "entry_key", "hotspot_key"))
+                if ref.get("accounting") == "primary" and key in measured:
+                    captures[ref["capture_id"]] = measured[key]
+            symbol = None
+            if bound_rel:
+                try:
+                    symbol = str(redundancy_evidence.load_packet(root / bound_rel).get("probe_symbol") or "").strip()
+                except (ValueError, OSError):
+                    symbol = None
+            record["facts"] = draft_row_facts(
+                item, captures, floor, floor_basis, story_mde, source_for(item), root,
+                function_share=impacts[symbol][0] if symbol and symbol in impacts and entry["state"] == "undecided"
+                else None)
         todo_rows.append(record)
 
     # ---- (e) accounting_evidence from computed facts ----
