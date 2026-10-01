@@ -5353,6 +5353,44 @@ def row_text_sources(ledger, parent, profile, result, story_shares, config, base
         profile=profile, ledger=ledger, accounting_evidence=result.get("accounting_evidence"))
 
 
+LEDGER_KEY_MENTION_RE = re.compile(
+    r"#(\d{2,5})((?:\s+[A-Za-z][\w-]*){0,5})\s*\(\s*`?([a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*)")
+
+
+def enforce_ledger_key_mentions(result, ledger):
+    """A mechanism key written next to its ledger id is the ledger's key.
+
+    Round 151/152 (#378): the accounting named six parked or candidate
+    mechanisms as `#232 (style/deferred-construction)` and the like, keys
+    the ledger never held (#232 is css/element-matched-rules-cache). The
+    number and citation rules do not read keys. Every `#N (key` in row text
+    or `accounting_evidence` (up to five words between the id and the
+    parenthesis) must name opportunity N's own mechanism key."""
+    texts = [("accounting_evidence", result.get("accounting_evidence"))]
+    for index, item in enumerate(result.get("paths") or [], 1):
+        if isinstance(item, dict):
+            texts.extend((f"path {index}", text) for text in row_text_strings(item))
+    wrong = []
+    for where, text in texts:
+        if not isinstance(text, str):
+            continue
+        for match in LEDGER_KEY_MENTION_RE.finditer(text):
+            opp_id, key = int(match.group(1)), match.group(3)
+            try:
+                opp = ledger.opp(opp_id)
+            except (CampaignError, KeyError, IndexError):
+                wrong.append(f"{where}: #{opp_id} ({key}) names no opportunity on the ledger")
+                continue
+            actual = opp.get("mechanism_key")
+            if actual and actual != key:
+                wrong.append(f"{where}: #{opp_id} ({key}) but the ledger's key for #{opp_id} is {actual}")
+    if wrong:
+        raise CampaignError(
+            f"{len(wrong)} mechanism key(s) written next to a ledger id are not that id's key: "
+            + "; ".join(wrong[:12])
+            + ". Quote the key from `campaign.py show --opp <id>` or leave it out.")
+
+
 def enforce_row_text_sources(paths, sources):
     """Every number and every source citation in a row's text comes from a
     file.
@@ -11654,6 +11692,7 @@ def cmd_decompose(args):
         )
         enforce_row_text_sources(judged, row_text_sources(
             ledger, parent, source_profile, result, story_shares, ledger.data["config"], floor, ledger.dir))
+        enforce_ledger_key_mentions(result, ledger)
         enforce_mandatory_invariants(
             judged, bound)
         enforce_row_text_distinct(result["paths"])

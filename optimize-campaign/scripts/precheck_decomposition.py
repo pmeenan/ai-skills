@@ -151,6 +151,8 @@ def main(campaign_dir, opp_id, children):
     # Judged per row once: every row and then accounting_evidence are listed.
     run_all(problems, lambda w: campaign.enforce_row_text_sources(w, text_sources), judged,
             limit=len(judged) + 2, neutralize_mechanisms=True)
+    try: campaign.enforce_ledger_key_mentions(result, ledger)
+    except campaign.CampaignError as e: problems.append(str(e))
     measured_rows = {i for i, p in enumerate(result["paths"], 1)
                      if p["disposition"] in ("mandatory", "no-qualifying-mechanism")
                      and shares.get(i, 0.0) >= story_floor and p.get("redundancy_evidence")}

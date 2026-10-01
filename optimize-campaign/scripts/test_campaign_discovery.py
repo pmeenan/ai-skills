@@ -2245,6 +2245,28 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
                 profile=profile, ledger=ledger, accounting_evidence=accounting)
         return row, sources
 
+    def test_a_key_written_next_to_a_ledger_id_is_that_ids_key(self):
+        """Round 152 (#378): `#232 (style/deferred-construction)` named a key
+        #232 never had; the key next to an id must be the ledger's."""
+        class Stub:
+            def opp(self, opp_id):
+                keys = {232: "css/element-matched-rules-cache", 378: None}
+                if opp_id not in keys:
+                    raise campaign.CampaignError("unknown")
+                return {"id": opp_id, "mechanism_key": keys[opp_id]}
+        ok = {"accounting_evidence": "parked #232 (css/element-matched-rules-cache) and area #378 (a-b-c)",
+              "paths": [{"invariant": "see #232 (`css/element-matched-rules-cache`)"}]}
+        campaign.enforce_ledger_key_mentions(ok, Stub())
+        bad = {"accounting_evidence": "parked opportunities #232 (style/deferred-construction)", "paths": []}
+        with self.assertRaisesRegex(campaign.CampaignError, "ledger's key for #232 is css/element-matched-rules-cache"):
+            campaign.enforce_ledger_key_mentions(bad, Stub())
+        worded = {"accounting_evidence": "", "paths": [{"invariant": "#232 matched rules cache (style/x)"}]}
+        with self.assertRaisesRegex(campaign.CampaignError, "path 1"):
+            campaign.enforce_ledger_key_mentions(worded, Stub())
+        unknown = {"accounting_evidence": "#999 (a/b)", "paths": []}
+        with self.assertRaisesRegex(campaign.CampaignError, "names no opportunity"):
+            campaign.enforce_ledger_key_mentions(unknown, Stub())
+
     def test_row_text_numbers_come_from_the_files_the_row_binds(self):
         row, sources = self.text_sources_fixture()
         # Packet values as stored, x100 and their complements, the capture
