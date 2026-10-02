@@ -432,6 +432,32 @@ The gate rejects a mechanism artifact whose benchmark or metric model differs
 from the campaign ledger. An oracle is a ceiling, not permission to alter
 semantics.
 
+**Suite route.** A mechanism whose causal evidence is a suite gain with no
+single story above its own floor (the small things that add up) sizes on a
+full-suite paired oracle A/B instead (user decision 2026-10-01):
+
+```bash
+python3 .agents/skills/optimize-campaign/scripts/campaign.py advance \
+  --opp <id> --to sized --suite-oracle-manifest <ab-suite/ab_results_manifest.json> \
+  --gate-skeptic <sizing-skeptic.json> --gate-adversary <sizing-adversary.json>
+```
+
+The manifest is a `run_ab_benchmark.py` feature A/B (the oracle feature
+toggled, at least 32 blocks, the campaign surface) covering every calibrated
+story; the gate recomputes it from its raw blocks and requires the suite delta
+at or above the suite floor (`2 x` calibrated suite MDE) with a 95% interval
+above zero. Its skill tree follows the local score-receipt lineage rule (run
+`record-skill-lineage --commit <ai-skills sha>` for a manifest measured under
+an earlier bound tree). The mechanism's viable `opportunity_budget` must have
+a row whose `artifact_sha256` is this manifest's digest, and both gate reviews
+attest `sha256:<manifest digest>` (`sha256sum` of the file; the sizing gate
+has no scaffold, the reviewer writes the playbook's output contract). The
+mechanism records `qualification_scope: suite`, `ceiling_pct` = the suite
+delta, and `sizing_evidence.route: suite-oracle`; its local landing receipt is
+then decided on the suite score rather than its target story. Candidate
+verification is unchanged: `mechanism_evidence.py compare` still proves the
+work removal on the target story; it carries no floor.
+
 ### 4. Implement and verify one invariant
 
 Advance to `implementing`, preserve the temporary counters, and repeat the

@@ -36,7 +36,9 @@ unbiased story is not a failure, its MDE simply raises its floor. The command re
     qualification floor(story) = max(share floor, 2 × MDE(story))
 
 The floor applies to a proposal's estimated target-story impact at
-`decompose` and to the sizing lower bound at `advance --to sized`. A mechanism
+`decompose` and to the sizing lower bound at `advance --to sized` (a mechanism
+sized on the suite route, `--suite-oracle-manifest`, clears the suite floor
+`2 × suite MDE` with a full-suite paired oracle instead; see the runbook). A mechanism
 that cannot plausibly move its story by twice the story's MDE cannot be read
 by the fixed-plan measurement, so implementing it only spends host time. On
 the Linux box story MDEs at 32 blocks run from about 0.2% to 2%, which makes

@@ -161,7 +161,9 @@ story where it is largest), its rows the frames beneath it in that story's
 stacks at or above the suite floor. A suite area decomposes like any other;
 its floor is the suite floor (`area_config`), so its rows close by count or
 qualify at that floor, and its mechanisms are sized across the suite by the
-union like every other. Functions the campaign has already judged (an anchor
+union like every other. A mechanism whose suite gain is proven by a
+full-suite paired oracle rather than a story-level sizing advances with
+`advance --to sized --suite-oracle-manifest` (campaign-runbook.md). Functions the campaign has already judged (an anchor
 of a row at or above its area's floor) or already probes are listed as such
 and not reopened.
 

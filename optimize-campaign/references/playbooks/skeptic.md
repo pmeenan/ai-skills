@@ -14,7 +14,7 @@ For `review_kind: mechanism`, open the staged diff, dossier, digest-bound
 counter logs, raw baseline/candidate files, and derived artifacts. Verify:
 
 - `hot_path_reality`: exact-score renderer main-thread profile or counters observed the path, on the campaign's rendering surface;
-- `floor_cleared`: the sizing lower bound exceeds the target story's qualification floor recorded in the sizing artifact;
+- `floor_cleared`: the sizing lower bound exceeds the target story's qualification floor recorded in the sizing artifact (a mechanism with `sizing_evidence.route: suite-oracle`: the recorded suite delta clears `suite_floor_pct` and its 95% interval excludes zero, re-read from the manifest);
 - `redundancy_supported`: for Layer 1/2 mechanisms, the bound redundancy packet's applicable/repeat fraction supports the claimed avoidable fraction;
 - `raw_evidence_opened`: raw files and digests match derived evidence;
 - `applicability_measured`: calls and applicable calls were counted;

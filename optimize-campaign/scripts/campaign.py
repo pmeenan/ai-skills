@@ -32,7 +32,9 @@ mechanism keys remain in the ledger so follow-on profiles can revisit an area
 without retrying paths already proved invalid.
 
 Gate requirements are enforced by `advance`:
-  -> sized:    --evidence-manifest from mechanism_evidence.py
+  -> sized:    --evidence-manifest from mechanism_evidence.py, or
+               --suite-oracle-manifest (full-suite paired oracle A/B whose
+               suite gain clears the suite floor)
   -> review:   --build-manifest, --test-manifest, and --verification-manifest
   -> landed:   --commit, plus recorded PASS verdicts from both skeptic and
                adversary reviews for the current review round.
@@ -7225,7 +7227,10 @@ def verify_local_score_receipt(config, path, opp, repo_root):
         if arm_provenance.get("build_role") != "release" or arm_provenance.get("symbol_level") != "0":
             raise ValueError(f"{path} arm {arm} is not the symbol-free release build")
     validate_and_recompute_checkpoint(manifest, path, config)
-    primary = [opp["target_story"]] if opp.get("target_story") else "suite"
+    # A mechanism sized on the suite route has no story above its floor; its
+    # landing primary is the suite score it was sized on.
+    primary = ([opp["target_story"]] if opp.get("target_story")
+               and sizing_route(opp) != SUITE_ORACLE_ROUTE else "suite")
     plan = fixed_plan(config, primary, manifest["blocks"])
     decision = statistics_policy.evaluate(manifest, plan)
     return {
@@ -10803,6 +10808,114 @@ def cmd_add(args):
     return 0
 
 
+SUITE_ORACLE_ROUTE = "suite-oracle"
+
+
+def sizing_route(opp):
+    """How a sized mechanism was sized: "suite-oracle" for a full-suite
+    paired oracle A/B, None for a mechanism_evidence.py summarize artifact."""
+    evidence = opp.get("sizing_evidence")
+    return evidence.get("route") if isinstance(evidence, dict) else None
+
+
+def load_suite_oracle_manifest(config, path, repo_root=None):
+    """A full-suite paired oracle A/B (run_ab_benchmark.py) as sizing evidence.
+
+    The suite route sizes a mechanism whose causal evidence is a suite gain
+    with no single story above its own floor (user decision 2026-10-01):
+    the runner-owned manifest is recomputed from its raw blocks (as landing
+    receipts and checkpoints are), it must measure every calibrated story,
+    and its suite delta must clear the suite floor with a 95% interval
+    above zero. Skill-tree provenance follows the local score-receipt rule
+    (`check_skill_lineage`). Returns (manifest, sha256, sizing record).
+    """
+    path = pathlib.Path(path)
+    label = f"suite-oracle manifest {path}"
+    try:
+        manifest = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise CampaignError(f"Cannot read {label}: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise CampaignError(f"{label} must be one JSON object")
+    if manifest.get("mode") != "ab":
+        raise CampaignError(f"{label} is not a feature A/B (mode={manifest.get('mode')!r})")
+    if manifest.get("benchmark") != config["benchmark"]:
+        raise CampaignError(
+            f"{label} measured {manifest.get('benchmark')!r}, not {config['benchmark']!r}")
+    feature = manifest.get("feature")
+    if not isinstance(feature, str) or not feature.strip():
+        raise CampaignError(f"{label} names no oracle feature")
+    blocks = manifest.get("blocks")
+    if isinstance(blocks, bool) or not isinstance(blocks, int) or blocks < MIN_SCORE_BLOCKS:
+        raise CampaignError(f"{label} has fewer than {MIN_SCORE_BLOCKS} blocks")
+    environment = manifest.get("capture_environment")
+    if not isinstance(environment, dict):
+        raise CampaignError(f"{label} has no capture environment")
+    require_campaign_display(config, environment.get("display"), label)
+    stories = suite_stories(config)
+    if not stories:
+        raise CampaignError(
+            "the suite route needs an A/A calibration (`campaign.py calibrate`) naming the suite's stories")
+    per_story = manifest.get("per_story")
+    missing = [s for s in stories if not isinstance((per_story or {}).get(s), dict)]
+    if not isinstance(per_story, dict) or missing:
+        raise CampaignError(
+            f"{label} is not a full-suite run: per_story lacks {len(missing)} of the "
+            f"{len(stories)} calibrated stories ({', '.join(missing[:5])}"
+            + ("" if len(missing) <= 5 else f", +{len(missing) - 5} more") + ")")
+    floor, floor_basis = suite_floor_pct(config)
+    if floor is None:
+        raise CampaignError(f"the suite route needs a calibrated suite floor ({floor_basis})")
+    # Runner-owned raw blocks, recomputed; the recorded suite delta and CI
+    # must be the raw recomputation.
+    validate_and_recompute_checkpoint(manifest, path, config)
+    adapter = benchmark_adapters.get_adapter(config["benchmark"])
+    per_story_delta = {}
+    for story in stories:
+        computed = recompute_targeted_story_statistics(
+            manifest["block_details"], [story], adapter=adapter)["targeted_delta_pct"]
+        recorded = per_story[story].get("delta_pct")
+        try:
+            agrees = abs(float(recorded) - computed) <= 1e-9
+        except (TypeError, ValueError):
+            agrees = False
+        if not agrees:
+            raise CampaignError(f"{label} per_story {story} delta does not match raw recomputation")
+        per_story_delta[story] = computed
+    delta = require_finite_number(manifest.get("geometric_delta_pct"), "suite geometric_delta_pct")
+    ci = manifest.get("ci_95_pct")
+    if not isinstance(ci, list) or len(ci) != 2:
+        raise CampaignError(f"{label} has no suite 95% interval")
+    ci = [require_finite_number(v, "suite ci_95_pct") for v in ci]
+    if delta < floor:
+        raise CampaignError(
+            f"{label}: suite gain {delta:+.3f}% is below the suite floor {floor:.3f}% ({floor_basis})")
+    if ci[0] <= 0:
+        raise CampaignError(
+            f"{label}: suite gain {delta:+.3f}% is not significant (95% CI [{ci[0]:.3f}, {ci[1]:.3f}] "
+            "includes zero)")
+    try:
+        lineage = check_skill_lineage(
+            config, manifest.get("skill_tree_sha256"), repo_root or ".", path)
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        raise CampaignError(f"suite-oracle skill tree: {exc}") from exc
+    digest = sha256_file(path)
+    record = {
+        "route": SUITE_ORACLE_ROUTE,
+        "manifest": str(path.resolve()),
+        "manifest_sha256": digest,
+        "feature": feature,
+        "suite_delta_pct": delta,
+        "suite_ci95_pct": ci,
+        "suite_floor_pct": floor,
+        "suite_floor_basis": floor_basis,
+        "per_story_delta_pct": per_story_delta,
+        "skill_tree_sha256": manifest.get("skill_tree_sha256"),
+        **({"skill_lineage": lineage} if lineage else {}),
+    }
+    return manifest, digest, record
+
+
 def cmd_advance(args):
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     opp = ledger.opp(args.opp)
@@ -10821,12 +10934,57 @@ def cmd_advance(args):
             f"Allowed from {src}: {sorted(FORWARD_TRANSITIONS.get(src, set()))}"
         )
     require_not_on_hold(ledger, dst)
+    suite_manifest = getattr(args, "suite_oracle_manifest", None)
+    if suite_manifest and dst != "sized":
+        raise CampaignError("--suite-oracle-manifest applies only to -> sized")
     if dst == "sized":
-        if not test_legacy:
+        if suite_manifest and args.evidence_manifest:
+            raise CampaignError(
+                "pass either --evidence-manifest (one-story twin sizing) or "
+                "--suite-oracle-manifest (full-suite paired oracle), not both")
+        if not test_legacy or suite_manifest:
             from opportunity_budget import rank
-            if not opp.get("opportunity_budget") or not rank(opp["opportunity_budget"])["viable_with_budget"]:
+            try:
+                viable = bool(opp.get("opportunity_budget")) and rank(
+                    opp["opportunity_budget"])["viable_with_budget"]
+            except (ValueError, KeyError, TypeError) as exc:
+                raise CampaignError(f"sizing: the opportunity_budget does not rank: {exc}") from exc
+            if not viable:
                 raise CampaignError("sizing requires a causal opportunity_budget that clears the calibrated measurement budget")
-        if args.evidence_manifest:
+        if suite_manifest:
+            config = ledger.data["config"]
+            _, digest, record = load_suite_oracle_manifest(
+                config, suite_manifest, find_repo_root(pathlib.Path.cwd()))
+            rows = [
+                w.get("name") for w in opp["opportunity_budget"].get("workloads") or []
+                if isinstance(w, dict) and w.get("artifact_sha256") == digest
+            ]
+            if not rows:
+                raise CampaignError(
+                    f"#{opp['id']:03d}'s opportunity_budget names no workload row bound to "
+                    f"this manifest (artifact_sha256 {digest[:12]}); the budget and the sizing "
+                    "evidence must be the same oracle run")
+            record["budget_rows"] = len(rows)
+            record["prior_qualification_scope"] = opp.get("qualification_scope")
+            opp["qualification_scope"] = "suite"
+            opp["ceiling_pct"] = record["suite_delta_pct"]
+            opp["evidence"] = suite_manifest
+            opp["sizing_evidence"] = record
+            opp["sizing_evidence_sha256"] = digest
+            ledger.record(opp, (
+                f"sized on the suite route: {record['feature']} suite "
+                f"{record['suite_delta_pct']:+.3f}% [{record['suite_ci95_pct'][0]:.3f}, "
+                f"{record['suite_ci95_pct'][1]:.3f}] vs suite floor "
+                f"{record['suite_floor_pct']:.3f}% ({record['suite_floor_basis']}); "
+                f"manifest {digest[:12]}, {len(rows)} budget row(s) bound"))
+            gate_challenge_record = (
+                "sizing",
+                validate_gate_challenges(
+                    args, gate="sizing", artifact_digests=[digest],
+                    campaign_dir=ledger.dir,
+                ),
+            )
+        elif args.evidence_manifest:
             evidence, evidence_digest = load_gate_evidence(
                 args.evidence_manifest, opp=opp, phase="sizing",
                 benchmark=ledger.data["config"]["benchmark"],
@@ -10886,7 +11044,8 @@ def cmd_advance(args):
         else:
             raise CampaignError(
                 "-> sized requires --evidence-manifest from "
-                "mechanism_evidence.py summarize; manual ceilings are rejected"
+                "mechanism_evidence.py summarize or --suite-oracle-manifest "
+                "(a full-suite paired oracle A/B); manual ceilings are rejected"
             )
     if dst == "review":
         repo_root = find_repo_root(pathlib.Path.cwd())
@@ -12439,6 +12598,9 @@ def cmd_reopen(args):
             "evidence": opp.get("evidence"),
             "ts": utc_now(),
         })
+        if sizing_route(opp) == SUITE_ORACLE_ROUTE:
+            opp["qualification_scope"] = opp["sizing_evidence"].get(
+                "prior_qualification_scope")
         for field, value in (
             ("ceiling_pct", None), ("evidence", None), ("tests", None),
             ("commit", None), ("revert_commit", None), ("reviews", {}),
@@ -13622,6 +13784,17 @@ def cmd_audit(args):
         ):
             path = opp.get(path_field)
             if not isinstance(path, str):
+                continue
+            if phase == "sizing" and sizing_route(opp) == SUITE_ORACLE_ROUTE:
+                # The suite route's evidence is a run_ab manifest, re-verified
+                # under the gate's own rules (lineage-accepted skill tree).
+                try:
+                    _, digest_value, _ = load_suite_oracle_manifest(
+                        ledger.data["config"], path, repo_root)
+                    if digest_value != opp.get("sizing_evidence_sha256"):
+                        problems.append(f"opportunity {opp['id']} sizing: suite-oracle manifest changed")
+                except CampaignError as exc:
+                    problems.append(f"opportunity {opp['id']} sizing: {exc}")
                 continue
             try:
                 evidence, _ = load_gate_evidence(
@@ -16059,6 +16232,14 @@ def build_parser():
         "--evidence-manifest",
         default=None,
         help="Passing sizing JSON emitted by mechanism_evidence.py summarize",
+    )
+    p.add_argument(
+        "--suite-oracle-manifest",
+        default=None,
+        help="Sizing on the suite route: a full-suite run_ab_benchmark.py paired "
+             "oracle A/B manifest whose suite gain clears the suite floor with a "
+             "95%% interval above zero; the mechanism's opportunity_budget must "
+             "name it (artifact_sha256). Exclusive with --evidence-manifest",
     )
     p.add_argument(
         "--verification-manifest",

@@ -1829,7 +1829,7 @@ class EnforcementRegressionTest(unittest.TestCase):
             check=True, capture_output=True, text=True,
         ).stdout.strip()
 
-    def checkpoint_manifest(self, stories="all", benchmark="speedometer3"):
+    def checkpoint_manifest(self, stories="all", benchmark="speedometer3", b_factor=None):
         adapter = campaign.benchmark_adapters.get_adapter(benchmark)
         evidence_name = "ab_evidence_" + "a" * 24
         evidence = self.repo / evidence_name
@@ -1854,7 +1854,8 @@ class EnforcementRegressionTest(unittest.TestCase):
                 # log-ratio reducer instead of a constant-data shortcut.
                 score = 100.0 + block_number * 0.07 + position * 0.013
                 if arm == "b":
-                    score *= 1.004 + (block_number % 5) * 0.0001
+                    score *= (b_factor(block_number) if b_factor
+                              else 1.004 + (block_number % 5) * 0.0001)
                 story_totals = {
                     story: (100000.0 + offset * 1000.0) / score
                     for offset, story in enumerate(selected_workloads)
@@ -2812,6 +2813,235 @@ class CalibrationFloorTest(unittest.TestCase):
         self.assertEqual(1, campaign.main([
             "--dir", str(self.dir), "calibrate", "--manifest", str(good),
             "--manifest", str(self.dir / "aa-wrong.json"), "--tolerance-pct", "5", "--max-mde-pct", "10"]))
+
+
+class SuiteOracleSizingTest(unittest.TestCase):
+    """`advance --to sized --suite-oracle-manifest`: a full-suite paired
+    oracle A/B whose suite gain clears the suite floor sizes a mechanism."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = pathlib.Path(self.tmp.name)
+        self.dir = self.repo / "camp"
+        self.prev_cwd = os.getcwd()
+        self.prev_test_override = os.environ.get("OPTIMIZE_CAMPAIGN_TEST_ALLOW_UNVERIFIED")
+        os.environ["OPTIMIZE_CAMPAIGN_TEST_ALLOW_UNVERIFIED"] = "1"
+        os.chdir(self.tmp.name)
+        self.assertEqual(0, self.run_cmd("init", "--name", "suite", "--share-floor", "0.5"))
+        self.assertEqual(0, self.run_cmd("add", "--anchor", "blink::Thing::Work", "--share", "0.6"))
+        self.opp = self.ledger()["opportunities"][-1]["id"]
+
+    def tearDown(self):
+        os.chdir(self.prev_cwd)
+        if self.prev_test_override is None:
+            os.environ.pop("OPTIMIZE_CAMPAIGN_TEST_ALLOW_UNVERIFIED", None)
+        else:
+            os.environ["OPTIMIZE_CAMPAIGN_TEST_ALLOW_UNVERIFIED"] = self.prev_test_override
+        self.tmp.cleanup()
+
+    def run_cmd(self, *argv):
+        return campaign.main(["--dir", str(self.dir)] + list(argv))
+
+    def ledger(self):
+        return json.loads((self.dir / "ledger.json").read_text())
+
+    def edit_ledger(self, fn):
+        data = self.ledger()
+        fn(data)
+        (self.dir / "ledger.json").write_text(json.dumps(data))
+
+    def manifest(self, b_factor=None, skill_tree="test-only"):
+        manifest, path = EnforcementRegressionTest.checkpoint_manifest(
+            self, stories="default", b_factor=b_factor)
+        adapter = campaign.benchmark_adapters.get_adapter("speedometer3")
+        manifest["feature"] = "Speedometer3OracleTest"
+        manifest["skill_tree_sha256"] = skill_tree
+        manifest["capture_environment"]["display"] = {"mode": "headless"}
+        manifest["per_story"] = {
+            story: {"delta_pct": campaign.recompute_targeted_story_statistics(
+                manifest["block_details"], [story], adapter=adapter)["targeted_delta_pct"]}
+            for story in manifest["observed_workloads"]
+        }
+        path.write_text(json.dumps(manifest))
+        return manifest, path
+
+    def calibrate(self, stories, suite_mde):
+        def apply(data):
+            data["config"]["calibration"] = {
+                "suite_mde_pct": suite_mde,
+                "story_mde_pct": {story: 1.0 for story in stories},
+            }
+        self.edit_ledger(apply)
+
+    def attach_budget(self, artifact):
+        rows = [{"name": story, "basis": "paired-oracle", "score_gain_upper_pct": 0.4,
+                 "artifact": str(artifact), "artifact_sha256": campaign.sha256_file(artifact),
+                 "source_revision": "a" * 40} for story in (TEST_STORY, "Story-00")]
+        budget = self.repo / "budget.json"
+        budget.write_text(json.dumps({
+            "suite_workload_count": 20, "confidence": 0.7, "acceptance_probability": 0.6,
+            "engineering_hours": 8, "measurement_hours": 4, "calibrated_mde_pct": 0.02,
+            "minimum_effect_pct": 0.01, "workloads": rows}))
+        self.assertEqual(0, self.run_cmd("budget", "--opp", str(self.opp), "--file", str(budget)))
+
+    def ready(self, suite_mde=0.1, b_factor=None, extra_story=None, skill_tree="test-only"):
+        manifest, path = self.manifest(b_factor, skill_tree)
+        stories = list(manifest["observed_workloads"]) + ([extra_story] if extra_story else [])
+        self.calibrate(stories, suite_mde)
+        self.attach_budget(path)
+        return manifest, path
+
+    def advance(self, path, *extra):
+        return self.run_cmd("advance", "--opp", str(self.opp), "--to", "sized",
+                            "--suite-oracle-manifest", str(path), *extra)
+
+    def opp_record(self):
+        return self.ledger()["opportunities"][-1]
+
+    def test_full_suite_gain_above_suite_floor_sizes_on_the_suite_route(self):
+        manifest, path = self.ready()
+        digest = campaign.sha256_file(path)
+        with mock.patch.object(campaign, "validate_gate_challenges",
+                               wraps=campaign.validate_gate_challenges) as gate:
+            self.assertEqual(0, self.advance(path))
+        gate.assert_called_once()
+        self.assertEqual("sizing", gate.call_args.kwargs["gate"])
+        self.assertEqual([digest], gate.call_args.kwargs["artifact_digests"])
+        opp = self.opp_record()
+        self.assertEqual("sized", opp["status"])
+        self.assertEqual("suite", opp["qualification_scope"])
+        self.assertEqual(manifest["geometric_delta_pct"], opp["ceiling_pct"])
+        self.assertEqual(str(path), opp["evidence"])
+        self.assertEqual(digest, opp["sizing_evidence_sha256"])
+        evidence = opp["sizing_evidence"]
+        self.assertEqual("suite-oracle", evidence["route"])
+        self.assertEqual(str(path.resolve()), evidence["manifest"])
+        self.assertEqual(digest, evidence["manifest_sha256"])
+        self.assertEqual("Speedometer3OracleTest", evidence["feature"])
+        self.assertEqual(manifest["ci_95_pct"], evidence["suite_ci95_pct"])
+        self.assertAlmostEqual(0.2, evidence["suite_floor_pct"])
+        self.assertIn("suite MDE", evidence["suite_floor_basis"])
+        self.assertEqual(set(manifest["observed_workloads"]), set(evidence["per_story_delta_pct"]))
+        self.assertEqual("test-only", evidence["skill_tree_sha256"])
+        self.assertTrue(any("suite route" in h["event"] for h in opp["history"]))
+        # The audit re-verifies the suite manifest instead of reading it as a
+        # summarize artifact.
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.run_cmd("audit")
+        self.assertNotIn(f"opportunity {self.opp} sizing", out.getvalue())
+        # A rejected-then-reopened mechanism gets its decomposition scope back.
+        self.edit_ledger(lambda d: d["opportunities"][-1].update(status="rejected"))
+        self.assertEqual(0, self.run_cmd(
+            "reopen", "--opp", str(self.opp), "--contradicts-prior-evidence",
+            "--reason", "a new oracle contradicts the rejection"))
+        self.assertIsNone(self.opp_record().get("qualification_scope"))
+        self.assertIsNone(self.opp_record().get("sizing_evidence"))
+
+    def test_landing_primary_is_the_suite_for_a_suite_sized_mechanism(self):
+        manifest, path = self.ready()
+        self.edit_ledger(lambda d: d["opportunities"][-1].update(target_story=TEST_STORY))
+        self.assertEqual(0, self.advance(path))
+        config = self.ledger()["config"]
+        manifest["enable_features"] = ""
+        manifest["feature"] = campaign.opp_feature_plan(config, self.opp_record())[0]
+        manifest["build_provenance"] = {
+            arm: {"git_sha": "c" * 40, "build_role": "release", "symbol_level": "0"}
+            for arm in ("a", "b")}
+        path.write_text(json.dumps(manifest))
+        receipt = campaign.verify_local_score_receipt(config, path, self.opp_record(), self.repo)
+        self.assertEqual("suite", receipt["plan"]["primary"])
+        story_sized = dict(self.opp_record(), sizing_evidence={"target_story": TEST_STORY})
+        receipt = campaign.verify_local_score_receipt(config, path, story_sized, self.repo)
+        self.assertEqual([TEST_STORY], receipt["plan"]["primary"])
+
+    def test_refuses_a_suite_gain_below_the_suite_floor(self):
+        _, path = self.ready(suite_mde=0.5)
+        self.assertEqual(1, self.advance(path))
+        self.assertEqual("candidate", self.opp_record()["status"])
+
+    def test_refuses_a_suite_gain_whose_interval_includes_zero(self):
+        # Alternating +/-1.2% around a +0.3% mean: delta clears a 0.2% floor,
+        # the interval does not exclude zero.
+        def noisy(block):
+            return 1.003 + (0.012 if block % 2 else -0.012)
+        manifest, path = self.ready(b_factor=noisy)
+        self.assertGreaterEqual(manifest["geometric_delta_pct"], 0.2)
+        self.assertLessEqual(manifest["ci_95_pct"][0], 0.0)
+        with mock.patch("sys.stderr") as err:
+            self.assertEqual(1, self.advance(path))
+        self.assertIn("includes zero", "".join(str(c) for c in err.write.call_args_list))
+        self.assertEqual("candidate", self.opp_record()["status"])
+
+    def test_refuses_a_manifest_that_misses_a_calibrated_story(self):
+        _, path = self.ready(extra_story="Missing-Story")
+        with mock.patch("sys.stderr") as err:
+            self.assertEqual(1, self.advance(path))
+        self.assertIn("not a full-suite run", "".join(str(c) for c in err.write.call_args_list))
+
+    def test_refuses_when_no_budget_row_names_the_manifest(self):
+        manifest, path = self.manifest()
+        self.calibrate(manifest["observed_workloads"], 0.1)
+        other = self.repo / "other-oracle.json"
+        other.write_text("{}")
+        self.attach_budget(other)
+        with mock.patch("sys.stderr") as err:
+            self.assertEqual(1, self.advance(path))
+        self.assertIn("names no workload row", "".join(str(c) for c in err.write.call_args_list))
+        self.assertEqual("candidate", self.opp_record()["status"])
+
+    def test_refuses_without_a_budget(self):
+        manifest, path = self.manifest()
+        self.calibrate(manifest["observed_workloads"], 0.1)
+        self.assertEqual(1, self.advance(path))
+
+    def test_refuses_both_sizing_flags(self):
+        _, path = self.ready()
+        with mock.patch("sys.stderr") as err:
+            self.assertEqual(1, self.advance(path, "--evidence-manifest", str(path)))
+        self.assertIn("not both", "".join(str(c) for c in err.write.call_args_list))
+        self.assertEqual(1, self.run_cmd(
+            "advance", "--opp", str(self.opp), "--to", "investigating",
+            "--suite-oracle-manifest", str(path)))
+
+    def test_refuses_an_unrecorded_skill_tree_and_an_edited_delta(self):
+        _, path = self.ready(skill_tree="f" * 64)
+        with mock.patch("sys.stderr") as err:
+            self.assertEqual(1, self.advance(path))
+        self.assertIn("record-skill-lineage", "".join(str(c) for c in err.write.call_args_list))
+        manifest = json.loads(path.read_text())
+        manifest["skill_tree_sha256"] = "test-only"
+        manifest["geometric_delta_pct"] += 1.0
+        path.write_text(json.dumps(manifest))
+        self.attach_budget(path)
+        self.assertEqual(1, self.advance(path))
+
+    def test_sizing_gate_reviews_bind_the_manifest_digest(self):
+        _, path = self.ready()
+        digest = campaign.sha256_file(path)
+        reports = {}
+        for role in ("skeptic", "adversary"):
+            transcript = self.repo / f"{role}.jsonl"
+            transcript.write_text(f'{{"opened": "sha256:{digest}"}}\n' + '{"note": "opened the manifest and read 2 numbers"}\n' * 120)
+            reports[role] = self.repo / f"sizing-{role}.json"
+            reports[role].write_text(json.dumps({
+                "schema_version": 1, "role": role, "gate": "sizing",
+                "reviewer_task_id": f"task-{role}", "transcript_ref": str(transcript),
+                "artifact_digests_checked": [f"sha256:{digest}"], "verdict": "PASS",
+                "challenges": [],
+                "why_this_proves_real_speedup": "The raw blocks recompute to the suite gain above the floor.",
+            }))
+        args = argparse.Namespace(gate_skeptic=str(reports["skeptic"]),
+                                  gate_adversary=str(reports["adversary"]))
+        with mock.patch.object(campaign, "test_bypass_active", return_value=False):
+            verified = campaign.validate_gate_challenges(
+                args, gate="sizing", artifact_digests=[digest])
+            self.assertEqual({"skeptic", "adversary"}, {r["role"] for r in verified})
+            with self.assertRaisesRegex(campaign.CampaignError, "unbound"):
+                campaign.validate_gate_challenges(
+                    args, gate="sizing", artifact_digests=["e" * 64])
 
 
 class ReviewHoldTest(CampaignTest):
