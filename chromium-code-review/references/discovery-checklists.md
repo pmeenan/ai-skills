@@ -448,9 +448,13 @@ renderer-, network-, or extension-supplied data:
   trusted side into an unexpected state? Feed these sequences into the
   State × Method matrix recipe.
 - For origin/site security decisions, verify the value compared is the one
-  the security model requires — origin vs site vs full URL, initiator vs
-  target — and that scheme properties come from the registry (see the State
-  section).
+  the security model and governing external specification require — exact
+  `url::Origin` vs. `net::SchemefulSite` (same-site) vs. full URL, initiator vs.
+  target, and storing principal vs. allowed/requesting principal across every
+  principal list — and that scheme properties come from the registry (see the
+  State section). Never trust a local comment claiming the spec requires exact
+  origin or site matching without checking the spec clause in `context.md` (or
+  fetching the referenced spec section directly).
 
 Example pattern: browser-side code does `static_cast<Mode>(value)` on a
 renderer-supplied uint32 and indexes a handler table with it. "The renderer
@@ -462,6 +466,20 @@ trusted; the candidate stands unless the browser-side range check exists.
 - Do header comments, method contracts, and documented invariants literally
   match the implementation? Treat contradictions as defects, not cosmetic
   nits.
+- **External Specification, RFC, And Explainer Compliance:** When the CL
+  implements or modifies behavior governed by an external specification,
+  explainer, or RFC (from `context.md`, `gerrit/unresolved-threads.json`,
+  linked bugs, or `§` section citations in code comments), compare each
+  normative requirement against the implementation: data-model/entry fields,
+  step-by-step algorithm ordering and preconditions, principal matching
+  granularity (such as exact `url::Origin` vs. `net::SchemefulSite` / same-site
+  across every principal list), error/DOMException mappings (such as
+  `QuotaExceededError` vs. `InvalidStateError`), and quota/lifetime bounds. Do
+  not trust an inline code comment's summary of the spec — verify against the
+  spec text distilled in `context.md` (or fetch the cited spec URL/section
+  directly when reachable). Any divergence between the external specification
+  and the code is a candidate defect even when local comments and unit tests
+  match the diverging implementation.
 - For every new predicate, gate, sentinel, or constant: find all uses and
   verify collaborating classes interpret it consistently.
 - Is each `DCHECK` guarding a load-bearing internal invariant, or validating
@@ -555,6 +573,13 @@ changed surface.
   exercise the edge case named by its name or comment, or merely codify the
   current implementation? Trace the test's control flow and assertions
   rather than trusting its name.
+- **Spec-Contradicting Tests:** Check whether any new or modified unit test
+  codifies behavior that contradicts the governing external specification, RFC,
+  or design doc in `context.md` (for example, a test asserting exact-origin
+  matching or a generic error code where the specification requires same-site
+  matching or a specific `DOMException`). A test that asserts the wrong spec
+  behavior masks the defect in CI and must be flagged alongside the
+  implementation mismatch.
 - A test-gap row must name the concrete missing scenarios — function plus
   input class ("partial inner `Write`", "`Reset()` while a flush is
   posted") — or it is an unanswered row. Generic "needs more coverage"

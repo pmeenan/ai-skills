@@ -488,6 +488,40 @@ class TrivialCodeEffortTests(unittest.TestCase):
         self.assertTrue(profile["trivial_code_eligibility"]["eligible"])
         self.assertTrue(profile["topology"]["collapsed"])
 
+    def test_spec_references_extracted_from_diff_and_threads_require_context_worker(self) -> None:
+        review = self.make_review(
+            {"components/example/widget.cc": "int Value() { return 1; }\n"},
+            {"components/example/widget.cc": (
+                "// Implements §3.2 step 4.\n"
+                "int Value() { return 1; }\n"
+            )},
+        )
+        (review / "detail.json").write_text(
+            json.dumps({"revisions": {self.revision: {"commit": {
+                "message": "Update Value\n\nBug: chromium:12345\n"}}}}),
+            encoding="utf-8",
+        )
+        (review / "gerrit").mkdir(parents=True, exist_ok=True)
+        (review / "gerrit" / "unresolved-threads.json").write_text(
+            json.dumps({
+                "summary": {"total_threads": 1, "unresolved_threads": 0, "malformed_entries": 0},
+                "threads": [{
+                    "comments": [{
+                        "message": "See https://github.com/WICG/cross-origin-storage/#cos-entry for the spec."
+                    }]
+                }],
+            }),
+            encoding="utf-8",
+        )
+        profile = self.profile(review)
+        ext = profile["prior_context"]["external_context"]
+        self.assertIn("§3.2", ext["spec_references"])
+        self.assertIn(
+            "https://github.com/WICG/cross-origin-storage/#cos-entry",
+            ext["spec_references"],
+        )
+        self.assertFalse(profile["context_fast_path_eligible"])
+
 
 if __name__ == "__main__":
     unittest.main()

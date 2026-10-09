@@ -380,50 +380,116 @@ def hunk_metadata(patch: str) -> list[dict[str, Any]]:
     return output
 
 
-def external_context(review_dir: Path, revision: str) -> dict[str, Any]:
+SPEC_URL_RE = re.compile(
+    r"https?://(?:"
+    r"[^\s<>()\[\]{}\"'`/]*\.(?:w3c\.github\.io|w3\.org|whatwg\.org|wicg\.github\.io|tc39\.es|ietf\.org|rfc-editor\.org|httpwg\.org|khronos\.org)"
+    r"|(?:w3c\.github\.io|www\.w3\.org|w3\.org|[\w.-]+\.whatwg\.org|whatwg\.org|wicg\.github\.io|tc39\.es|datatracker\.ietf\.org|www\.rfc-editor\.org|rfc-editor\.org|httpwg\.org|registry\.khronos\.org)"
+    r"|github\.com/(?:WICG|w3c|whatwg|tc39|httpwg)/"
+    r")[^\s<>()\[\]{}\"'`]*",
+    re.I,
+)
+SPEC_CITATION_RE = re.compile(
+    r"(?:§+\s*\d+(?:\.\d+)*|\bRFC\s*\d{3,5}(?:\s*§?\s*\d+(?:\.\d+)*)?\b)",
+    re.I,
+)
+
+
+def extract_spec_references(text: str) -> list[str]:
+    refs: list[str] = []
+    refs.extend(SPEC_URL_RE.findall(text))
+    refs.extend(
+        re.sub(r"\s+", " ", match).strip()
+        for match in SPEC_CITATION_RE.findall(text)
+    )
+    return refs
+
+
+def external_context(review_dir: Path, revision: str, patch: str = "") -> dict[str, Any]:
     result: dict[str, Any] = {
         "available": False,
         "count": 0,
         "references": [],
+        "spec_references": [],
     }
-    detail_path = review_dir / "detail.json"
-    if not detail_path.is_file():
-        return result
-    detail = read_json_xssi(detail_path)
-    if not isinstance(detail, dict) or not isinstance(detail.get("revisions"), dict):
-        fail(f"{detail_path} has no revisions object")
-    pinned = detail["revisions"].get(revision)
-    if not isinstance(pinned, dict) or not isinstance(pinned.get("commit"), dict):
-        return result
-    message = pinned["commit"].get("message")
-    if not isinstance(message, str):
-        return result
     references: list[str] = []
-    references.extend(re.findall(r"https?://[^\s<>()\[\]{}\"'`]+", message, re.I))
-    references.extend(re.findall(
-        r"(?<![A-Za-z0-9_.:/-])(?:crbug\.com/\d+|issues\.chromium\.org/issues/\d+|b/\d+)\b",
-        message,
-        re.I,
-    ))
-    for footer in re.findall(r"(?im)^\s*Bug:\s*(\S.*)$", message):
-        if not re.match(r"(?i)^(?:none|n/a|not applicable)\s*$", footer):
-            references.append(f"Bug: {footer.strip()}")
-    for design in re.findall(r"(?im)^\s*Design(?:\s+doc)?:\s*(\S.*)$", message):
-        if not re.match(r"(?i)^(?:none|n/a|not applicable)\s*$", design):
-            references.append(f"Design: {design.strip()}")
-    normalized = sorted({item.rstrip(".,;:") for item in references if item.strip()})
-    result.update(available=True, count=len(normalized), references=normalized)
+    spec_references: list[str] = []
+
+    added_lines = "\n".join(
+        line[1:]
+        for line in patch.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    )
+    if added_lines:
+        spec_references.extend(extract_spec_references(added_lines))
+
+    normalized_threads = review_dir / "gerrit" / "unresolved-threads.json"
+    if normalized_threads.is_file():
+        threads_obj = read_json_xssi(normalized_threads)
+        if isinstance(threads_obj, dict):
+            for bucket in ("threads", "malformed"):
+                for thread in threads_obj.get(bucket, []) or []:
+                    if not isinstance(thread, dict):
+                        continue
+                    for comment in thread.get("comments", []) or []:
+                        if isinstance(comment, dict) and isinstance(comment.get("message"), str):
+                            spec_references.extend(extract_spec_references(comment["message"]))
+    elif (review_dir / "comments.json").is_file():
+        comments_obj = read_json_xssi(review_dir / "comments.json")
+        if isinstance(comments_obj, dict):
+            for entries in comments_obj.values():
+                if not isinstance(entries, list):
+                    continue
+                for entry in entries:
+                    if isinstance(entry, dict) and isinstance(entry.get("message"), str):
+                        spec_references.extend(extract_spec_references(entry["message"]))
+
+    detail_path = review_dir / "detail.json"
+    available = False
+    if detail_path.is_file():
+        detail = read_json_xssi(detail_path)
+        if not isinstance(detail, dict) or not isinstance(detail.get("revisions"), dict):
+            fail(f"{detail_path} has no revisions object")
+        pinned = detail["revisions"].get(revision)
+        if isinstance(pinned, dict) and isinstance(pinned.get("commit"), dict):
+            message = pinned["commit"].get("message")
+            if isinstance(message, str):
+                available = True
+                references.extend(re.findall(r"https?://[^\s<>()\[\]{}\"'`]+", message, re.I))
+                references.extend(re.findall(
+                    r"(?<![A-Za-z0-9_.:/-])(?:crbug\.com/\d+|issues\.chromium\.org/issues/\d+|b/\d+)\b",
+                    message,
+                    re.I,
+                ))
+                for footer in re.findall(r"(?im)^\s*Bug:\s*(\S.*)$", message):
+                    if not re.match(r"(?i)^(?:none|n/a|not applicable)\s*$", footer):
+                        references.append(f"Bug: {footer.strip()}")
+                for design in re.findall(r"(?im)^\s*Design(?:\s+doc)?:\s*(\S.*)$", message):
+                    if not re.match(r"(?i)^(?:none|n/a|not applicable)\s*$", design):
+                        references.append(f"Design: {design.strip()}")
+                spec_references.extend(extract_spec_references(message))
+
+    normalized_specs = sorted(
+        {item.rstrip(".,;:)]}") for item in spec_references if item.strip()}
+    )
+    references.extend(normalized_specs)
+    normalized = sorted({item.rstrip(".,;:)]}") for item in references if item.strip()})
+    result.update(
+        available=available,
+        count=len(normalized),
+        references=normalized,
+        spec_references=normalized_specs,
+    )
     return result
 
 
-def prior_context(review_dir: Path, revision: str) -> dict[str, Any]:
+def prior_context(review_dir: Path, revision: str, patch: str = "") -> dict[str, Any]:
     result: dict[str, Any] = {
         "normalized_threads_available": False,
         "total_threads": 0,
         "unresolved_threads": 0,
         "malformed_entries": 0,
         "prior_feedback_input_available": (review_dir / "prior-feedback-input.md").is_file(),
-        "external_context": external_context(review_dir, revision),
+        "external_context": external_context(review_dir, revision, patch),
     }
     normalized = review_dir / "gerrit" / "unresolved-threads.json"
     if normalized.is_file():
@@ -626,6 +692,14 @@ def markdown(profile: dict[str, Any]) -> str:
         f"- Approximate changed surfaces: {counts['approximate_changed_surfaces']}",
         f"- Unresolved / malformed comment threads: {profile['prior_context']['unresolved_threads']} / {profile['prior_context']['malformed_entries']}",
         f"- External context references / fast path: {profile['prior_context']['external_context']['count']} / {'eligible' if profile['context_fast_path_eligible'] else 'not eligible'}",
+        *(
+            [
+                "- External specification references: "
+                + ", ".join(profile["prior_context"]["external_context"]["spec_references"])
+            ]
+            if profile["prior_context"]["external_context"].get("spec_references")
+            else []
+        ),
         f"- Deterministic initial plan / compact dual-generalist fast path: {'eligible' if profile['initial_plan_fast_path_eligible'] else 'not eligible'} / {'eligible' if profile['compact_generalist_fast_path_eligible'] else 'not eligible'}",
         "- Reasons: " + "; ".join(profile["effort_reasons"]),
         "",
@@ -731,7 +805,7 @@ def main() -> int:
     surfaces = max(hunks, declaration_surfaces)
     signals = signal_counts([item["path"] for item in files], patch)
     triggers = specialist_triggers([item["path"] for item in files], patch)
-    context = prior_context(review_dir, revision)
+    context = prior_context(review_dir, revision, patch)
     patch_bytes = len(patch.encode("utf-8"))
     effort, reasons, micro, trivial_code = choose_effort(
         files, hunks, surfaces, signals, triggers, context, patch_bytes, worker_budget
@@ -776,10 +850,12 @@ def main() -> int:
         "prior_context": context,
         # Available external context is evidence the pinned description was
         # read, not a reason to force the slow path, so only availability
-        # gates the skeleton.
+        # gates the skeleton unless explicit specification references require
+        # normative spec ingestion.
         "context_fast_path_eligible": (
             (effort in {"micro", "trivial-code"} or small_low_risk["eligible"])
             and context["external_context"]["available"]
+            and not context["external_context"].get("spec_references")
         ),
         "initial_plan_fast_path_eligible": effort != "large",
         "compact_generalist_fast_path_eligible": small_low_risk["eligible"],

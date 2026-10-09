@@ -13,7 +13,7 @@ preamble, so its rules travel with every section.
 | Reconciliation (Phase 6) | reconciliation-phase-6.md | 71 |
 | Drafting The Review (Phase 7) | drafting-the-review-phase-7.md | 81 |
 | Finding Format | finding-format.md | 28 |
-| Severity Calibration | severity-calibration.md | 54 |
+| Severity Calibration | severity-calibration.md | 55 |
 | Output Format | output-format.md | 81 |
 | Pre-Output Gate | pre-output-gate.md | 70 |
 | Tone | tone.md | 6 |

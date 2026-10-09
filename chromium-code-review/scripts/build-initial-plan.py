@@ -19,10 +19,11 @@ specialist rows, this helper deterministically writes:
 
 When `compact_generalist_fast_path_eligible` is true (or always for unsharded
 `evidence-graph-v1` initial passes), `GSS` also receives `mechanical-leads.md`
-(when present) and `GAI` also receives `context.md` (when present) plus any
-precomputed `callers/dossiers/*.md` class lifetime dossiers, closing
-mechanical-leads and holistic alignment within the dual-frontier passes without
-spawning extra discovery subagents.
+(when present) and `context.md` (when present), and `GAI` also receives
+`context.md` (when present) plus any precomputed `callers/dossiers/*.md` class
+lifetime dossiers, closing mechanical-leads, external specification compliance,
+and holistic alignment within the dual-frontier passes without spawning extra
+discovery subagents.
 """
 
 from __future__ import annotations
@@ -302,14 +303,19 @@ def main() -> int:
             fail(f"build-discovery-brief.py failed for {work_id}: {res.stderr.strip()}")
 
         assigned_extras: list[str] = []
-        if work_id == "GSS" and (review_dir / "mechanical-leads.md").is_file():
-            assigned_extras.append(
-                f"- `{review_dir / 'mechanical-leads.md'}` (close every mechanical lead row alongside your surface/state audit)"
-            )
+        if work_id == "GSS":
+            if (review_dir / "mechanical-leads.md").is_file():
+                assigned_extras.append(
+                    f"- `{review_dir / 'mechanical-leads.md'}` (close every mechanical lead row alongside your surface/state audit)"
+                )
+            if (review_dir / "context.md").is_file():
+                assigned_extras.append(
+                    f"- `{review_dir / 'context.md'}` (audit external specification compliance, normative contract clauses, and spec-to-code/test alignment)"
+                )
         if work_id == "GAI":
             if (review_dir / "context.md").is_file():
                 assigned_extras.append(
-                    f"- `{review_dir / 'context.md'}` (audit holistic CL description and intent alignment)"
+                    f"- `{review_dir / 'context.md'}` (audit holistic CL description, external specification compliance, and intent alignment)"
                 )
             for dossier in dossier_files:
                 assigned_extras.append(

@@ -151,6 +151,41 @@ omissions select the first RC ID in lexical order; they are not extra family
 decisions. Scoped rows outside an authoritative family cannot supply a
 promoted finding's Suggested edit.
 
+After collection, correct a root-cause Suggested-edit decision without changing
+the original row by appending this exact section to the same `RC*.md` file:
+
+````markdown
+## Suggested-edit amendments
+
+### RC001-SA1
+- Target: RC001-1
+- Suggested-edit decision: applicable — replaces net/streams/delay_buffer.cc:203
+- Suggested-edit selected lines:
+
+  ```cpp
+    return write_len_;
+  ```
+- Suggested-edit replacement:
+
+  ```suggestion
+    return result;
+  ```
+- Evidence: net/streams/delay_buffer.cc:203
+- Attempt: 2
+````
+
+The amendment ID is `RC<batch>-SA<n>` and must share the target row's exact
+batch prefix. `Target` resolves one complete RC row ID; prefix matches are not
+accepted. An applicable amendment requires the exact changed-side target plus
+both lossless fenced fields. An omitted amendment uses a specific reason and
+has neither fence. `Evidence` is non-empty and `Attempt` is a positive integer.
+The latest valid amendment for a row is its effective Suggested-edit decision;
+the original text remains authoritative history. When an amendment changes a
+family from applicable to omitted or changes its omission reason, also append a
+structured `replace-fields` amendment targeting `root-family:<RF-id>` so the
+table's `suggested edit` cell exactly matches the amended decision. Do not use
+`replace-fields` for the narrative decision or fenced code.
+
 Reopened candidates become canonical rows before further work. For round 1,
 challenger RC001 owns `ledger/reopened/round-1-RC001.md`:
 

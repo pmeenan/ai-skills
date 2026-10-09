@@ -56,7 +56,11 @@ replacement in the canonical multiline RC-row fields from the root-cause shape
 file named below;
 otherwise record the concrete eligibility condition that fails. Put only
 `applicable — RC⟨batch⟩-⟨n⟩` in the root-family table cell; the RC row owns
-the lossless code.
+the lossless code. After collection, use the append-only Suggested-edit
+amendment schema in the root-cause shape file for corrections to the decision,
+target, selected lines, or replacement. If the effective family decision
+changes, also amend the root-family table cell with structured
+`replace-fields`; never rewrite the collected prefix.
 
 Deliverables:
 - root-cause/RC⟨batch⟩.md — RC⟨batch⟩-⟨n⟩ rows in the shape
@@ -67,7 +71,7 @@ Deliverables:
   refutations, each with path:line evidence.
 - If your pass opens new candidates, write them first as canonical rows in
   ledger/reopened/round-⟨round⟩-RC⟨batch⟩.md with IDs
-  R⟨round⟩-RC⟨batch⟩-1, -2, ... and the Reopened Candidates shape from the
+  R⟨round⟩-RC⟨batch⟩-⟨n⟩ (numbered from 1) and the Reopened Candidates shape from the
   same root-cause shape file. A status-line-only or brief-only candidate does
   not exist.
 - When a reopened row needs a named discovery recipe, write a bounded

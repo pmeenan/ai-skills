@@ -32,6 +32,20 @@ same P0 throughput collapse by adjudicating the design intended in-thread.
 - Do header comments, method contracts, and documented invariants literally
   match the implementation? Treat contradictions as defects, not cosmetic
   nits.
+- **External Specification, RFC, And Explainer Compliance:** When the CL
+  implements or modifies behavior governed by an external specification,
+  explainer, or RFC (from `context.md`, `gerrit/unresolved-threads.json`,
+  linked bugs, or `§` section citations in code comments), compare each
+  normative requirement against the implementation: data-model/entry fields,
+  step-by-step algorithm ordering and preconditions, principal matching
+  granularity (such as exact `url::Origin` vs. `net::SchemefulSite` / same-site
+  across every principal list), error/DOMException mappings (such as
+  `QuotaExceededError` vs. `InvalidStateError`), and quota/lifetime bounds. Do
+  not trust an inline code comment's summary of the spec — verify against the
+  spec text distilled in `context.md` (or fetch the cited spec URL/section
+  directly when reachable). Any divergence between the external specification
+  and the code is a candidate defect even when local comments and unit tests
+  match the diverging implementation.
 - For every new predicate, gate, sentinel, or constant: find all uses and
   verify collaborating classes interpret it consistently.
 - Is each `DCHECK` guarding a load-bearing internal invariant, or validating

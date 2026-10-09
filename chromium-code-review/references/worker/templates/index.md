@@ -15,9 +15,9 @@ preamble, so its rules travel with every section.
 | pin.md | pin-md.md | 32 |
 | profile.json, profile.md, And Context Budgets | profile-json-profile-md-and-context-budgets.md | 53 |
 | directives.md, progress.md, And orchestration.tsv | directives-md-progress-md-and-orchestration-tsv.md | 62 |
-| Per-Worker Input Manifests | per-worker-input-manifests.md | 83 |
+| Per-Worker Input Manifests | per-worker-input-manifests.md | 91 |
 | Scope-Packet Spec And Code Packets | scope-packet-spec-and-code-packets.md | 34 |
-| context.md | context-md.md | 41 |
+| context.md | context-md.md | 47 |
 | gerrit/unresolved-threads.json | gerrit-unresolved-threads-json.md | 37 |
 | inventory.md — Changed-Surface Inventory And Risk-Area Map | inventory-md-changed-surface-inventory-and-risk-area-map.md | 159 |
 | plan.md — Thread-Plan Roster | plan-md-thread-plan-roster.md | 107 |
@@ -32,11 +32,11 @@ preamble, so its rules travel with every section.
 | Subagent Brief — Verification Skeptic | subagent-brief-verification-skeptic.md | 50 |
 | verification/ — Batches And Skeptic Verdict Rows | verification-batches-and-skeptic-verdict-rows.md | 192 |
 | verification/affinity.md — Invariant Affinity And Consistency Audit | verification-affinity-md-invariant-affinity-and-consistency-audit.md | 40 |
-| root-cause/ — Plan, Root-Cause Rows, And Reopened Rows | root-cause-plan-root-cause-rows-and-reopened-rows.md | 168 |
+| root-cause/ — Plan, Root-Cause Rows, And Reopened Rows | root-cause-plan-root-cause-rows-and-reopened-rows.md | 203 |
 | reconciliation.md — Reconciliation Table And Pre-Output Gate | reconciliation-md-reconciliation-table-and-pre-output-gate.md | 100 |
 | synthesis/ — Bounded Index And Evidence Cards | synthesis-bounded-index-and-evidence-cards.md | 53 |
 | Exact Output Fragments, draft-parts/, And draft-assembly/ | exact-output-fragments-draft-parts-and-draft-assembly.md | 120 |
-| challenge/ And challenge.md | challenge-and-challenge-md.md | 41 |
+| challenge/ And challenge.md | challenge-and-challenge-md.md | 79 |
 | patchset-delta.md And delivery-gate.md | patchset-delta-md-and-delivery-gate-md.md | 38 |
 | gerrit-comments.md | gerrit-comments-md.md | 39 |
 | Final-Review Finding | final-review-finding.md | 31 |

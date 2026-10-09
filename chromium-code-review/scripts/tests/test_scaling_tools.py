@@ -1687,6 +1687,7 @@ class InitialPlanAndCallerDossierTest(unittest.TestCase):
         self.assertIn("declares `WeakPtrFactory` BEFORE subsequent member(s)", dossier_text)
         self.assertIn("raw_ptr<Delegate> delegate_;", dossier_text)
 
+        write(review / "context.md", "# Context\n")
         initial_plan_script = SCRIPTS / "build-initial-plan.py"
         plan_out = run("python3", str(initial_plan_script), str(review), "--worktree", str(worktree)).stdout
         self.assertIn("compact-dual-generalist", plan_out)
@@ -1695,7 +1696,10 @@ class InitialPlanAndCallerDossierTest(unittest.TestCase):
         self.assertTrue((review / "packets" / "GAI-code.md").is_file())
         self.assertTrue((review / "briefs" / "GSS.md").is_file())
         self.assertTrue((review / "briefs" / "GAI.md").is_file())
+        gss_brief = (review / "briefs" / "GSS.md").read_text(encoding="utf-8")
         gai_brief = (review / "briefs" / "GAI.md").read_text(encoding="utf-8")
+        self.assertIn("context.md", gss_brief)
+        self.assertIn("context.md", gai_brief)
         self.assertIn("WidgetLoader.md", gai_brief)
 
 

@@ -62,6 +62,13 @@ changed surface.
   exercise the edge case named by its name or comment, or merely codify the
   current implementation? Trace the test's control flow and assertions
   rather than trusting its name.
+- **Spec-Contradicting Tests:** Check whether any new or modified unit test
+  codifies behavior that contradicts the governing external specification, RFC,
+  or design doc in `context.md` (for example, a test asserting exact-origin
+  matching or a generic error code where the specification requires same-site
+  matching or a specific `DOMException`). A test that asserts the wrong spec
+  behavior masks the defect in CI and must be flagged alongside the
+  implementation mismatch.
 - A test-gap row must name the concrete missing scenarios — function plus
   input class ("partial inner `Write`", "`Reset()` while a flush is
   posted") — or it is an unanswered row. Generic "needs more coverage"

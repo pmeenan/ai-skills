@@ -43,7 +43,15 @@ Columns and roles are exact. `role` is one of `brief`, `control`, `reference`,
 to: its bytes/SHA-256 cover the immutable pre-attempt prefix, and the
 validator verifies the current file still begins with exactly that prefix —
 append-only growth, never a rewrite. Every other role's hash must match the
-file exactly when the attempt is sealed. Later directory validation preserves
+file exactly when the attempt is sealed. The validator permits a single
+finalizer-owned exception for `reconciliation.md`: when
+`reconciliation.before-clerical.md` exactly matches the sealed prestate and an
+affirmative `delivery-gate.md` exists, `refresh-delivery-gate.py` may replace
+only the unique Freshness line with its deterministic accepted-result line.
+The projected prestate must remain the exact current-file prefix; legitimate
+append-only amendments may follow it. Any other changed byte within that
+prefix, missing/mismatched saved prestate, or non-affirmative gate remains a
+prefix-rewrite failure. Later directory validation preserves
 a stale non-`prestate` row only when its bytes/hash match a canonical artifact
 prefix sealed as `prestate` by a later complete same-artifact attempt, or when
 it names a deterministic `indexes/` output whose rebuild is current and its

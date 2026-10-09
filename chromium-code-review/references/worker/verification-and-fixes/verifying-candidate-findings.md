@@ -24,11 +24,15 @@ code, not from memory.
 - Cite the exact code path and any relevant tests or comments.
 - Classify the issue: correctness bug, contract mismatch, missing test,
   performance risk, lifecycle risk, or polish.
-- Check whether existing tests intentionally codify the observed behavior.
+- Check whether existing tests intentionally codify the observed behavior —
+  but verify that a CL-introduced test or comment does not itself codify a
+  misreading of a governing external specification or subsystem invariant in
+  `context.md`.
 - Challenge the finding: look for alternate caller paths, wrappers, overrides,
   feature gates, or invariants that make it unreachable or lower its severity.
 - Apply Universal Verification Principles during refutation:
-  - **Documented Intent Overrides Syntactic Omissions:** Adjacent inline comments, docstrings, and header contracts are binding design specifications. An omitted branch or conditional that is explicitly documented in code comments or header docs as intentional design is NOT a defect unless it violates higher-level requirements.
+  - **Contract Authority Hierarchy (External Specs & Subsystem Invariants Outrank Local Comments/Tests):** Normative external specifications (W3C, WHATWG, WICG, IETF RFCs, WebIDL/Mojo wire contracts) and documented subsystem invariants (`context.md`, `callers/directory-docs.md`) outrank CL-local header comments, inline comments, and CL-introduced unit tests. Local comments or unit tests that codify a misreading of the governing external specification **never** refute a spec-mismatch candidate; unless the CL explicitly marks the divergence as an intentional staged `TODO` with safe gating/fallback, confirm the mismatch (or record `UNPROVEN` as an owner question when specification intent is genuinely ambiguous).
+  - **Documented Intent Overrides Syntactic Omissions:** Within the bounds of the Contract Authority Hierarchy above, adjacent inline comments, docstrings, and header contracts are binding design specifications for internal implementation choices. An omitted branch or conditional that is explicitly documented in code comments or header docs as intentional design is NOT a defect unless it violates a governing external specification, base-interface contract, or higher-level subsystem invariant.
   - **Burden of Proof Requires Reachable Harm:** A missing `if` check or omitted pre-filter is ONLY a bug if a reachable trace produces a concrete bad state (memory corruption, security bypass, data loss, or broken invariant). Omitting an optional defensive check on a safe or idempotent path (e.g. `std::map::erase` on a key) is not a defect; the reviewer must prove reachable harm, not demand arbitrary defensive guards.
   - **Producer/Consumer Symmetry (Read vs. Write Scoping):** Query/read paths scope to the key space of stored data, not to the write-side preconditions of the caller. Cache, index, and storage lookup APIs must match the full potential key space of stored data, regardless of caller context.
 - To refute a candidate, name the specific guard (the line) or documented design contract/comment that proves safe behavior, or produce the concrete trace that completes safely. "Looks handled" or "the caller probably checks" is not a refutation — it is the shallow read the candidate exists to challenge. For hypotheses written as IF/THEN/UNLESS, refutation means filling in the UNLESS with a citation.

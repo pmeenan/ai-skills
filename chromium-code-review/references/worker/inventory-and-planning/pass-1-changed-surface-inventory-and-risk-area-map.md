@@ -37,7 +37,9 @@ output goes to
   Give each surface a stable ID from the template. For a dense single-file
   shard, the shard that owns the surface's earliest changed line owns the
   complete surface even when its body crosses a shard boundary. For each,
-  record its contract source, primary callers, old behavior, new
+  record its contract source (including governing external specification
+  sections from `context.md` or `§` comments alongside header contracts),
+  primary callers, old behavior, new
   behavior, mutable state, ownership/lifetime model, tests, and whether it is
   production-reachable, test-only, or future-stack plumbing. Also label its
   scope relationship as `core`, `necessary consequence`, `test/support`,

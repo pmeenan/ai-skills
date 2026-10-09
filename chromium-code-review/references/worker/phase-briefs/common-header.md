@@ -87,7 +87,10 @@ regenerate a collected artifact.
 Before returning, run
 `⟨skill-dir⟩/scripts/validate-worker-artifact.py ⟨review-dir⟩ <each-row-bearing-deliverable>`.
 Fix failures in a new artifact before collection; for collected prestate use
-an amendment. Never bypass validation with an abbreviated/missing path. If no
+an amendment. Never bypass validation with an abbreviated/missing path.
+Never read or grep helper script source files (`scripts/*.py`); if validation
+fails, run `⟨skill-dir⟩/scripts/explain-gate-error.py "<exact error message>"`
+and fix only the reported field or table shape. If no
 valid correction is expressible, return `needs-repair` with the exact error.
 
 For a procedural-only repair of sealed historical attempts, include exactly

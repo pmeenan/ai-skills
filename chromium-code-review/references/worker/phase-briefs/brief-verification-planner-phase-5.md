@@ -95,8 +95,10 @@ rows are context and must not be scheduled again. Then:
    ⟨skill-dir⟩/references/worker/templates/scope-packet-spec-and-code-packets.md)
    with one diff row per file the batch's candidates cite, and list
    packets/V⟨batch⟩-code.md as an assigned input in the brief;
-   the orchestrator materializes it before sealing. Register each
-   brief and its exact candidate/reference/control inputs in input-manifest.tsv.
+   the orchestrator materializes it before sealing (or run
+   `⟨skill-dir⟩/scripts/build-batch-briefs.py ⟨review-dir⟩ --phase verification`
+   after writing `verification/batches.md` to deterministically render
+   `packets/V*.spec.tsv`, `packets/V*-code.md`, and `briefs/V*.md`).
 
 Deliverables: ⟨review-dir⟩/verification/batches.md and the briefs.
 

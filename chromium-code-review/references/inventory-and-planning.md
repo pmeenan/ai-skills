@@ -52,11 +52,27 @@ than making analysis shallower.
   from these ancestor docs into `context.md` so all downstream reviewers inherit
   the directory's mental model, threading/lifetime expectations, and deprecation
   guardrails without re-reading the raw docs.
-- Follow public Bug links and design docs referenced by the CL description when
-  needed to judge intent, scope, or bug alignment.
-- Audit the CL description, commit message, and referenced design docs against
-  the current implementation. Flag stale architectural claims when iterative
-  refactoring made the docs no longer match the code.
+- Follow public Bug links, design docs, and external specifications (W3C,
+  WHATWG, WICG, IETF RFCs, WebIDL specs, and explainers) referenced in
+  `pin.md`, `profile.json` (`prior_context.external_context`),
+  `gerrit/unresolved-threads.json`, or added diff comments (including URLs and
+  `§` section citations).
+- When a governing external specification, explainer, or RFC is referenced,
+  fetch and read the cited specification sections directly when reachable —
+  never rely solely on what the CL's own comments or unit tests claim the spec
+  says. Distill the normative spec requirements for the touched surfaces into
+  `context.md`: required data-model/entry fields, step-by-step algorithm
+  ordering and preconditions, principal matching granularity (for example,
+  exact `url::Origin` vs. `net::SchemefulSite` / same-site across every
+  principal list), required error/DOMException mappings, and quota or lifetime
+  bounds.
+- Audit the CL description, commit message, referenced design docs, and
+  governing external specification clauses against the current implementation
+  and unit tests. Flag stale architectural claims when iterative refactoring
+  made the docs no longer match the code, and flag any **spec-to-code or
+  spec-to-test mismatch** where the implementation or a test assertion
+  diverges from the external specification (even if inline code comments match
+  the diverging implementation).
 - Run a scope-relevance pass over the diff: every changed function, declaration,
   new member, test hook, defensive guard, and refactor must be either directly
   part of the CL's stated goal, a necessary consequence of that goal, required
@@ -70,9 +86,10 @@ than making analysis shallower.
   the documented rule in `callers/directory-docs.md` wins over legacy code.
 
 Record the results in `context.md`: subsystem invariants/deprecations/layering
-rules from `callers/directory-docs.md`, bug summary and alignment notes,
-description-vs-implementation discrepancies, and the scope-relevance notes
-that the holistic thread and the draft writer will consume.
+rules from `callers/directory-docs.md`, external specification requirements
+and section citations, bug summary and alignment notes,
+description-and-spec-vs-implementation discrepancies, and the scope-relevance
+notes that the discovery threads and the draft writer will consume.
 
 ## Pass 1 — Changed-Surface Inventory And Risk-Area Map
 
@@ -96,7 +113,9 @@ output goes to
   Give each surface a stable ID from the template. For a dense single-file
   shard, the shard that owns the surface's earliest changed line owns the
   complete surface even when its body crosses a shard boundary. For each,
-  record its contract source, primary callers, old behavior, new
+  record its contract source (including governing external specification
+  sections from `context.md` or `§` comments alongside header contracts),
+  primary callers, old behavior, new
   behavior, mutable state, ownership/lifetime model, tests, and whether it is
   production-reachable, test-only, or future-stack plumbing. Also label its
   scope relationship as `core`, `necessary consequence`, `test/support`,

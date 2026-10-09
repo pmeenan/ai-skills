@@ -56,9 +56,13 @@ renderer-, network-, or extension-supplied data:
   trusted side into an unexpected state? Feed these sequences into the
   State × Method matrix recipe.
 - For origin/site security decisions, verify the value compared is the one
-  the security model requires — origin vs site vs full URL, initiator vs
-  target — and that scheme properties come from the registry (see the State
-  section).
+  the security model and governing external specification require — exact
+  `url::Origin` vs. `net::SchemefulSite` (same-site) vs. full URL, initiator vs.
+  target, and storing principal vs. allowed/requesting principal across every
+  principal list — and that scheme properties come from the registry (see the
+  State section). Never trust a local comment claiming the spec requires exact
+  origin or site matching without checking the spec clause in `context.md` (or
+  fetching the referenced spec section directly).
 
 Example pattern: browser-side code does `static_cast<Mode>(value)` on a
 renderer-supplied uint32 and indexes a handler table with it. "The renderer

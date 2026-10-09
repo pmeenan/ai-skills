@@ -10,11 +10,11 @@ preamble, so its rules travel with every section.
 
 | section | file | source lines |
 | --- | --- | --- |
-| Verifying Candidate Findings | verifying-candidate-findings.md | 55 |
+| Verifying Candidate Findings | verifying-candidate-findings.md | 59 |
 | Skeptic Verdicts | skeptic-verdicts.md | 48 |
 | Execution-Based Verification | execution-based-verification.md | 28 |
 | Evaluating Fixes | evaluating-fixes.md | 79 |
 | Root-Cause Trigger Planning | root-cause-trigger-planning.md | 31 |
 | Root-Cause, Layering, And Fix Optimality | root-cause-layering-and-fix-optimality.md | 105 |
-| Final Synthesis Pass | final-synthesis-pass.md | 50 |
+| Final Synthesis Pass | final-synthesis-pass.md | 53 |
 | Verdict Alignment And Gerrit Output Rules | verdict-alignment-and-gerrit-output-rules.md | 65 |

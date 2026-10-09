@@ -16,7 +16,7 @@ preamble, so its rules travel with every section.
 | Async And Lifecycle | async-and-lifecycle.md | 118 |
 | State, Persistence, And Cache | state-persistence-and-cache.md | 70 |
 | Integration And Feature Control | integration-and-feature-control.md | 64 |
-| Security And Trust Boundaries | security-and-trust-boundaries.md | 38 |
-| Contracts And API Shape | contracts-and-api-shape.md | 63 |
-| Tests As Specifications | tests-as-specifications.md | 71 |
+| Security And Trust Boundaries | security-and-trust-boundaries.md | 42 |
+| Contracts And API Shape | contracts-and-api-shape.md | 77 |
+| Tests As Specifications | tests-as-specifications.md | 78 |
 | Changed-Lines Polish | changed-lines-polish.md | 92 |

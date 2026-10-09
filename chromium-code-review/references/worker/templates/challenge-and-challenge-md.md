@@ -45,7 +45,45 @@ discarding shard rows:
 
 The immutable index lives at `challenge/round-1/index.md`; `challenge.md`
 contains only the current round, index path, issue count, and pass/fail result.
+For an issue whose immutable shard row explicitly classifies it `clerical`, a
+collector may close it without changing the shard by writing
+`challenge/round-<N>/clerical-resolutions.json` before recollection:
+
+```json
+{
+  "draft_revision": "2",
+  "resolutions": [{
+    "issue": "CH007-1",
+    "shard": "CH007",
+    "classification": "clerical",
+    "evidence": "internal card path only",
+    "corrections": [{
+      "kind": "exact-text-projection",
+      "path": "draft-sections/FRAME.md",
+      "before_path": "draft-parts/FRAME.before-clerical.md",
+      "audited_sha256": "<hash present in CH007.md>",
+      "current_sha256": "<current file hash>",
+      "replacements": [{"old": "<exact old text>", "new": "<exact new text>", "count": 1}]
+    }]
+  }]
+}
+```
+
+An `exact-text-projection` authenticates the preserved before-file hash against
+the immutable shard and must reproduce the complete current file by the listed
+ordered exact replacements. A reconciliation-only correction instead uses
+`{"kind":"structured-amendment","path":"reconciliation.md","amendment":"<ID>"}`;
+the named `replace-fields` amendment must be present and remains subject to all
+normal reconciliation gates. Every receipt entry names one exact shard/issue,
+has nonempty evidence, and resolves only a row explicitly classified
+`clerical`, either in a `classification` column or with the word `clerical` in
+the normative `scope` or `required correction` cell. Unclassified or
+substantive issues remain open. The collector
+records the receipt path in the index, and final validation rechecks it.
+
 After any draft revision, increment the round and run a new complete challenge
 generation under `challenge/round-<N>/`; never overwrite an earlier round. A
 revision is never accepted based only on the old challenge's issues being
-addressed; the revised draft is challenged afresh.
+addressed; the revised draft is challenged afresh. The authenticated clerical
+projection above is the sole exception because it proves the exact byte delta
+from the challenged input while preserving every immutable shard.

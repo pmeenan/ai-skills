@@ -12,7 +12,7 @@ preamble, so its rules travel with every section.
 | --- | --- | --- |
 | Common Header | common-header.md | 111 |
 | Adaptive Topology Preflight (mechanical) | adaptive-topology-preflight-mechanical.md | 25 |
-| Brief — Context (Phase 1, always separate from inventory when spawned) | brief-context-phase-1-always-separate-from-inventory-when-spawned.md | 34 |
+| Brief — Context (Phase 1, always separate from inventory when spawned) | brief-context-phase-1-always-separate-from-inventory-when-spawned.md | 40 |
 | Brief — Inventory (Phase 1, unsharded) | brief-inventory-phase-1-unsharded.md | 46 |
 | Brief — Inventory Shard (Phase 1, one per file group or dense hunk range) | brief-inventory-shard-phase-1-one-per-file-group-or-dense-hunk-range.md | 55 |
 | Brief — Gerrit Thread Normalizer (after Phase 0, all review modes) | brief-gerrit-thread-normalizer-after-phase-0-all-review-modes.md | 34 |
@@ -29,7 +29,7 @@ preamble, so its rules travel with every section.
 | Brief — Root-Cause Planner (Phase 5.5) | brief-root-cause-planner-phase-5-5.md | 51 |
 | Brief — Root-Cause-Planning Shard (Phase 5.5, RCPLAN⟨shard⟩) | brief-root-cause-planning-shard-phase-5-5-rcplan-shard.md | 39 |
 | Brief — Root-Cause-Plan Exact Collector (Phase 5.5) | brief-root-cause-plan-exact-collector-phase-5-5.md | 29 |
-| Brief — Root-Cause Challenger (Phase 5.5, one per batch) | brief-root-cause-challenger-phase-5-5-one-per-batch.md | 52 |
+| Brief — Root-Cause Challenger (Phase 5.5, one per batch) | brief-root-cause-challenger-phase-5-5-one-per-batch.md | 56 |
 | Brief — Reconciliation Builder (Phase 6) | brief-reconciliation-builder-phase-6.md | 70 |
 | Brief — Reconciliation Shard (Phase 6, when indexed) | brief-reconciliation-shard-phase-6-when-indexed.md | 33 |
 | Brief — Reconciliation Exact-Coverage Collector (Phase 6, sharded) | brief-reconciliation-exact-coverage-collector-phase-6-sharded.md | 28 |
@@ -39,6 +39,6 @@ preamble, so its rules travel with every section.
 | Brief — Draft Assembly (Phase 7, large reviews, one per assembly node) | brief-draft-assembly-phase-7-large-reviews-one-per-assembly-node.md | 37 |
 | Brief — Synthesis Challenge Planner (Phase 8) | brief-synthesis-challenge-planner-phase-8.md | 45 |
 | Brief — Synthesis Challenger (Phase 8, one per CH shard) | brief-synthesis-challenger-phase-8-one-per-ch-shard.md | 40 |
-| Brief — Challenge Collector (Phase 8) | brief-challenge-collector-phase-8.md | 32 |
+| Brief — Challenge Collector (Phase 8) | brief-challenge-collector-phase-8.md | 38 |
 | Brief — Patchset-Delta Inspector (Phase 9, only if a newer patchset appeared) | brief-patchset-delta-inspector-phase-9-only-if-a-newer-patchset-appeared.md | 28 |
 | Brief — Delivery Gate Finalizer (Phase 9, after the final challenge) | brief-delivery-gate-finalizer-phase-9-after-the-final-challenge.md | 53 |

@@ -37,23 +37,29 @@ Tier: `standard` (Model Tiers in `references/scaling-and-indexes.md`).
 Only when `profile.json` sets `context_fast_path_eligible: true`, render the
 empty-source `context.md` skeleton mechanically and skip this worker. Inventory
 and the always-run holistic lens still audit description alignment and scope.
-Any link, prior feedback, unresolved thread, or unknown profile evidence
-requires the worker.
+Any spec reference, link, prior feedback, unresolved thread, or unknown profile
+evidence requires the worker.
 
 ```text
-Scope: bug/design/description alignment and scope relevance for the full CL.
-Do not build the changed-surface inventory.
+Scope: bug/design/spec/description alignment and scope relevance for the full
+CL. Do not build the changed-surface inventory.
 
 Procedure: read
 ⟨skill-dir⟩/references/worker/inventory-and-planning/gather-context-pass-1.md
 and execute it against the pinned diff. Read the CL
-description from ⟨review-dir⟩/pin.md; follow public bug links and design
-docs it references. Bound external ingestion: distill each bug or design
-doc into context.md rather than carrying its full text — for long bug
-threads read the description plus the comments that state intent, scope
-decisions, or repro details (skip CI/bot chatter); for large design docs
-extract the sections the CL implements. Record what you skimmed vs read
-fully so the draft writer can caveat bug-alignment claims.
+description from ⟨review-dir⟩/pin.md alongside relative review-dir inputs
+(`profile.json`, `callers/directory-docs.md`, and `gerrit/unresolved-threads.json`
+when present); follow public bug links, design docs, and external
+specifications (W3C, WHATWG, WICG, IETF RFCs, explainers, and `§` section
+citations) referenced in the description, unresolved review threads, or added
+diff comments. Bound external ingestion: distill each bug, design doc, or
+external specification into context.md rather than carrying its full text —
+for long bug threads read the description plus the comments that state intent,
+scope decisions, or repro details (skip CI/bot chatter); for large design docs
+or external specifications fetch and extract the normative sections, data-model
+fields, and algorithm steps the CL implements, comparing each requirement
+against the code and unit tests. Record what you skimmed vs read fully so the
+draft writer can caveat bug- and spec-alignment claims.
 
 Deliverable: ⟨review-dir⟩/context.md — Sources Consulted, Intended Behavior
 And Scope, Description-To-Code Alignment, Scope Relevance, and Unknowns And

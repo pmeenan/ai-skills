@@ -53,6 +53,12 @@ Inputs: challenge/round-⟨round⟩/index.md and every planned CH*.md in that
 round directory. Verify every
 planned shard exists and mechanically extract issue IDs/counts.
 
+If explicitly clerical shard rows were corrected, also read the bounded
+`challenge/round-⟨round⟩/clerical-resolutions.json` receipt in the exact schema
+from the challenge template. Accept only authenticated exact-text projections
+or present reconciliation `replace-fields` amendments; never use a receipt to
+close an unclassified or substantive issue.
+
 Deliverable: finalize the immutable round index with every shard, scope, issue
 ID, missing shard, and result; write challenge.md as a compact pointer/summary
 to `challenge/round-⟨round⟩/index.md`. Never overwrite an older round.

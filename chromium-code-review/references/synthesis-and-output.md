@@ -236,6 +236,7 @@ explicitly. Anchors beat intuition, especially for test-gap severity:
 | Discarded accepted/written-count return (`Push`, short `Write`) — silent byte loss | P1 |
 | Callback or timer bound with `Unretained` plus a reachable destroy-before-fire path | P1 |
 | Documented base-interface contract clause violated by an override (buffer retention across `ERR_IO_PENDING`, `OK`-vs-byte-count semantics) | P1 |
+| Implementation (and/or its unit tests) contradicts a normative clause of the governing external specification or RFC (e.g. wrong origin/site matching granularity, missing required metadata field, wrong error/exception type, or violated algorithm step) | P1 when it weakens a security/privacy/isolation boundary or corrupts persisted/wire state; P2 for functional/API spec divergence |
 | Renumbered or reused values of a persisted/serialized enum | P1 |
 | Zero-delay self-reposting task that busy-loops `FastForwardBy` under mock time (CI hang) | P1 |
 | Restriction feature (throttle, quota, block, isolation) silently degrading to unrestricted behavior on the common path | P1; P2 when the bypass needs an uncommon mode |
