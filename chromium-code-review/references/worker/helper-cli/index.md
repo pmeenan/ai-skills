@@ -24,4 +24,4 @@ preamble, so its rules travel with every section.
 | Pin and snapshot | pin-and-snapshot.md | 21 |
 | Progress and cost | progress-and-cost.md | 17 |
 | Materialization and indexes | materialization-and-indexes.md | 32 |
-| Mechanical collection | mechanical-collection.md | 12 |
+| Mechanical collection | mechanical-collection.md | 13 |

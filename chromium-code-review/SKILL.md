@@ -738,9 +738,17 @@ run it, not the default path.
 ## Phase 9 — Delivery
 
 Run `refresh-delivery-gate.py` as Phase 9 directs, then rebuild indexes.
-Delivery requires a fresh scalar Gerrit check, an affirmative validator result,
-and a passing challenge for the exact delivered draft. Material patchset changes
-restart in a new review directory; no new SHA may reuse old ledgers or verdicts.
+Delivery requires a fresh scalar Gerrit check (including live `/comments` and
+`gerrit/unresolved-threads.json` reconciliation in non-local mode), an
+affirmative validator result, and a passing challenge for the exact delivered
+draft. Material patchset changes restart in a new review directory; no new SHA
+may reuse old ledgers or verdicts. When presenting the final review to the user
+in chat or as a user-facing artifact outside `⟨review-dir⟩`, strip internal
+gate-accounting fields (`Synthesis item`, `Fix status`, `Suggested edit:
+omitted — ...`, `Rows`, severity anchor/delta parentheticals, and the raw
+`plan.md` roster table), use repo-relative `path:line` references (never local
+worktree paths or `file://` URLs into the codereview worktree), and keep Gerrit
+inline comments concise (1–3 sentences).
 
 After the delivery gate passes, run `scripts/report-review-costs.py
 ⟨review-dir⟩` and append its one-line summary to `progress.md`. The report is

@@ -5395,8 +5395,14 @@ def validate_draft_sections(root: Path, draft_revision: str,
     return sections
 
 
+def contains_local_path_or_url(text: str) -> bool:
+    return bool(re.search(
+        r"(?:file://|/(?:tmp|home|usr/local)/|/codereview/worktrees/)", text
+    ))
+
+
 def contains_local_path_url_or_placeholder(text: str) -> bool:
-    if re.search(r"(?:file://|/(?:tmp|home)/)", text):
+    if contains_local_path_or_url(text):
         return True
     for match in re.finditer(r"<[^>\n]+>", text):
         if match.group(0)[1:-1].strip().lower() in {
@@ -5412,6 +5418,54 @@ def contains_local_path_url_or_placeholder(text: str) -> bool:
             continue
         return True
     return False
+
+
+def validate_gerrit_thread_replies(
+    root: Path, gerrit: str, report: Report
+) -> None:
+    """Reject Gerrit replies targeting resolved, unknown, or stale threads."""
+    threads_path = root / "gerrit" / "unresolved-threads.json"
+    if not threads_path.is_file():
+        return
+    try:
+        data = json.loads(threads_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(data, dict) or not isinstance(data.get("threads"), list):
+        return
+    unresolved_by_root: dict[str, str] = {}
+    for thread in data["threads"]:
+        if isinstance(thread, dict) and thread.get("unresolved") is True:
+            root_id = str(thread.get("root_id") or "").strip()
+            latest_id = str(thread.get("latest_id") or "").strip()
+            if root_id:
+                unresolved_by_root[root_id] = latest_id
+    matches = list(re.finditer(r"(?m)^###\s+Thread\s+([^\s—]+).*$", gerrit))
+    for index, match in enumerate(matches):
+        root_id = match.group(1).strip().strip("`")
+        next_heading = re.search(r"(?m)^##", gerrit[match.end():])
+        end = (
+            match.end() + next_heading.start()
+            if next_heading is not None else len(gerrit)
+        )
+        section = gerrit[match.end():end]
+        if root_id not in unresolved_by_root:
+            report.error(
+                f"gerrit-comments.md replies to resolved or unknown Gerrit "
+                f"thread {root_id}"
+            )
+            continue
+        latest_match = re.search(
+            r"(?im)^-\s*Latest comment id:\s*(\S+)", section
+        )
+        if latest_match:
+            cited_latest = latest_match.group(1).strip().strip("`")
+            expected_latest = unresolved_by_root[root_id]
+            if expected_latest and cited_latest != expected_latest:
+                report.error(
+                    f"gerrit-comments.md thread {root_id} cites stale latest "
+                    f"comment id {cited_latest}, expected {expected_latest}"
+                )
 
 
 def validate_final(root: Path, sha: str | None, source_ids: dict[str, Path],
@@ -5430,8 +5484,11 @@ def validate_final(root: Path, sha: str | None, source_ids: dict[str, Path],
     draft_revision = field(draft, "Draft revision") or ""
     if not re.fullmatch(r"[1-9]\d*", draft_revision):
         report.error("draft-review.md lacks a positive integer Draft revision")
+    if contains_local_path_or_url(draft):
+        report.error("draft-review.md contains a local filesystem path or file:// URL")
     if contains_local_path_url_or_placeholder(gerrit):
         report.error("gerrit-comments.md contains a local path/URL or placeholder inline")
+    validate_gerrit_thread_replies(root, gerrit, report)
     validate_output_coverage(root, synthesis_items, draft, gerrit, report)
     sections = validate_draft_sections(
         root, draft_revision, budgets.get("worker_input_budget_bytes"), report

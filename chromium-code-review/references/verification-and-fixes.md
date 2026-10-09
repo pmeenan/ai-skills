@@ -40,9 +40,10 @@ code, not from memory.
 - Challenge the finding: look for alternate caller paths, wrappers, overrides,
   feature gates, or invariants that make it unreachable or lower its severity.
 - Apply Universal Verification Principles during refutation:
-  - **Contract Authority Hierarchy (External Specs & Subsystem Invariants Outrank Local Comments/Tests):** Normative external specifications (W3C, WHATWG, WICG, IETF RFCs, WebIDL/Mojo wire contracts) and documented subsystem invariants (`context.md`, `callers/directory-docs.md`) outrank CL-local header comments, inline comments, and CL-introduced unit tests. Local comments or unit tests that codify a misreading of the governing external specification **never** refute a spec-mismatch candidate; unless the CL explicitly marks the divergence as an intentional staged `TODO` with safe gating/fallback, confirm the mismatch (or record `UNPROVEN` as an owner question when specification intent is genuinely ambiguous).
+  - **Contract Authority Hierarchy & Verbatim Spec Quotes (External Specs & Subsystem Invariants Outrank Local Comments/Tests):** Normative external specifications (W3C, WHATWG, WICG, IETF RFCs, WebIDL/Mojo wire contracts) and documented subsystem invariants (`context.md`, `callers/directory-docs.md`) outrank CL-local header comments, inline comments, and CL-introduced unit tests. Local comments or unit tests that codify a misreading of the governing external specification **never** refute a spec-mismatch candidate; unless the CL explicitly marks the divergence as an intentional staged `TODO` with safe gating/fallback, confirm the mismatch (or record `UNPROVEN` as an owner question when specification intent is genuinely ambiguous). Whenever quoting a specification in a verdict or finding, quote the spec's exact words verbatim (e.g. `"origins"`, `"globally disclosable"`), never paraphrasing code identifiers inside quotation marks or citing unverified section numbers.
   - **Documented Intent Overrides Syntactic Omissions:** Within the bounds of the Contract Authority Hierarchy above, adjacent inline comments, docstrings, and header contracts are binding design specifications for internal implementation choices. An omitted branch or conditional that is explicitly documented in code comments or header docs as intentional design is NOT a defect unless it violates a governing external specification, base-interface contract, or higher-level subsystem invariant.
-  - **Burden of Proof Requires Reachable Harm:** A missing `if` check or omitted pre-filter is ONLY a bug if a reachable trace produces a concrete bad state (memory corruption, security bypass, data loss, or broken invariant). Omitting an optional defensive check on a safe or idempotent path (e.g. `std::map::erase` on a key) is not a defect; the reviewer must prove reachable harm, not demand arbitrary defensive guards.
+  - **Burden of Proof Requires Reachable Harm & Trusted-Caller Calibration:** A missing `if` check or omitted pre-filter is ONLY a blocking bug if a reachable trace produces a concrete bad state (memory corruption, security bypass, data loss, or broken invariant). Defense-in-depth checks on inputs supplied exclusively by trusted browser-process code (e.g. re-verifying a browser-computed staging digest at commit time, or guarding against `>2 GiB` buffers that cannot cross a single Mojo message) and hazards that require a caller to violate a documented "call at most once" contract (e.g. calling `Finish()` after `Discard()`) are at most **P3** (or a P3 doc/behavior mismatch if `Discard()` after `Finish()` deletes the committed file because `path_` is not cleared), never P1/P2 blockers, unless reachable from untrusted input without a browser bug.
+  - **Explicit `TODO`-Tracked Scope & Open Reviewer Threads:** In foundation or stacked CLs, missing follow-up integrations that are already tracked by an explicit in-code `TODO` (such as `BrowsingDataRemover` wiring or storage quota enforcement) or by an open Gerrit thread waiting on the reviewer's own input are not new P2 blockers: refute them as `REFUTED` (citing the `TODO` `path:line` or open thread ID) or record a non-blocking design question (`UNPROVEN`), unless the code being landed actively causes harm today (for example, an unguarded OTR profile writing to the regular profile directory). Likewise, generic requests to "add UMA histograms, tracing, or benchmarks" in a foundation CL with no callers and no `histograms.xml` in scope are `REFUTED`.
   - **Producer/Consumer Symmetry (Read vs. Write Scoping):** Query/read paths scope to the key space of stored data, not to the write-side preconditions of the caller. Cache, index, and storage lookup APIs must match the full potential key space of stored data, regardless of caller context.
 - To refute a candidate, name the specific guard (the line) or documented design contract/comment that proves safe behavior, or produce the concrete trace that completes safely. "Looks handled" or "the caller probably checks" is not a refutation — it is the shallow read the candidate exists to challenge. For hypotheses written as IF/THEN/UNLESS, refutation means filling in the UNLESS with a citation.
 - If honest tracing can neither confirm nor refute a candidate, do not drop
@@ -70,11 +71,19 @@ code, not from memory.
   callback closure holds an owning anchor (`scoped_refptr<Parent>` or
   `std::unique_ptr`) until completion. Local variable death, declaration order,
   or callback capture syntax alone cannot confirm a use-after-free without
-  tracing the asynchronous completion path.
+  tracing the asynchronous completion path. **Standard `PostTaskAndReplyWithResult`
+  reply ownership:** when a service posts background work via
+  `PostTaskAndReplyWithResult` with value-copied inputs and passes the caller's
+  `OnceCallback` directly as the reply (without dereferencing `this` or service
+  members in the reply), the service's destruction before the reply runs is safe
+  and callers guarding their own state with `WeakPtr` is the standard Chromium
+  contract (`REFUTED`); also do not claim `weak_factory_` is "unused" when
+  `GetWeakPtr()` is public API.
 - For style claims, cite authority applicable to the changed directory.
-  Blink/WebKit naming guidance is not a Chromium-wide convention, and a
+  Blink/WebKit naming guidance is not a Chromium-wide convention, a
   mechanical `bool` hit without local authority or concrete callsite ambiguity
-  is REFUTED.
+  is REFUTED, and valid UTF-8 section symbols (`§`, e.g. `§ 8.4`) in
+  specification citations are permitted by Chromium style (`REFUTED`).
 
 ## Skeptic Verdicts
 
@@ -382,6 +391,14 @@ review:
 - Are findings derived from actual code traces rather than assumptions?
 - Do proposed fixes preserve the documented contract and nearby Chromium
   idioms? Have API-shaping fixes been weighed against reasonable alternatives?
+- **Cross-finding fix compatibility & no grab-bag bundling:** Do any two
+  promoted findings recommend mutually incompatible fixes (for example, one
+  finding recommending asynchronous `ImportantFileWriter::ScheduleWrite()` while
+  another recommends propagating a synchronous `bool SaveMetadata()` return
+  value), or repeat the same prose across multiple findings? Reconcile
+  conflicting fix recommendations so they agree on a coherent architecture,
+  trim duplicated sub-points, and never bundle unrelated observations into a
+  single multi-topic finding.
 - Did the integration trace prove the code is wired into the intended runtime
   path, and did the disabled/default-path trace prove old behavior is
   preserved?
@@ -437,17 +454,22 @@ approvals with blocking conditions.
 
 When formatting comments meant to be copy-pasted directly to Gerrit:
 
-- **No local paths:** Gerrit comments must never contain local absolute
-  file paths (e.g. `/usr/local/...`) or local `file:///` URLs. Use
-  repo-relative references only (e.g. `net/http/http_cache_writers.cc:1010`).
+- **No local paths:** Neither `draft-review.md` nor `gerrit-comments.md` may
+  ever contain local absolute file paths (e.g. `/usr/local/...`,
+  `/codereview/worktrees/...`, `/tmp/...`, `/home/...`) or local `file:///`
+  URLs. Use repo-relative references only (e.g.
+  `net/http/http_cache_writers.cc:1010`).
 - **No placeholder or fake inlines:** do not output generic placeholder
   inline comments (e.g., `L16500 (General Nit) // General Nit`). General
   feedback belongs in the main comment body; inline comments must target
   real, modified lines of code.
-- **Concise, query-based inlines:** frame inline feedback as questions or
-  concise queries (e.g., "Can we gate these success-only metrics...?").
-  Avoid repeating the same suggestion across multiple files/declarations;
-  place a single comment at the most relevant site.
+- **Concise, query-based inlines (1–3 sentences):** frame inline feedback as
+  concise questions or direct observations (1–3 sentences stating the concrete
+  bug/impact and the ask, e.g., "Can we gate these success-only metrics...?").
+  Never paste multi-paragraph trace dumps or internal gate metadata (`Rows`,
+  `Synthesis item`, `Fix status`, anchor names) into Gerrit comments. Avoid
+  repeating the same suggestion across multiple files/declarations; place a
+  single comment at the most relevant site.
 - **Make applicable edits directly actionable:** every promoted finding has a
   `Suggested edit` decision inherited from its evidence card. Mark it
   `applicable` only when the validated fix is fully determined, replaces one
@@ -483,5 +505,11 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   contains CommentInfo arrays. Flatten with paths retained, group replies by
   transitive `in_reply_to` root, order within each thread by `updated` (stable
   ID tie-break), and take unresolved state from that thread's latest comment.
-  Target the normalized root/latest IDs. Never use the last file-array element
-  or the change's latest message as unresolved-thread state.
+  Target the normalized root/latest IDs in `gerrit/unresolved-threads.json`.
+  Never use the last file-array element or the change's latest message as
+  unresolved-thread state, never emit a `### Thread <root_id>` reply for a
+  thread that is already resolved on Gerrit (absent from
+  `gerrit/unresolved-threads.json`), never attach unrelated new findings to an
+  existing or resolved thread, and when an open thread is explicitly waiting on
+  the human reviewer's own input, note that status instead of posting a
+  prescriptive agent reply.

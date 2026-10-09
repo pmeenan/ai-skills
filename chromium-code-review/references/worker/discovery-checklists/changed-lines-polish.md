@@ -78,9 +78,10 @@ dropping them from an otherwise-LGTM review.
   that choice exists.
 - Flag newly introduced non-ASCII characters in comments, API docs, and
   developer-facing test prose as optional polish unless they are intentional
-  names, protocol data, user-visible strings, or otherwise clearly required.
-  Prefer ASCII punctuation in Chromium code comments, especially replacing
-  smart quotes and em/en dashes with plain ASCII equivalents.
+  names, specification section citations (`§`), protocol data, user-visible
+  strings, or otherwise clearly required. Prefer ASCII punctuation in Chromium
+  code comments for smart quotes and em/en dashes, but do not flag standard
+  UTF-8 section symbols (`§ 8.4`) in spec references.
 - For FIFO/LIFO containers, prefer Chromium's `base::queue` / `base::stack`
   over `std::queue` / `std::stack` unless the code needs the standard
   underlying container's pointer/iterator stability or another documented

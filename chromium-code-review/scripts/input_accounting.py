@@ -4,8 +4,11 @@ import hashlib
 import json
 import re
 
-OUTPUT_DIRS = {'draft-parts', 'gerrit-parts', 'output-coverage'}
-OUTPUT_FILES = {'draft-review.md', 'gerrit-comments.md', 'output-coverage.tsv'}
+OUTPUT_DIRS = {'draft-parts', 'gerrit-parts', 'output-coverage', 'gerrit'}
+OUTPUT_FILES = {
+    'draft-review.md', 'gerrit-comments.md', 'output-coverage.tsv',
+    'comments.json', 'profile.json', 'profile.md',
+}
 
 
 def mutable_output(root: Path, path: Path) -> bool:

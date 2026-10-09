@@ -70,18 +70,29 @@ Output Rules section of `references/verification-and-fixes.md`:
 - **Replies to existing unresolved threads:** file and thread line, status, and
   the exact response, using normalized root/latest IDs from
   `gerrit/unresolved-threads.json`. Do not open duplicate new threads for an
-  existing topic.
+  existing topic, never reply to a thread that is already resolved on Gerrit
+  (absent from `gerrit/unresolved-threads.json`), never attach unrelated new
+  findings to a resolved thread, and do not post a prescriptive agent reply on
+  an open thread whose latest comment is explicitly waiting on the human
+  reviewer's own input.
 - **New inline comments:** repo-relative file, exact line or range, verbatim line
-  text from the reviewed patchset, and concise comment text. When the finding's
-  Suggested edit decision is applicable, attach the comment to that exact
-  selected range and include its fenced `suggestion` block; Gerrit replaces
-  the attached lines with the block contents. Prefix optional polish with
-  `nit:`.
+  text from the reviewed patchset, and concise comment text (1–3 sentences).
+  When the finding's Suggested edit decision is applicable, attach the comment
+  to that exact selected range and include its fenced `suggestion` block;
+  Gerrit replaces the attached lines with the block contents. Prefix optional
+  polish with `nit:`.
 
-For Gerrit-ready text, cite findings as repo-relative `path:line` against the
-reviewed patchset, extract quoted code verbatim, and re-check line numbers
-before sending. Avoid leaking local filesystem paths in comments meant for
-Gerrit.
+For both `draft-review.md` and `gerrit-comments.md`, cite all code locations as
+repo-relative `path:line` against the reviewed patchset, extract quoted code
+verbatim, and re-check line numbers before sending. Neither file may ever
+contain local filesystem or worktree paths (`/codereview/worktrees/`,
+`/usr/local/`, `/tmp/`, `/home/`) or `file://` URLs. When the orchestrator
+renders a user-facing review report in chat or as a conversation artifact
+outside `REVIEW_DIR`, strip internal gate-accounting fields (`- **Synthesis
+item:**`, `- **Fix status:**`, `- **Suggested edit:** omitted — ...`,
+`- **Rows:**`, severity anchor/delta parentheticals, and the raw `plan.md`
+roster table) so the user receives a clean engineering review while
+`REVIEW_DIR/draft-review.md` retains the full machine-validated audit trail.
 
 `comments.json` is a map from path to CommentInfo arrays, not a globally
 ordered list. Thread targeting uses the normalized

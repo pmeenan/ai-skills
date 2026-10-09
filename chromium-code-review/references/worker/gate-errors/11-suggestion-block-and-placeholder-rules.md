@@ -56,7 +56,7 @@ at all — which is why you get a *count* error rather than an indentation error
 ### `<...>` placeholder detection in `gerrit-comments.md`
 
 `validate_final` rejects `gerrit-comments.md` if it matches
-`(?:file://|/(?:tmp|home)/|<[^>]+>)`.
+`(?:file://|/(?:tmp|home|usr/local)/|/codereview/worktrees/|<[^>]+>)`.
 
 | Symptom | Real cause | Fix | Source |
 | --- | --- | --- | --- |

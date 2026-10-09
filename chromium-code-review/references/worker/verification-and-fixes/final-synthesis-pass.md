@@ -23,6 +23,14 @@ review:
 - Are findings derived from actual code traces rather than assumptions?
 - Do proposed fixes preserve the documented contract and nearby Chromium
   idioms? Have API-shaping fixes been weighed against reasonable alternatives?
+- **Cross-finding fix compatibility & no grab-bag bundling:** Do any two
+  promoted findings recommend mutually incompatible fixes (for example, one
+  finding recommending asynchronous `ImportantFileWriter::ScheduleWrite()` while
+  another recommends propagating a synchronous `bool SaveMetadata()` return
+  value), or repeat the same prose across multiple findings? Reconcile
+  conflicting fix recommendations so they agree on a coherent architecture,
+  trim duplicated sub-points, and never bundle unrelated observations into a
+  single multi-topic finding.
 - Did the integration trace prove the code is wired into the intended runtime
   path, and did the disabled/default-path trace prove old behavior is
   preserved?

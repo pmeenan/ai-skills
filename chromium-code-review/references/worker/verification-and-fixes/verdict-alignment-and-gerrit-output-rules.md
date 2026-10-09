@@ -25,17 +25,22 @@ approvals with blocking conditions.
 
 When formatting comments meant to be copy-pasted directly to Gerrit:
 
-- **No local paths:** Gerrit comments must never contain local absolute
-  file paths (e.g. `/usr/local/...`) or local `file:///` URLs. Use
-  repo-relative references only (e.g. `net/http/http_cache_writers.cc:1010`).
+- **No local paths:** Neither `draft-review.md` nor `gerrit-comments.md` may
+  ever contain local absolute file paths (e.g. `/usr/local/...`,
+  `/codereview/worktrees/...`, `/tmp/...`, `/home/...`) or local `file:///`
+  URLs. Use repo-relative references only (e.g.
+  `net/http/http_cache_writers.cc:1010`).
 - **No placeholder or fake inlines:** do not output generic placeholder
   inline comments (e.g., `L16500 (General Nit) // General Nit`). General
   feedback belongs in the main comment body; inline comments must target
   real, modified lines of code.
-- **Concise, query-based inlines:** frame inline feedback as questions or
-  concise queries (e.g., "Can we gate these success-only metrics...?").
-  Avoid repeating the same suggestion across multiple files/declarations;
-  place a single comment at the most relevant site.
+- **Concise, query-based inlines (1–3 sentences):** frame inline feedback as
+  concise questions or direct observations (1–3 sentences stating the concrete
+  bug/impact and the ask, e.g., "Can we gate these success-only metrics...?").
+  Never paste multi-paragraph trace dumps or internal gate metadata (`Rows`,
+  `Synthesis item`, `Fix status`, anchor names) into Gerrit comments. Avoid
+  repeating the same suggestion across multiple files/declarations; place a
+  single comment at the most relevant site.
 - **Make applicable edits directly actionable:** every promoted finding has a
   `Suggested edit` decision inherited from its evidence card. Mark it
   `applicable` only when the validated fix is fully determined, replaces one
@@ -71,5 +76,11 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   contains CommentInfo arrays. Flatten with paths retained, group replies by
   transitive `in_reply_to` root, order within each thread by `updated` (stable
   ID tie-break), and take unresolved state from that thread's latest comment.
-  Target the normalized root/latest IDs. Never use the last file-array element
-  or the change's latest message as unresolved-thread state.
+  Target the normalized root/latest IDs in `gerrit/unresolved-threads.json`.
+  Never use the last file-array element or the change's latest message as
+  unresolved-thread state, never emit a `### Thread <root_id>` reply for a
+  thread that is already resolved on Gerrit (absent from
+  `gerrit/unresolved-threads.json`), never attach unrelated new findings to an
+  existing or resolved thread, and when an open thread is explicitly waiting on
+  the human reviewer's own input, note that status instead of posting a
+  prescriptive agent reply.

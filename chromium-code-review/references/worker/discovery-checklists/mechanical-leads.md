@@ -59,7 +59,9 @@ manual thread work, and the script's output says which is which.
 - Scan added or modified lines for non-ASCII characters:
   `git diff --color=never --unified=0 <parent> <revision> -- '*.cc' '*.h' '*.mm' '*.md' | LC_ALL=C rg -n '^[+][^+].*[^[:ascii:]]'`.
   Each hit in comments, docs, or developer-facing test prose is a polish
-  candidate unless the character is intentional and justified.
+  candidate unless the character is intentional and justified (standard UTF-8
+  section symbols `§` in specification citations such as `§ 8.4`, proper names,
+  and protocol/test literals are valid Chromium style and not defects).
 - Scan added or modified `bool` declarations as convention leads:
   `git diff --color=never --unified=0 <parent> <revision> -- '*.cc' '*.h' | rg -n '^[+][^+].*\bbool\s+[A-Za-z0-9_]+_'`.
   Do not infer a repository-wide `is_`/`has_` rule from the hit. Open the

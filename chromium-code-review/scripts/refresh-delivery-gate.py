@@ -65,6 +65,141 @@ def load_detail(args: argparse.Namespace, cl: str, mode: str = "current", root: 
     return fetch_detail(f"{base}/changes/{encoded}/detail?o=ALL_REVISIONS")
 
 
+def load_comments(args: argparse.Namespace, cl: str, mode: str = "current") -> dict[str, Any] | None:
+    if args.comments_json:
+        return decode_json(args.comments_json.read_bytes(), str(args.comments_json))
+    if mode != "current" or args.detail_json:
+        return None
+    qualified = f"{args.gerrit_project}~{cl}"
+    encoded = urllib.parse.quote(qualified, safe="")
+    base = args.gerrit_base.rstrip("/")
+    return fetch_detail(f"{base}/changes/{encoded}/comments")
+
+
+def archive_prior_bytes(root: Path, path: Path) -> None:
+    if not path.is_file():
+        return
+    import hashlib
+    payload = path.read_bytes()
+    sha = hashlib.sha256(payload).hexdigest()
+    destination = root / "output-history" / f"{sha}.bin"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not destination.exists():
+        with destination.open("xb") as stream:
+            stream.write(payload)
+        destination.chmod(0o444)
+
+
+def refresh_comment_threads(root: Path, live_comments: dict[str, Any]) -> str | None:
+    import importlib.util
+    extractor_path = Path(__file__).resolve().with_name("extract-unresolved-comments.py")
+    spec = importlib.util.spec_from_file_location("extract_unresolved_comments", extractor_path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"cannot load {extractor_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    live_normalized = module.normalize(live_comments)
+    live_by_root = {
+        str(thread["root_id"]).strip(): str(thread.get("latest_id") or "").strip()
+        for thread in live_normalized.get("threads", [])
+        if isinstance(thread, dict)
+        and thread.get("unresolved") is True
+        and thread.get("root_id")
+    }
+    threads_path = root / "gerrit" / "unresolved-threads.json"
+    existing_by_root: dict[str, str] | None = None
+    if threads_path.is_file():
+        existing_data = json.loads(threads_path.read_text(encoding="utf-8"))
+        if isinstance(existing_data, dict) and isinstance(existing_data.get("threads"), list):
+            existing_by_root = {
+                str(thread["root_id"]).strip(): str(thread.get("latest_id") or "").strip()
+                for thread in existing_data["threads"]
+                if isinstance(thread, dict)
+                and thread.get("unresolved") is True
+                and thread.get("root_id")
+            }
+    stale_replies: list[str] = []
+    gerrit_path = root / "gerrit-comments.md"
+    if gerrit_path.is_file():
+        gerrit_text = gerrit_path.read_text(encoding="utf-8")
+        for match in re.finditer(r"(?m)^###\s+Thread\s+([^\s—]+).*$", gerrit_text):
+            root_id = match.group(1).strip().strip("`")
+            next_heading = re.search(r"(?m)^##", gerrit_text[match.end():])
+            end = (
+                match.end() + next_heading.start()
+                if next_heading is not None else len(gerrit_text)
+            )
+            section = gerrit_text[match.end():end]
+            if root_id not in live_by_root:
+                stale_replies.append(f"resolved/unknown thread {root_id}")
+                continue
+            latest_match = re.search(
+                r"(?im)^-\s*Latest comment id:\s*(\S+)", section
+            )
+            if latest_match:
+                cited_latest = latest_match.group(1).strip().strip("`")
+                if live_by_root[root_id] and cited_latest != live_by_root[root_id]:
+                    stale_replies.append(
+                        f"thread {root_id} latest_id {cited_latest} != {live_by_root[root_id]}"
+                    )
+    threads_changed = existing_by_root is not None and existing_by_root != live_by_root
+    if not threads_changed and not stale_replies:
+        return None
+    for target in (
+        root / "comments.json",
+        threads_path,
+        root / "profile.json",
+        root / "profile.md",
+    ):
+        archive_prior_bytes(root, target)
+    atomic_write(
+        root / "comments.json",
+        json.dumps(live_comments, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+    )
+    atomic_write(
+        threads_path,
+        json.dumps(live_normalized, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+    )
+    profile_path = root / "profile.json"
+    if profile_path.is_file():
+        profile_cmd = [
+            sys.executable,
+            str(Path(__file__).resolve().with_name("profile-review.py")),
+            str(root),
+        ]
+        try:
+            existing_profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            budget = existing_profile.get("context_budget", {})
+            tokens = budget.get("estimation", {}).get("context_window_tokens")
+            if isinstance(tokens, int) and tokens > 0:
+                profile_cmd.extend(["--context-window-tokens", str(tokens)])
+            tier_tokens = budget.get("reported_tier_context_tokens", {})
+            if isinstance(tier_tokens, dict):
+                for tier, tier_val in sorted(tier_tokens.items()):
+                    if isinstance(tier_val, int) and tier_val > 0:
+                        profile_cmd.extend(["--tier-context-window-tokens", f"{tier}:{tier_val}"])
+            subprocess.run(profile_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if (root / "indexes").is_dir():
+                subprocess.run(
+                    [
+                        sys.executable,
+                        str(Path(__file__).resolve().with_name("build-review-indexes.py")),
+                        str(root),
+                    ],
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+        except (OSError, ValueError, TypeError):
+            pass
+    details = []
+    if threads_changed:
+        details.append("unresolved Gerrit thread set or latest comment IDs changed")
+    if stale_replies:
+        details.append("gerrit-comments.md targets " + ", ".join(stale_replies))
+    return "; ".join(details) + "; reconcile prior-feedback.md and gerrit-comments.md"
+
+
 def atomic_write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -190,6 +325,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("review_dir", type=Path)
     parser.add_argument("--detail-json", type=Path, help="normalized or XSSI-prefixed Gerrit detail JSON")
+    parser.add_argument("--comments-json", type=Path, help="normalized or XSSI-prefixed Gerrit /comments JSON")
     parser.add_argument("--gerrit-base", default="https://chromium-review.googlesource.com")
     parser.add_argument("--gerrit-project", default="chromium/src")
     parser.add_argument("--checked-at", help="RFC3339 timestamp; defaults to current UTC")
@@ -212,12 +348,17 @@ def main() -> int:
     try:
         cl, pinned_ps, pinned_sha, mode = pinned_data(root)
         detail = load_detail(args, cl, mode=mode, root=root)
+        live_comments = load_comments(args, cl, mode=mode)
         current_ps, current_sha, revisions = current_data(detail)
         gerrit_updated = str(detail.get("updated") or "unavailable")
         pinned_revision = revisions.get(pinned_sha)
         if not isinstance(pinned_revision, dict) or str(pinned_revision.get("_number", "")) != pinned_ps:
             raise ValueError("pinned SHA does not map to the pinned patchset in ALL_REVISIONS")
         challenge = challenge_proof(root)
+        comment_staleness = (
+            refresh_comment_threads(root, live_comments)
+            if live_comments is not None else None
+        )
         if mode == "historical":
             result = "historical pin verified"
             reason = f"pinned PS{pinned_ps}/SHA mapping remains present; current is PS{current_ps}"
@@ -252,11 +393,19 @@ def main() -> int:
                 result = "current"
                 reason = "local review pin is current"
         elif current_sha == pinned_sha:
-            result = "current"
-            reason = "Gerrit current revision equals the pinned revision"
+            if comment_staleness:
+                result = "stale comments"
+                reason = comment_staleness
+            else:
+                result = "current"
+                reason = "Gerrit current revision equals the pinned revision"
         elif args.accept_proven_trivial_delta and proven_trivial_delta(root, pinned_sha, current_sha):
-            result = "trivial delta verified"
-            reason = "accepted existing patchset-delta.md revalidation for the unchanged Gerrit-current SHA"
+            if comment_staleness:
+                result = "stale comments"
+                reason = comment_staleness
+            else:
+                result = "trivial delta verified"
+                reason = "accepted existing patchset-delta.md revalidation for the unchanged Gerrit-current SHA"
         else:
             result = "newer patchset"
             reason = "Gerrit current differs from the pin; delta classification is required"
@@ -285,7 +434,19 @@ def main() -> int:
         ),
     )
     if affirmative and reconciliation_update:
+        archive_prior_bytes(root, root / "reconciliation.md")
         atomic_write(root / "reconciliation.md", reconciliation_update[1])
+        if (root / "indexes").is_dir():
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve().with_name("build-review-indexes.py")),
+                    str(root),
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
     print(f"{result}: {'yes' if affirmative else 'no'}")
     return 0 if affirmative else 2
 

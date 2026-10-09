@@ -2888,8 +2888,10 @@ Return partial with explicit remaining scope when needed.
             "Do not post Wrapper<placeholder>.",
             "See /tmp/private-review/output.txt.",
             "See file:///home/reviewer/output.txt.",
+            "See /usr/local/google/home/reviewer/src/a.cc:1.",
+            "See /codereview/worktrees/cl-1-ps2/a.cc:1.",
         ):
-            with self.subTest(forbidden=forbidden):
+            with self.subTest(target="gerrit", forbidden=forbidden):
                 gerrit.write_text(
                     f"# Gerrit-ready comments\n\n{forbidden}\n", encoding="utf-8"
                 )
@@ -2899,6 +2901,227 @@ Return partial with explicit remaining scope when needed.
                 )
                 self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
                 self.assertIn("local path/URL or placeholder", run.stdout)
+        gerrit.write_text("# Gerrit-ready comments\n\nLGTM fixture.\n", encoding="utf-8")
+
+        draft = self.review / "draft-review.md"
+        base_draft = draft.read_text(encoding="utf-8")
+        for forbidden in (
+            "See [a.cc](file:///usr/local/google/home/reviewer/codereview/worktrees/cl-1-ps2/a.cc#L1).",
+            "See /codereview/worktrees/cl-1-ps2/a.cc:1.",
+            "See /tmp/private-review/output.txt.",
+        ):
+            with self.subTest(target="draft", forbidden=forbidden):
+                draft.write_text(f"{base_draft}\n{forbidden}\n", encoding="utf-8")
+                run = subprocess.run(
+                    [str(VALIDATE), str(self.review), "--phase", "final"],
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+                self.assertIn(
+                    "draft-review.md contains a local filesystem path or file:// URL",
+                    run.stdout,
+                )
+
+    def test_final_rejects_resolved_or_stale_gerrit_thread_replies(self) -> None:
+        self.make_final_artifacts()
+        subprocess.run(
+            [
+                str(EXTRACT),
+                str(FIXTURES / "comments.json"),
+                "-o",
+                str(self.review / "gerrit" / "unresolved-threads.json"),
+            ],
+            check=True,
+        )
+        shutil.copy2(FIXTURES / "comments.json", self.review / "comments.json")
+        subprocess.run(
+            [str(PROFILE), str(self.review), "--context-window-tokens", "3000"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.refresh_indexes()
+
+        gerrit = self.review / "gerrit-comments.md"
+        gerrit.write_text(
+            "# Gerrit-ready comments\n\n"
+            "## Unresolved Thread Replies\n\n"
+            "### Thread open-root\n"
+            "- File: a.cc:12\n"
+            "- Latest comment id: open-reply\n"
+            "- Reply:\n"
+            "Ack, updated.\n",
+            encoding="utf-8",
+        )
+        valid_run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(valid_run.returncode, 0, valid_run.stdout + valid_run.stderr)
+
+        gerrit.write_text(
+            "# Gerrit-ready comments\n\n"
+            "## Unresolved Thread Replies\n\n"
+            "### Thread resolved-root\n"
+            "- File: a.cc:20\n"
+            "- Latest comment id: resolved-reply\n"
+            "- Reply:\n"
+            "Replying to a resolved thread.\n",
+            encoding="utf-8",
+        )
+        resolved_run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(resolved_run.returncode, 1)
+        self.assertIn(
+            "gerrit-comments.md replies to resolved or unknown Gerrit thread resolved-root",
+            resolved_run.stdout,
+        )
+
+        gerrit.write_text(
+            "# Gerrit-ready comments\n\n"
+            "## Unresolved Thread Replies\n\n"
+            "### Thread open-root\n"
+            "- File: a.cc:12\n"
+            "- Latest comment id: open-root\n"
+            "- Reply:\n"
+            "Replying to stale comment ID.\n",
+            encoding="utf-8",
+        )
+        stale_run = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(stale_run.returncode, 1)
+        self.assertIn(
+            "gerrit-comments.md thread open-root cites stale latest comment id open-root, expected open-reply",
+            stale_run.stdout,
+        )
+
+    def test_refresh_delivery_gate_detects_newly_resolved_comments_and_updates_threads(
+        self,
+    ) -> None:
+        self.make_final_artifacts()
+        initial_comments = {
+            "a.cc": [
+                {
+                    "id": "open-root",
+                    "patch_set": 2,
+                    "line": 1,
+                    "updated": "2026-07-22 00:00:00.000000000",
+                    "unresolved": True,
+                    "author": {"name": "Reviewer"},
+                    "message": "Is this thread still open?",
+                }
+            ]
+        }
+        (self.review / "comments.json").write_text(
+            json.dumps(initial_comments) + "\n", encoding="utf-8"
+        )
+        subprocess.run(
+            [
+                str(EXTRACT),
+                str(self.review / "comments.json"),
+                "-o",
+                str(self.review / "gerrit" / "unresolved-threads.json"),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [str(PROFILE), str(self.review), "--context-window-tokens", "3000"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.refresh_indexes()
+
+        gerrit = self.review / "gerrit-comments.md"
+        gerrit.write_text(
+            "# Gerrit-ready comments\n\n"
+            "## Unresolved Thread Replies\n\n"
+            "### Thread open-root\n"
+            "- File: a.cc:1\n"
+            "- Latest comment id: open-root\n"
+            "- Reply:\n"
+            "Still open.\n",
+            encoding="utf-8",
+        )
+
+        live_comments_path = self.review.parent / "live-comments.json"
+        resolved_comments = {
+            "a.cc": [
+                *initial_comments["a.cc"],
+                {
+                    "id": "open-resolved",
+                    "in_reply_to": "open-root",
+                    "patch_set": 2,
+                    "line": 1,
+                    "updated": "2026-07-22 00:02:00.000000000",
+                    "unresolved": False,
+                    "author": {"name": "Author"},
+                    "message": "Done.",
+                },
+            ]
+        }
+        live_comments_path.write_text(
+            json.dumps(resolved_comments) + "\n", encoding="utf-8"
+        )
+
+        stale_gate = subprocess.run(
+            [
+                "python3",
+                str(REFRESH),
+                str(self.review),
+                "--detail-json",
+                str(self.review / "detail.json"),
+                "--comments-json",
+                str(live_comments_path),
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(stale_gate.returncode, 2, stale_gate.stdout + stale_gate.stderr)
+        self.assertIn("stale comments: no", stale_gate.stdout)
+        refreshed_threads = json.loads(
+            (self.review / "gerrit" / "unresolved-threads.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(refreshed_threads["summary"]["unresolved_threads"], 0)
+        self.assertTrue((self.review / "output-history").is_dir())
+
+        invalid_final = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(invalid_final.returncode, 1)
+        self.assertIn("non-deliverable result: stale comments", invalid_final.stdout)
+        self.assertIn(
+            "gerrit-comments.md replies to resolved or unknown Gerrit thread open-root",
+            invalid_final.stdout,
+        )
+
+        # After removing the stale thread reply, re-running refresh-delivery-gate passes.
+        gerrit.write_text("# Gerrit-ready comments\n\nLGTM fixture.\n", encoding="utf-8")
+        clean_gate = subprocess.run(
+            [
+                "python3",
+                str(REFRESH),
+                str(self.review),
+                "--detail-json",
+                str(self.review / "detail.json"),
+                "--comments-json",
+                str(live_comments_path),
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(clean_gate.returncode, 0, clean_gate.stdout + clean_gate.stderr)
+        self.assertIn("current: yes", clean_gate.stdout)
+        valid_final = subprocess.run(
+            [str(VALIDATE), str(self.review), "--phase", "final"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(valid_final.returncode, 0, valid_final.stdout + valid_final.stderr)
 
     def make_sectioned_final(self) -> None:
         self.make_final_artifacts()

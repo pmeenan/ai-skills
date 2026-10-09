@@ -161,6 +161,8 @@ These surface as a Python traceback ending in `ValueError: <message>`.
 | `<source> must contain a JSON object` | Wrong JSON shape. | Re-fetch the detail JSON. | refresh-delivery-gate.py:38 |
 | `detail has no ALL_REVISIONS map or full current_revision` | Detail fetched without `ALL_REVISIONS`. | Let the script fetch it itself, or pass a detail JSON fetched with `o=ALL_REVISIONS`. | refresh-delivery-gate.py:100 |
 | `detail current_revision is absent from revisions or lacks _number` | Inconsistent Gerrit response. | Re-fetch the detail JSON. | refresh-delivery-gate.py:103 |
-| `pinned SHA does not map to the pinned patchset in ALL_REVISIONS` | `pin.md` and Gerrit disagree. | Re-fetch the CL into a fresh review directory. | refresh-delivery-gate.py:204 |
+| `pinned SHA does not map to the pinned patchset in ALL_REVISIONS` | `pin.md` and Gerrit disagree. | Re-fetch the CL into a fresh review directory. | refresh-delivery-gate.py:345 |
+| `Gerrit comments fetch failed after 3 attempts: <err>` | Gerrit `/comments` unreachable during delivery gate check. | Retry, or pass a pre-fetched file with `--comments-json <path>`. | refresh-delivery-gate.py:72 |
+| `stale comments: no` (exit 2) | Live Gerrit `/comments` changed the unresolved thread set (e.g., threads were resolved or updated during the review) or `gerrit-comments.md` replies to a resolved/updated thread. | Update `draft-review.md` and `gerrit-comments.md` against the refreshed `gerrit/unresolved-threads.json`, re-run the synthesis challenge, and re-run `refresh-delivery-gate.py`. | refresh-delivery-gate.py:372 |
 
 ---

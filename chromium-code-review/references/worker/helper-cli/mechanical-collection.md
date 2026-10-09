@@ -32,8 +32,9 @@ Throughout, `<skill-dir>` means the sealed snapshot at
 ```
 extract-unresolved-comments.py [-o OUTPUT] <comments.json>
 collect-challenge-round.py <review-dir> <round>
-refresh-delivery-gate.py [--detail-json J] [--gerrit-base B] [--gerrit-project P]
-                         [--checked-at T] [--accept-proven-trivial-delta] <review-dir>
+refresh-delivery-gate.py [--detail-json J] [--comments-json C] [--gerrit-base B]
+                         [--gerrit-project P] [--checked-at T]
+                         [--accept-proven-trivial-delta] <review-dir>
 ```
 
 These are deterministic. **Run them directly; never spend an agent executing

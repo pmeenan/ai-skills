@@ -11,7 +11,7 @@ preamble, so its rules travel with every section.
 | section | file | source lines |
 | --- | --- | --- |
 | Routing | routing.md | 12 |
-| Mechanical Leads | mechanical-leads.md | 93 |
+| Mechanical Leads | mechanical-leads.md | 95 |
 | Per-Surface Invariant Questions | per-surface-invariant-questions.md | 24 |
 | Async And Lifecycle | async-and-lifecycle.md | 118 |
 | State, Persistence, And Cache | state-persistence-and-cache.md | 70 |
@@ -19,4 +19,4 @@ preamble, so its rules travel with every section.
 | Security And Trust Boundaries | security-and-trust-boundaries.md | 42 |
 | Contracts And API Shape | contracts-and-api-shape.md | 77 |
 | Tests As Specifications | tests-as-specifications.md | 78 |
-| Changed-Lines Polish | changed-lines-polish.md | 92 |
+| Changed-Lines Polish | changed-lines-polish.md | 93 |

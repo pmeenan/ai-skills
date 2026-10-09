@@ -225,6 +225,17 @@ Calibration notes:
   real-time performance nuisance.
 - Avoid blocking on speculative problems, style preferences, or fixes whose
   tradeoffs have not been validated.
+- Defense-in-depth checks on inputs supplied exclusively by trusted
+  browser-process code (e.g. re-verifying a browser-computed staging digest or
+  guarding against `>2 GiB` single-message buffers) and hazards that require a
+  caller to violate a documented "call at most once" contract are **P3**, never
+  P1/P2.
+- Missing follow-up integrations already tracked by an explicit in-code `TODO`
+  (such as `BrowsingDataRemover` or storage quota enforcement) or by an open
+  Gerrit thread waiting on the reviewer's own input are not new P2 blockers;
+  defer them to non-blocking Questions / Notes unless the landed code causes
+  immediate active harm (such as an unguarded OTR profile writing to the
+  regular profile directory).
 
 Anchor table — match each finding to the nearest anchor and argue any delta
 explicitly. Anchors beat intuition, especially for test-gap severity:
@@ -254,8 +265,11 @@ explicitly. Anchors beat intuition, especially for test-gap severity:
 | Histogram emission disagreeing with its metadata (unit, bucket range, enum coverage, expiry) — silent misrecording | P2 |
 | Bulk-migration call site that can observe a proven old-vs-new behavioral difference (null/error/encoding/lifetime), unaccounted by the CL | P1 |
 | Residue hunk in a claimed-mechanical change that alters behavior beyond the proven transformation spec | P1; P3 when provably cosmetic |
+| Defense-in-depth validation on trusted browser-internal caller inputs or caller misuse of a documented one-shot API contract | P3 |
+| Doc/behavior mismatch on out-of-order post-`Finish()`/post-`Discard()` cleanup or redundant no-op I/O / rehash | P3 |
+| Include hygiene, missing `OWNERS` file, dead enum enumerator, or internal numeric sentinel preferring `std::optional` | P3 |
 | Ambiguous boolean name (policy vs state, `should_` vs `is_`) | P3 |
-| Non-ASCII punctuation in comments or developer-facing prose | P3 |
+| Non-ASCII punctuation in comments or developer-facing prose (excluding standard `§` section symbols in spec citations) | P3 |
 | Defensive hardening or opportunistic cleanup absent from the CL description | P3 (suggest split or description mention) |
 
 ## Output Format
@@ -318,18 +332,29 @@ Output Rules section of `references/verification-and-fixes.md`:
 - **Replies to existing unresolved threads:** file and thread line, status, and
   the exact response, using normalized root/latest IDs from
   `gerrit/unresolved-threads.json`. Do not open duplicate new threads for an
-  existing topic.
+  existing topic, never reply to a thread that is already resolved on Gerrit
+  (absent from `gerrit/unresolved-threads.json`), never attach unrelated new
+  findings to a resolved thread, and do not post a prescriptive agent reply on
+  an open thread whose latest comment is explicitly waiting on the human
+  reviewer's own input.
 - **New inline comments:** repo-relative file, exact line or range, verbatim line
-  text from the reviewed patchset, and concise comment text. When the finding's
-  Suggested edit decision is applicable, attach the comment to that exact
-  selected range and include its fenced `suggestion` block; Gerrit replaces
-  the attached lines with the block contents. Prefix optional polish with
-  `nit:`.
+  text from the reviewed patchset, and concise comment text (1–3 sentences).
+  When the finding's Suggested edit decision is applicable, attach the comment
+  to that exact selected range and include its fenced `suggestion` block;
+  Gerrit replaces the attached lines with the block contents. Prefix optional
+  polish with `nit:`.
 
-For Gerrit-ready text, cite findings as repo-relative `path:line` against the
-reviewed patchset, extract quoted code verbatim, and re-check line numbers
-before sending. Avoid leaking local filesystem paths in comments meant for
-Gerrit.
+For both `draft-review.md` and `gerrit-comments.md`, cite all code locations as
+repo-relative `path:line` against the reviewed patchset, extract quoted code
+verbatim, and re-check line numbers before sending. Neither file may ever
+contain local filesystem or worktree paths (`/codereview/worktrees/`,
+`/usr/local/`, `/tmp/`, `/home/`) or `file://` URLs. When the orchestrator
+renders a user-facing review report in chat or as a conversation artifact
+outside `REVIEW_DIR`, strip internal gate-accounting fields (`- **Synthesis
+item:**`, `- **Fix status:**`, `- **Suggested edit:** omitted — ...`,
+`- **Rows:**`, severity anchor/delta parentheticals, and the raw `plan.md`
+roster table) so the user receives a clean engineering review while
+`REVIEW_DIR/draft-review.md` retains the full machine-validated audit trail.
 
 `comments.json` is a map from path to CommentInfo arrays, not a globally
 ordered list. Thread targeting uses the normalized

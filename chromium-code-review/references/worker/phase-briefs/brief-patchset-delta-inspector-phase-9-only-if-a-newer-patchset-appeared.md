@@ -41,7 +41,8 @@ patchset ⟨PS⟩.
 Procedure: fetch the new revision ref by its explicit name and inspect it
 through explicit-object Git commands without creating a worktree (never use
 FETCH_HEAD or change the pinned worktree). Diff it against the reviewed
-revision ⟨sha⟩. Classify the
+revision ⟨sha⟩. Also inspect the refreshed `⟨review-dir⟩/gerrit/unresolved-threads.json`
+if Gerrit comments were updated alongside the patchset. Classify the
 delta: trivial (rebase/comment/format only, with no changed executable or
 contract semantics) or material (behavior, new
 files, changed logic). For material deltas, list the affected findings

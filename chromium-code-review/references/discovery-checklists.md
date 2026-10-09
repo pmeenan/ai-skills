@@ -82,7 +82,9 @@ manual thread work, and the script's output says which is which.
 - Scan added or modified lines for non-ASCII characters:
   `git diff --color=never --unified=0 <parent> <revision> -- '*.cc' '*.h' '*.mm' '*.md' | LC_ALL=C rg -n '^[+][^+].*[^[:ascii:]]'`.
   Each hit in comments, docs, or developer-facing test prose is a polish
-  candidate unless the character is intentional and justified.
+  candidate unless the character is intentional and justified (standard UTF-8
+  section symbols `§` in specification citations such as `§ 8.4`, proper names,
+  and protocol/test literals are valid Chromium style and not defects).
 - Scan added or modified `bool` declarations as convention leads:
   `git diff --color=never --unified=0 <parent> <revision> -- '*.cc' '*.h' | rg -n '^[+][^+].*\bbool\s+[A-Za-z0-9_]+_'`.
   Do not infer a repository-wide `is_`/`has_` rule from the hit. Open the
@@ -667,9 +669,10 @@ dropping them from an otherwise-LGTM review.
   that choice exists.
 - Flag newly introduced non-ASCII characters in comments, API docs, and
   developer-facing test prose as optional polish unless they are intentional
-  names, protocol data, user-visible strings, or otherwise clearly required.
-  Prefer ASCII punctuation in Chromium code comments, especially replacing
-  smart quotes and em/en dashes with plain ASCII equivalents.
+  names, specification section citations (`§`), protocol data, user-visible
+  strings, or otherwise clearly required. Prefer ASCII punctuation in Chromium
+  code comments for smart quotes and em/en dashes, but do not flag standard
+  UTF-8 section symbols (`§ 8.4`) in spec references.
 - For FIFO/LIFO containers, prefer Chromium's `base::queue` / `base::stack`
   over `std::queue` / `std::stack` unless the code needs the standard
   underlying container's pointer/iterator stability or another documented

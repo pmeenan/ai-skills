@@ -38,7 +38,13 @@ only the user directives and skill brief.
   ordering and preconditions, principal matching granularity (for example,
   exact `url::Origin` vs. `net::SchemefulSite` / same-site across every
   principal list), required error/DOMException mappings, and quota or lifetime
-  bounds.
+  bounds. **Quote specification text verbatim:** any text placed inside
+  quotation marks as a spec quote in `context.md` or downstream findings must
+  be copied character-for-character from the fetched specification (preserving
+  the spec's exact terminology such as `"origins"` or `"globally disclosable"`
+  rather than substituting C++/Mojo field names like `"allowed origins"` or
+  `"allow any origin"`), and every cited `§` section number or follow-up CL
+  number must be directly verified in the fetched document or Gerrit metadata.
 - Audit the CL description, commit message, referenced design docs, and
   governing external specification clauses against the current implementation
   and unit tests. Flag stale architectural claims when iterative refactoring
@@ -59,7 +65,7 @@ only the user directives and skill brief.
   the documented rule in `callers/directory-docs.md` wins over legacy code.
 
 Record the results in `context.md`: subsystem invariants/deprecations/layering
-rules from `callers/directory-docs.md`, external specification requirements
-and section citations, bug summary and alignment notes,
+rules from `callers/directory-docs.md`, verbatim external specification
+requirements and verified section citations, bug summary and alignment notes,
 description-and-spec-vs-implementation discrepancies, and the scope-relevance
 notes that the discovery threads and the draft writer will consume.

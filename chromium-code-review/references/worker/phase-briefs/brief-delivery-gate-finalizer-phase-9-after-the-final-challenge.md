@@ -37,7 +37,11 @@ Tier: `mechanical` (Model Tiers in `references/scaling-and-indexes.md`).
 Canonical path: run
 `python3 ⟨skill-dir⟩/scripts/refresh-delivery-gate.py ⟨review-dir⟩`
 directly after the passing challenge. For an already inspected/revalidated
-trivial delta, add `--accept-proven-trivial-delta`. Exit 0 and an affirmative
+trivial delta, add `--accept-proven-trivial-delta`. It also refreshes live
+Gerrit `/comments` into `comments.json` and `gerrit/unresolved-threads.json`
+(archiving prior bytes to `output-history/`) and fails with `stale comments` if
+any thread replied to in `gerrit-comments.md` was resolved or superseded on
+Gerrit. Exit 0 and an affirmative
 `delivery-gate.md` are required. Do not spawn an agent merely to fetch scalars
 or update Freshness.
 

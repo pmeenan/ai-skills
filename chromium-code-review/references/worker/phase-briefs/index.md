@@ -40,5 +40,5 @@ preamble, so its rules travel with every section.
 | Brief — Synthesis Challenge Planner (Phase 8) | brief-synthesis-challenge-planner-phase-8.md | 45 |
 | Brief — Synthesis Challenger (Phase 8, one per CH shard) | brief-synthesis-challenger-phase-8-one-per-ch-shard.md | 40 |
 | Brief — Challenge Collector (Phase 8) | brief-challenge-collector-phase-8.md | 38 |
-| Brief — Patchset-Delta Inspector (Phase 9, only if a newer patchset appeared) | brief-patchset-delta-inspector-phase-9-only-if-a-newer-patchset-appeared.md | 28 |
-| Brief — Delivery Gate Finalizer (Phase 9, after the final challenge) | brief-delivery-gate-finalizer-phase-9-after-the-final-challenge.md | 53 |
+| Brief — Patchset-Delta Inspector (Phase 9, only if a newer patchset appeared) | brief-patchset-delta-inspector-phase-9-only-if-a-newer-patchset-appeared.md | 29 |
+| Brief — Delivery Gate Finalizer (Phase 9, after the final challenge) | brief-delivery-gate-finalizer-phase-9-after-the-final-challenge.md | 57 |
