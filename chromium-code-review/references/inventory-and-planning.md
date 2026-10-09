@@ -60,12 +60,18 @@ than making analysis shallower.
 - When a governing external specification, explainer, or RFC is referenced,
   fetch and read the cited specification sections directly when reachable —
   never rely solely on what the CL's own comments or unit tests claim the spec
-  says. Distill the normative spec requirements for the touched surfaces into
-  `context.md`: required data-model/entry fields, step-by-step algorithm
-  ordering and preconditions, principal matching granularity (for example,
-  exact `url::Origin` vs. `net::SchemefulSite` / same-site across every
-  principal list), required error/DOMException mappings, and quota or lifetime
-  bounds. **Quote specification text verbatim:** any text placed inside
+  says. **Never rely on truncated HTML spec fetches:** Bikeshed/ReSpec HTML
+  documents embed large `<style>` and `<script>` blocks that can cause URL-read
+  tools or prefix slices to truncate the document before later normative
+  sections (such as algorithms, storage/resource limits, or security/privacy
+  considerations); strip `<style>`/`<script>` blocks first or extract sections
+  by `id` across the full document so no relevant section is missed. Distill the
+  normative spec requirements for the touched surfaces into `context.md`:
+  required data-model/entry fields, step-by-step algorithm ordering and
+  preconditions, principal matching granularity (for example, exact
+  `url::Origin` vs. `net::SchemefulSite` / same-site across every principal
+  list), required error/DOMException/console-warning behavior, and quota or
+  capacity bounds. **Quote specification text verbatim:** any text placed inside
   quotation marks as a spec quote in `context.md` or downstream findings must
   be copied character-for-character from the fetched specification (preserving
   the spec's exact terminology such as `"origins"` or `"globally disclosable"`

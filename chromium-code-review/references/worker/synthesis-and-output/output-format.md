@@ -86,13 +86,15 @@ For both `draft-review.md` and `gerrit-comments.md`, cite all code locations as
 repo-relative `path:line` against the reviewed patchset, extract quoted code
 verbatim, and re-check line numbers before sending. Neither file may ever
 contain local filesystem or worktree paths (`/codereview/worktrees/`,
-`/usr/local/`, `/tmp/`, `/home/`) or `file://` URLs. When the orchestrator
-renders a user-facing review report in chat or as a conversation artifact
-outside `REVIEW_DIR`, strip internal gate-accounting fields (`- **Synthesis
-item:**`, `- **Fix status:**`, `- **Suggested edit:** omitted — ...`,
-`- **Rows:**`, severity anchor/delta parentheticals, and the raw `plan.md`
-roster table) so the user receives a clean engineering review while
-`REVIEW_DIR/draft-review.md` retains the full machine-validated audit trail.
+`/usr/local/`, `/tmp/`, `/home/`), `file://` URLs, or LaTeX math notation
+(`$...$`, which Gerrit does not render — use backticked plain text such as
+`` `O(entries)` `` instead). When the orchestrator renders a user-facing review
+report in chat or as a conversation artifact outside `REVIEW_DIR`, strip
+internal gate-accounting fields (`- **Synthesis item:**`, `- **Fix status:**`,
+`- **Suggested edit:** omitted — ...`, `- **Rows:**`, severity anchor/delta
+parentheticals, and the raw `plan.md` roster table) so the user receives a clean
+engineering review while `REVIEW_DIR/draft-review.md` retains the full
+machine-validated audit trail.
 
 `comments.json` is a map from path to CommentInfo arrays, not a globally
 ordered list. Thread targeting uses the normalized
