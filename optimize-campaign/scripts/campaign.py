@@ -6205,6 +6205,9 @@ def enforce_own_counters(paths, story_shares, config, base_floor, story, campaig
         return
     story_packets = story_site_packets(campaign_dir, story, None)
     floor = max(story_floor_pct(config, story)[0], float(base_floor))
+    epoch = _epoch_start(campaign_dir)
+    newest_build = site_newest_build(campaign_dir) if epoch else {}
+    order = build_order(campaign_dir) if epoch else {}
     for index, item in enumerate(paths, 1):
         disposition = item.get("disposition")
         if disposition not in MEASURED_DISPOSITIONS + ("novel", "known"):
@@ -6216,6 +6219,19 @@ def enforce_own_counters(paths, story_shares, config, base_floor, story, campaig
                            if any(symbol_matches(item.get("anchor", ""), symbol) for symbol in symbols))
         if not own_sites:
             continue
+        # A retired site name, whose newest build predates the current
+        # baseline epoch, is superseded on a function that an in-epoch counter
+        # now probes and has reduced for this story (round 193: r56's
+        # input/widget-base-update-text-input-state against r185's
+        # widget/update-text-input-state, both on
+        # WidgetBase::UpdateTextInputStateInternal). A function with only
+        # retired counters still has to be re-measured.
+        if epoch:
+            retired = {site for site in own_sites
+                       if order.get(newest_build.get(site), 0.0) < epoch}
+            if retired and any(site in story_packets
+                               for site in own_sites if site not in retired):
+                own_sites = [site for site in own_sites if site not in retired]
         if item.get("wrapper_of") is not None:
             raise CampaignError(
                 f"Path {index} ({item['anchor'][:80]!r}) declares wrapper_of "
