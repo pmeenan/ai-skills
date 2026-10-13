@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side pre-check for a decomposition review request: runs the same
+"""Pre-check for a decomposition review request (run by the drafter, reviewer, or orchestrator; in multi-engine mode, the operator and host): runs the same
 row rules the gate runs (measured dispositions, covered-by sample identity,
 candidate packet bounds by hypothesis, packet relevance, build consistency,
 evidence provenance on the build, anchors, sites named, own counters, nearest packet, packet time coverage, row-text numbers, row-text sources

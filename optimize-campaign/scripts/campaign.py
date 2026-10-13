@@ -714,6 +714,12 @@ def validate_gate_challenges(
             )
         if gate_uses_checks(gate):
             validate_checked_gate_report(report, role, gate)
+        author_task_id = getattr(args, "author_task_id", None) or report.get("author_task_id")
+        if isinstance(author_task_id, str) and author_task_id.strip() and task_id.strip() == author_task_id.strip():
+            raise CampaignError(
+                f"{gate} {role} challenge reviewer_task_id {task_id!r} matches the artifact "
+                "author_task_id; gate reviewers must be fresh independent subagents, never the author"
+            )
         if task_id in task_ids:
             raise CampaignError("skeptic and adversary challenges use the same task id")
         task_ids.add(task_id)
@@ -1231,7 +1237,7 @@ class Ledger:
         ]
         blockers = []
         expected = latest.get("area_count")
-        # Suite and efficiency areas are opened by the host from the same
+        # Suite and efficiency areas are opened by the orchestrator (in multi-engine mode, the host) from the same
         # profile; the profile's own area count is of its story frontier.
         frontier_discoveries = [d for d in latest_discoveries if not d.get("scope")]
         if expected is not None and len(frontier_discoveries) != expected:
@@ -3100,7 +3106,7 @@ def enforce_evidence_provenance(campaign_dir, build_id):
     by hand anywhere in the evidence base changes what the gate sees: a
     `time_weighted` flag flipped to false takes a site out of the story's
     packet set. One edited packet refuses every request on that build until
-    it is regenerated or invalidated by a host ruling."""
+    it is regenerated or invalidated by an orchestrator-only (in multi-engine mode, the host) ruling."""
     import redundancy_evidence
     if not build_id:
         return
@@ -6913,13 +6919,13 @@ def union_claim_bound(packet, cls, campaign_dir, app, rep_):
     never varied separated nothing). Returns (bound, reason-when-unsized)."""
     import redundancy_evidence
     if not cls:
-        return 0.0, ("site class unregistered: the host records what its key and predicate test "
+        return 0.0, ("site class unregistered: orchestrator-only (in multi-engine mode, the host) records what its key and predicate test "
                      "(campaign.py register-site) before the union sizes it")
     saturated = float(packet.get("applicable_fraction") or 0.0) >= redundancy_evidence.APPLICABLE_SATURATED
     if saturated and app is None:
         if cls not in SATURATION_SIZES_CLASSES:
             return 0.0, (f"the predicate held on every call of a {cls} site, so it separated nothing; "
-                         "probe with a predicate that varies, or the host excludes the class for the phase")
+                         "probe with a predicate that varies, or orchestrator-only (in multi-engine mode, the host) excludes the class for the phase")
         if not packet_applicable_literal(packet, campaign_dir):
             if packet.get("time_weighted") and packet.get("applicable_time_fraction") is not None:
                 app = float(packet["applicable_time_fraction"])
@@ -7225,7 +7231,7 @@ def bind_redundancy_evidence(path_item, story, fraction, campaign_dir, coverage=
     if not site_class:
         raise CampaignError(
             f"Path {path_item['anchor']!r} claims on packet {packet['site']!r}, a site with no "
-            "registered hypothesis class; the host records what its key and predicate test "
+            "registered hypothesis class; orchestrator-only (in multi-engine mode, the host) records what its key and predicate test "
             "(campaign.py register-site) before a row claims on it"
         )
     if hypothesis == "repeat" and site_class != "unchanged-input":
@@ -8198,7 +8204,7 @@ def discovery_phase(ledger):
     closed by count. `suite`: functions below every story floor whose mean
     share across the suite clears the suite floor (the small things that add
     up). `efficiency`: cheaper algorithms for the counted, necessary work.
-    Each opens when the host records the previous one exhausted
+    Each opens when the orchestrator (in multi-engine mode, the host) records the previous one exhausted
     (`open-phase`); an `algorithmic` row is refused before the efficiency
     phase, so the search for the big redundancies is never traded for
     micro-optimizations."""
@@ -8242,7 +8248,7 @@ def phase_open_blockers(ledger, phase):
 
 
 def cmd_open_phase(args):
-    """Host: open the next discovery phase once the current one is exhausted."""
+    """Orchestrator-only (in multi-engine mode, the host): open the next discovery phase once the current one is exhausted."""
     ledger = Ledger(args.dir or default_campaign_dir()).load()
     note = (args.note or "").strip()
     if len(note) < 8:
@@ -8563,7 +8569,7 @@ def cmd_efficiency_frontier(args):
     phase = discovery_phase(ledger)
     if args.open and phase != "efficiency":
         raise CampaignError(
-            f"the campaign is in the {phase} phase; the host opens the efficiency phase "
+            f"the campaign is in the {phase} phase; orchestrator-only (in multi-engine mode, the host) opens the efficiency phase "
             "(campaign.py open-phase --phase efficiency) once the redundancy and suite searches are exhausted"
         )
     found = efficiency_frontier_rows(ledger)
@@ -8994,7 +9000,7 @@ def enforce_phase_dispositions(paths, phase, parent=None):
         if disposition == "algorithmic" and phase != "efficiency":
             raise CampaignError(
                 f"Path {index} ({anchor!r}) is algorithmic in the {phase} phase. A cheaper "
-                "algorithm for necessary work is the efficiency phase's question, which the host "
+                "algorithm for necessary work is the efficiency phase's question, which orchestrator-only (in multi-engine mode, the host) "
                 "opens once the redundancy and suite searches are exhausted; in this phase the row "
                 "closes by count (mandatory, with its packet and invariant) or claims redundancy "
                 "(novel/known with its packet)."
@@ -9598,6 +9604,8 @@ def cmd_init(args):
             "benchmark": adapter.benchmark_id,
             "metric_model": adapter.metric_model,
             "execution": args.execution,
+            "operating_mode": getattr(args, "mode", None) or "single-agent",
+            "max_concurrent_subagents": max(1, int(getattr(args, "max_concurrent_subagents", None) or 4)),
             "benchmark_source": source,
             "branch": args.branch or (
                 "speedometer" if adapter.benchmark_id == "speedometer3"
@@ -9643,6 +9651,9 @@ def cmd_init(args):
     }
     (ledger.dir / "dossiers").mkdir(parents=True, exist_ok=True)
     (ledger.dir / "reviews").mkdir(parents=True, exist_ok=True)
+    if (getattr(args, "mode", None) or "single-agent") == "multi-engine":
+        (ledger.dir / "outbox" / "mailbox" / "to-operator").mkdir(parents=True, exist_ok=True)
+        (ledger.dir / "outbox" / "mailbox" / "to-host").mkdir(parents=True, exist_ok=True)
     ledger.save()
     print(f"Initialized campaign at {ledger.dir}")
     return 0
@@ -11724,7 +11735,7 @@ def accepted_decomposition(parent):
 
 
 def cmd_budget(args):
-    """Host: attach a causal opportunity budget (paired-oracle or
+    """Orchestrator-only (in multi-engine mode, the host): attach a causal opportunity budget (paired-oracle or
     critical-path-counterfactual bounds, references/measurement-policy.md)
     to a mechanism after its oracle experiment, validated by
     opportunity_budget.rank; `advance --to sized` requires it."""
@@ -14285,10 +14296,10 @@ _SITE_REGISTRY_CACHE = {}
 
 def site_class_registry(ledger):
     """Site -> hypothesis class the audit and the union trust: the skill's
-    table for the pre-existing sites, then the host's `register-site`
+    table for the pre-existing sites, then the orchestrator-only (in multi-engine mode, the host) `register-site`
     entries on the ledger (a later entry replaces an earlier one). A
-    packet's own `hypothesis_class` label is the operator's word; the class
-    is the host's (round 32: the operator proposed re-reducing a site under
+    packet's own `hypothesis_class` label is the drafter/operator's word; the registered class
+    is orchestrator-only (in multi-engine mode, the host) (round 32: the operator proposed re-reducing a site under
     another label to close an audit pair)."""
     registry = dict(SITE_HYPOTHESIS_CLASS)
     for site, entry in (ledger.data.get("site_hypothesis_classes") or {}).items():
@@ -14335,7 +14346,7 @@ def packet_hypothesis_class(packet, registry=None):
 def site_registry_issues(campaign_dir, registry):
     """Packets under evidence/ with calls whose site is unregistered or
     whose label disagrees with the registry: {site: {label, registered,
-    packets}}. Their classes count for nothing until the host registers the
+    packets}}. Their classes count for nothing until the orchestrator (in multi-engine mode, the host) registers the
     site (`campaign.py register-site`)."""
     import redundancy_evidence
     issues = {}
@@ -14523,9 +14534,9 @@ def site_registry_issue_text(site, issue):
     if issue.get("registered"):
         return (f"site {site!r}: {issue['packets']} packet(s) labelled {issue['label']} but the site is "
                 f"registered as {issue['registered']!r}; they count for no class (reduce with the "
-                "registered class, or the host re-registers the site)")
+                "registered class, or orchestrator-only (in multi-engine mode, the host) re-registers the site)")
     return (f"site {site!r}: {issue['packets']} packet(s) labelled {issue['label'] or '(none)'} on an "
-            "unregistered site; they count for no class until the host records what its key and "
+            "unregistered site; they count for no class until orchestrator-only (in multi-engine mode, the host) records what its key and "
             "predicate test (campaign.py register-site --site ... --class ... --note ...)")
 
 
@@ -14557,8 +14568,8 @@ def cmd_depth_audit(args):
 
 
 def cmd_exclude_hypothesis(args):
-    """Host-recorded judgment that a hypothesis class does not apply to a
-    story's phase. The operator proposes; the host records."""
+    """Orchestrator-only (in multi-engine mode, the host) recorded judgment that a hypothesis class does not apply to a
+    story's phase. The investigator/operator proposes; the orchestrator (in multi-engine mode, the host) records."""
     import redundancy_evidence
     if args.hypothesis_class not in redundancy_evidence.HYPOTHESIS_CLASSES:
         raise CampaignError(f"unknown class {args.hypothesis_class!r}; one of {redundancy_evidence.HYPOTHESIS_CLASSES}")
@@ -14690,7 +14701,7 @@ def cmd_reserve_key(args):
 
 
 def cmd_register_site(args):
-    """Host-recorded class of a probe site: the hypothesis its key and
+    """Orchestrator-only (in multi-engine mode, the host) recorded class of a probe site: the hypothesis its key and
     predicate test. The audit and the union count a packet for its site's
     registered class only; a packet's own label must agree."""
     import redundancy_evidence
@@ -15744,7 +15755,7 @@ def cmd_decompose_draft(args):
     unregistered = sorted(site for site in called if not registry.get(site))
     if unregistered:
         problems.append(f"{len(unregistered)} site(s) with calls in {story!r} have no registered hypothesis "
-                        f"class: {unregistered}. The host records each (campaign.py register-site --site <site> "
+                        f"class: {unregistered}. Orchestrator-only (in multi-engine mode, the host) records each (campaign.py register-site --site <site> "
                         "--class <class> --note <what the key and predicate test>) before they are reduced.")
     placements, unknown = {}, []
     for site in sorted(called):
@@ -15816,7 +15827,7 @@ def cmd_decompose_draft(args):
     if conflicts:
         raise CampaignError(
             f"{len(conflicts)} evidence file(s) exist with other contents: {conflicts[:12]}. "
-            "decompose-draft never overwrites evidence; pick another --tag, or have the host "
+            "decompose-draft never overwrites evidence; pick another --tag, or have the orchestrator (in multi-engine mode, the host) "
             "decide which reduction is the evidence.")
     written, unchanged = [], []
     for rel, text in planned.items():
@@ -16240,6 +16251,10 @@ def add_gate_challenge_arguments(parser):
         "--gate-adversary-transcript", default=None,
         help="The adversary task's transcript/notes file (see --gate-skeptic-transcript)",
     )
+    parser.add_argument(
+        "--author-task-id", default=None,
+        help="Optional task/conversation ID of the subagent that authored the artifact; gate reviewers must not match it",
+    )
 
 
 def build_parser():
@@ -16278,6 +16293,14 @@ def build_parser():
     p.add_argument(
         "--execution", choices=("local", "ssh"), default="ssh",
         help="Where measurements run; both modes use the same on-host runners",
+    )
+    p.add_argument(
+        "--mode", choices=("single-agent", "multi-engine"), default="single-agent",
+        help="Campaign operating mode: single-agent (default, one orchestrator with subagents) or multi-engine (optional, host and operator linked via outbox/mailbox/)",
+    )
+    p.add_argument(
+        "--max-concurrent-subagents", type=int, default=4,
+        help="Configurable limit on concurrent remote subagents (default: 4)",
     )
     p.add_argument(
         "--benchmark-source", default=None,
@@ -16808,7 +16831,7 @@ def build_parser():
                                            "phase, with the hypothesis classes never probed there (references/hypotheses.md)")
     p.add_argument("--story", default=None)
     p.set_defaults(func=cmd_depth_audit)
-    p = sub.add_parser("exclude-hypothesis", help="Host: record that a hypothesis class does not apply to a story's phase")
+    p = sub.add_parser("exclude-hypothesis", help="Orchestrator-only (in multi-engine mode, the host): record that a hypothesis class does not apply to a story's phase")
     p.add_argument("--story", required=True, help="story name, or * for every story")
     p.add_argument("--phase", required=True)
     p.add_argument("--class", dest="hypothesis_class", required=True)
@@ -16823,7 +16846,7 @@ def build_parser():
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_suite_impacts)
 
-    p = sub.add_parser("open-phase", help="Host: open the next discovery phase (redundancy -> suite -> efficiency) once the current one is exhausted")
+    p = sub.add_parser("open-phase", help="Orchestrator-only (in multi-engine mode, the host): open the next discovery phase (redundancy -> suite -> efficiency) once the current one is exhausted")
     p.add_argument("--phase", required=True, choices=DISCOVERY_PHASES[1:])
     p.add_argument("--note", required=True)
     p.set_defaults(func=cmd_open_phase)
@@ -16832,7 +16855,7 @@ def build_parser():
     p.add_argument("--open", action="store_true")
     p.set_defaults(func=cmd_efficiency_frontier)
 
-    p = sub.add_parser("budget", help="Host: attach a validated causal opportunity budget to a mechanism (its rows name artifact files under the campaign)")
+    p = sub.add_parser("budget", help="Orchestrator-only (in multi-engine mode, the host): attach a validated causal opportunity budget to a mechanism (its rows name artifact files under the campaign)")
     p.add_argument("--opp", required=True)
     p.add_argument("--file", required=True)
     p.set_defaults(func=cmd_budget)
@@ -16842,18 +16865,18 @@ def build_parser():
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_export_decomposition)
 
-    p = sub.add_parser("own-time-frontier", help="Every in-scope function by the time in its own body, counted or not; --open (efficiency phase, host) makes each OPEN function an efficiency area in its home story")
+    p = sub.add_parser("own-time-frontier", help="Every in-scope function by the time in its own body, counted or not; --open (efficiency phase, orchestrator-only (in multi-engine mode, the host)) makes each OPEN function an efficiency area in its home story")
     p.add_argument("--open", action="store_true")
     p.add_argument("--limit", type=int, default=0, help="open at most this many, largest first")
     p.set_defaults(func=cmd_own_time_frontier)
 
-    p = sub.add_parser("register-site", help="Host: record the hypothesis class a probe site's key and predicate test")
+    p = sub.add_parser("register-site", help="Orchestrator-only (in multi-engine mode, the host): record the hypothesis class a probe site's key and predicate test")
     p.add_argument("--site", required=True, help="site name as passed to RedundancyCounter")
     p.add_argument("--class", dest="hypothesis_class", required=True)
     p.add_argument("--note", required=True, help="what the key names and what `applicable` states")
     p.set_defaults(func=cmd_register_site)
 
-    p = sub.add_parser("reserve-key", help="Host: reserve a novel mechanism_key for a discovery before parallel drafting")
+    p = sub.add_parser("reserve-key", help="Orchestrator-only (in multi-engine mode, the host): reserve a novel mechanism_key for a discovery before parallel drafting")
     p.add_argument("--key", required=True, help="mechanism_key to reserve")
     p.add_argument("--opp", type=int, required=True, help="discovery opportunity id")
     p.add_argument("--area", default=None, help="optional area_key override")

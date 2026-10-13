@@ -17,12 +17,12 @@ claimed while it has open entries.
 Every packet records its class (`redundancy_evidence.py --hypothesis-class
 <id>`), but the class a packet *counts for* is its site's registered one:
 the table at the end of this file for the sites that existed before the
-field, and the host's `campaign.py register-site --site <site> --class <id>
+field, and the orchestrator-only (in multi-engine mode, the host) `campaign.py register-site --site <site> --class <id>
 --note "<what the key names and what applicable states>"` for every site
-since, recorded when the host reviews the build. A packet on an
+since, recorded when the orchestrator (in multi-engine mode, the host) reviews the build. A packet on an
 unregistered site, or one whose label disagrees with the registry, counts
 for no class; `depth-audit` lists such sites first, and `probe-union` does
-not size them. The label is the operator's word; the class is the host's
+not size them. The label is the drafter/operator's word; the registered class is orchestrator-only (in multi-engine mode, the host)
 (round 32: an audit pair was proposed closed by re-reducing an existing
 site under another label).
 
@@ -34,7 +34,7 @@ its phase read 79-88% "repeats" in round 32). A predicate that held on every
 call sizes a `no-op-mutation`, `unchanged-input` or `cache-hit-path` site at
 the whole function (the finding of round 28) and nothing else: a fan-out or
 unconsumed-result predicate that never varied separated nothing, so the
-class is probed again with a predicate that varies or excluded by the host.
+class is probed again with a predicate that varies or excluded by the orchestrator (in multi-engine mode, the host).
 
 ## The classes
 
@@ -82,10 +82,10 @@ A class is probed for a story and phase when a packet in that story
 carries the class and its probed function is in that phase; a
 `redundant-trigger` packet on a lifecycle root (the frame update, the
 lifecycle phases) counts for every phase beneath it, since a skipped
-update skips them all. A class the host judges inapplicable to a story's
+update skips them all. A class the orchestrator (in multi-engine mode, the host) judges inapplicable to a story's
 phase is recorded with `campaign.py exclude-hypothesis --story S --phase P
---class C --note <why>` and stays visible in the audit as excluded; the
-operator proposes exclusions in the report, never records them.
+--class C --note <why>` (orchestrator-only (in multi-engine mode, the host)) and stays visible in the audit as excluded; the
+investigator/operator proposes exclusions in the report, never records them.
 
 ## Phases the audit assigns beyond the lens
 

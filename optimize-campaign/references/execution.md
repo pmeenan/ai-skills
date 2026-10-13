@@ -85,6 +85,12 @@ complement local/SSH execution:
   or regresses, the try CL must be promptly abandoned via `pinpoint_measure.py abandon`.
 
 
+## Subagent Model Routing and Remote SSH Concurrency
+
+- **Mechanical measurement and extraction** (profile captures, A/B blocks, `ingest`/`summarize`, build/test receipts, digest tables): a light, cheap model is fine.
+- **Investigation, drafting, implementation, and gate reviews:** use the strongest available model.
+- **SSH fragility and configurable concurrency:** Keep subagent concurrency limits configurable (`--max-concurrent-subagents` at `init` / `config.max_concurrent_subagents`, default `4`). Remote SSH sessions to the measurement host are sensitive to connection fan-out: enforce **one SSH connection per subagent**, **no parallel SSH invocations inside a subagent**, and **at most about 4 concurrent remote subagents** so `sshd MaxStartups` and multiplexed sockets never drop commands mid-flight.
+
 ### Enforcing Active Console VT on X11 Surfaces
 
 When a campaign's display policy uses an X11 server (`--display :1 --display-vt 9`), every `tune_benchmark_host.py enable` invocation — whether invoked by `remote_measure.py`, `mechanism_evidence.py`, or a manual twin probe script — must include `--vt <N>` matching the X server's VT. `measurement_host.display_environment` resolves the X server's VT (from `--display-vt` or `/proc/<pid>/cmdline` of `Xorg`) and refuses to start when `/sys/class/tty/tty0/active` does not match `tty<N>`, and `campaign.require_campaign_display` refuses any receipt whose `active_vt` differs from the campaign's frozen VT.

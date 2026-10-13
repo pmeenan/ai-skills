@@ -352,7 +352,7 @@ For distinct binaries, schedule the same actual interleaving with matching
 instrumentation and provenance; never rebuild or retune between arms.
 
 Candidates on top of landed work (per-candidate feature): when the candidate
-is an increment over a landed candidate behind the campaign flag (the host ran
+is an increment over a landed candidate behind the campaign flag (orchestrator-only (in multi-engine mode, the host) ran
 `campaign.py set-feature`), pass `--feature <candidate's own feature>
 --enable-features=<campaign feature>`. Arm A captures with the campaign
 feature enabled, arm B with the campaign feature plus the candidate's; the

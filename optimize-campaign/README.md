@@ -6,7 +6,7 @@ randomized, family-adjusted A/B measurement on one fixed rendering surface.
 Start the agent with `SKILL.md`; read [measurement policy](references/measurement-policy.md)
 for the evidence rules and landing requirements.
 
-## Host prerequisites (operator, once per machine)
+## Measurement host prerequisites (once per machine)
 
 Run from the Chromium `src` directory with `.agents/skills` pointing to a
 reviewed, committed clone of this repository. The measurement host needs:
@@ -46,6 +46,8 @@ addressable share above floor closed by a measured candidate packet, a
 counted no-qualifying-mechanism, a mandatory invariant or a hand-off row,
 with the per-story lens (`story_lens.py`) showing what sits underneath each
 frontier entry.
+
+A campaign runs in **single-agent mode by default** (`campaign.py init --mode single-agent`, where one orchestrator owns `ledger.json` and all orchestrator-only gate actions and delegates work to subagents) or in **multi-engine mode (optional)** (`--mode multi-engine` or a documented convention in the campaign's `CLAUDE.md`, where separate host and operator agents communicate through `outbox/mailbox/PROTOCOL.md` and `wait_for.sh`).
 
 ## Start a new campaign
 

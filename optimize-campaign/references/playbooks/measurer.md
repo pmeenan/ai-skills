@@ -5,6 +5,8 @@ frozen fixed plan as input (`statistics` in the ledger, minimum effect raised
 to the calibrated MDE); never choose the sample size, primary endpoint or
 regression margins from partial results.
 
+**Operating mode, model tier, and role ownership:** Mechanical measurement and extraction (captures, A/B blocks, `ingest`/`summarize`, digest tables) can run on a **light, cheap model**; gate reviews use the **strongest available model**. Ledger and gate actions (`calibrate`, `checkpoint`, `advance`, `park`, `note`) are **orchestrator-only (in multi-engine mode, the host)**, executed after the orchestrator verifies manifests and summaries from disk. Report integrity and evidence integrity apply to the orchestrator and every subagent; over SSH, use one connection per subagent and no parallel SSH calls.
+
 1. Confirm the active campaign and whether another measurement holds the
    host lease. Follow an existing run before launching more work. Record the
    launch in the ledger before it starts, including runs that later fail.

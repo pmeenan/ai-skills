@@ -137,6 +137,31 @@ adversary challenges. Give them raw artifacts, retain their real task and
 transcript references, and resolve every challenge. Reviews may pause a valid
 machine result; they can never waive a machine rejection.
 
+### Operating modes: single-agent (default) and multi-engine (optional)
+
+1. **Single-agent mode (default):**
+   - One **orchestrator** agent runs the campaign end-to-end and owns `ledger.json` and all **orchestrator-only (in multi-engine mode, the host)** gate and ledger actions: `decompose` import, `advance`, `park`, `review`, `note`, `register-site`, `open-phase`, `exclude-hypothesis`, `set-feature`, `reserve-key`, `budget`, `hold`, and `evidence/invalidated_manifests.json` rulings.
+   - The orchestrator delegates investigation, decomposition drafting, measurement, implementation, and gate reviews (`skeptic` and `adversary`) to subagents. No `outbox/mailbox/` directory or `wait_for.sh` loop is required.
+
+2. **Multi-engine mode (optional):**
+   - Separate **host** (orchestrator owning the ledger and gate actions) and **operator** (delegating probes, drafts, implementations, and measurements) agents/engines are linked through the file-based mailbox (`outbox/mailbox/PROTOCOL.md` and `outbox/mailbox/wait_for.sh`).
+   - The host writes `outbox/mailbox/to-operator/ROUND-<N>.prompt.md` and the operator writes `outbox/mailbox/to-host/ROUND-<N>.report.md` using atomic `<file>.tmp` + `mv` writes.
+   - Round numbers (`ROUND-1`, `ROUND-2`, ...) are strictly sequential; the operator writes one final `ROUND-<N>.report.md` per round (never `-FINAL` or `-COMPLETE` variants); a prompt starting with `HOLD` pauses execution while awaiting a user decision; `outbox/mailbox/STOP` halts both sides cleanly.
+
+3. **Independence in single-agent mode:**
+   - Gate reviewers (`skeptic` and `adversary`) are always fresh, read-only subagents with clean context, spawned from prompts the orchestrator writes.
+   - Reviewers are never the author of the artifact being reviewed and are never reused after an artifact change (`reviews/gate-report-registry.json` permanently binds each `reviewer_task_id` to the exact `artifact_digests_checked` set and refuses reuse on modified digests or matching `--author-task-id`).
+   - The orchestrator verifies all subagent output from disk (`verify_numbers.py`, `audit_identifiers.py`, `precheck_decomposition.py`, SHA-256 digests, and build/test/measurement receipts) before acting on it or importing it into `ledger.json`.
+   - The rules for report integrity and evidence integrity apply to the orchestrator and to every subagent.
+
+4. **Subagent roles, generic model guidance, and SSH concurrency:**
+   - **Mechanical measurement and extraction** (captures, A/B blocks, `ingest`/`summarize`, build/test receipts, digest tables): a light, cheap model is fine.
+   - **Investigation, drafting, implementation, and gate reviews:** use the strongest available model.
+   - **Configurable concurrency & SSH fragility:** Keep concurrency limits configurable (`--max-concurrent-subagents` at `init`, `config.max_concurrent_subagents`, default `4`). When subagents work over SSH against a remote measurement host, enforce **one SSH connection per subagent**, **no parallel SSH invocations inside a subagent**, and **at most about 4 concurrent remote subagents** to avoid SSH multiplexing drops and `sshd MaxStartups` throttling.
+
+5. **Mode selection:**
+   - Selected at campaign setup via `campaign.py init --mode single-agent|multi-engine` (stored in `ledger.json` as `config.operating_mode`, default `single-agent`) or by a documented convention in the campaign's `CLAUDE.md`. Nothing in the gate requires the mailbox.
+
 ## Initialize or resume
 
 Work from Chromium `src`. The campaign store is on the test machine; from
@@ -168,6 +193,8 @@ python3 .agents/skills/optimize-campaign/scripts/campaign.py init \
   --benchmark <adapter-id> \
   --benchmark-source <source> \
   --execution ssh \
+  --mode single-agent \
+  --max-concurrent-subagents 4 \
   --branch <branch> \
   --feature <campaign-feature> \
   --share-floor <adapter-floor> \
@@ -310,11 +337,11 @@ The recipe is four steps, and only the third is typed by hand:
    `explain` computes it, then checked by the gate's own rules), closes the
    rows the counts close (`mandatory`, `below-floor`) with evidence generated
    from the packet and profile numbers, and writes `accounting_evidence`
-   from computed facts. It refuses an unregistered site (the host runs
-   `register-site`), a site with no known function (pass `--symbol
+   from computed facts. It refuses an unregistered site (orchestrator-only (in multi-engine mode, the host):
+   `campaign.py register-site`), a site with no known function (pass `--symbol
    SITE=FUNCTION`), and any evidence file that exists with other bytes; a
    rerun with the same inputs writes the same files.
-3. **The operator writes only what `<out>.todo.json` lists:** the
+3. **The drafter (in single-agent mode, the drafting subagent; in multi-engine mode, the operator) writes only what `<out>.todo.json` lists:** the
    `invariant` of each mandatory row, an `investigation` where a large row
    needs one, the disposition of each undecided row (`novel`/`known`/
    `covered-by`/`wrapper_of`, with its key, fraction and text), and the V8
@@ -471,7 +498,7 @@ scoped work reduction with total-work checks, or the separate trace-backed laten
 When an implementation is complete, compiles cleanly, and passes focused smoke checks, it is deemed **"ready to be tested"**. Before dispatching the change to the expensive remote 32-block macro measurement pipeline (128 iterations / ~1.5 hours), the candidate MUST pass a thorough offline code review via the `chromium-code-review` skill in **local mode** as a final pre-test quality gate.
 
 #### Review Gate Protocol:
-1. **Explicit Subagent Delegation:** The orchestrator agent MUST explicitly spawn a dedicated code review subagent via `invoke_subagent` (e.g. `Role: "Local Code Reviewer"`, `TypeName: "self"`) to execute the multi-phase review pipeline. Do NOT attempt to run all review phases directly in the orchestrator's main context.
+1. **Explicit Subagent Delegation:** The orchestrator agent MUST explicitly spawn a dedicated fresh code review subagent on the strongest available model (for example with role `"Local Code Reviewer"`) to execute the multi-phase review pipeline. Do NOT attempt to run all review phases directly in the orchestrator's main context.
 2. **Local Pinning:** The review subagent runs `scripts/pin-local.sh` from `chromium-code-review`:
    ```bash
    bash .agents/skills/chromium-code-review/scripts/pin-local.sh <candidate_ref_or_sha> <baseline_ref> <review_dir>
@@ -525,7 +552,7 @@ A arm would switch off the landed work too, and the measurement would be the
 sum of both. When a candidate must be measured as an increment over a landed
 candidate that shares the campaign flag:
 
-1. The host records the plan:
+1. Orchestrator-only (in multi-engine mode, the host) records the plan:
    `campaign.py set-feature --opp N --feature Speedometer3MatchedRulesCache
    [--note TEXT]`. The opportunity then toggles its own feature, with
    `base_features = [<campaign feature>]` enabled on both arms (`show --opp N`
@@ -638,9 +665,9 @@ measurement started inside a shared hold is refused (it would wait for itself).
 Wrap campaign builds and unit-test runs in `hostlock shared` too, so a waiting
 measurement on the same host sees them.
 
-## Report Integrity, Evidence Integrity, Benchmark Independence, and Mailbox Protocol
+## Report Integrity, Evidence Integrity, Benchmark Independence, and Optional Mailbox Protocol
 
-- **Report integrity (`ROUND-185b`):** Every number, path, SHA-256 digest, commit hash, and `file:line` citation in a campaign or round report must come from a disk-reading script executed in the same turn. Any fact not verified from disk in that turn must be printed literally as `"NOT CHECKED"`. Never hardcode prose claims or fallback numbers inside report-generation scripts, and never complete or guess full hashes from 8–12 character prefixes.
-- **Evidence integrity (`ROUND-188`):** Never move, rename, or hide files under `evidence/` (for example into `evidence/_archived*`) to bypass `precheck_decomposition.py` or a gate check. Invalidating a superseded or contaminated packet/manifest is a host ruling recorded in `evidence/invalidated_manifests.json`.
+- **Report integrity (`ROUND-185b`):** Applies to the orchestrator and to every subagent. Every number, path, SHA-256 digest, commit hash, and `file:line` citation in a campaign or round report must come from a disk-reading script executed in the same turn. Any fact not verified from disk in that turn must be printed literally as `"NOT CHECKED"`. Never hardcode prose claims or fallback numbers inside report-generation scripts, and never complete or guess full hashes from 8–12 character prefixes. The orchestrator verifies subagent output from disk before acting on it.
+- **Evidence integrity (`ROUND-188`):** Applies to the orchestrator and to every subagent. Never move, rename, or hide files under `evidence/` (for example into `evidence/_archived*`) to bypass `precheck_decomposition.py` or a gate check. Invalidating a superseded or contaminated packet/manifest is an orchestrator-only (in multi-engine mode, the host) ruling recorded in `evidence/invalidated_manifests.json`.
 - **No benchmark special-casing (`#415` Component A):** Optimizations that pattern-match page JavaScript source strings or a benchmark harness/framework's specific code shape are disallowed.
-- **Host/operator mailbox protocol:** When a campaign runs under a split host/operator mailbox (`outbox/mailbox/to-operator/ROUND-<N>.prompt.md` and `outbox/mailbox/to-host/ROUND-<N>.report.md`), round numbers are strictly sequential (`ROUND-1`, `ROUND-2`, ...), and the operator writes exactly one final report file (`ROUND-<N>.report.md`, never `-FINAL` or `-COMPLETE` variants) after all work and reviews finish; the host monitors that final report file only.
+- **Optional multi-engine mailbox protocol (`--mode multi-engine`):** Only needed when separate agents/engines play the host and operator roles; single-agent mode (the default) does not use a mailbox. When enabled (`outbox/mailbox/PROTOCOL.md`, `outbox/mailbox/wait_for.sh`), prompts (`outbox/mailbox/to-operator/ROUND-<N>.prompt.md`) and reports (`outbox/mailbox/to-host/ROUND-<N>.report.md`) use strictly sequential round numbers (`ROUND-1`, `ROUND-2`, ...), atomic `.tmp` + `mv` writes, and one final report file per round (`ROUND-<N>.report.md`, never `-FINAL` or `-COMPLETE` variants), with `HOLD` prompts and `outbox/mailbox/STOP` controlling pauses and clean shutdown.

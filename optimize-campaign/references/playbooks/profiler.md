@@ -4,6 +4,8 @@ Goal: two independent, main-thread-scoped, per-story discovery frontiers on
 the campaign's rendering surface. Profiles locate work; they do not estimate
 score improvement.
 
+**Operating mode, model tier, and role ownership:** Mechanical profile capture and `story_lens.py` extraction can run on a **light, cheap model**; frontier reconciliation judgment and the two independent `profile-review-scaffold` gate reviews use the **strongest available model**. Importing (`campaign.py profile`) or retracting (`profile-retract`) a profile is **orchestrator-only (in multi-engine mode, the host)** after verifying capture summaries, lens outputs, and reviewer transcripts from disk. Report integrity and evidence integrity apply to the orchestrator and every subagent; over SSH, use one connection per subagent and no parallel SSH calls.
+
 Inputs: campaign tip SHA, feature name, campaign display policy, marginal
 floor, remote host/source, and output paths for two summaries plus the
 reconciliation.

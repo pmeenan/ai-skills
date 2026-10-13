@@ -1,7 +1,7 @@
 # Shared discovery decomposition contract
 
 Start from `decompose-draft` after the probe run (below, "Drafting from a
-probe run"); it fills `decompose-scaffold`'s rows, and the operator writes
+probe run"); it fills `decompose-scaffold`'s rows, and the drafter (in single-agent mode, the drafting subagent; in multi-engine mode, the operator) writes
 only the judgement it leaves. Never create a new shape. Every profiler
 root/hotspot must have exactly one `primary` owner.
 
@@ -117,7 +117,7 @@ lists, per story and phase, the rows above the floor in that position and the
 classes no packet has probed for that phase, and exhaustion is refused while
 it has open entries. Every packet records its class
 (`redundancy_evidence.py --hypothesis-class`); the class it counts for is
-the site's registered one (`campaign.py register-site`, host only), and a
+the site's registered one (`campaign.py register-site`, orchestrator-only (in multi-engine mode, the host)), and a
 candidate's claim follows it: `packet_hypothesis: repeat` is accepted on an
 `unchanged-input` site only, and no claim is accepted on an unregistered
 site.
@@ -169,7 +169,7 @@ and not reopened.
 
 ## Discovery phases
 
-Discovery is three searches in a fixed order, each opened by the host
+Discovery is three searches in a fixed order, each opened by the orchestrator (in multi-engine mode, the host)
 (`campaign.py open-phase --phase <suite|efficiency> --note "..."`) once the
 previous one is exhausted; the ledger records the phase
 (`discovery_phase`), the pre-check prints it, and `audit-exhaustion` is
@@ -675,7 +675,7 @@ out of the story's packet set, and with the row's anchor renamed to a
 function that does not exist (`OutOfFlowLayoutPart::RunLayout()`) the row
 escaped the own-counter rule and passed the pre-check. One edited packet
 now refuses every request on that build until it is regenerated or
-invalidated by a host ruling (`evidence/invalidated_manifests.json`), and an anchor must be the function its primary work refs name
+invalidated by an orchestrator-only (in multi-engine mode, the host) ruling (`evidence/invalidated_manifests.json`), and an anchor must be the function its primary work refs name
 (`function:<symbol>` in the hotspot key): a row renamed away from its
 function is outside every rule keyed on it.
 
@@ -703,9 +703,7 @@ whose key repeats. A novel row on such a count is refused.
 
 `scripts/precheck_decomposition.py <campaign> <opp> <children.json>` runs
 the gate's rules on a staged file and prints the coverage table, the bound
-packets and the rows a reviewer opens; `scripts/host_review.py --dir
-<campaign> --rev <n> <opp>...` writes the host-side gate reports from the
-artifacts. Both live in the skill tree the campaign binds by digest, and
+packets and the rows a reviewer opens; when mechanical review reports are generated from staged decomposition files (`--children <path>`, `decompositions/decomp-<id>-r<rev>.json`, or `outbox/review-requests/decomp-<id>-r<rev>.json`), `scripts/host_review.py --dir <campaign> --rev <n> [--children <path>] <opp>...` writes the gate reports from the artifacts. Both live in the skill tree the campaign binds by digest, and
 both import the reducer and the rules as they are. A copy under the
 campaign, or any wrapper that replaces a rule or a reducer function (an
 override of `supported_avoidable_fraction` for a site, say), is not the
@@ -724,8 +722,8 @@ still to decompose by priority; `campaign.py explain --opp N --children
 relevance, weight ratio, coverage and closing bound, which is nearest, the
 mechanism rows that could cover it with their identity, the rows beneath it
 a wrapper could name, and what the gate would accept. A refusal from the
-pre-check names the `explain` command for its rows. Nobody types Python at
-the host: a question the commands cannot answer is a missing command, and
+pre-check names the `explain` command for its rows. Nobody types ad-hoc Python at
+the measurement host: a question the commands cannot answer is a missing command, and
 the report says so.
 
 ## Drafting from a probe run
@@ -733,9 +731,9 @@ the report says so.
 Every mechanical part of a decomposition comes from `campaign.py
 decompose-draft --opp N --browser-log <log> [--browser-log <log>...] --patch
 <patch> --out <paths.json> [--symbol SITE=FUNCTION ...] [--tag rNNN]`, which
-runs no browser and builds nothing. Before it, operators decomposed by
+runs no browser and builds nothing. Before it, drafters/operators decomposed by
 hand (round 142: a reducer loop with its own table of sites, functions and
-classes beside the host's registry, a cost-packet loop, and a script that
+classes beside the orchestrator-only (in multi-engine mode, the host) registry, a cost-packet loop, and a script that
 typed every row), and the typed parts were where files went wrong (the
 first #330, #333 and #404 files cite a `report.json` the profile never
 wrote). The
@@ -798,7 +796,7 @@ draft (blank dispositions, no `accounting_evidence`, the root row's
 
 ## Every number and citation in operator text comes from a file
 
-The operator writes `invariant`, `investigation` (hypotheses,
+The drafter (in single-agent mode, the drafting subagent; in multi-engine mode, the operator; referred to in error messages and `OPERATOR-TODO` markers as "operator text") writes `invariant`, `investigation` (hypotheses,
 falsifications, stop reason), `existing_mechanism`, `rationale`, the
 narrative of `accounting_evidence`, and the `evidence` of the rows the
 draft left. Those fields may only quote numbers from the row's `facts`
@@ -924,6 +922,6 @@ The cycle profile (`sp3-frontier-*`) averages over 10 in-process iterations per 
 ## Prose Verification, Evidence Integrity, and Sub-site Accounting Rules
 
 - **No regex or global substitution over decomposition prose:** Never run regex or global string/number replacements across a decomposition JSON's `existing_mechanism`, `invariant`, or `investigation` prose (in `r185`/`r186`, bulk regex substitution corrupted numbers across unrelated rows). Edit row prose per-row from the bound artifacts, then run `verify_numbers.py <campaign_dir> <opp_id> <decomp.json>`, `audit_identifiers.py <campaign_dir> <opp_id> <decomp.json>`, and `precheck_decomposition.py <campaign_dir> <opp_id> <decomp.json>` as standard pre-review steps before spawning Skeptic/Adversary reviewers.
-- **Evidence integrity (never move or hide `evidence/`):** Never move, rename, or hide files under `evidence/` (for example into `evidence/_archived*` as happened in `r188`) to make `precheck_decomposition.py` or `campaign.py decompose` pass. Invalidating superseded or contaminated evidence is an explicit host ruling recorded in `evidence/invalidated_manifests.json`.
+- **Evidence integrity (never move or hide `evidence/`):** Applies to the orchestrator and to every subagent. Never move, rename, or hide files under `evidence/` (for example into `evidence/_archived*` as happened in `r188`) to make `precheck_decomposition.py` or `campaign.py decompose` pass. Invalidating superseded or contaminated evidence is an explicit orchestrator-only (in multi-engine mode, the host) ruling recorded in `evidence/invalidated_manifests.json`.
 - **Keep `calls_per_repetition_mean` and `distinct_inputs_mean` separate:** Never conflate a site's total call count (`calls_per_repetition_mean`) with its distinct keys (`distinct_inputs_mean`). When a probe site uses a constant or boolean key (`0`/`1`), `distinct_inputs_mean` is `1.0` or `2.0` while `calls_per_repetition_mean` is thousands (`r196`: a writer cited `distinct_inputs_mean=2` as "2 calls/rep" instead of `calls_per_repetition_mean=5186.15`).
 - **Include all call sites of an enclosed helper when summing sub-sites:** When decomposing an enclosing function (such as `StyleEngine::UpdateActiveStyle` in `r196`) by summing child probe counters (`style/update-active-style-sheets`), check `cost_evidence` (`evidence/cost_<id>_r<row>.json`) and all call sites inside the parent function (`UpdateActiveStyleSheetsInShadow` across tree scopes as well as document scope) so sibling call sites are not omitted from the accounting narrative.

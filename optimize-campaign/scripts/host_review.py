@@ -44,10 +44,25 @@ def patch_lines(patch, site):
     region = text[lo:hi if hi > 0 else k + 3000]
     return [l[1:].strip() for l in region.splitlines() if l.startswith('+') and re.search(r'SetKey|SetApplicable|HashCombine|applicable|key =|RedundancyScope', l)][:14]
 
-def review(oid, rev):
+def resolve_children_path(oid, rev, children_arg=None):
+    if children_arg:
+        p = pathlib.Path(children_arg)
+        return p if p.is_file() else (C / p)
+    for rel in (
+        f'outbox/review-requests/decomp-{oid}-r{rev}.json',
+        f'decompositions/decomp-{oid}-r{rev}.json',
+        f'decomp-{oid}-r{rev}.json',
+    ):
+        cand = C / rel
+        if cand.is_file():
+            return cand
+    return C / f'outbox/review-requests/decomp-{oid}-r{rev}.json'
+
+
+def review(oid, rev, children_arg=None, reviewer_prefix='claude-host-review'):
     parent = led.opp(oid); story = parent['target_story']
     floor = max(campaign.story_floor_pct(cfg, story)[0], cfg['share_floor_pct'])
-    children = C / f'outbox/review-requests/decomp-{oid}-r{rev}.json'
+    children = resolve_children_path(oid, rev, children_arg)
     res = campaign.load_decomposition(str(children)); paths = res['paths']
     csha = sha(children)
     refs_list = parent['expected_work_refs']
@@ -119,7 +134,7 @@ def review(oid, rev):
         report = C / f'reviews/decomp-{oid}-r{rev}-{role}.json'
         subprocess.run(['python3', CAMP, '--dir', str(C), 'decompose-review-scaffold', '--opp', str(oid), '--role', role, '--children', str(children), '--out', str(report)], check=True, capture_output=True)
         rep = json.loads(report.read_text())
-        task = f"claude-host-review-r{rev}-{oid}-{role}-{TODAY}{ATTEMPT}"
+        task = f"{reviewer_prefix}-r{rev}-{oid}-{role}-{TODAY}{ATTEMPT}"
         tpath = C / 'reviews' / 'transcripts' / f'decomp-{oid}-r{rev}-{role}.md'
         rep['reviewer_task_id'] = task; rep['transcript_ref'] = str(tpath); rep['verdict'] = 'PASS'; rep['challenges'] = []; rep['resolved_challenges'] = []
         attested = rep['artifact_digests_checked']
@@ -209,6 +224,8 @@ if __name__ == '__main__':
     ap.add_argument('--dir', required=True, help='campaign directory')
     ap.add_argument('--rev', type=int, required=True, help='request revision number (decomp-<id>-r<rev>.json)')
     ap.add_argument('--attempt', default='', help='suffix for the reviewer task ids when a reviewed artifact was edited and reviewed again')
+    ap.add_argument('--children', default=None, help='optional explicit decomposition JSON path (used in single-agent mode when outbox/review-requests/ is not used)')
+    ap.add_argument('--reviewer-prefix', default='claude-host-review', help='prefix for reviewer_task_id')
     ap.add_argument('ids', type=int, nargs='+')
     a = ap.parse_args()
     ATTEMPT = ('-' + a.attempt) if a.attempt else ''
@@ -216,5 +233,5 @@ if __name__ == '__main__':
     led = campaign.Ledger(str(C)).load(); cfg = led.data['config']
     SRC = (led.data['profile_runs'][-1].get('repository_root') if led.data.get('profile_runs') else None) or '.'
     for oid in a.ids:
-        out, csha = review(oid, a.rev)
+        out, csha = review(oid, a.rev, children_arg=a.children, reviewer_prefix=a.reviewer_prefix)
         print(oid, csha[:12], {r: (str(p[0].name), p[1].stat().st_size) for r, p in out.items()})

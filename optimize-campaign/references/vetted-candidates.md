@@ -91,7 +91,7 @@ condition, not a value.
 12. Every packet re-derives from its cited logs on the ledger host and its
     site is defined in its recorded probe patch (`decompose` checks both).
     A packet whose numbers differ from its own log is fabricated evidence;
-    the human decides whether the campaign continues with that operator.
+    the human decides whether the campaign continues with that agent/operator.
 14. No `covered-by` row has a probed function with a packet for its story
     between it and its owner (`covered_by_nearest_probe` on the row), and no
     `applicable` predicate reads state written by another function.

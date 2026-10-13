@@ -1,6 +1,6 @@
 # Campaign skeptic playbook
 
-Goal: independently verify effectiveness. Be read-only.
+Goal: independently verify effectiveness as a fresh, clean-context, read-only subagent on the **strongest available model** (spawned from a prompt the orchestrator writes, never the author of the artifact, and never reused after an artifact edit). Report integrity and evidence integrity apply to every reviewer subagent, and the orchestrator verifies the review from disk before executing the **orchestrator-only (in multi-engine mode, the host)** gate command.
 
 Generate the bound report first:
 

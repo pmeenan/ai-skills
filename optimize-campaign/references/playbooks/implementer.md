@@ -3,6 +3,8 @@
 Goal: implement exactly the dossier's one invariant and prove it removes the
 measured mechanism work.
 
+**Operating mode, model tier, and role ownership:** Candidate implementation runs as a delegated subagent on the **strongest available model** (mechanical build, capture, and `ingest`/`summarize` steps may use a light, cheap model). Ledger state transitions (`advance`, `review`, `park`, `note`, `set-feature`) are **orchestrator-only (in multi-engine mode, the host)**, executed only after the orchestrator verifies all receipts and staged diffs from disk. Report integrity and evidence integrity apply to the orchestrator and every subagent; over SSH, use one connection per subagent and no parallel SSH calls.
+
 Inputs: opportunity id/key, dossier, baseline raw artifact, tests, campaign
 flag, tree lease, and candidate output path.
 
@@ -44,7 +46,7 @@ Procedure:
 8. Remove temporary probes, restage the complete production/test diff, and rerun
    the receipt commands against that exact staged tree. When the implementation is
    deemed "ready to be tested", execute the **Pre-Testing Local Code Review Gate**:
-   spawn a dedicated code review subagent via `invoke_subagent` following
+   spawn a dedicated fresh code review subagent on the strongest available model following
    `chromium-code-review` in local mode (`scripts/pin-local.sh`) with
    `directives.md` setting `- Mode: local branch` and `- Skip test coverage: true`.
    Verify the review reports `PASS` (or all findings are resolved) before entering

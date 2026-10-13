@@ -100,6 +100,36 @@ class CampaignTest(unittest.TestCase):
                 "set-feature", "--opp", str(other), "--feature", "OwnFeature"))
             self.assertNotIn("feature", self.ledger()["opportunities"][-1])
 
+    def test_operating_mode_and_author_independence(self):
+        # Default init is single-agent mode with max_concurrent_subagents=4 and no mailbox dir.
+        cfg = self.ledger()["config"]
+        self.assertEqual("single-agent", cfg["operating_mode"])
+        self.assertEqual(4, cfg["max_concurrent_subagents"])
+        self.assertFalse((self.dir / "outbox" / "mailbox").exists())
+
+        # Multi-engine mode creates outbox/mailbox/to-operator and to-host and stores custom concurrency.
+        multi = pathlib.Path(self.tmp.name) / "multi-engine-campaign"
+        self.assertEqual(0, campaign.main([
+            "--dir", str(multi), "init", "--name", "me-test",
+            "--mode", "multi-engine", "--max-concurrent-subagents", "3",
+        ]))
+        mdata = json.loads((multi / "ledger.json").read_text())
+        self.assertEqual("multi-engine", mdata["config"]["operating_mode"])
+        self.assertEqual(3, mdata["config"]["max_concurrent_subagents"])
+        self.assertTrue((multi / "outbox" / "mailbox" / "to-operator").is_dir())
+        self.assertTrue((multi / "outbox" / "mailbox" / "to-host").is_dir())
+
+        # host_review.resolve_children_path supports single-agent paths without outbox/.
+        import host_review
+        host_review.C = self.dir
+        (self.dir / "decompositions").mkdir(parents=True, exist_ok=True)
+        sa_decomp = self.dir / "decompositions" / "decomp-7-r1.json"
+        sa_decomp.write_text("{}")
+        self.assertEqual(sa_decomp, host_review.resolve_children_path(7, 1))
+        explicit = self.dir / "custom.json"
+        explicit.write_text("{}")
+        self.assertEqual(explicit, host_review.resolve_children_path(7, 1, str(explicit)))
+
     def test_jetstream_init_records_adapter_and_local_execution(self):
         other = pathlib.Path(self.tmp.name) / "jetstream-campaign"
         self.assertEqual(0, campaign.main([
@@ -2373,6 +2403,17 @@ class EnforcementRegressionTest(unittest.TestCase):
             campaign.validate_gate_challenges(
                 argparse.Namespace(
                     gate_skeptic=str(skeptic), gate_adversary=str(adversary)
+                ),
+                gate="checkpoint",
+                artifact_digests=["d" * 64],
+            )
+        adversary_ok = self.gate_challenge("adversary", "task-adversary")
+        with self.assertRaisesRegex(campaign.CampaignError, "author_task_id"):
+            campaign.validate_gate_challenges(
+                argparse.Namespace(
+                    gate_skeptic=str(skeptic),
+                    gate_adversary=str(adversary_ok),
+                    author_task_id="task-skeptic",
                 ),
                 gate="checkpoint",
                 artifact_digests=["d" * 64],

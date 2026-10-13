@@ -5,6 +5,8 @@ bounds, ranking and stopping criteria. Investigate one bounded story area
 with its main-thread profile, score-time composition, callers, source
 contracts and rejected hypotheses.
 
+**Operating mode, model tier, and role ownership:** In single-agent mode (default) or multi-engine mode (optional), investigation and decomposition drafting run as delegated subagents on the **strongest available model** (mechanical probe captures, reductions, and digest tables may use a light, cheap model). Ledger and gate actions (`register-site`, `reserve-key`, `exclude-hypothesis`, `open-phase`, `decompose` import, `advance`, `park`, `note`) are **orchestrator-only (in multi-engine mode, the host)**. The orchestrator verifies all subagent outputs from disk before acting on them. Report integrity and evidence integrity apply to the orchestrator and every subagent; over SSH, use one connection per subagent, no parallel SSH, and respect the configurable concurrency limit (at most ~4 concurrent remote subagents).
+
 ## What a qualifying mechanism looks like
 
 Every suite-level win in `optimization-patterns.md` has one of four shapes.
