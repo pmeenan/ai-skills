@@ -3152,5 +3152,33 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         self.assertEqual(len(raw["paths"]), len(campaign.load_decomposition(scaffold, draft=True)["paths"]))
 
 
+    def test_reserve_key_and_discarded_candidates_warning(self):
+        import io, contextlib
+        opp1 = self.draft_fixture()
+        ledger = campaign.Ledger(self.dir).load()
+        opp2 = campaign.new_opportunity(
+            ledger, kind="discovery", anchor=f"{STORY}/blink::Other()",
+            area_key="other-area", profile_id="p1", share=5.0,
+        )["id"]
+        ledger.save()
+        # Reserve a key for opp1; opp2 cannot reserve the same key.
+        self.assertEqual(0, campaign.main(["--dir", str(self.dir), "reserve-key", "--key", "layout/new-fast-path", "--opp", str(opp1)]))
+        self.assertEqual(1, campaign.main(["--dir", str(self.dir), "reserve-key", "--key", "layout/new-fast-path", "--opp", str(opp2)]))
+        # Release allows opp2 to reserve it.
+        self.assertEqual(0, campaign.main(["--dir", str(self.dir), "reserve-key", "--key", "layout/new-fast-path", "--opp", str(opp1), "--release"]))
+        self.assertEqual(0, campaign.main(["--dir", str(self.dir), "reserve-key", "--key", "layout/new-fast-path", "--opp", str(opp2)]))
+        # warn_discarded_candidates prints a non-fatal warning on matching key or anchor function.
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            warnings = campaign.warn_discarded_candidates(
+                [{"disposition": "novel", "mechanism_key": "css/match-result-RuleSet-cascade-fast-path",
+                  "anchor": "blink::ElementRuleCollector::CollectMatchingRules(blink::MatchRequest const&)"}],
+                campaign_dir=self.dir,
+            )
+        self.assertTrue(warnings)
+        self.assertIn("WARNING:", err.getvalue())
+        self.assertIn("warning only", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

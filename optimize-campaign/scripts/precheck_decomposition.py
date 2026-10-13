@@ -209,8 +209,11 @@ def main(campaign_dir, opp_id, children):
                 problems.append(f"Path {i} ({p['anchor'][:60]!r}) estimated_local_story_impact_pct {supplied} is not the ledger's share x fraction {shares[i] * float(frac):.6f}; omit the field (decompose derives it) or set it to exactly that value.")
             if p["disposition"] == "novel" and p.get("mechanism_key"):
                 existing = next((o for o in ledger.data["opportunities"] if o.get("kind") == "mechanism" and o.get("mechanism_key") == p["mechanism_key"]), None)
-                if existing:
+                if existing and existing.get("parent_id") != parent["id"] and parent["id"] not in (existing.get("discovery_ids") or []):
                     problems.append(f"Path {i} ({p['anchor'][:60]!r}) is novel for mechanism_key {p['mechanism_key']!r}, which already exists as #{existing['id']}; mark it known.")
+                res = (ledger.data.get("reserved_mechanism_keys") or {}).get(p["mechanism_key"])
+                if isinstance(res, dict) and res.get("opp") not in (None, parent["id"]):
+                    problems.append(f"Path {i} ({p['anchor'][:60]!r}) claims novel mechanism_key {p['mechanism_key']!r}, which is reserved by discovery #{int(res['opp']):03d}.")
             qual_floor = max(campaign.qualification_floor_pct(ledger.data["config"], story)[0], floor)
             if frac is not None and shares[i] * float(frac) < qual_floor:
                 fi = campaign.mechanism_function_impact(p, float(frac), profile, story, campaign_dir)
@@ -222,6 +225,30 @@ def main(campaign_dir, opp_id, children):
                 else:
                     suite_note = f"; across the suite {suite['suite_impact_pct']:.3f}% < {suite['suite_floor_pct']:.3f}%" if suite and suite.get("suite_floor_pct") is not None else ""
                     problems.append(f"Path {i} ({p['anchor'][:60]!r}) is {p['disposition']} at {float(frac):.4f} of {shares[i]:.2f}% = {shares[i]*float(frac):.3f}%, below the {qual_floor:.3f}% qualification floor" + (f" (the function's share {fi[0]:.2f}% x {float(frac):.4f} = {fi[1]:.3f}% too)" if fi else "") + suite_note + "; decompose refuses it as a candidate. Close it by count (mandatory / no-qualifying-mechanism) instead; a bound above the area floor but below these closes as unmeasurable.")
+    seen_novel = {}
+    for i, p in enumerate(result["paths"], 1):
+        if p.get("disposition") in ("novel", "algorithmic") and p.get("mechanism_key"):
+            mk = p["mechanism_key"]
+            if mk in seen_novel:
+                problems.append(f"Path {i} repeats novel/algorithmic mechanism_key {mk!r} already claimed on row {seen_novel[mk]}; make one row the owner and mark wrapper rows covered-by.")
+            else:
+                seen_novel[mk] = i
+    if seen_novel:
+        children_path = pathlib.Path(children).resolve()
+        for sib in sorted(children_path.parent.glob("*.json")):
+            if sib == children_path or sib.name.endswith(".todo.json") or "skeptic" in sib.name or "adversary" in sib.name:
+                continue
+            try:
+                sib_data = json.loads(sib.read_text())
+            except (OSError, ValueError):
+                continue
+            if not isinstance(sib_data, dict) or sib_data.get("area_key") in (None, parent["area_key"]):
+                continue
+            for sp in sib_data.get("paths") or []:
+                if isinstance(sp, dict) and sp.get("disposition") in ("novel", "algorithmic") and sp.get("mechanism_key") in seen_novel:
+                    mk = sp["mechanism_key"]
+                    problems.append(f"Path {seen_novel[mk]} novel mechanism_key {mk!r} collides with sibling staged file {sib.name} (area {sib_data.get('area_key')!r}); reserve keys with `campaign.py reserve-key` or mark the second discovery's row known after the first decomposes.")
+    campaign.warn_discarded_candidates(result["paths"], campaign_dir=campaign_dir, ledger=ledger)
     rows = campaign.decomposition_rows_at_or_above_floor(parent, result, ledger.data["config"])
     print(f"\n{len(rows)} rows at/above floor; dispositions:", {d: sum(1 for r in rows if r['disposition'] == d) for d in set(r['disposition'] for r in rows)})
     print("\nPROBLEMS:" if problems else "\nno gate problems")
@@ -263,6 +290,7 @@ def efficiency_precheck(ledger, parent, result, shares, story, story_floor, camp
     except campaign.CampaignError as e: problems.append(str(e))
     try: campaign.enforce_row_text_distinct(result["paths"])
     except campaign.CampaignError as e: problems.append(str(e))
+    campaign.warn_discarded_candidates(result["paths"], campaign_dir=campaign_dir, ledger=ledger)
     print("\nPROBLEMS:" if problems else "\nno gate problems")
     for x in problems: print(" -", x)
     return 1 if problems else 0

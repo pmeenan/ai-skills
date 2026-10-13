@@ -3152,6 +3152,122 @@ def anchor_function(anchor):
     return str(anchor or "").split("(")[0].strip()
 
 
+DISCARDED_CANDIDATES_JSON = (
+    pathlib.Path(__file__).resolve().parent.parent.parent
+    / "optimize-speedometer"
+    / "references"
+    / "discarded-candidates"
+    / "discarded-candidates.json"
+)
+
+
+def load_discarded_candidates(ledger=None):
+    """Load rejected/parked candidates from the cross-campaign catalog and
+    the active ledger so decompose-draft and decompose can warn before a
+    known dead-end is re-proposed."""
+    entries = []
+    seen = set()
+    if DISCARDED_CANDIDATES_JSON.is_file():
+        try:
+            data = json.loads(DISCARDED_CANDIDATES_JSON.read_text())
+            for item in data.get("entries") or []:
+                if isinstance(item, dict):
+                    key = (item.get("campaign"), item.get("id"), item.get("key"))
+                    seen.add(key)
+                    entries.append(item)
+        except (OSError, ValueError):
+            pass
+    if ledger is not None:
+        for opp in ledger.data.get("opportunities") or []:
+            if opp.get("status") not in ("rejected", "parked"):
+                continue
+            key_name = opp.get("mechanism_key") or opp.get("area_key") or ""
+            ident = (ledger.data.get("name"), opp.get("id"), key_name)
+            if ident in seen:
+                continue
+            entries.append({
+                "id": opp.get("id"),
+                "campaign": ledger.data.get("name") or "current",
+                "kind": opp.get("kind"),
+                "status": opp.get("status"),
+                "key": key_name,
+                "area_key": opp.get("area_key"),
+                "anchor": opp.get("anchor"),
+                "anchor_function": anchor_function(opp.get("anchor")),
+                "target_story": opp.get("target_story"),
+                "file": "ledger.json",
+                "reason": opp.get("reason") or opp.get("notes") or "see ledger history",
+            })
+    return entries
+
+
+def warn_discarded_candidates(paths, campaign_dir=None, ledger=None, include_undecided=False):
+    """Print a non-fatal warning when a novel/algorithmic row (or an
+    undecided draft row) matches a rejected or parked candidate by key or
+    anchor function. Context or story may differ, so this never refuses."""
+    if ledger is None and campaign_dir is not None:
+        try:
+            ledger = Ledger(campaign_dir).load()
+        except Exception:
+            ledger = None
+    catalog = load_discarded_candidates(ledger=ledger)
+    if not catalog:
+        return []
+    by_key = {}
+    by_func = {}
+    def _index_func(raw_fn, entry):
+        fn = anchor_function(raw_fn or "")
+        if "/" in fn and "::" not in fn.split("/", 1)[0]:
+            fn = fn.split("/", 1)[1]
+        if not fn:
+            return
+        by_func.setdefault(fn, []).append(entry)
+        if fn.startswith("blink::"):
+            by_func.setdefault(fn[len("blink::"):], []).append(entry)
+    for entry in catalog:
+        k = str(entry.get("key") or entry.get("mechanism_key") or "").strip().lower()
+        if k:
+            by_key.setdefault(k, []).append(entry)
+        _index_func(entry.get("anchor_function") or entry.get("anchor") or "", entry)
+        for sym in (entry.get("functions") or []) + (entry.get("symbols") or []):
+            _index_func(sym, entry)
+    warnings = []
+    for index, item in enumerate(paths or [], 1):
+        disp = item.get("disposition")
+        if disp not in ("novel", "algorithmic") and not (include_undecided and disp in (None, "")):
+            continue
+        mkey = str(item.get("mechanism_key") or "").strip()
+        mkey_l = mkey.lower()
+        row_fn = anchor_function(item.get("anchor") or "")
+        if "/" in row_fn and "::" not in row_fn.split("/", 1)[0]:
+            row_fn = row_fn.split("/", 1)[1]
+        row_fn_short = row_fn[len("blink::"):] if row_fn.startswith("blink::") else row_fn
+        matched = []
+        seen_ids = set()
+        candidates_for_row = (
+            (by_key.get(mkey_l, []) if mkey_l else [])
+            + (by_func.get(row_fn, []) if row_fn else [])
+            + (by_func.get(row_fn_short, []) if row_fn_short and row_fn_short != row_fn else [])
+        )
+        for entry in candidates_for_row:
+            eid = (entry.get("campaign"), entry.get("id"), entry.get("key"))
+            if eid not in seen_ids:
+                seen_ids.add(eid)
+                matched.append(entry)
+        for entry in matched[:3]:
+            label = f"#{entry['id']}" if entry.get("id") is not None else (entry.get("title") or entry.get("key"))
+            reason = " ".join(str(entry.get("reason") or "").split())[:140]
+            ref = entry.get("file") or "references/discarded-candidates/INDEX.md"
+            msg = (
+                f"WARNING: row {index} ({mkey or row_fn}) matches discarded candidate "
+                f"{label} ({entry.get('key')}, {entry.get('status')} in {entry.get('campaign')}): "
+                f"{reason} [see {ref}; warning only — context may differ]"
+            )
+            warnings.append(msg)
+            print(msg, file=sys.stderr)
+    return warnings
+
+
 def names_other_code(text, own_function):
     """Does the text name a symbol or file other than the row's own
     function? A sentence about the probed function itself ("X checks dirty
@@ -11961,6 +12077,26 @@ def cmd_decompose(args):
                 )
             known.append((existing, path_item))
 
+    seen_novel_keys = set()
+    reservations = ledger.data.get("reserved_mechanism_keys") or {}
+    for path_item, area_key in novel:
+        mkey = path_item["mechanism_key"]
+        if mkey in seen_novel_keys:
+            raise CampaignError(
+                f"Decomposition marks mechanism_key {mkey!r} as novel on multiple rows; "
+                "make one row the novel owner and mark same-mechanism wrapper rows covered-by"
+            )
+        seen_novel_keys.add(mkey)
+        res = reservations.get(mkey)
+        if isinstance(res, dict) and res.get("opp") not in (None, parent["id"]):
+            raise CampaignError(
+                f"Path {mkey!r} is reserved by discovery #{int(res['opp']):03d}; "
+                "coordinate parallel drafts or release the reservation with "
+                f"`campaign.py reserve-key --key {mkey} --opp {int(res['opp'])} --release`"
+            )
+    if not test_bypass_active():
+        warn_discarded_candidates(result["paths"], campaign_dir=ledger.dir, ledger=ledger)
+
     created = []
     for path_item, area_key in novel:
         opp = new_opportunity(
@@ -11988,6 +12124,8 @@ def cmd_decompose(args):
             opp["cost_evidence"] = path_item.get("cost_evidence")
             opp["impact_basis"] = path_item.get("impact_basis")
         record_mechanism_observation(opp, parent, path_item)
+        if isinstance(ledger.data.get("reserved_mechanism_keys"), dict):
+            ledger.data["reserved_mechanism_keys"].pop(path_item["mechanism_key"], None)
         created.append(opp)
     for opp, path_item in known:
         profile_id = parent.get("profile_id")
@@ -14403,6 +14541,51 @@ def cmd_suite_impacts(args):
     return 0
 
 
+def cmd_reserve_key(args):
+    """Reserve a novel mechanism_key for a discovery before parallel drafting
+    so sibling subagents cannot collide on the same key (round 139: #254 and
+    #258 raced on svg-path-Seg-List-Parse-cache)."""
+    ledger = Ledger(args.dir or default_campaign_dir()).load()
+    key = require_stable_key(args.key, "--key")
+    parent = ledger.opp(int(args.opp))
+    if parent.get("kind") != "discovery":
+        raise CampaignError(f"#{parent['id']:03d} is a mechanism; reserve-key takes a discovery --opp")
+    reservations = ledger.data.setdefault("reserved_mechanism_keys", {})
+    if args.release:
+        holder = reservations.get(key)
+        if holder and holder.get("opp") not in (None, parent["id"]):
+            raise CampaignError(
+                f"Mechanism key {key!r} is reserved by #{int(holder['opp']):03d}, not #{parent['id']:03d}"
+            )
+        reservations.pop(key, None)
+        ledger.save()
+        print(f"Released mechanism key reservation {key!r} for #{parent['id']:03d}")
+        return 0
+    existing = next(
+        (o for o in ledger.data.get("opportunities", [])
+         if o.get("kind") == "mechanism" and o.get("mechanism_key") == key),
+        None,
+    )
+    if existing and existing.get("parent_id") != parent["id"] and parent["id"] not in (existing.get("discovery_ids") or []):
+        raise CampaignError(
+            f"Mechanism key {key!r} already exists in ledger as #{existing['id']:03d} "
+            f"[{existing.get('status')}]; mark the row known instead of reserving it as novel"
+        )
+    holder = reservations.get(key)
+    if isinstance(holder, dict) and holder.get("opp") not in (None, parent["id"]):
+        raise CampaignError(
+            f"Mechanism key {key!r} is already reserved by discovery #{int(holder['opp']):03d}"
+        )
+    reservations[key] = {
+        "opp": parent["id"],
+        "area_key": args.area or parent.get("area_key"),
+        "ts": utc_now(),
+    }
+    ledger.save()
+    print(f"Reserved mechanism key {key!r} for discovery #{parent['id']:03d}")
+    return 0
+
+
 def cmd_register_site(args):
     """Host-recorded class of a probe site: the hypothesis its key and
     predicate test. The audit and the union count a packet for its site's
@@ -15926,6 +16109,7 @@ def cmd_decompose_draft(args):
         print("gate problems not tied to a row:")
         for problem in global_problems:
             print(f" - {problem[:400]}")
+    warn_discarded_candidates(draft_rows, campaign_dir=root, ledger=ledger, include_undecided=True)
     print(out)
     print(todo_path)
     return 0
@@ -16565,6 +16749,13 @@ def build_parser():
     p.add_argument("--class", dest="hypothesis_class", required=True)
     p.add_argument("--note", required=True, help="what the key names and what `applicable` states")
     p.set_defaults(func=cmd_register_site)
+
+    p = sub.add_parser("reserve-key", help="Host: reserve a novel mechanism_key for a discovery before parallel drafting")
+    p.add_argument("--key", required=True, help="mechanism_key to reserve")
+    p.add_argument("--opp", type=int, required=True, help="discovery opportunity id")
+    p.add_argument("--area", default=None, help="optional area_key override")
+    p.add_argument("--release", action="store_true", help="release an existing reservation")
+    p.set_defaults(func=cmd_reserve_key)
 
     return parser
 

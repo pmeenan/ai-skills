@@ -1,0 +1,2945 @@
+{
+  "schema_version": 1,
+  "generated_from_campaign": "speedometer-september",
+  "legacy_entry_count": 26,
+  "speedometer_september_entry_count": 43,
+  "total_entry_count": 69,
+  "entries": [
+    {
+      "id": "DOM-01",
+      "ledger_id": null,
+      "key": "dom-01",
+      "title": "DOM-01: `Element::setInnerHTML` Buffer Pre-allocation",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "dom_core.md",
+      "functions": [
+        "Element::setInnerHTML"
+      ],
+      "stories": [],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Negligible impact (`+0.02%`).",
+      "reason": "String materialization and HTML tokenizer state machine instantiation dwarf initial buffer allocation costs. The allocation is already handled efficiently by WTF `StringBuilder` exponential growth.",
+      "durable_invariant": "Do not attempt pre-sizing or capacity reservation optimizations for HTML parser input buffers.",
+      "rejection_stage": "Initial Review / Adversarial Audit.",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": null,
+      "revisit_if": "Do not attempt pre-sizing or capacity reservation optimizations for HTML parser input buffers.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "DOM-02",
+      "ledger_id": null,
+      "key": "dom-02",
+      "title": "DOM-02: `HTMLCollection` Sequential Index Caching",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "dom_core.md",
+      "functions": [
+        "HTMLCollection"
+      ],
+      "stories": [],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Flat delta (`+0.07%`).",
+      "reason": "Blink already implements `CollectionItemsCache` and `CollectionIndexCache` inside `ContainerNode`. Adding an extra layer of index caching at the IDL wrapper level added redundant branch checks without avoiding tree walks.",
+      "durable_invariant": "Do not add outer index/iterator caches to DOM collections; internal collection caches already optimize forward/backward traversal.",
+      "rejection_stage": "Initial Review / Adversarial Audit.",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": null,
+      "revisit_if": "Do not add outer index/iterator caches to DOM collections; internal collection caches already optimize forward/backward traversal.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "DOM-03",
+      "ledger_id": null,
+      "key": "dom-03",
+      "title": "DOM-03: `Element::SetAttributeInternal` Redundancy Check",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "dom_core.md",
+      "functions": [
+        "Element::SetAttributeInternal"
+      ],
+      "stories": [],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Net negative (`-0.20%`).",
+      "reason": "Modern JavaScript UI frameworks (React, Vue, Preact, Lit) already maintain virtual DOM or template state and omit setting unchanged attributes in user-space script. The C++ check was evaluated on every legitimate attribute update where strings differed, adding string equality comparison overhead to every mutation.",
+      "durable_invariant": "Avoid adding duplicate-check branches to general DOM attribute setters. Frameworks already deduplicate in JS; C++ checks only penalize genuine mutations.",
+      "rejection_stage": "Initial Review / Adversarial Audit.",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": null,
+      "revisit_if": "Avoid adding duplicate-check branches to general DOM attribute setters. Frameworks already deduplicate in JS; C++ checks only penalize genuine mutations.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "DOM-04",
+      "ledger_id": null,
+      "key": "dom-04",
+      "title": "DOM-04: `ContainerNode::NotifyNodeRemoved` Leaf Short-Circuit",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "dom_core.md",
+      "functions": [
+        "ContainerNode::NotifyNodeRemoved"
+      ],
+      "stories": [
+        "TodoMVC-JavaScript-ES5-Complex-DOM"
+      ],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Regressed `TodoMVC-JavaScript-ES5-Complex-DOM` (`-1.56%`).",
+      "reason": "Blink's `ContainerNode::RemoveBetween` already batches removal notifications. Adding pre-removal checks on every individual child detachment added redundant branch evaluations without reducing work in batched removal routines.",
+      "durable_invariant": "Do not add outer leaf-node guards to removal notification pipelines; batch removal routines (`RemoveChildren`, `RemoveBetween`) already optimize unparented and childless subtrees.",
+      "rejection_stage": "Initial Review / Adversarial Audit.",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": null,
+      "revisit_if": "Do not add outer leaf-node guards to removal notification pipelines; batch removal routines (`RemoveChildren`, `RemoveBetween`) already optimize unparented and childless subtrees.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "DOM-05",
+      "ledger_id": null,
+      "key": "dom-05",
+      "title": "DOM-05: `ContainerNode::RemoveChildren` Batch Detachment",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "dom_core.md",
+      "functions": [
+        "ContainerNode::RemoveChildren"
+      ],
+      "stories": [
+        "NewsSite-Nuxt"
+      ],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Stat-sig regression on `NewsSite-Nuxt` (`-0.88%`).",
+      "reason": "Pre-unlinking child pointers disrupted Blink's unified layout tree detachment (`DetachLayoutTree`) and invalidated DOM tree structural invariants expected by subsequent MutationObserver notification scopes.",
+      "durable_invariant": "Never modify DOM tree sibling/parent pointers ahead of Blink's standard `Node::DetachLayoutTree` and `ContainerNodeWillBeRemoved` sequence.",
+      "rejection_stage": "Clean-Branch Isolation A/B (Commit `e7fe5448749d0`).",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": "e7fe5448749d0",
+      "revisit_if": "Never modify DOM tree sibling/parent pointers ahead of Blink's standard `Node::DetachLayoutTree` and `ContainerNodeWillBeRemoved` sequence.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "DOM-06",
+      "ledger_id": null,
+      "key": "dom-06",
+      "title": "DOM-06: `SelectorQuery` Childless Container Bypass & `SpaceSplitString` Single-Class",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "dom_core.md",
+      "functions": [
+        "SelectorQuery",
+        "SpaceSplitString"
+      ],
+      "stories": [],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Sub-threshold suite delta `+0.18% [-0.21%, +0.58%]` ($t = 0.94$); zero stat-sig story wins.",
+      "reason": "While directionally positive in `TodoMVC-Backbone` (`+1.18%`), querying selectors against childless nodes is rare in modern frameworks. The per-call cycle savings were too small (<5 cycles) to cross statistical significance.",
+      "durable_invariant": "Selector query optimizations must address selector matching complexity (e.g. bloom filters or rule sharing) rather than trivial container empty checks.",
+      "rejection_stage": "Clean-Branch Isolation A/B (Commit `94aa1c3d49674`).",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": "94aa1c3d49674",
+      "revisit_if": "Selector query optimizations must address selector matching complexity (e.g. bloom filters or rule sharing) rather than trivial container empty checks.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "HTML-01",
+      "ledger_id": null,
+      "key": "html-01",
+      "title": "HTML-01: `HTMLInputElement::setValue` Redundancy Check",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "html_forms.md",
+      "functions": [
+        "HTMLInputElement::setValue"
+      ],
+      "stories": [
+        "TodoMVC-JavaScript-ES5-Complex-DOM"
+      ],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Stat-sig regression in `TodoMVC-JavaScript-ES5-Complex-DOM` (`-1.56%`).",
+      "reason": "Modern frameworks already track input state in JavaScript and only assign `input.value = ...` when the value has changed. The C++ string equality check added string length checks and character comparison overhead to every actual user keystroke/state update, causing mispredicted branches in ThinLTO builds.",
+      "durable_invariant": "Do not add string equality guards to `HTMLInputElement::setValue` or similar form control value setters.",
+      "rejection_stage": "Clean-Branch Isolation A/B (Commit `1da92dcd7047f`).",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": "1da92dcd7047f",
+      "revisit_if": "Do not add string equality guards to `HTMLInputElement::setValue` or similar form control value setters.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "HTML-02",
+      "ledger_id": null,
+      "key": "html-02",
+      "title": "HTML-02: `HTMLFastPathParser::ParseAttributes` Empty Check",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "html_forms.md",
+      "functions": [
+        "HTMLFastPathParser::ParseAttributes"
+      ],
+      "stories": [],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Regressions across Svelte, Vue, and ES5.",
+      "reason": "Edge cases in HTML whitespace handling and entity decoding caused the fast-path parser to misclassify valid attributes or fail on trailing slashes, forcing expensive fallback to the full `HTMLDocumentParser`.",
+      "durable_invariant": "Do not alter tokenizer scanning or attribute slicing boundaries in `HTMLFastPathParser` without proving that fallback rates to the full parser remain strictly 0.00%.",
+      "rejection_stage": "Initial Review / Adversarial Audit.",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": null,
+      "revisit_if": "Do not alter tokenizer scanning or attribute slicing boundaries in `HTMLFastPathParser` without proving that fallback rates to the full parser remain strictly 0.00%.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "HTML-03",
+      "ledger_id": null,
+      "key": "html-03",
+      "title": "HTML-03: `DOMParser::parseFromString` Fast-Path",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "html_forms.md",
+      "functions": [
+        "DOMParser::parseFromString"
+      ],
+      "stories": [],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Inaudible delta (`+0.05%`).",
+      "reason": "`DOMParser` creates an isolated implementation document and already routes directly into Blink's optimized parser pipeline. The DOMParser call frequency in Speedometer 3 is too low to produce measurable benchmark deltas.",
+      "durable_invariant": "Optimizations to `DOMParser` must prove significant call volume in target stories before investigation.",
+      "rejection_stage": "Initial Review / Adversarial Audit.",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": null,
+      "revisit_if": "Optimizations to `DOMParser` must prove significant call volume in target stories before investigation.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "EVT-01",
+      "ledger_id": null,
+      "key": "evt-01",
+      "title": "EVT-01: `EventTarget::FireEventListeners` Single-Listener Bypass",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "events.md",
+      "functions": [
+        "EventTarget::FireEventListeners"
+      ],
+      "stories": [],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Net negative (`-0.11%`).",
+      "reason": "In Chromium, the cost of event dispatch is dominated by V8 context switches, isolate entry, and script execution. Branching on vector size saved 1-2 CPU cycles inside C++, which was eclipsed by branch misprediction penalties on varied listener topologies.",
+      "durable_invariant": "Do not add branch specializations for small vector sizes in `EventTarget::FireEventListeners`.",
+      "rejection_stage": "Initial Review / Adversarial Audit.",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": null,
+      "revisit_if": "Do not add branch specializations for small vector sizes in `EventTarget::FireEventListeners`.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "EVT-02",
+      "ledger_id": null,
+      "key": "evt-02",
+      "title": "EVT-02: `EventPath` Non-Bubbling Event Allocation Bypass",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "events.md",
+      "functions": [
+        "EventPath"
+      ],
+      "stories": [],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Net suite drag (`-0.36%`).",
+      "reason": "Even non-bubbling events must participate in capture phase dispatch and shadow boundary retargeting (WHATWG DOM \u00a7 2.8). Bypassing `EventPath` forced fallback paths and broke V8 inline caching for event dispatch trampolines.",
+      "durable_invariant": "`EventPath` construction is required for correct shadow DOM retargeting and capture dispatch; do not attempt to bypass it based solely on the `bubbles` flag.",
+      "rejection_stage": "Clean-Branch Isolation A/B (Commit `b62a277517deb`).",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": "b62a277517deb",
+      "revisit_if": "`EventPath` construction is required for correct shadow DOM retargeting and capture dispatch; do not attempt to bypass it based solely on the `bubbles` flag.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "LAY-01",
+      "ledger_id": null,
+      "key": "lay-01",
+      "title": "LAY-01: `Element::RebuildLayoutTree` Pseudo-Element Check",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "Element::RebuildLayoutTree"
+      ],
+      "stories": [
+        "TodoMVC-JavaScript-ES6-Webpack",
+        "TodoMVC-Vue-Complex-DOM"
+      ],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Stat-sig regressions on `TodoMVC-JavaScript-ES6-Webpack` (`-2.24%`) and `TodoMVC-Vue-Complex-DOM` (`-1.53%`).",
+      "reason": "Pseudo-element layout attachment is tightly coupled with anonymous box generation. Skipping the pseudo-element rebuild check left child layout objects in a dirty state, triggering synchronous layout recalculation flushes during subsequent frames.",
+      "durable_invariant": "Do not skip pseudo-element attachment checks during `RebuildLayoutTree`; style-based dirty bits do not capture inherited anonymous box constraints.",
+      "rejection_stage": "Clean-Branch Isolation A/B (Commit `0972933e1e8c1`).",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": "0972933e1e8c1",
+      "revisit_if": "Do not skip pseudo-element attachment checks during `RebuildLayoutTree`; style-based dirty bits do not capture inherited anonymous box constraints.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "LAY-02",
+      "ledger_id": null,
+      "key": "lay-02",
+      "title": "LAY-02: `Element::getBoundingClientRect` Viewport Caching",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "Element::getBoundingClientRect"
+      ],
+      "stories": [],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Net negative (`-0.08%`).",
+      "reason": "Cache invalidation overhead on every DOM mutation, transform change, and ancestor scroll exceeded the cost of recalculating the bounding rect. Cache hit rate in interactive benchmarks was <15%.",
+      "durable_invariant": "Never introduce memoization caches for layout geometry coordinates without hardware-backed or layout-tree-versioned cache validation.",
+      "rejection_stage": "Initial Review / Adversarial Audit.",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": null,
+      "revisit_if": "Never introduce memoization caches for layout geometry coordinates without hardware-backed or layout-tree-versioned cache validation.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "LAY-03",
+      "ledger_id": null,
+      "key": "lay-03",
+      "title": "LAY-03: `Element::GetBoundingClientRect` Single-Box Direct Quad Calculation",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "Element::GetBoundingClientRect"
+      ],
+      "stories": [
+        "NewsSite-Next",
+        "NewsSite-Nuxt"
+      ],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Regressed `NewsSite-Next` (`-1.02%`) and `NewsSite-Nuxt` (`-0.44%`), suite delta `-0.22%`.",
+      "reason": "Skipping the lifecycle layout update caused geometry queries to read stale coordinates whenever preceding script mutated DOM state. When layout updates were later forced by subsequent reads, the engine suffered pipeline stalls.",
+      "durable_invariant": "Geometry APIs (`getBoundingClientRect`, `offsetTop`, `offsetWidth`) must guarantee clean layout state; never bypass lifecycle updates to calculate geometry.",
+      "rejection_stage": "Clean-Branch Isolation A/B (Commit `7a42f04e3b2d5`).",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": "7a42f04e3b2d5",
+      "revisit_if": "Geometry APIs (`getBoundingClientRect`, `offsetTop`, `offsetWidth`) must guarantee clean layout state; never bypass lifecycle updates to calculate geometry.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "LAY-04",
+      "ledger_id": null,
+      "key": "lay-04",
+      "title": "LAY-04: `LayoutBox` Non-Form Controls & Childless Containment",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "LayoutBox"
+      ],
+      "stories": [],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Net suite drag of `-0.21% [-0.59%, +0.17%]`. Zero stat-sig wins.",
+      "reason": "`DefaultIntrinsicContentInlineSize` is already only called on boxes requiring intrinsic sizing. Adding polymorphic type checks (`IsFormControlElement`) and containment branches added evaluation cost across millions of box evaluations during layout passes without skipping measurable work.",
+      "durable_invariant": "Do not add type-filter branches inside inner layout traversal algorithms unless profiling proves the non-target types dominate >50% of the inclusive time.",
+      "rejection_stage": "Clean-Branch Isolation A/B (Commit `5bd0c31335e1c`).",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": "5bd0c31335e1c",
+      "revisit_if": "Do not add type-filter branches inside inner layout traversal algorithms unless profiling proves the non-target types dominate >50% of the inclusive time.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "CSS-01",
+      "ledger_id": null,
+      "key": "css-01",
+      "title": "CSS-01: `CSSComputedStyleDeclaration` String Fast-Path",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "cssom_style.md",
+      "functions": [
+        "CSSComputedStyleDeclaration"
+      ],
+      "stories": [],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Net negative (`-0.64%`).",
+      "reason": "Verifying that layout tree styles had not mutated required inspecting `ComputedStyle` generation IDs. The ID check plus atomic string hashing equaled the cost of the lightweight `CSSValue` materialization.",
+      "durable_invariant": "Do not attempt string-level caching on `CSSComputedStyleDeclaration`; the engine's `ComputedStyle` sharing already handles style memoization.",
+      "rejection_stage": "Initial Review / Adversarial Audit.",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": null,
+      "revisit_if": "Do not attempt string-level caching on `CSSComputedStyleDeclaration`; the engine's `ComputedStyle` sharing already handles style memoization.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "CSS-02",
+      "ledger_id": null,
+      "key": "css-02",
+      "title": "CSS-02: `EasySelectorChecker::Match` Subselector Bypass",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "cssom_style.md",
+      "functions": [
+        "EasySelectorChecker::Match"
+      ],
+      "stories": [
+        "TodoMVC-JavaScript-ES5"
+      ],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Stat-sig regression on `TodoMVC-JavaScript-ES5` (`-2.29%`).",
+      "reason": "Subtle interactions with shadow DOM boundaries and `:host` / `:not()` pseudo-classes caused false-positive rule matches, forcing style invalidations and invalid cascade applications.",
+      "durable_invariant": "Selector matching shortcuts must be verified against 100% of WPT selector tests; partial shortcuts in `EasySelectorChecker` consistently produce style cascade bugs.",
+      "rejection_stage": "Initial Review / Adversarial Audit.",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": null,
+      "revisit_if": "Selector matching shortcuts must be verified against 100% of WPT selector tests; partial shortcuts in `EasySelectorChecker` consistently produce style cascade bugs.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "CSS-03",
+      "ledger_id": null,
+      "key": "css-03",
+      "title": "CSS-03: `NGShapeCache` 96-Char Buffer Expansion",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "cssom_style.md",
+      "functions": [
+        "NGShapeCache"
+      ],
+      "stories": [
+        "Editor-CodeMirror",
+        "Editor-TipTap"
+      ],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Stat-sig regression on `Editor-CodeMirror` (`-2.51%`).",
+      "reason": "Larger keys increased hash table collision rates and cache memory footprint. In CodeMirror, code tokens are short (5\u201320 characters), so expanding the key length increased memory bandwidth without improving hit rates for real tokens.",
+      "durable_invariant": "Do not increase shape cache or text layout key lengths without proof that average token length in the target workload exceeds the existing boundary.",
+      "rejection_stage": "Initial Review / Adversarial Audit.",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": null,
+      "revisit_if": "Do not increase shape cache or text layout key lengths without proof that average token length in the target workload exceeds the existing boundary.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "CSS-04",
+      "ledger_id": null,
+      "key": "css-04",
+      "title": "CSS-04: `Seeker<T>::Seek` Empty Rule Intervals Check",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "cssom_style.md",
+      "functions": [
+        "Seeker<T>::Seek"
+      ],
+      "stories": [
+        "TodoMVC-Lit"
+      ],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Stat-sig regression on `TodoMVC-Lit` (`-2.69% [-5.22%, -0.08%]`).",
+      "reason": "`Seeker<T>::Seek` is inlined into the innermost loop of CSS rule set matching. In official ThinLTO/PGO2 builds, LLVM perfectly arranges binary branch targets. Adding an outer check introduced branch mispredictions and increased instruction cache footprint on every rule lookup.",
+      "durable_invariant": "Never add micro-branch guards or outer empty checks to tightly inlined template search helpers like `Seeker<T>::Seek`. In PGO builds, outer branches cause net regressions.",
+      "rejection_stage": "Clean-Branch Isolation A/B (Commit `2f4b0e8e09591`).",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": "2f4b0e8e09591",
+      "revisit_if": "Never add micro-branch guards or outer empty checks to tightly inlined template search helpers like `Seeker<T>::Seek`. In PGO builds, outer branches cause net regressions.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "CANV-01",
+      "ledger_id": null,
+      "key": "canv-01",
+      "title": "CANV-01: `Canvas2DRecorderContext::DrawPathInternal` Full-Circle Arc to `drawOval`",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "canvas_graphics.md",
+      "functions": [
+        "Canvas2DRecorderContext::DrawPathInternal",
+        "drawOval"
+      ],
+      "stories": [
+        "Charts-chartjs"
+      ],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Directly regressed target story `Charts-chartjs` **`-2.50% [-3.28%, -1.71%]`**.",
+      "reason": "In Skia's GPU playback pipeline, `drawOval` and `drawArc`/`drawPath` are serialized as different `PaintOp` types. Chart.js draws hundreds of circular markers in batch; converting full circles to ovals broke Skia's internal paint op batching, causing more draw calls and GPU state flushes.",
+      "durable_invariant": "Do not convert SkPath arcs to Skia ovals/rectangles without verifying Skia GPU op-merging and batching behavior; op-type diversity prevents batch draw call collapsing.",
+      "rejection_stage": "Clean-Branch Isolation A/B (Commit `f962a0a15a3d3`).",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": "f962a0a15a3d3",
+      "revisit_if": "Do not convert SkPath arcs to Skia ovals/rectangles without verifying Skia GPU op-merging and batching behavior; op-type diversity prevents batch draw call collapsing.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "CANV-02",
+      "ledger_id": null,
+      "key": "canv-02",
+      "title": "CANV-02: `Canvas2DRecorderContext::setTransform` CTM Redundancy Check",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "canvas_graphics.md",
+      "functions": [
+        "Canvas2DRecorderContext::setTransform"
+      ],
+      "stories": [
+        "TodoMVC-WebComponents-Complex"
+      ],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Stat-sig regression on `TodoMVC-WebComponents-Complex` (`-2.14%`).",
+      "reason": "Redundant `setTransform` calls were exceedingly rare in the benchmark. The 6-float comparison (`AffineTransform` equality) executed on every valid transform change, adding pure CPU overhead without pruning work.",
+      "durable_invariant": "Do not add matrix redundancy checks to Canvas 2D transform setters unless redundant calls exceed 60% of total invocations in profile traces.",
+      "rejection_stage": "Clean-Branch Isolation A/B (Commit `2aff51c8caf23`).",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": "2aff51c8caf23",
+      "revisit_if": "Do not add matrix redundancy checks to Canvas 2D transform setters unless redundant calls exceed 60% of total invocations in profile traces.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "SVG-01",
+      "ledger_id": null,
+      "key": "svg-01",
+      "title": "SVG-01: `Document::createElementNS` SVG Tag Dispatcher",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "svg.md",
+      "functions": [
+        "Document::createElementNS"
+      ],
+      "stories": [
+        "TodoMVC-Lit-Complex-DOM"
+      ],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Stat-sig regression on `TodoMVC-Lit-Complex-DOM` (`-2.42%`).",
+      "reason": "The hardcoded tag dispatch switch created branch table pressure and polluted branch target buffers when non-SVG or varied elements were created in rapid succession.",
+      "durable_invariant": "Do not replace Blink's atomic-string qualified name hash tables with hardcoded C++ `switch` statements for element creation.",
+      "rejection_stage": "Initial Review / Adversarial Audit.",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": null,
+      "revisit_if": "Do not replace Blink's atomic-string qualified name hash tables with hardcoded C++ `switch` statements for element creation.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "SVG-02",
+      "ledger_id": null,
+      "key": "svg-02",
+      "title": "SVG-02: `CSSPathCache` 1-Entry MRU Cache",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "svg.md",
+      "functions": [
+        "CSSPathCache"
+      ],
+      "stories": [],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Inaudible delta (`+0.21% [-0.25%, +0.67%]`); zero stat-sig wins across all 32 stories.",
+      "reason": "Speedometer SVG chart workloads (`React-Stockcharts-SVG`, `Charts-observable-plot`) render dynamic time-series charts where each data point has unique path coordinates. Sequential identical path strings are virtually nonexistent in timed loops.",
+      "durable_invariant": "Do not add 1-entry MRU caches for path or geometry strings without confirming temporal locality (repeated identical consecutive strings) in the target workload.",
+      "rejection_stage": "Clean-Branch Isolation A/B (Commit `a514ed9da50da`).",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": "a514ed9da50da",
+      "revisit_if": "Do not add 1-entry MRU caches for path or geometry strings without confirming temporal locality (repeated identical consecutive strings) in the target workload.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "FRAME-01",
+      "ledger_id": null,
+      "key": "frame-01",
+      "title": "FRAME-01: `LocalFrameView` Childless Traversal Bypass",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "lifecycle_editing.md",
+      "functions": [
+        "LocalFrameView"
+      ],
+      "stories": [
+        "TodoMVC-Lit",
+        "TodoMVC-WebComponents"
+      ],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Stat-sig regressions on `TodoMVC-WebComponents` (`-4.97%`) and `TodoMVC-Lit` (`-3.26%`).",
+      "reason": "Frame traversal is responsible for triggering lifecycle callbacks, intersection observers, and resize observations in precise document order. Bypassing traversal disrupted callback ordering in multi-component custom element trees.",
+      "durable_invariant": "Do not bypass or reorder frame iteration in `LocalFrameView`; frame lifecycle ordering is strictly required for web observer notifications.",
+      "rejection_stage": "Clean-Branch Isolation A/B (Commit `7ca3a7b231c25`).",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": "7ca3a7b231c25",
+      "revisit_if": "Do not bypass or reorder frame iteration in `LocalFrameView`; frame lifecycle ordering is strictly required for web observer notifications.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "EDIT-01",
+      "ledger_id": null,
+      "key": "edit-01",
+      "title": "EDIT-01: `DomSelection::rangeCount` Layout Flush Bypass & Lazy Focus",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "lifecycle_editing.md",
+      "functions": [
+        "DomSelection::rangeCount"
+      ],
+      "stories": [
+        "TodoMVC-React",
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-Webpack-Complex"
+      ],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Stat-sig regressions on `TodoMVC-React` (`-2.36%`), `TodoMVC-Svelte-Complex-DOM` (`-2.89%`), `TodoMVC-Webpack-Complex` (`-0.94%`).",
+      "reason": "Skipping the layout update left the selection controller with un-updated layout positions. When subsequent DOM operations or events queried selection bounds, the engine was forced into delayed, high-latency synchronous layout recalculations.",
+      "durable_invariant": "Selection range queries must ensure clean layout; delaying layout flushes in selection queries causes cascading layout thrashing during event dispatch.",
+      "rejection_stage": "Clean-Branch Isolation A/B (Commit `2ed50198cef96`).",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": "2ed50198cef96",
+      "revisit_if": "Selection range queries must ensure clean layout; delaying layout flushes in selection queries causes cascading layout thrashing during event dispatch.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "NAV-01",
+      "ledger_id": null,
+      "key": "nav-01",
+      "title": "NAV-01: `HistoryItem` Lazy Navigation API UUIDs",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "lifecycle_editing.md",
+      "functions": [
+        "HistoryItem"
+      ],
+      "stories": [],
+      "upper_bound": {
+        "summary": "pre-campaign leaf candidate (< 1% story bound; headless SwiftShader)"
+      },
+      "measured_result": "Flat delta (`-0.12%`); zero stat-sig wins across all 32 stories.",
+      "reason": "While Navigation API history items generate UUIDs on creation, Speedometer 3 stories execute inside pre-loaded single page applications where full navigation is not invoked during timed test runs.",
+      "durable_invariant": "Navigation API optimizations have zero impact on standard SPA benchmarks like Speedometer; verify that navigation lifecycles actually execute in the target benchmark before sizing.",
+      "rejection_stage": "Clean-Branch Isolation A/B (Commit `8a82f82fdda9d`).",
+      "campaign": "speedometer-earlier",
+      "date": null,
+      "baseline_commit": "8a82f82fdda9d",
+      "revisit_if": "Navigation API optimizations have zero impact on standard SPA benchmarks like Speedometer; verify that navigation lifecycles actually execute in the target benchmark before sizing.",
+      "design_docs": [],
+      "evidence_paths": []
+    },
+    {
+      "id": "SP3-SEP-224",
+      "ledger_id": 224,
+      "key": "layout/inline-prepare-layout-cache",
+      "title": "#224: `layout/inline-prepare-layout-cache`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "blink::InlineNode::PrepareLayout(blink::InlineNodeData*) const"
+      ],
+      "stories": [
+        "Editor-TipTap"
+      ],
+      "upper_bound": {
+        "target_story": "Editor-TipTap",
+        "target_story_share_pct": 8.1594,
+        "estimated_avoidable_fraction": 0.495183,
+        "estimated_local_story_impact_pct": 2.9053,
+        "estimated_suite_impact_pct": null,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 8.16% (Editor-TipTap), avoidable fraction 0.4952, local story impact 2.91%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "withdrawn for rework per outbox/inspection-2026-09-07.md: fraction read from a probe whose key or applicable predicate does not state the hypothesis, existing Chromium reuse not examined; re-list as known if the reworked count still clears the floor",
+      "campaign": "speedometer-september",
+      "date": "2026-09-07",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Revisit if a reworked probe with a key and applicable predicate that state the hypothesis and examine existing InlineNode::PrepareLayout reuse clears the story floor.",
+      "design_docs": [
+        "outbox/inspection-2026-09-07.md"
+      ],
+      "evidence_paths": [
+        "evidence/probe_rework_tiptap_inline_prepare.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-225",
+      "ledger_id": 225,
+      "key": "fonts/shape-result-ink-bounds-cache",
+      "title": "#225: `fonts/shape-result-ink-bounds-cache`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "cssom_style.md",
+      "functions": [
+        "blink::ShapeResultView::ComputeInkBounds() const"
+      ],
+      "stories": [
+        "Editor-TipTap",
+        "TodoMVC-Vue",
+        "TodoMVC-WebComponents",
+        "TodoMVC-Preact-Complex-DOM",
+        "NewsSite-Nuxt",
+        "NewsSite-Next",
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-Lit-Complex-DOM",
+        "Charts-observable-plot",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-React-Complex-DOM",
+        "React-Stockcharts-SVG",
+        "TodoMVC-React-Redux",
+        "Editor-CodeMirror",
+        "Perf-Dashboard",
+        "TodoMVC-jQuery",
+        "Charts-chartjs",
+        "TodoMVC-Backbone"
+      ],
+      "upper_bound": {
+        "target_story": "Editor-TipTap",
+        "target_story_share_pct": 6.4973,
+        "estimated_avoidable_fraction": 0.320508,
+        "estimated_local_story_impact_pct": 2.0691,
+        "estimated_suite_impact_pct": 0.1206,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 6.50% (Editor-TipTap), avoidable fraction 0.3205, local story impact 2.07%, suite impact 0.1206%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "User decision 2026-10-12: parked as not worth the effort; decomposition-gate suite-impact upper bound 0.1206% is below the 0.20% cutoff. Unmeasured; revisit only if the bound is revised upward.",
+      "campaign": "speedometer-september",
+      "date": "2026-10-12",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Below a 0.20% suite-impact cutoff (0.1206%); revisit if the bound rises on a newer profile or workload.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/probe_rework_tiptap_ink_bounds.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-226",
+      "ledger_id": 226,
+      "key": "layout/inline-layout-caching",
+      "title": "#226: `layout/inline-layout-caching`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "blink::InlineLayoutAlgorithm::Layout()"
+      ],
+      "stories": [
+        "Perf-Dashboard",
+        "NewsSite-Next",
+        "TodoMVC-Angular-Complex-DOM",
+        "Editor-TipTap",
+        "Editor-CodeMirror",
+        "React-Stockcharts-SVG",
+        "TodoMVC-WebComponents",
+        "NewsSite-Nuxt",
+        "TodoMVC-Lit-Complex-DOM",
+        "Charts-observable-plot",
+        "Charts-chartjs"
+      ],
+      "upper_bound": {
+        "target_story": "Perf-Dashboard",
+        "target_story_share_pct": 17.6473,
+        "estimated_avoidable_fraction": 0.948131,
+        "estimated_local_story_impact_pct": 16.6962,
+        "estimated_suite_impact_pct": 1.234,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 17.65% (Perf-Dashboard), avoidable fraction 0.9481, local story impact 16.70%, suite impact 1.2340%"
+      },
+      "measured_result": "32-block Perf-Dashboard oracle A/B: -0.57% [-0.89%, -0.25%] (fired 19/767 calls/rep, 2.5%)",
+      "reason": "round 72: the redesigned oracle (skip at BlockNode::Layout after PrepareLayoutIfNeeded, complete key with text hash, items count, Style pointer, inline size, percentage resolution, BFC offsets, exclusion space; layout slot only) ran 32 blocks on Perf-Dashboard without a crash and bounds the story gain at -0.57% [-0.89, -0.25]; it reached 767 and fired 19 calls per repetition (2.5%). The round-61b crash was symbolized (CHECK in BoxFragmentPainter::PaintInlineItems: stale fragment items when an inline result is reused without PrepareLayout; evidence/oracle_batch2/0_226_diag_sym1_perfdash_1/gdb_bt.log). Under a sound key the redundancy the counter saw (79% repeats of (block, text, constraints)) is not reusable: the misses are most likely replaced ComputedStyle pointers and exclusion-space differences. Four builds, three runs.",
+      "campaign": "speedometer-september",
+      "date": "2026-09-22",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Revisit only if inline layout caching can avoid ComputedStyle pointer churn and exclusion-space misses without stale PaintInlineItems fragment state (32-block oracle measured -0.57% [-0.89%, -0.25%] with 2.5% fire rate).",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/oracle_batch1/3_226_perfdash_32",
+        "evidence/oracle_batch2/1_226_perfdash_32",
+        "evidence/oracle_batch2/0_226_diag_sym1_perfdash_1",
+        "evidence/probe_rework_perfdash_inline_layout.json",
+        "measurements/tot-profile/analysis/stories/Editor-TipTap/report.json",
+        "measurements/tot-profile-2/analysis/stories/Editor-TipTap/report.json",
+        "measurements/tot-lens.json",
+        "evidence/probe_r155_newssite_next__layout_inline_layout_algorithm.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-227",
+      "ledger_id": 227,
+      "key": "compositing/paint-artifact-incremental-layerization",
+      "title": "#227: `compositing/paint-artifact-incremental-layerization`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "canvas_graphics.md",
+      "functions": [
+        "blink::PaintArtifactCompositor::Update(blink::PaintArtifact const&, blink::PaintArtifactCompositor::ViewportProperties const&, blink::BasicHeapVector<(blink::internal::HeapCollectionType)1, cppgc::internal::BasicMember<blink::TransformPaintPropertyNode const, cppgc::internal::StrongMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy, cppgc::internal::DisabledCheckingPolicy, cppgc::internal::CompressedPointer>, 32u> const&, blink::Vector<std::__Cr::unique_ptr<cc::ViewTransitionRequest, std::__Cr::default_delete<cc::ViewTransitionRequest> >, 0u, blink::PartitionAllocator>)",
+        "TodoMVC-Vue/cc::LayerTreeHost::RequestMainFrameUpdate(bool)",
+        "TodoMVC-WebComponents/cc::LayerTreeHost::RequestMainFrameUpdate(bool)"
+      ],
+      "stories": [
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-Preact-Complex-DOM",
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-Vue",
+        "TodoMVC-WebComponents",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-React-Complex-DOM",
+        "Editor-CodeMirror",
+        "TodoMVC-React-Redux",
+        "Perf-Dashboard",
+        "TodoMVC-JavaScript-ES5",
+        "Editor-TipTap",
+        "Charts-chartjs",
+        "TodoMVC-jQuery",
+        "React-Stockcharts-SVG",
+        "TodoMVC-Backbone"
+      ],
+      "upper_bound": {
+        "target_story": "TodoMVC-Svelte-Complex-DOM",
+        "target_story_share_pct": 5.1011,
+        "estimated_avoidable_fraction": 0.533333,
+        "estimated_local_story_impact_pct": null,
+        "estimated_suite_impact_pct": 0.3088,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 5.10% (TodoMVC-Svelte-Complex-DOM), avoidable fraction 0.5333, suite impact 0.3088%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "Sizing (ROUND-197) epoch check: candidate evidence is out of epoch (sp3-baseline-1 / sp3-post-158-r3). On the current profile sp3-tot-frontier-1, TodoMVC-Svelte-Complex-DOM PendingLayer::Matches share 0.7803% x 58.9% = 0.4596%, below the 1.3910% story floor (operator report ROUND-197.227.md sha256 503db2391c73).",
+      "campaign": "speedometer-september",
+      "date": "2026-10-13",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Below the 1.3910% TodoMVC-Svelte-Complex-DOM story floor on Epoch 1 profile sp3-tot-frontier-1 (0.7803% x 58.9% = 0.4596%); revisit if PendingLayer::Matches share or repeat fraction rises.",
+      "design_docs": [
+        "outbox/ROUND-197.227.md"
+      ],
+      "evidence_paths": [
+        "evidence/probe_r185_todomvc_svelte_complex_dom__compositing_layerizer_layerize_group.json",
+        "evidence/probe_rework_svelte_pac_layers.json",
+        "evidence/probe_rework_preact_pac_layers.json",
+        "evidence/probe_rework_lit_pac_chunks.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-228",
+      "ledger_id": 228,
+      "key": "layout/flex-item-min-max-cache",
+      "title": "#228: `layout/flex-item-min-max-cache`",
+      "kind": "mechanism",
+      "status": "rejected",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "blink::FlexLayoutAlgorithm::ConstructAndAppendFlexItems(blink::FlexLayoutAlgorithm::Phase, blink::BasicHeapVector<(blink::internal::HeapCollectionType)1, cppgc::internal::BasicMember<blink::LayoutBox, cppgc::internal::StrongMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy, cppgc::internal::DisabledCheckingPolicy, cppgc::internal::CompressedPointer>, 0u>*)"
+      ],
+      "stories": [
+        "NewsSite-Next",
+        "Editor-TipTap",
+        "Editor-CodeMirror",
+        "NewsSite-Nuxt"
+      ],
+      "upper_bound": {
+        "target_story": "NewsSite-Next",
+        "target_story_share_pct": 22.4788,
+        "estimated_avoidable_fraction": 0.416633,
+        "estimated_local_story_impact_pct": 9.3654,
+        "estimated_suite_impact_pct": null,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 22.48% (NewsSite-Next), avoidable fraction 0.4166, local story impact 9.37%"
+      },
+      "measured_result": "Round 22 versioned counter: 0.0-4.6% repeated min/max time (NewsSite-Next 4.6% of 2.7% = 0.12%)",
+      "reason": "Round 22 counter at BlockNode::ComputeMinMaxSizes keyed on the inputs and the DOM/style versions: repeated min/max computations are 0.0-4.6% of the function's time in every story (Next 4.6% of a 2.7% share); the earlier 63.8% was measured in a lambda without the versions in the key, across DOM mutations. See the notes.",
+      "campaign": "speedometer-september",
+      "date": "2026-09-10",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Rejected: true repeated min/max computations with DOM/style versions included in the key are 0.0-4.6% of BlockNode::ComputeMinMaxSizes time (0.12% of NewsSite-Next); revisit only if a workload exhibits high same-version min/max repetition.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/probes-round22.patch"
+      ]
+    },
+    {
+      "id": "SP3-SEP-229",
+      "ledger_id": 229,
+      "key": "layout/reusing-text-shaper-item-cache",
+      "title": "#229: `layout/reusing-text-shaper-item-cache`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "blink::InlineNode::ShapeText(blink::InlineItemsData*, blink::String const*, blink::BasicHeapVector<(blink::internal::HeapCollectionType)1, cppgc::internal::BasicMember<blink::InlineItem, cppgc::internal::StrongMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy, cppgc::internal::DisabledCheckingPolicy, cppgc::internal::CompressedPointer>, 0u> const*, blink::Font const*) const"
+      ],
+      "stories": [
+        "Editor-TipTap"
+      ],
+      "upper_bound": {
+        "target_story": "Editor-TipTap",
+        "target_story_share_pct": 31.383,
+        "estimated_avoidable_fraction": 0.102782,
+        "estimated_local_story_impact_pct": 3.2244,
+        "estimated_suite_impact_pct": null,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 31.38% (Editor-TipTap), avoidable fraction 0.1028, local story impact 3.22%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "withdrawn per outbox/inspection-2026-09-07.md round 5: reviews for the revision-4 decompositions were authored by the orchestrator (400-byte transcripts, generated task ids), covered-by rows were assigned by symbol substring across unrelated phases, and the fraction used does not follow from the packet's applicable predicate",
+      "campaign": "speedometer-september",
+      "date": "2026-09-07",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Withdrawn in Round 5 decomposition audit; superseded by #243 and #289 on InlineNode::ShapeText / ReusingTextShaper.",
+      "design_docs": [
+        "outbox/inspection-2026-09-07.md"
+      ],
+      "evidence_paths": [
+        "ledger.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-230",
+      "ledger_id": 230,
+      "key": "layout/simplified-layout-caching",
+      "title": "#230: `layout/simplified-layout-caching`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "blink::SimplifiedLayoutAlgorithm::Layout()"
+      ],
+      "stories": [
+        "Perf-Dashboard"
+      ],
+      "upper_bound": {
+        "target_story": "Perf-Dashboard",
+        "target_story_share_pct": 10.3543,
+        "estimated_avoidable_fraction": 0.940184,
+        "estimated_local_story_impact_pct": 9.623,
+        "estimated_suite_impact_pct": null,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 10.35% (Perf-Dashboard), avoidable fraction 0.9402, local story impact 9.62%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "withdrawn per outbox/inspection-2026-09-07.md round 5: reviews for the revision-4 decompositions were authored by the orchestrator (400-byte transcripts, generated task ids), covered-by rows were assigned by symbol substring across unrelated phases, and the fraction used does not follow from the packet's applicable predicate",
+      "campaign": "speedometer-september",
+      "date": "2026-09-07",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Withdrawn in Round 5 decomposition audit; revisit only if a valid time-weighted probe on SimplifiedLayoutAlgorithm::Layout clears the story floor.",
+      "design_docs": [
+        "outbox/inspection-2026-09-07.md"
+      ],
+      "evidence_paths": [
+        "ledger.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-231",
+      "ledger_id": 231,
+      "key": "layout/oof-candidate-layout-cache",
+      "title": "#231: `layout/oof-candidate-layout-cache`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "blink::OutOfFlowLayoutPart::Run()"
+      ],
+      "stories": [
+        "Perf-Dashboard",
+        "NewsSite-Next",
+        "NewsSite-Nuxt",
+        "React-Stockcharts-SVG",
+        "TodoMVC-Backbone",
+        "TodoMVC-Vue",
+        "TodoMVC-WebComponents",
+        "TodoMVC-Lit-Complex-DOM",
+        "Charts-observable-plot",
+        "Charts-chartjs",
+        "Editor-CodeMirror",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-Angular-Complex-DOM"
+      ],
+      "upper_bound": {
+        "target_story": "Perf-Dashboard",
+        "target_story_share_pct": 10.4367,
+        "estimated_avoidable_fraction": 0.917613,
+        "estimated_local_story_impact_pct": 9.5713,
+        "estimated_suite_impact_pct": 0.6557,
+        "opportunity_budget_upper_pct": 9.36,
+        "sized_ceiling_pct": 8.8701,
+        "summary": "target-story share 10.44% (Perf-Dashboard), avoidable fraction 0.9176, local story impact 9.57%, suite impact 0.6557%, causal budget aggregate upper 9.36%, twin ceiling 8.87%"
+      },
+      "measured_result": "Twin sizing (Perf-Dashboard): avoidable cycle share 8.785% [8.699%, 8.870%] (ceiling 8.87%)",
+      "reason": "r96 design (outbox/CANDIDATE-231-DESIGN.md 6ae66ae9, 18/18 quotes verified) + host profile check (scratch/results_perf_sampling_bfdi2qcr Perf-Dashboard profile.collapsed): under OutOfFlowLayoutPart::LayoutCandidates (10.00% of the story), BlockNode::Layout is 9.26%, of which 8.76% is full BlockLayoutAlgorithm (5.09) / FlexLayoutAlgorithm (3.67) runs and only 0.03% the layout-result cache check. The sized repeats (8.785%, same key and fragment size) are therefore cache misses on boxes whose subtree is dirty: the probe key had no descendant state (sizing adversary condition). A correct reuse test (clean subtree) saves only CalculateOffset/ComputeOof* and wrapper cost, 0.46-0.59% of Perf-Dashboard < 1.604% floor. The round-72 oracle's +13.54% (leak flag) reused stale layouts. Open question, not measured: whether Perf-Dashboard's subtree dirtiness comes from real content changes or no-op mutations (a discovery lead, class no-op-mutation / unchanged-output). Reversible with reopen.",
+      "campaign": "speedometer-september",
+      "date": "2026-09-25",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Revisit if Perf-Dashboard's OOF subtree dirtiness is shown to come from no-op mutations that can be filtered upstream; clean-subtree OOF candidate caching alone saves only 0.46-0.59% vs the 1.604% Perf-Dashboard floor.",
+      "design_docs": [
+        "outbox/CANDIDATE-231-DESIGN.md",
+        "outbox/SIZING-231-PROBE-DESIGN.md"
+      ],
+      "evidence_paths": [
+        "evidence/twin_batch2/sizing-231.json",
+        "evidence/oracle_batch2/3_231_perfdash_32",
+        "evidence/probe_r185_perf_dashboard__layout_oof_layout_part.json",
+        "evidence/probe_r185_todomvc_backbone__layout_oof_layout_part.json",
+        "measurements/tot-profile/analysis/stories/TodoMVC-Vue/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/TodoMVC-Vue/candidate_frontier.json",
+        "measurements/tot-lens.json",
+        "evidence/probe_r185_react_stockcharts_svg__layout_oof_layout_part.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-232",
+      "ledger_id": 232,
+      "key": "css/element-matched-rules-cache",
+      "title": "#232: `css/element-matched-rules-cache`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "cssom_style.md",
+      "functions": [
+        "blink::ElementRuleCollector::CollectMatchingRules(blink::MatchRequest const&, blink::PartNames*)",
+        "blink::LocalFrameView::UpdateAllLifecyclePhases(blink::DocumentUpdateReason)"
+      ],
+      "stories": [
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-Preact-Complex-DOM",
+        "TodoMVC-Vue",
+        "TodoMVC-WebComponents",
+        "NewsSite-Next",
+        "NewsSite-Nuxt",
+        "TodoMVC-Backbone",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-React-Redux",
+        "Perf-Dashboard",
+        "Editor-CodeMirror",
+        "Charts-chartjs",
+        "Editor-TipTap"
+      ],
+      "upper_bound": {
+        "target_story": "TodoMVC-Lit-Complex-DOM",
+        "target_story_share_pct": 3.7958,
+        "estimated_avoidable_fraction": 0.263871,
+        "estimated_local_story_impact_pct": 0.936,
+        "estimated_suite_impact_pct": 0.425,
+        "opportunity_budget_upper_pct": 6.9351,
+        "sized_ceiling_pct": 4.522,
+        "summary": "target-story share 3.80% (TodoMVC-Lit-Complex-DOM), avoidable fraction 0.2639, local story impact 0.94%, suite impact 0.4250%, causal budget aggregate upper 6.94%, twin ceiling 4.52%"
+      },
+      "measured_result": "Twin sizing (TodoMVC-Svelte-Complex-DOM): avoidable cycle share 4.327% [4.133%, 4.522%] (ceiling 4.52%); r102-r105 candidate r4 (7d556c93): 0 collections taken on TodoMVC-Svelte-Complex-DOM (+0.23% gate/signature overhead)",
+      "reason": "r102-r105: candidate r4 (7d556c93) is correct (tests, receipts) but takes no collections on TodoMVC-Svelte-Complex-DOM. Diagnostics (recounted by the host): 92% of author rule collections repeat a cache key (757 of 821 per repetition), yet every one visits a rule the safe cache refuses: '.notifications-group .notifications-list li > div > :nth-child(2)' (universal bucket, subject :nth-child; 516/rep) and non-subject :hover/:focus rules (304/rep). Reaching them needs sibling-index and ancestor/sibling hover-focus state in the key plus affected-by flag replay onto ancestors and siblings: much larger and riskier for a 3.2% [2.7, 3.7] ceiling vs the 2.134% floor, with +0.23% gate/signature cost measured at r102. User decision 2026-09-25: park. Reversible with reopen; patches r1-r4 and diagnostics under evidence/candidates/232/.",
+      "campaign": "speedometer-september",
+      "date": "2026-09-26",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Revisit if ElementRuleCollector matched-rules caching can cheaply encode sibling-index (:nth-child) and ancestor/sibling :hover/:focus state without exceeding the 3.2% ceiling on TodoMVC-Svelte-Complex-DOM.",
+      "design_docs": [
+        "outbox/CANDIDATE-232-DESIGN.md"
+      ],
+      "evidence_paths": [
+        "evidence/twin_batch1/sizing-232.json",
+        "evidence/twin_232_on_234/sizing-232.json",
+        "evidence/candidates/232",
+        "evidence/probe_r185_todomvc_backbone__css_element_rule_collector_calls.json",
+        "evidence/probe_r185_todomvc_lit_complex_dom__css_element_rule_collector_calls.json",
+        "measurements/tot-profile/analysis/stories/TodoMVC-Vue/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/TodoMVC-Vue/candidate_frontier.json",
+        "measurements/tot-lens.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-233",
+      "ledger_id": 233,
+      "key": "style/shadow-root-active-style-cache",
+      "title": "#233: `style/shadow-root-active-style-cache`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "cssom_style.md",
+      "functions": [
+        "blink::StyleEngine::UpdateActiveStyle()"
+      ],
+      "stories": [
+        "TodoMVC-WebComponents"
+      ],
+      "upper_bound": {
+        "target_story": "TodoMVC-WebComponents",
+        "target_story_share_pct": 1.5714,
+        "estimated_avoidable_fraction": 0.99,
+        "estimated_local_story_impact_pct": 1.5516,
+        "estimated_suite_impact_pct": null,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 1.57% (TodoMVC-WebComponents), avoidable fraction 0.9900, local story impact 1.55%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "withdrawn per outbox/inspection-2026-09-07.md round 5: reviews for the revision-4 decompositions were authored by the orchestrator (400-byte transcripts, generated task ids), covered-by rows were assigned by symbol substring across unrelated phases, and the fraction used does not follow from the packet's applicable predicate",
+      "campaign": "speedometer-september",
+      "date": "2026-09-07",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Withdrawn in Round 5 decomposition audit; revisit only if a valid time-weighted probe on StyleEngine::UpdateActiveStyle clears the story floor.",
+      "design_docs": [
+        "outbox/inspection-2026-09-07.md"
+      ],
+      "evidence_paths": [
+        "ledger.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-235",
+      "ledger_id": 235,
+      "key": "root/update-style-and-layout-for-node",
+      "title": "#235: `root/update-style-and-layout-for-node`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "blink::Document::UpdateStyleAndLayoutForNode(blink::Node const*, blink::DocumentUpdateReason)"
+      ],
+      "stories": [
+        "Perf-Dashboard",
+        "Editor-CodeMirror",
+        "React-Stockcharts-SVG",
+        "Editor-TipTap",
+        "Charts-chartjs",
+        "TodoMVC-WebComponents",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-React-Complex-DOM",
+        "NewsSite-Nuxt",
+        "TodoMVC-React-Redux",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-Backbone",
+        "TodoMVC-Angular-Complex-DOM",
+        "NewsSite-Next",
+        "TodoMVC-Vue"
+      ],
+      "upper_bound": {
+        "target_story": "Perf-Dashboard",
+        "target_story_share_pct": 32.0168,
+        "estimated_avoidable_fraction": 0.055029,
+        "estimated_local_story_impact_pct": 1.7511,
+        "estimated_suite_impact_pct": 0.1409,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 32.02% (Perf-Dashboard), avoidable fraction 0.0550, local story impact 1.75%, suite impact 0.1409%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "User decision 2026-10-12: parked as not worth the effort; decomposition-gate suite-impact upper bound 0.1409% is below the 0.20% cutoff. Unmeasured; revisit only if the bound is revised upward.",
+      "campaign": "speedometer-september",
+      "date": "2026-10-12",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Below a 0.20% suite-impact cutoff (0.1409%); revisit if the bound rises on a newer profile or workload.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/probe_r185_perf_dashboard__root_update_style_and_layout_for_node.json",
+        "evidence/probes-round185-tot.patch"
+      ]
+    },
+    {
+      "id": "SP3-SEP-236",
+      "ledger_id": 236,
+      "key": "parser/domparser-template-cache",
+      "title": "#236: `parser/domparser-template-cache`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "html_forms.md",
+      "functions": [
+        "blink::DOMParser::parseFromString(blink::V8UnionStringOrTrustedHTML const*, blink::V8SupportedType const&, blink::ExceptionState&)"
+      ],
+      "stories": [
+        "TodoMVC-JavaScript-ES5"
+      ],
+      "upper_bound": {
+        "target_story": "TodoMVC-JavaScript-ES5",
+        "target_story_share_pct": 22.3422,
+        "estimated_avoidable_fraction": 0.094574,
+        "estimated_local_story_impact_pct": 2.0843,
+        "estimated_suite_impact_pct": 0.1179,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 22.34% (TodoMVC-JavaScript-ES5), avoidable fraction 0.0946, local story impact 2.08%, suite impact 0.1179%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "User decision 2026-10-12: parked as not worth the effort; decomposition-gate suite-impact upper bound 0.1179% is below the 0.20% cutoff. Unmeasured; revisit only if the bound is revised upward.",
+      "campaign": "speedometer-september",
+      "date": "2026-10-12",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Below a 0.20% suite-impact cutoff (0.1179%); revisit if the bound rises on a newer profile or workload.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/probe_r185_todomvc_javascript_es5__parser_domparser_parse_from_string.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-237",
+      "ledger_id": 237,
+      "key": "paint/pre-paint-tree-walk-cache",
+      "title": "#237: `paint/pre-paint-tree-walk-cache`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "canvas_graphics.md",
+      "functions": [
+        "blink::PrePaintTreeWalk::Walk(blink::LocalFrameView&, blink::PrePaintTreeWalk::PrePaintTreeWalkContext const&)"
+      ],
+      "stories": [
+        "NewsSite-Nuxt",
+        "NewsSite-Next",
+        "TodoMVC-Svelte-Complex-DOM",
+        "Editor-CodeMirror",
+        "TodoMVC-Preact-Complex-DOM",
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-WebComponents",
+        "TodoMVC-Vue",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-Backbone",
+        "TodoMVC-React-Redux",
+        "TodoMVC-JavaScript-ES5",
+        "Editor-TipTap",
+        "TodoMVC-jQuery",
+        "Perf-Dashboard",
+        "Charts-chartjs",
+        "Charts-observable-plot",
+        "React-Stockcharts-SVG"
+      ],
+      "upper_bound": {
+        "target_story": "NewsSite-Nuxt",
+        "target_story_share_pct": 7.1155,
+        "estimated_avoidable_fraction": 0.202011,
+        "estimated_local_story_impact_pct": 1.4275,
+        "estimated_suite_impact_pct": 0.1553,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 7.12% (NewsSite-Nuxt), avoidable fraction 0.2020, local story impact 1.43%, suite impact 0.1553%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "re-parked by the host, round 57: parked in round 46 as the harness-driven redundant-trigger form of the pre-paint idea; #324 (precise pre-paint dirtiness, unchanged-output) is its successor; the #137 r3 revision reopened it automatically through a covered-by wrapper",
+      "campaign": "speedometer-september",
+      "date": "2026-09-18",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Harness-driven redundant-trigger artifact (superseded by #324 unchanged-output pre-paint hypothesis); do not revisit unless real-world non-harness triggers are demonstrated.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/probes-round46.patch"
+      ]
+    },
+    {
+      "id": "SP3-SEP-238",
+      "ledger_id": 238,
+      "key": "hittest/tree-scope-element-from-point-cache",
+      "title": "#238: `hittest/tree-scope-element-from-point-cache`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "blink::LayoutView::HitTest(blink::HitTestLocation const&, blink::HitTestResult&)",
+        "blink::TreeScope::ElementFromPoint(double, double) const"
+      ],
+      "stories": [
+        "NewsSite-Nuxt",
+        "NewsSite-Next"
+      ],
+      "upper_bound": {
+        "target_story": "NewsSite-Nuxt",
+        "target_story_share_pct": 8.531,
+        "estimated_avoidable_fraction": 0.946325,
+        "estimated_local_story_impact_pct": 8.0398,
+        "estimated_suite_impact_pct": 0.7544,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 8.53% (NewsSite-Nuxt), avoidable fraction 0.9463, local story impact 8.04%, suite impact 0.7544%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "re-parked by the host, round 57: the user's 2026-09-17 decision (harness artifact: the elementFromPoint calls this mechanism would cache are the runner's Page.layout probes) stands; the #129 r3 revision carried the origin row and the gate reopened it automatically",
+      "campaign": "speedometer-september",
+      "date": "2026-09-18",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Harness artifact (caches the benchmark runner's Page.layout elementFromPoint probe); do not revisit.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/probe_r184_newssite_nuxt__hittest_layout_view_hit_test.json",
+        "measurements/tot-profile/analysis/stories/NewsSite-Nuxt/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/NewsSite-Nuxt/candidate_frontier.json",
+        "measurements/tot-lens.json",
+        "evidence/probe_r184_newssite_next__hittest_layout_view_hit_test.json",
+        "measurements/tot-profile/analysis/stories/NewsSite-Next/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/NewsSite-Next/candidate_frontier.json",
+        "evidence/probe_r185_newssite_nuxt__hittest_tree_scope_element_from_point.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-239",
+      "ledger_id": 239,
+      "key": "canvas/flush-canvas-internal",
+      "title": "#239: `canvas/flush-canvas-internal`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "canvas_graphics.md",
+      "functions": [
+        "blink::BaseRenderingContext2D::FlushCanvasInternal(blink::Canvas2DResourceProvider*, blink::Canvas2DBitmapProvider*, blink::FlushReason)"
+      ],
+      "stories": [
+        "Charts-chartjs",
+        "Perf-Dashboard"
+      ],
+      "upper_bound": {
+        "target_story": "Charts-chartjs",
+        "target_story_share_pct": 4.7644,
+        "estimated_avoidable_fraction": 0.271887,
+        "estimated_local_story_impact_pct": 1.2856,
+        "estimated_suite_impact_pct": 0.07,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 4.76% (Charts-chartjs), avoidable fraction 0.2719, local story impact 1.29%, suite impact 0.0700%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "User decision 2026-10-12: parked as not worth the effort; decomposition-gate suite-impact upper bound 0.07% is below the 0.20% cutoff. Unmeasured; revisit only if the bound is revised upward.",
+      "campaign": "speedometer-september",
+      "date": "2026-10-12",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Below a 0.20% suite-impact cutoff (0.0700%); revisit if the bound rises on a newer profile or workload.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/probe_r185_charts_chartjs__canvas_flush_canvas_internal.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-240",
+      "ledger_id": 240,
+      "key": "dom/import-node-template-cache",
+      "title": "#240: `dom/import-node-template-cache`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "dom_core.md",
+      "functions": [
+        "blink::Document::importNode(blink::Node*, blink::V8UnionBooleanOrImportNodeOptions*, blink::ExceptionState&)"
+      ],
+      "stories": [
+        "TodoMVC-WebComponents",
+        "TodoMVC-Lit-Complex-DOM",
+        "Perf-Dashboard"
+      ],
+      "upper_bound": {
+        "target_story": "TodoMVC-WebComponents",
+        "target_story_share_pct": 3.468,
+        "estimated_avoidable_fraction": 0.966455,
+        "estimated_local_story_impact_pct": 3.0442,
+        "estimated_suite_impact_pct": 0.2585,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 3.47% (TodoMVC-WebComponents), avoidable fraction 0.9665, local story impact 3.04%, suite impact 0.2585%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "r106 batch-3 design (outbox/SIZING-BATCH-3-ORACLES.md a30e8ab4, 19/19 quotes; profile recomputed by the host): importNode is 3.15% of TodoMVC-WebComponents, 99.6% of it DocumentFragment::Clone -> per-instance AppendChild 1.04%, CloneAttributesFrom 0.85% (ElementData already shared across clones), CreateElement 0.36%, TextFieldInputType::UpdateView 0.32%. A template cache cannot skip creating distinct DOM nodes; the shareable part is already shared. Parked before any oracle build.",
+      "campaign": "speedometer-september",
+      "date": "2026-09-26",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "99.6% of Document::importNode in TodoMVC-WebComponents is per-instance DOM node construction (DocumentFragment::Clone), while ElementData is already shared; revisit only if bulk DOM node cloning itself can be amortized.",
+      "design_docs": [
+        "outbox/SIZING-BATCH-3-PROBE-DESIGN.md"
+      ],
+      "evidence_paths": [
+        "evidence/probe_r185_todomvc_webcomponents__dom_document_import_node.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-241",
+      "ledger_id": 241,
+      "key": "resource/resource-request-memory-cache-hit",
+      "title": "#241: `resource/resource-request-memory-cache-hit`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "lifecycle_editing.md",
+      "functions": [
+        "blink::ResourceFetcher::RequestResource(blink::FetchParameters&, blink::ResourceFactory const&, blink::ResourceClient*)",
+        "blink::ImageResource::Fetch(blink::FetchParameters&, blink::ResourceFetcher*)"
+      ],
+      "stories": [
+        "NewsSite-Next",
+        "NewsSite-Nuxt",
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-Preact-Complex-DOM",
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-WebComponents",
+        "TodoMVC-Vue",
+        "TodoMVC-Backbone",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-React-Redux",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-jQuery"
+      ],
+      "upper_bound": {
+        "target_story": "NewsSite-Next",
+        "target_story_share_pct": 1.5096,
+        "estimated_avoidable_fraction": 0.981,
+        "estimated_local_story_impact_pct": 1.4576,
+        "estimated_suite_impact_pct": 0.2945,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 1.51% (NewsSite-Next), avoidable fraction 0.9810, local story impact 1.46%, suite impact 0.2945%"
+      },
+      "measured_result": "32-block NewsSite-Next oracle A/B (Speedometer3Oracle241): +1.090% [+0.908%, +1.271%] vs 1.0% floor (100% fired, 0 audit mismatches)",
+      "reason": "r109 oracle A/B (evidence/oracle_batch3/ab-241, manifest e3dc6d84; 32 blocks, NewsSite-Next, Speedometer3Optimizations on both arms): +1.090% [0.908, 1.271] against a 1.0% floor, lower bound below it. The oracle is an explicit upper bound: it skipped CanRequest/CSP/WillSendRequest/SetReferrer on same-fetcher memory-cache hits (302 per iteration, 100% fired, 0 audit mismatches); a shippable change must keep the security checks (PrepareResourceRequestForCacheAccess sub-costs: annotations 0.60%, CanRequest 0.22% of the story), so its gain is lower still.",
+      "campaign": "speedometer-september",
+      "date": "2026-09-26",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Oracle upper bound (+1.090% [0.908%, 1.271%] on NewsSite-Next) skipped mandatory security checks (CanRequest/CSP, 0.22% + 0.60% annotations) and still had its CI lower bound below the 1.0% story floor; revisit only if security/CSP checks on same-fetcher memory-cache hits can be soundly memoized.",
+      "design_docs": [
+        "outbox/SIZING-BATCH-3-PROBE-DESIGN.md"
+      ],
+      "evidence_paths": [
+        "evidence/oracle_batch3/ab-241",
+        "evidence/oracle_batch3/oracle-241.r2.patch",
+        "evidence/cost_346_r7.json",
+        "measurements/tot-profile/analysis/stories/NewsSite-Nuxt/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/NewsSite-Nuxt/candidate_frontier.json",
+        "measurements/tot-lens.json",
+        "evidence/cost_339_r7.json",
+        "measurements/tot-profile/analysis/stories/NewsSite-Next/candidate_frontier.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-242",
+      "ledger_id": 242,
+      "key": "layout/layout-result-discarded-before-paint",
+      "title": "#242: `layout/layout-result-discarded-before-paint`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "blink::BlockNode::Layout(blink::ConstraintSpace const&, blink::BlockBreakToken const*, blink::EarlyBreak const*, blink::ColumnSpannerPath const*) const"
+      ],
+      "stories": [
+        "Editor-TipTap",
+        "NewsSite-Next",
+        "NewsSite-Nuxt",
+        "Perf-Dashboard",
+        "React-Stockcharts-SVG",
+        "Editor-CodeMirror",
+        "TodoMVC-Backbone",
+        "TodoMVC-Lit-Complex-DOM",
+        "Charts-chartjs",
+        "TodoMVC-WebComponents",
+        "Charts-observable-plot",
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-Preact-Complex-DOM",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-jQuery",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-Vue"
+      ],
+      "upper_bound": {
+        "target_story": "Editor-TipTap",
+        "target_story_share_pct": 55.7573,
+        "estimated_avoidable_fraction": 0.465,
+        "estimated_local_story_impact_pct": 25.9168,
+        "estimated_suite_impact_pct": 3.828,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 55.76% (Editor-TipTap), avoidable fraction 0.4650, local story impact 25.92%, suite impact 3.8280%"
+      },
+      "measured_result": "Paired oracle on Editor-TipTap: +0.15% [-0.15%, +0.45%]",
+      "reason": "round 60: the paired oracle (second unpainted layout returns the previous result) bounds the story gain at +0.15% [-0.15, +0.45] on Editor-TipTap against a 30% counter reading; the post-hoc predicate has no online oracle, and #322 on the same function reads +3.66% [3.29, 4.04]. No causal budget, so not sizable; superseded by #322 for sizing.",
+      "campaign": "speedometer-september",
+      "date": "2026-09-19",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Paired oracle on Editor-TipTap measured +0.15% [-0.15%, +0.45%] with no online predictor of whether a layout result will be discarded before paint; superseded by #322.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/oracle_batch1/1b_242_tiptap_32",
+        "measurements/tot-profile/analysis/stories/Editor-TipTap/report.json",
+        "measurements/tot-profile-2/analysis/stories/Editor-TipTap/report.json",
+        "measurements/tot-lens.json",
+        "measurements/tot-profile/analysis/stories/Editor-CodeMirror/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/Editor-CodeMirror/candidate_frontier.json",
+        "evidence/probe_r155_newssite_next__layout_unconsumed_cross_pass.json",
+        "measurements/tot-profile/analysis/stories/NewsSite-Next/candidate_frontier.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-243",
+      "ledger_id": 243,
+      "key": "fonts/inline-shape-text-overlap",
+      "title": "#243: `fonts/inline-shape-text-overlap`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "cssom_style.md",
+      "functions": [
+        "blink::InlineNode::ShapeText(blink::InlineItemsData*, blink::String const*, blink::BasicHeapVector<(blink::internal::HeapCollectionType)1, cppgc::internal::BasicMember<blink::InlineItem, cppgc::internal::StrongMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy, cppgc::internal::DisabledCheckingPolicy, cppgc::internal::CompressedPointer>, 0u> const*, blink::Font const*) const"
+      ],
+      "stories": [
+        "Editor-TipTap",
+        "Editor-CodeMirror",
+        "Perf-Dashboard",
+        "Charts-observable-plot",
+        "React-Stockcharts-SVG",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-Lit-Complex-DOM",
+        "NewsSite-Next",
+        "TodoMVC-JavaScript-ES5",
+        "NewsSite-Nuxt",
+        "TodoMVC-WebComponents",
+        "TodoMVC-Vue",
+        "Charts-chartjs",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-jQuery",
+        "TodoMVC-React-Redux",
+        "TodoMVC-Backbone"
+      ],
+      "upper_bound": {
+        "target_story": "Editor-TipTap",
+        "target_story_share_pct": 31.383,
+        "estimated_avoidable_fraction": 0.501,
+        "estimated_local_story_impact_pct": 15.7169,
+        "estimated_suite_impact_pct": 0.7484,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 31.38% (Editor-TipTap), avoidable fraction 0.5010, local story impact 15.72%, suite impact 0.7484%"
+      },
+      "measured_result": "r75 v3 sound oracle on Editor-TipTap: -0.31% [-0.97%, +0.35%] (reused 4/258 calls/rep, 0/192 audit mismatches)",
+      "reason": "r75 v3 sound oracle: -0.31% [-0.97, +0.35] Editor-TipTap (n.s.), feeding previous items into ReusingTextShaper from PrepareLayout with a same-offset text guard reused shape results in only 4 of 258 reached calls per repetition (0 of 192 audits mismatched). The 49.5% overlapping calls are paragraphs whose own text item changed, so reuse needs sub-item safe-to-break range copying plus offset relocation for the suffix (what InlineNodeDataEditor does for SetTextWithOffset). Three oracles built and run (r73 identical-text, r75 item-level). Revivable with that v4 design; parked so #322 (20.8% TipTap, sized) takes the host time.",
+      "campaign": "speedometer-september",
+      "date": "2026-09-22",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Item-level shape reuse in InlineNode::ShapeText hit on only 4 of 258 calls/rep (-0.31% [-0.97%, +0.35%] on Editor-TipTap) because edited paragraphs mutate their single text item; revisit with a v4 sub-item safe-to-break range copy + suffix offset relocation design.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/oracle_batch2/2_243_tiptap_32",
+        "evidence/oracle_batch2/7_243_tiptap_32",
+        "evidence/oracle_batch2/10_243v3_tiptap_32",
+        "evidence/oracles-243v3.patch",
+        "measurements/tot-profile/analysis/stories/Editor-TipTap/report.json",
+        "measurements/tot-profile-2/analysis/stories/Editor-TipTap/report.json",
+        "measurements/tot-lens.json",
+        "evidence/probe_r184_editor_codemirror__fonts_inline_shape_text_overlap.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-244",
+      "ledger_id": 244,
+      "key": "layout/inline-min-max-text-overlap",
+      "title": "#244: `layout/inline-min-max-text-overlap`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "blink::InlineNode::ComputeMinMaxSizes(blink::WritingMode, blink::ConstraintSpace const&, blink::MinMaxSizesInput const&) const",
+        "blink::InlineNode::ComputeMinMaxSizes(blink::WritingMode, blink::ConstraintSpace const&, blink::MinMaxSizesFloatInput const&) const"
+      ],
+      "stories": [
+        "Editor-TipTap",
+        "Editor-CodeMirror",
+        "Perf-Dashboard",
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-Preact-Complex-DOM",
+        "Charts-observable-plot",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-WebComponents",
+        "Charts-chartjs",
+        "TodoMVC-JavaScript-ES5",
+        "NewsSite-Nuxt",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-Vue",
+        "TodoMVC-React-Complex-DOM",
+        "React-Stockcharts-SVG",
+        "TodoMVC-React-Redux",
+        "NewsSite-Next",
+        "TodoMVC-jQuery"
+      ],
+      "upper_bound": {
+        "target_story": "Editor-TipTap",
+        "target_story_share_pct": 8.3572,
+        "estimated_avoidable_fraction": 0.570552,
+        "estimated_local_story_impact_pct": 4.6522,
+        "estimated_suite_impact_pct": 0.3148,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 8.36% (Editor-TipTap), avoidable fraction 0.5706, local story impact 4.65%, suite impact 0.3148%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "Sizing (ROUND-197) epoch check: candidate evidence is out of epoch (sp3-baseline-1 / sp3-post-158-r3). On the current profile sp3-tot-frontier-1, Editor-TipTap InlineNode::ComputeMinMaxSizes share 0.6290% x 67.1% = 0.4221%, below the 1.0000% story floor (operator report ROUND-197.244.md sha256 9be3cf8edfab).",
+      "campaign": "speedometer-september",
+      "date": "2026-10-13",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Below the 1.0000% Editor-TipTap story floor on Epoch 1 profile sp3-tot-frontier-1 (0.6290% x 67.1% = 0.4221%); revisit if InlineNode::ComputeMinMaxSizes share rises.",
+      "design_docs": [
+        "outbox/ROUND-197.244.md"
+      ],
+      "evidence_paths": [
+        "evidence/probe_r185_editor_tiptap__layout_inline_min_max_text_overlap.json",
+        "measurements/tot-profile/analysis/stories/Editor-TipTap/report.json",
+        "measurements/tot-profile-2/analysis/stories/Editor-TipTap/report.json",
+        "measurements/tot-lens.json",
+        "evidence/probe_r184_editor_codemirror__layout_inline_min_max_text_overlap.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-283",
+      "ledger_id": 283,
+      "key": "css/style-cascade-important-set-without-full-cascade-map",
+      "title": "#283: `css/style-cascade-important-set-without-full-cascade-map`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "cssom_style.md",
+      "functions": [
+        "blink::StyleResolver::ResolveStyle(blink::Element*, blink::StyleRecalcContext const&, blink::StyleRequest const&)"
+      ],
+      "stories": [
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-Preact-Complex-DOM",
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-WebComponents",
+        "NewsSite-Next",
+        "NewsSite-Nuxt",
+        "TodoMVC-Vue",
+        "TodoMVC-Backbone",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-React-Redux",
+        "TodoMVC-jQuery"
+      ],
+      "upper_bound": {
+        "target_story": "TodoMVC-Svelte-Complex-DOM",
+        "target_story_share_pct": 19.6229,
+        "estimated_avoidable_fraction": 0.075,
+        "estimated_local_story_impact_pct": 1.4642,
+        "estimated_suite_impact_pct": 0.4492,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 19.62% (TodoMVC-Svelte-Complex-DOM), avoidable fraction 0.0750, local story impact 1.46%, suite impact 0.4492%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "host, round 43: measured story by story (ai-skills 3ca2ba6) the claim reads 0.4492% of the suite against the 0.4494% floor and 1.46% of Svelte against 2.13%; it qualified at suite scope only under the home-fraction assumption (0.549%). A real mechanism at the noise floor; reopen if sizing sharpens or a fuller reading raises the claim.",
+      "campaign": "speedometer-september",
+      "date": "2026-09-17",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Suite impact (0.4492%) sits right at the 0.4494% suite floor (1.46% on TodoMVC-Svelte-Complex-DOM vs 2.13% floor); revisit if calibration MDE tightens or a broader cascade optimization raises the bound.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/cost_eff_249.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-285",
+      "ledger_id": 285,
+      "key": "html/fastpath-parser-raw-attribute-span-cache",
+      "title": "#285: `html/fastpath-parser-raw-attribute-span-cache`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "html_forms.md",
+      "functions": [
+        "void blink::(anonymous namespace)::HTMLFastPathParser<unsigned char>::ParseChildren<blink::(anonymous namespace)::HTMLFastPathParser<unsigned char>::TagInfo::Ul>(blink::ContainerNode*)",
+        "blink::Element* blink::(anonymous namespace)::HTMLFastPathParser<char16_t>::ParseElement<true>()",
+        "blink::Element* blink::(anonymous namespace)::HTMLFastPathParser<unsigned char>::ParseElement<true>()"
+      ],
+      "stories": [
+        "TodoMVC-jQuery",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-Backbone",
+        "Charts-chartjs",
+        "Charts-observable-plot",
+        "Editor-CodeMirror",
+        "Editor-TipTap",
+        "NewsSite-Next",
+        "NewsSite-Nuxt",
+        "Perf-Dashboard",
+        "React-Stockcharts-SVG",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-Preact-Complex-DOM",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-React-Redux",
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-Vue",
+        "TodoMVC-WebComponents"
+      ],
+      "upper_bound": {
+        "target_story": "TodoMVC-jQuery",
+        "target_story_share_pct": 29.1171,
+        "estimated_avoidable_fraction": 0.145,
+        "estimated_local_story_impact_pct": 4.211,
+        "estimated_suite_impact_pct": 0.6907,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 29.12% (TodoMVC-jQuery), avoidable fraction 0.1450, local story impact 4.21%, suite impact 0.6907%"
+      },
+      "measured_result": "32-block TodoMVC-jQuery oracle A/B: -7.84% [-8.04%, -7.64%] slower (97% fired, 0/3.96M audit mismatches)",
+      "reason": "round 72: oracle (raw attribute span cache in the fast-path parser) fired on 97% of reached calls with 0 mismatches in 3.96M audited calls and made TodoMVC-jQuery 7.84% [7.64, 8.04] SLOWER: hashing and comparing the span plus copying the attribute vector costs more than scanning it. The mechanism cannot beat the fast path; the packet's time-weighted repeat (1.1%) said as much.",
+      "campaign": "speedometer-september",
+      "date": "2026-09-22",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Oracle regressed TodoMVC-jQuery by -7.84% [-8.04%, -7.64%] because hashing/comparing raw attribute spans and copying the attribute vector costs more than HTMLFastPathParser's inline scan (1.1% time-weighted repeat); do not revisit.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/oracle_batch2/6_285_jquery_32",
+        "evidence/cost_eff_256.json",
+        "evidence/cost_eff_308.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-286",
+      "ledger_id": 286,
+      "key": "paint/non-layered-paint-properties-fast-path",
+      "title": "#286: `paint/non-layered-paint-properties-fast-path`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "canvas_graphics.md",
+      "functions": [
+        "blink::PaintPropertyTreeBuilder::UpdateForSelf()"
+      ],
+      "stories": [
+        "NewsSite-Nuxt",
+        "NewsSite-Next",
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-Preact-Complex-DOM",
+        "TodoMVC-WebComponents",
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-Vue",
+        "Charts-observable-plot",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "Editor-CodeMirror",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-React-Redux",
+        "TodoMVC-Backbone",
+        "Editor-TipTap",
+        "Perf-Dashboard",
+        "TodoMVC-jQuery",
+        "React-Stockcharts-SVG",
+        "Charts-chartjs"
+      ],
+      "upper_bound": {
+        "target_story": "NewsSite-Nuxt",
+        "target_story_share_pct": 3.3259,
+        "estimated_avoidable_fraction": 0.45,
+        "estimated_local_story_impact_pct": 1.495,
+        "estimated_suite_impact_pct": 0.5231,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 3.33% (NewsSite-Nuxt), avoidable fraction 0.4500, local story impact 1.50%, suite impact 0.5231%"
+      },
+      "measured_result": "32-block NewsSite-Nuxt oracle A/B: -0.26% [-0.58%, +0.07%] (26% fired, 1,061/4,035 calls/rep)",
+      "reason": "round 72: oracle (skip paint-property update for non-layered objects without properties whose location, size and Style pointer are unchanged) fired on 26% of reached calls (1,061 of 4,035 per repetition) and bounds NewsSite-Nuxt at -0.26% [-0.58, +0.07]: the skipped work is trivial. Same conclusion as #324.",
+      "campaign": "speedometer-september",
+      "date": "2026-09-22",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Oracle measured -0.26% [-0.58%, +0.07%] on NewsSite-Nuxt despite firing on 26% of calls because PaintPropertyTreeBuilder::UpdateForSelf for non-layered objects is trivial; do not revisit.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/oracle_batch2/5_286_nuxt_32",
+        "evidence/cost_eff_258.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-288",
+      "ledger_id": 288,
+      "key": "layout/set-style-non-inherited-subgroup-and-image-fast-path",
+      "title": "#288: `layout/set-style-non-inherited-subgroup-and-image-fast-path`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "blink::LayoutObject::SetStyle(blink::ComputedStyle const*, blink::LayoutObject::ApplyStyleChanges)"
+      ],
+      "stories": [
+        "TodoMVC-Svelte-Complex-DOM"
+      ],
+      "upper_bound": {
+        "target_story": "TodoMVC-Svelte-Complex-DOM",
+        "target_story_share_pct": 3.4233,
+        "estimated_avoidable_fraction": 0.35,
+        "estimated_local_story_impact_pct": 1.1379,
+        "estimated_suite_impact_pct": 0.0,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 3.42% (TodoMVC-Svelte-Complex-DOM), avoidable fraction 0.3500, local story impact 1.14%, suite impact 0.0000%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "host, round 43: measured story by story (ai-skills 3ca2ba6) the claim reads 0.440% of the suite against the 0.449% floor and 1.14% of Svelte against 2.13%; it qualified at suite scope only under the home-fraction assumption (0.490%). A real mechanism below the noise floor; reopen if sizing sharpens or a fuller reading raises the claim.",
+      "campaign": "speedometer-september",
+      "date": "2026-09-17",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Below the suite floor (0.440% vs 0.449%) and story floor (1.14% vs 2.13% on TodoMVC-Svelte-Complex-DOM); revisit if calibration MDE tightens or combined with a broader LayoutObject::SetStyle fast path.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/cost_eff_264.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-289",
+      "ledger_id": 289,
+      "key": "fonts/reusing-text-shaper-segmented-and-per-item-shape-cache",
+      "title": "#289: `fonts/reusing-text-shaper-segmented-and-per-item-shape-cache`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "cssom_style.md",
+      "functions": [
+        "blink::InlineNode::PrepareLayout(blink::InlineNodeData*) const"
+      ],
+      "stories": [
+        "Editor-TipTap",
+        "TodoMVC-JavaScript-ES5",
+        "NewsSite-Nuxt",
+        "Perf-Dashboard",
+        "NewsSite-Next",
+        "TodoMVC-WebComponents",
+        "TodoMVC-Lit-Complex-DOM",
+        "Editor-CodeMirror",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "Charts-observable-plot",
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-Preact-Complex-DOM",
+        "TodoMVC-Vue",
+        "TodoMVC-Backbone",
+        "React-Stockcharts-SVG",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-React-Redux",
+        "TodoMVC-jQuery",
+        "Charts-chartjs"
+      ],
+      "upper_bound": {
+        "target_story": "Editor-TipTap",
+        "target_story_share_pct": 33.9833,
+        "estimated_avoidable_fraction": 0.18,
+        "estimated_local_story_impact_pct": 6.1033,
+        "estimated_suite_impact_pct": 0.4469,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 33.98% (Editor-TipTap), avoidable fraction 0.1800, local story impact 6.10%, suite impact 0.4469%"
+      },
+      "measured_result": "32-block Editor-TipTap sound oracle A/B: -3.73% [-3.98%, -3.47%] (11.3% fired, 40,935/363,021 calls, 0/2,560 audit mismatches)",
+      "reason": "r73 sound oracle (retry): -3.73% [-3.98, -3.47] Editor-TipTap, 32 blocks; fired 40,935 of 363,021 reached (11.3%), 0 of 2,560 audited mismatched; design expected +6.10%. Per-call cache upkeep (key hash and slice copy on every miss, ShapeResult copy on every hit) costs more than the 11% of shaping it removes. evidence/oracle_batch2/8_289_tiptap_32",
+      "campaign": "speedometer-september",
+      "date": "2026-09-22",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Sound oracle regressed Editor-TipTap by -3.73% [-3.98%, -3.47%] because per-call key hashing, slice copying, and ShapeResult cloning exceed the 11.3% shaping hits; revisit only with a zero-allocation in-place segmentation/shape reuse scheme.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/oracle_batch2/4_289_tiptap_32",
+        "evidence/oracle_batch2/8_289_tiptap_32",
+        "evidence/cost_eff_281.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-316",
+      "ledger_id": 316,
+      "key": "layout/lazy-line-break-ascii-alpha-run-fast-forward",
+      "title": "#316: `layout/lazy-line-break-ascii-alpha-run-fast-forward`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "blink::LazyLineBreakIterator::NextBreakOpportunity(unsigned int, unsigned int) const",
+        "blink::LazyLineBreakIterator::PreviousBreakOpportunity(unsigned int, unsigned int) const"
+      ],
+      "stories": [
+        "Editor-TipTap",
+        "NewsSite-Next",
+        "NewsSite-Nuxt",
+        "Editor-CodeMirror",
+        "Perf-Dashboard",
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-WebComponents",
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-Preact-Complex-DOM",
+        "TodoMVC-Backbone",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-React-Redux",
+        "Charts-observable-plot",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-Vue",
+        "React-Stockcharts-SVG",
+        "TodoMVC-jQuery",
+        "Charts-chartjs"
+      ],
+      "upper_bound": {
+        "target_story": "Editor-TipTap",
+        "target_story_share_pct": 5.8287,
+        "estimated_avoidable_fraction": 0.2204,
+        "estimated_local_story_impact_pct": 1.2805,
+        "estimated_suite_impact_pct": 0.077,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 5.83% (Editor-TipTap), avoidable fraction 0.2204, local story impact 1.28%, suite impact 0.0770%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "User decision 2026-10-12: parked as not worth the effort; decomposition-gate suite-impact upper bound 0.077% is below the 0.20% cutoff. Unmeasured; revisit only if the bound is revised upward.",
+      "campaign": "speedometer-september",
+      "date": "2026-10-12",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Below a 0.20% suite-impact cutoff (0.0770%); revisit if the bound rises on a newer profile or workload.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/cost_eff_294.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-318",
+      "ledger_id": 318,
+      "key": "dom/selector-query-subtree-bloom-filter-tag-name-bits",
+      "title": "#318: `dom/selector-query-subtree-bloom-filter-tag-name-bits`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "dom_core.md",
+      "functions": [
+        "void blink::SelectorQuery::Execute<blink::SingleElementSelectorQueryTrait>(blink::ContainerNode&, blink::SingleElementSelectorQueryTrait::OutputType&) const"
+      ],
+      "stories": [
+        "NewsSite-Next",
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-WebComponents",
+        "TodoMVC-JavaScript-ES5",
+        "Perf-Dashboard",
+        "NewsSite-Nuxt",
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-Preact-Complex-DOM",
+        "TodoMVC-jQuery",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-React-Complex-DOM",
+        "Editor-CodeMirror",
+        "Charts-observable-plot",
+        "Charts-chartjs",
+        "Editor-TipTap",
+        "TodoMVC-React-Redux",
+        "TodoMVC-Vue",
+        "React-Stockcharts-SVG"
+      ],
+      "upper_bound": {
+        "target_story": "NewsSite-Next",
+        "target_story_share_pct": 1.5861,
+        "estimated_avoidable_fraction": 0.7419,
+        "estimated_local_story_impact_pct": 1.1731,
+        "estimated_suite_impact_pct": 0.2052,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 1.59% (NewsSite-Next), avoidable fraction 0.7419, local story impact 1.17%, suite impact 0.2052%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "Sizing (ROUND-197) epoch check: candidate evidence is out of epoch (sp3-baseline-1 / sp3-post-158-r3). On the current profile sp3-tot-frontier-1, NewsSite-Next SelectorQuery::Execute share 0.6285% x 75.07% = 0.4718%, below the 1.0000% story floor (operator report ROUND-197.318.md sha256 c4fdae2a41a8).",
+      "campaign": "speedometer-september",
+      "date": "2026-10-13",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Below the 1.0000% NewsSite-Next story floor on Epoch 1 profile sp3-tot-frontier-1 (0.6285% x 75.07% = 0.4718%); revisit if SelectorQuery::Execute share rises.",
+      "design_docs": [
+        "outbox/ROUND-197.318.md"
+      ],
+      "evidence_paths": [
+        "evidence/probe_r185_newssite_next__dom_container_node_query_selector.json",
+        "evidence/cost_eff_298.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-319",
+      "ledger_id": 319,
+      "key": "css/apply-animated-style-skip-base-data-and-transition-update",
+      "title": "#319: `css/apply-animated-style-skip-base-data-and-transition-update`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "cssom_style.md",
+      "functions": [
+        "blink::StyleResolver::ResolveStyle(blink::Element*, blink::StyleRecalcContext const&, blink::StyleRequest const&)"
+      ],
+      "stories": [
+        "TodoMVC-Svelte-Complex-DOM",
+        "NewsSite-Nuxt",
+        "TodoMVC-Preact-Complex-DOM",
+        "NewsSite-Next",
+        "TodoMVC-Vue",
+        "TodoMVC-WebComponents",
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-React-Redux",
+        "TodoMVC-Backbone",
+        "TodoMVC-jQuery"
+      ],
+      "upper_bound": {
+        "target_story": "TodoMVC-Svelte-Complex-DOM",
+        "target_story_share_pct": 19.6229,
+        "estimated_avoidable_fraction": 0.115,
+        "estimated_local_story_impact_pct": 2.2451,
+        "estimated_suite_impact_pct": 0.7709,
+        "opportunity_budget_upper_pct": 2.245,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 19.62% (TodoMVC-Svelte-Complex-DOM), avoidable fraction 0.1150, local story impact 2.25%, suite impact 0.7709%, causal budget aggregate upper 2.25%"
+      },
+      "measured_result": "Twin sizing on TodoMVC-Svelte-Complex-DOM: 1.63% [1.61%, 1.66%] avoidable cycle share vs 2.134% floor",
+      "reason": "round 69: twin-sized avoidable share 1.63% [1.61, 1.66] of TodoMVC-Svelte-Complex-DOM's scored cycles (baseline share 4.66%, applicability 0.75, 3 blocks on twin Build 13269594), below the story floor 2.134% (2 x MDE 1.067). The oracle's +7.72% was flagged as a leak in round 60 and the counter expected 2.25%; the twin settles it. evidence/twin_batch1/sizing-319.json (45b7d4ed).",
+      "campaign": "speedometer-september",
+      "date": "2026-09-22",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Twin-sized avoidable share is 1.63% [1.61%, 1.66%] of TodoMVC-Svelte-Complex-DOM, below the 2.134% story floor; revisit if story MDE tightens or combined with another StyleResolver animation/cascade change.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/twin_batch1/sizing-319.json",
+        "evidence/oracle_batch1/5_319_svelte_48",
+        "evidence/cost_eff_249.json",
+        "evidence/probe_rework_svelte_transition.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-320",
+      "ledger_id": 320,
+      "key": "fonts/harfbuzz-extract-shape-results-single-pass-and-uninitialized-run-glyphs",
+      "title": "#320: `fonts/harfbuzz-extract-shape-results-single-pass-and-uninitialized-run-glyphs`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "cssom_style.md",
+      "functions": [
+        "blink::HarfBuzzShaper::ExtractShapeResults(blink::RangeContext*, bool&, blink::ReshapeQueueItem const&, blink::SimpleFontData const*, UScriptCode, blink::CanvasRotationInVertical, blink::HarfBuzzShaper::FallbackFontStage&, blink::ShapeResult*) const",
+        "blink::ShapeResult::InsertRun(blink::ShapeResultRun*, unsigned int, unsigned int, unsigned int*, hb_buffer_t*)"
+      ],
+      "stories": [
+        "Editor-TipTap",
+        "NewsSite-Nuxt",
+        "NewsSite-Next",
+        "Editor-CodeMirror",
+        "Perf-Dashboard",
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-WebComponents",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-Preact-Complex-DOM",
+        "Charts-chartjs",
+        "Charts-observable-plot",
+        "TodoMVC-Svelte-Complex-DOM",
+        "React-Stockcharts-SVG",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-Backbone",
+        "TodoMVC-React-Redux",
+        "TodoMVC-Vue",
+        "TodoMVC-jQuery",
+        "TodoMVC-React-Complex-DOM"
+      ],
+      "upper_bound": {
+        "target_story": "Editor-TipTap",
+        "target_story_share_pct": 3.9254,
+        "estimated_avoidable_fraction": 0.55,
+        "estimated_local_story_impact_pct": 2.1187,
+        "estimated_suite_impact_pct": 0.1642,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 3.93% (Editor-TipTap), avoidable fraction 0.5500, local story impact 2.12%, suite impact 0.1642%"
+      },
+      "measured_result": "32-block Editor-TipTap oracle A/B (Speedometer3Oracle320): +0.616% [+0.352%, +0.881%] vs 1.0% floor (100% fired, 0 audit mismatches)",
+      "reason": "r109 oracle A/B (evidence/oracle_batch3/ab-320, manifest ff6e5ca3; 32 blocks, Editor-TipTap, Speedometer3Optimizations on both arms, Speedometer3Oracle320 toggled): +0.616% [0.352, 0.881], below the 1.0% story floor even at the upper bound; the oracle fired on 100% of ExtractShapeResults calls with 0 audit mismatches, so the single-pass fast path is real but small (0.29x the 2.12% estimate).",
+      "campaign": "speedometer-september",
+      "date": "2026-09-26",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Oracle A/B on Editor-TipTap measured +0.616% [+0.352%, +0.881%] at 100% fire rate, below the 1.0% story floor even at the CI upper bound; revisit if bundled with adjacent HarfBuzzShaper work or if story MDE tightens.",
+      "design_docs": [
+        "outbox/SIZING-BATCH-3-PROBE-DESIGN.md"
+      ],
+      "evidence_paths": [
+        "evidence/oracle_batch3/ab-320",
+        "evidence/oracle_batch3/oracle-320.r2.patch",
+        "evidence/cost_eff_310.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-321",
+      "ledger_id": 321,
+      "key": "canvas/retain-paint-op-buffer-capacity-across-canvas-size-reset",
+      "title": "#321: `canvas/retain-paint-op-buffer-capacity-across-canvas-size-reset`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "canvas_graphics.md",
+      "functions": [
+        "cc::PaintOpBuffer::AllocatePaintOpSlowPath(unsigned short)"
+      ],
+      "stories": [
+        "Charts-chartjs",
+        "Charts-observable-plot",
+        "Perf-Dashboard",
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-Preact-Complex-DOM",
+        "TodoMVC-WebComponents",
+        "TodoMVC-Vue",
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "React-Stockcharts-SVG",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-Backbone",
+        "TodoMVC-React-Complex-DOM",
+        "NewsSite-Nuxt",
+        "NewsSite-Next",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-React-Redux",
+        "Editor-TipTap",
+        "Editor-CodeMirror",
+        "TodoMVC-jQuery"
+      ],
+      "upper_bound": {
+        "target_story": "Charts-chartjs",
+        "target_story_share_pct": 1.6527,
+        "estimated_avoidable_fraction": 0.85,
+        "estimated_local_story_impact_pct": 1.3656,
+        "estimated_suite_impact_pct": 0.0806,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 1.65% (Charts-chartjs), avoidable fraction 0.8500, local story impact 1.37%, suite impact 0.0806%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "User decision 2026-10-12: parked as not worth the effort; decomposition-gate suite-impact upper bound 0.0806% is below the 0.20% cutoff. Unmeasured; revisit only if the bound is revised upward.",
+      "campaign": "speedometer-september",
+      "date": "2026-10-12",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Below a 0.20% suite-impact cutoff (0.0806%); revisit if the bound rises on a newer profile or workload.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/cost_eff_314.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-322",
+      "ledger_id": 322,
+      "key": "layout/reuse-container-layout-when-children-unchanged",
+      "title": "#322: `layout/reuse-container-layout-when-children-unchanged`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "blink::BlockNode::Layout(blink::ConstraintSpace const&, blink::BlockBreakToken const*, blink::EarlyBreak const*, blink::ColumnSpannerPath const*) const"
+      ],
+      "stories": [
+        "Editor-TipTap",
+        "Editor-CodeMirror",
+        "NewsSite-Next",
+        "NewsSite-Nuxt",
+        "Perf-Dashboard",
+        "TodoMVC-Lit-Complex-DOM",
+        "React-Stockcharts-SVG",
+        "Charts-observable-plot",
+        "Charts-chartjs",
+        "TodoMVC-WebComponents",
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-Backbone",
+        "TodoMVC-Preact-Complex-DOM",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-Vue",
+        "TodoMVC-jQuery"
+      ],
+      "upper_bound": {
+        "target_story": "Editor-TipTap",
+        "target_story_share_pct": 10.0714,
+        "estimated_avoidable_fraction": 0.569704,
+        "estimated_local_story_impact_pct": 5.7362,
+        "estimated_suite_impact_pct": 2.5606,
+        "opportunity_budget_upper_pct": 4.0359,
+        "sized_ceiling_pct": 22.3321,
+        "summary": "target-story share 10.07% (Editor-TipTap), avoidable fraction 0.5697, local story impact 5.74%, suite impact 2.5606%, causal budget aggregate upper 4.04%, twin ceiling 22.33%"
+      },
+      "measured_result": "Twin sizing (Editor-TipTap): avoidable cycle share 20.817% [19.301%, 22.332%] (ceiling 22.33%); r86 twin on Editor-TipTap: +0.12% [+0.03%, +0.20%] total cycles (only 5/8,190 BlockNode::Layout calls/rep completed container reuse)",
+      "reason": "r87 diagnostic (counters, r87-diag/redundancy.log, verified by the host): of 8,190 BlockNode::Layout calls per Editor-TipTap repetition only 28 reach the candidate's child-dirty block-container branch; 12 leave it on the simplified path, and 7 of those fall back after a child's size or baseline changed (paying the container layout twice), so 5 containers per repetition complete it. Nearly all of TipTap's layout is inline-children containers and self-dirty boxes, which the shape must exclude (the #226 PaintInlineItems crash class). The twin (r86) matched: no mechanism reduction, total cycles +0.12 [+0.03, +0.20]. Sized 20.8% is not reachable by container-level reuse; the redundancy lives in inline layout (see parked #226/#243/#289). Patch c7620da2 and tests kept in evidence/candidates/322 for reference.",
+      "campaign": "speedometer-september",
+      "date": "2026-09-24",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Container-level BlockNode::Layout reuse when children are unchanged reaches only 5 containers/rep on Editor-TipTap (twin +0.12% [+0.03%, +0.20%]) because TipTap's work is inside inline-children containers; revisit only via inline-level reuse (see #243 v4).",
+      "design_docs": [
+        "outbox/CANDIDATE-322-DESIGN.md"
+      ],
+      "evidence_paths": [
+        "evidence/twin_batch1/sizing-322.json",
+        "evidence/candidates/322",
+        "evidence/oracle_batch1/1a_322_codemirror_32",
+        "evidence/oracle_batch1/1c_322_tiptap_32",
+        "measurements/tot-profile/analysis/stories/Editor-CodeMirror/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/Editor-CodeMirror/candidate_frontier.json",
+        "measurements/tot-lens.json",
+        "evidence/probe_r155_newssite_next__layout_geometry_unchanged_block_child_dirty.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-323",
+      "ledger_id": 323,
+      "key": "style/share-matched-rules-across-same-descriptor-elements",
+      "title": "#323: `style/share-matched-rules-across-same-descriptor-elements`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "cssom_style.md",
+      "functions": [
+        "blink::StyleResolver::ResolveStyle(blink::Element*, blink::StyleRecalcContext const&, blink::StyleRequest const&)"
+      ],
+      "stories": [
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-Preact-Complex-DOM",
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-Backbone",
+        "Charts-observable-plot",
+        "TodoMVC-Vue",
+        "React-Stockcharts-SVG",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-WebComponents",
+        "NewsSite-Nuxt",
+        "NewsSite-Next",
+        "TodoMVC-React-Redux",
+        "Editor-CodeMirror",
+        "Perf-Dashboard",
+        "Editor-TipTap",
+        "Charts-chartjs"
+      ],
+      "upper_bound": {
+        "target_story": "TodoMVC-Lit-Complex-DOM",
+        "target_story_share_pct": 12.2145,
+        "estimated_avoidable_fraction": 0.694888,
+        "estimated_local_story_impact_pct": 8.2873,
+        "estimated_suite_impact_pct": 3.4562,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 12.21% (TodoMVC-Lit-Complex-DOM), avoidable fraction 0.6949, local story impact 8.29%, suite impact 3.4562%"
+      },
+      "measured_result": "32-block TodoMVC-Svelte-Complex-DOM sound oracle A/B: -0.28% [-0.89%, +0.32%] (18.3% fired, 118,844/650,432 calls, 0/7,469 audit mismatches)",
+      "reason": "r73 sound oracle: -0.28% [-0.89, +0.32] TodoMVC-Svelte-Complex-DOM, 32 blocks, not significant; sibling-restricted cross-element style sharing fired 118,844 of 650,432 reached (18.3%), 0 of 7,469 audited mismatched; design expected +2.74%. Skipping rule matching and cascade for those elements buys nothing measurable against the per-element style clone. evidence/oracle_batch2/9_323_svelte_32",
+      "campaign": "speedometer-september",
+      "date": "2026-09-22",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Sibling-restricted cross-element matched-rule sharing fired on 18.3% of calls on TodoMVC-Svelte-Complex-DOM but measured -0.28% [-0.89%, +0.32%]; revisit only if matched-rule sharing can avoid the per-element ComputedStyle clone without signature overhead.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/oracle_batch2/9_323_svelte_32",
+        "evidence/probe_r185_todomvc_javascript_es6_webpack_complex_dom__style_resolve_style_content_key_repeat.json",
+        "evidence/probe_r185_todomvc_javascript_es5__style_resolve_style_content_key_repeat.json",
+        "evidence/probe_r185_todomvc_backbone__style_resolve_style_content_key_repeat.json",
+        "measurements/tot-profile/analysis/stories/Charts-observable-plot/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/Charts-observable-plot/candidate_frontier.json",
+        "measurements/tot-lens.json",
+        "evidence/probe_r185_todomvc_lit_complex_dom__style_resolve_style_content_key_repeat.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-324",
+      "ledger_id": 324,
+      "key": "paint/precise-pre-paint-dirtiness-after-unchanged-layout",
+      "title": "#324: `paint/precise-pre-paint-dirtiness-after-unchanged-layout`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "canvas_graphics.md",
+      "functions": [
+        "blink::PrePaintTreeWalk::Walk(blink::LayoutObject const&, blink::PrePaintTreeWalk::PrePaintTreeWalkContext const&, blink::PrePaintInfo*)",
+        "blink::PrePaintTreeWalk::Walk(blink::LocalFrameView&, blink::PrePaintTreeWalk::PrePaintTreeWalkContext const&)"
+      ],
+      "stories": [
+        "NewsSite-Nuxt",
+        "NewsSite-Next",
+        "Editor-CodeMirror",
+        "Editor-TipTap",
+        "TodoMVC-WebComponents",
+        "TodoMVC-Vue",
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-React-Redux",
+        "Perf-Dashboard",
+        "Charts-chartjs",
+        "React-Stockcharts-SVG",
+        "TodoMVC-Backbone",
+        "Charts-observable-plot"
+      ],
+      "upper_bound": {
+        "target_story": "NewsSite-Nuxt",
+        "target_story_share_pct": 7.2149,
+        "estimated_avoidable_fraction": 0.623017,
+        "estimated_local_story_impact_pct": 4.4712,
+        "estimated_suite_impact_pct": 0.6939,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 7.21% (NewsSite-Nuxt), avoidable fraction 0.6230, local story impact 4.47%, suite impact 0.6939%"
+      },
+      "measured_result": "32-block NewsSite-Nuxt paired oracle A/B: +0.44% [+0.03%, +0.85%] vs 1.084% floor (303/975 fired out of 7,570 walked objects/rep)",
+      "reason": "round 61b: the paired oracle (skip WalkInternal for a flagged object whose previous visit at the same key changed nothing; key = new paint offset, size, parent transform/clip, Style pointer, visual overflow) bounds the story gain at +0.44% [+0.03, +0.85] on NewsSite-Nuxt against an expected 4.17% and a story floor of 1.084%. Reach/fire counters: 975 reached and 303 fired per iteration out of 7,570 walked objects; the counter's 44% post-hoc unchanged output is not predictable from the object's own flags. evidence/oracle_batch1b/6_324_nuxt_32/.",
+      "campaign": "speedometer-september",
+      "date": "2026-09-20",
+      "baseline_commit": "68c685e50ae62703d3ac2b0fe52b017461f238b8",
+      "profile_id": "sp3-frontier-2",
+      "revisit_if": "Paired oracle on NewsSite-Nuxt measured +0.44% [+0.03%, +0.85%] vs the 1.084% story floor because post-hoc unchanged pre-paint output (44%) is not predictable from the object's own pre-call flags; revisit only if a cheaper upstream layout/paint dirtiness invariant is found.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/oracle_batch1/6_324_nuxt_32",
+        "evidence/probe_r184_newssite_nuxt__paint_pre_paint_object_output_unchanged.json",
+        "evidence/probe_r184_editor_codemirror__paint_pre_paint_object_output_unchanged.json",
+        "evidence/probe_r184_newssite_next__paint_pre_paint_object_output_unchanged.json",
+        "evidence/probes-round184-tot.patch",
+        "measurements/tot-profile/analysis/stories/NewsSite-Next/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/NewsSite-Next/candidate_frontier.json",
+        "measurements/tot-lens.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-388",
+      "ledger_id": 388,
+      "key": "todomvc-react-redux-cc-layertreehost-requestmainframeupdate-bool",
+      "title": "#388: `todomvc-react-redux-cc-layertreehost-requestmainframeupdate-bool`",
+      "kind": "discovery",
+      "status": "parked",
+      "subsystem_file": "lifecycle_editing.md",
+      "functions": [
+        "TodoMVC-React-Redux/cc::LayerTreeHost::RequestMainFrameUpdate(bool)"
+      ],
+      "stories": [
+        "TodoMVC-React-Redux"
+      ],
+      "upper_bound": {
+        "target_story": "TodoMVC-React-Redux",
+        "target_story_share_pct": 10.343,
+        "estimated_avoidable_fraction": null,
+        "estimated_local_story_impact_pct": null,
+        "estimated_suite_impact_pct": null,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 10.34% (TodoMVC-React-Redux)"
+      },
+      "measured_result": "r185 --vt 9 probe packet coverage: 2.05 aggregate (iteration 0 = 6.69, iterations 1+ = 1.32) vs [0.5, 2.0] gate band",
+      "reason": "User decision 2026-10-11: parked. Decomposition cannot bind: in TodoMVC-React-Redux the BlockNode::Layout probe family (e.g. probe_r185_todomvc_react_redux__layout_same_pass_cc_rest.json, build 214f1ab3edbd, --vt 9 re-measurement) reads aggregate packet time coverage 2.05, above the gate band [0.5, 2.0] (campaign.py enforce_packet_time_coverage); the excess is in-process iteration 0 (6.69) vs iterations 1+ (1.32). Revisit after the skill update scores coverage on iterations 1+, or with a lower-tax layout probe.",
+      "campaign": "speedometer-september",
+      "date": "2026-10-11",
+      "baseline_commit": "bbda0de4ff47bec0172dedca40a851b0af591d7a",
+      "profile_id": "sp3-tot-frontier-1",
+      "revisit_if": "Packet-time coverage on TodoMVC-React-Redux was 2.05 across all iterations due to iteration-0 warm-up (6.69 on iter 0 vs 1.32 on iterations 1+); revisit now that optimize-campaign scores packet-time coverage on in-process iterations 1+.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/probe_r185_todomvc_react_redux__layout_same_pass_cc_rest.json",
+        "evidence/redundancy_r185_redux_tot.log"
+      ]
+    },
+    {
+      "id": "SP3-SEP-407",
+      "ledger_id": 407,
+      "key": "flex/reuse-flex-item-construction-when-unchanged",
+      "title": "#407: `flex/reuse-flex-item-construction-when-unchanged`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "blink::FlexLayoutAlgorithm::ConstructAndAppendFlexItems(blink::FlexLayoutAlgorithm::Phase, blink::BasicHeapVector<(blink::internal::HeapCollectionType)1, cppgc::internal::BasicMember<blink::LayoutBox, cppgc::internal::StrongMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy, cppgc::internal::DisabledCheckingPolicy, cppgc::internal::CompressedPointer>, 0u>*)"
+      ],
+      "stories": [
+        "NewsSite-Nuxt",
+        "NewsSite-Next",
+        "Editor-CodeMirror",
+        "Editor-TipTap",
+        "Perf-Dashboard"
+      ],
+      "upper_bound": {
+        "target_story": "NewsSite-Nuxt",
+        "target_story_share_pct": 18.3369,
+        "estimated_avoidable_fraction": 0.294808,
+        "estimated_local_story_impact_pct": 5.3963,
+        "estimated_suite_impact_pct": 2.5731,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 18.34% (NewsSite-Nuxt), avoidable fraction 0.2948, local story impact 5.40%, suite impact 2.5731%"
+      },
+      "measured_result": "r166 diagnostic counter on NewsSite-Next: all-clean reusable slice = 1.37% of ConstructAndAppendFlexItems (0.31% of story < 1.0% floor)",
+      "reason": "Round-166 diagnostic (patch evidence/probes-round166-tot.patch a452143b, build 8ffa44bf, log scratch/r166/redundancy_r166_next.log bb0e0b86, NewsSite-Next 20 reps): flex/item-construct-unchanged-output 0.2122 of ConstructAndAppendFlexItems splits into all-clean 0.0137 (606 calls/rep) and some-dirty 0.1989 (2581 calls/rep). Only all-clean is reusable construction; 0.0137 x 22.48 = 0.31 pct-pts < 1.0 story floor (pre-registered threshold f >= 0.04448). some-dirty time is owned by the child layouts it triggers.",
+      "campaign": "speedometer-september",
+      "date": "2026-10-02",
+      "baseline_commit": "bbda0de4ff47bec0172dedca40a851b0af591d7a",
+      "profile_id": "sp3-tot-frontier-1",
+      "revisit_if": "All-clean reusable flex-item construction is only 1.37% of ConstructAndAppendFlexItems (0.31% of NewsSite-Next < 1.0% floor), while the 19.89% some-dirty slice is child layout time; revisit only if child layout dirtiness itself is eliminated.",
+      "design_docs": [
+        "outbox/R166-PROBE-DESIGN.md"
+      ],
+      "evidence_paths": [
+        "evidence/probes-round166-tot.patch",
+        "evidence/probe_r155_newssite_next__flex_item_construct_unchanged_output.json",
+        "measurements/tot-profile/analysis/stories/NewsSite-Next/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/NewsSite-Next/candidate_frontier.json",
+        "measurements/tot-lens.json",
+        "evidence/probe_r168_newssite_nuxt__flex_item_construct_unchanged_output.json",
+        "evidence/probes-round168-tot.patch",
+        "evidence/cost_343_r14.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-408",
+      "ledger_id": 408,
+      "key": "layout/same-pass-relayout-under-changed-constraints",
+      "title": "#408: `layout/same-pass-relayout-under-changed-constraints`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "blink::BlockNode::Layout(blink::ConstraintSpace const&, blink::BlockBreakToken const*, blink::EarlyBreak const*, blink::ColumnSpannerPath const*) const"
+      ],
+      "stories": [
+        "NewsSite-Next",
+        "Editor-TipTap",
+        "NewsSite-Nuxt",
+        "Editor-CodeMirror",
+        "Perf-Dashboard",
+        "Charts-observable-plot",
+        "TodoMVC-Svelte-Complex-DOM",
+        "TodoMVC-Preact-Complex-DOM",
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-WebComponents",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-Vue",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-Backbone",
+        "React-Stockcharts-SVG",
+        "TodoMVC-jQuery"
+      ],
+      "upper_bound": {
+        "target_story": "NewsSite-Next",
+        "target_story_share_pct": 2.7073,
+        "estimated_avoidable_fraction": 0.362277,
+        "estimated_local_story_impact_pct": 0.9676,
+        "estimated_suite_impact_pct": 0.7869,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 2.71% (NewsSite-Next), avoidable fraction 0.3623, local story impact 0.97%, suite impact 0.7869%"
+      },
+      "measured_result": "r166 diagnostic counter on NewsSite-Next: same-space second layout = 0.26% of BlockNode::Layout (0.07% of story < 1.0% floor)",
+      "reason": "Round-166 diagnostic (patch a452143b, build 8ffa44bf, log scratch/r166/redundancy_r166_next.log bb0e0b86): layout/unconsumed-same-pass 0.3667 of BlockNode::Layout splits by ConstraintSpace hash ignoring cache_slot: space-equal output-equal 0.0023 + space-equal output-changed 0.0003 = 0.0026 x 26.93 = 0.07 pct-pts < 1.0 floor (pre-registered f >= 0.03713): same-space second layouts are already served by the layout cache. The mass is space-changed: output-equal 0.1974 (11236 calls/rep), output-changed 0.1668. space-changed-output-equal (second layout under a different space with equal size/baselines/BFC offsets) is a different, early-cutoff hypothesis, not #408s reuse; recorded for a separate decision.",
+      "campaign": "speedometer-september",
+      "date": "2026-10-02",
+      "baseline_commit": "bbda0de4ff47bec0172dedca40a851b0af591d7a",
+      "profile_id": "sp3-tot-frontier-1",
+      "revisit_if": "Same-ConstraintSpace second layouts in one pass are only 0.26% of BlockNode::Layout (0.07% of NewsSite-Next < 1.0% floor); the 19.74% space-changed-output-equal slice was split out and landed as #410.",
+      "design_docs": [
+        "outbox/R166-PROBE-DESIGN.md"
+      ],
+      "evidence_paths": [
+        "evidence/probes-round166-tot.patch",
+        "evidence/probe_r155_newssite_next__layout_unconsumed_same_pass.json",
+        "measurements/tot-profile/analysis/stories/NewsSite-Next/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/NewsSite-Next/candidate_frontier.json",
+        "measurements/tot-lens.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-409",
+      "ledger_id": 409,
+      "key": "layout/reuse-flex-container-layout-when-children-unchanged",
+      "title": "#409: `layout/reuse-flex-container-layout-when-children-unchanged`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "layout_geometry.md",
+      "functions": [
+        "blink::BlockNode::Layout(blink::ConstraintSpace const&, blink::BlockBreakToken const*, blink::EarlyBreak const*, blink::ColumnSpannerPath const*) const"
+      ],
+      "stories": [
+        "NewsSite-Nuxt",
+        "NewsSite-Next",
+        "Editor-TipTap",
+        "Editor-CodeMirror",
+        "Perf-Dashboard",
+        "Charts-observable-plot"
+      ],
+      "upper_bound": {
+        "target_story": "NewsSite-Nuxt",
+        "target_story_share_pct": 11.695,
+        "estimated_avoidable_fraction": 0.191692,
+        "estimated_local_story_impact_pct": 2.2212,
+        "estimated_suite_impact_pct": 1.615,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 11.69% (NewsSite-Nuxt), avoidable fraction 0.1917, local story impact 2.22%, suite impact 1.6150%"
+      },
+      "measured_result": "r167 no-force provenance run on NewsSite-Next: 0 applicable calls out of 2,533,400 BlockNode::Layout calls (100% harness-made)",
+      "reason": "harness-made (round 167 trigger provenance; rule pre-registered in r166/r167: proceed only if no-force eligible fraction x 26.93 >= 1.0). Build 8ffa44bf (patch a452143b), NewsSite-Next 20 reps on the r46 no-force workload scratch/provenance_r46/sp3_noforce (benchmark-runner.mjs bf7b7a4a = v3.1 minus the body getBoundingClientRect + elementFromPoint lines), log scratch/r167/redundancy_r167_next_noforce.log a6e087d1 (12500 rows; host re-ran sums_r166.py: identical, partitions exact): layout/geometry-unchanged-flex-child-dirty records 2533400 BlockNode::Layout calls (9.093 s) with 0 applicable calls; eligible 0, oof 0, percent 0, fragmented 0 -> 0 x 26.93 = 0 pct-pts. With the force present (r166 log bb0e0b86) the same counter read 240000 applicable calls, 0.1390 of BlockNode::Layout, eligible 0.0891, origin-harness 100%. Removing the two harness lines cut BlockNode::Layout time 13.50 s -> 9.09 s. Same outcome as #237 in round 46.",
+      "campaign": "speedometer-september",
+      "date": "2026-10-02",
+      "baseline_commit": "bbda0de4ff47bec0172dedca40a851b0af591d7a",
+      "profile_id": "sp3-tot-frontier-1",
+      "revisit_if": "100% harness-made on NewsSite-Next (0 applicable calls out of 2,533,400 BlockNode::Layout calls when the runner's forced getBoundingClientRect + elementFromPoint is removed); do not revisit.",
+      "design_docs": [
+        "outbox/R166-PROBE-DESIGN.md",
+        "outbox/R168-PROBE-DESIGN.md"
+      ],
+      "evidence_paths": [
+        "evidence/probes-round166-tot.patch",
+        "evidence/probe_r155_newssite_next__layout_geometry_unchanged_flex_child_dirty.json",
+        "measurements/tot-profile/analysis/stories/NewsSite-Next/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/NewsSite-Next/candidate_frontier.json",
+        "measurements/tot-lens.json",
+        "evidence/probe_r168_newssite_nuxt__layout_geometry_unchanged_flex_child_dirty.json",
+        "measurements/tot-profile/analysis/stories/NewsSite-Nuxt/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/NewsSite-Nuxt/candidate_frontier.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-411",
+      "ledger_id": 411,
+      "key": "css/recalc-style-identical-output-residual",
+      "title": "#411: `css/recalc-style-identical-output-residual`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "cssom_style.md",
+      "functions": [
+        "blink::Element::RecalcStyle(blink::StyleRecalcChange, blink::StyleRecalcContext const&)"
+      ],
+      "stories": [
+        "TodoMVC-Lit-Complex-DOM",
+        "Editor-CodeMirror",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-JavaScript-ES5",
+        "Perf-Dashboard",
+        "TodoMVC-Backbone",
+        "Charts-observable-plot",
+        "TodoMVC-Vue",
+        "React-Stockcharts-SVG",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-WebComponents",
+        "NewsSite-Nuxt",
+        "NewsSite-Next",
+        "TodoMVC-React-Redux",
+        "Editor-TipTap"
+      ],
+      "upper_bound": {
+        "target_story": "TodoMVC-Lit-Complex-DOM",
+        "target_story_share_pct": 15.5,
+        "estimated_avoidable_fraction": 0.176465,
+        "estimated_local_story_impact_pct": 2.7282,
+        "estimated_suite_impact_pct": 0.988,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 15.50% (TodoMVC-Lit-Complex-DOM), avoidable fraction 0.1765, local story impact 2.73%, suite impact 0.9880%"
+      },
+      "measured_result": "32-block full-suite oracle A/B (Speedometer3Oracle411): -1.5178% [-1.6008%, -1.4348%] vs 0.4031% suite floor (1.45% hit rate, 0 audit mismatches)",
+      "reason": "User decision 2026-10-13 after sizing (ROUND-197): 32-block full-suite paired oracle (Speedometer3Oracle411, evidence/oracle_411/ab-suite/ab_results_manifest.json sha256 73b50ca1aa85, 0 audit mismatches) measured -1.5178% [-1.6008%, -1.4348%] vs the 0.4031% suite floor. Its pre-call selector-dependency key hit on only 726 of 50176 RecalcOwnStyle calls (1.45%, TodoMVC-JavaScript-ES6-Webpack-Complex-DOM), and the earlier proposal 406b was dropped on small priors (see the #406 ledger note of 2026-10-02). No cheap predictor of identical output before resolution is known.",
+      "campaign": "speedometer-september",
+      "date": "2026-10-13",
+      "baseline_commit": "bbda0de4ff47bec0172dedca40a851b0af591d7a",
+      "profile_id": "sp3-tot-frontier-1",
+      "revisit_if": "32-block full-suite oracle (Speedometer3Oracle411) measured -1.5178% [-1.6008%, -1.4348%] with a 1.45% hit rate on its pre-call selector-dependency key; revisit only if a near-zero-cost pre-call predictor of identical RecalcOwnStyle output is discovered.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/oracle_411/oracle-411.patch",
+        "evidence/oracle_411/ab-suite/ab_results_manifest.json",
+        "evidence/probe_r184_editor_codemirror__style_element_recalc_style.json",
+        "evidence/probe_r185_todomvc_javascript_es6_webpack_complex_dom__style_element_recalc_style.json",
+        "evidence/probe_r185_todomvc_javascript_es5__style_element_recalc_style.json",
+        "evidence/probes-round185-tot.patch",
+        "evidence/probe_r185_perf_dashboard__style_element_recalc_style.json",
+        "evidence/probe_r185_todomvc_backbone__style_element_recalc_style.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-412",
+      "ledger_id": 412,
+      "key": "bindings/to-blink-atomic-string",
+      "title": "#412: `bindings/to-blink-atomic-string`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "dom_core.md",
+      "functions": [
+        "blink::AtomicString blink::ToBlinkString<blink::AtomicString>(v8::Isolate*, v8::Local<v8::String>, blink::ExternalMode)"
+      ],
+      "stories": [
+        "Charts-observable-plot",
+        "React-Stockcharts-SVG",
+        "TodoMVC-WebComponents",
+        "TodoMVC-Vue",
+        "Perf-Dashboard",
+        "NewsSite-Next",
+        "TodoMVC-Lit-Complex-DOM",
+        "NewsSite-Nuxt",
+        "TodoMVC-Backbone",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-React-Redux",
+        "TodoMVC-JavaScript-ES5",
+        "Editor-TipTap",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "Editor-CodeMirror",
+        "Charts-chartjs"
+      ],
+      "upper_bound": {
+        "target_story": "Charts-observable-plot",
+        "target_story_share_pct": 2.2216,
+        "estimated_avoidable_fraction": 0.72274,
+        "estimated_local_story_impact_pct": 1.5928,
+        "estimated_suite_impact_pct": 0.4188,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 2.22% (Charts-observable-plot), avoidable fraction 0.7227, local story impact 1.59%, suite impact 0.4188%"
+      },
+      "measured_result": "32-block Charts-observable-plot oracle A/B (Speedometer3Oracle412): -0.1269% [-0.3100%, +0.0565%] vs 1.2545% floor (93.75% fired, 0/476,621 audit mismatches); twin post-hoc share 1.6746% [1.6531%, 1.6952%]",
+      "reason": "Sizing (ROUND-197): 32-block Charts-observable-plot paired oracle (Speedometer3Oracle412, manifest evidence/oracle_412/ab-plot/ab_results_manifest.json sha256 1c5ed51006207d7d, 0/476621 audit mismatches, fired on 7149334 of 7625955 applicable calls) measured -0.1269% [-0.3100%, +0.0565%] vs the 1.2545% story floor: bypassing AtomicString::FromUTF8 on nearly every applicable call yields no gain because v8::String::WriteOneByteV2 still runs (operator report). Twin post-hoc cycle share 1.6746% does not translate into wall-clock savings.",
+      "campaign": "speedometer-september",
+      "date": "2026-10-13",
+      "baseline_commit": "bbda0de4ff47bec0172dedca40a851b0af591d7a",
+      "profile_id": "sp3-tot-frontier-1",
+      "revisit_if": "32-block Charts-observable-plot oracle (Speedometer3Oracle412) fired on 93.75% of applicable calls and measured -0.1269% [-0.3100%, +0.0565%] because v8::String::WriteOneByteV2 still runs; revisit only if V8-side external or pre-atomized string handoff can bypass copying altogether.",
+      "design_docs": [
+        "outbox/SIZING-414-412-DESIGN.md"
+      ],
+      "evidence_paths": [
+        "evidence/oracle_412/oracle-412.patch",
+        "evidence/oracle_412/ab-plot/ab_results_manifest.json",
+        "evidence/twin_r197/sizing-412-plot.json",
+        "measurements/tot-profile/analysis/stories/Charts-observable-plot/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/Charts-observable-plot/candidate_frontier.json",
+        "measurements/tot-lens.json",
+        "evidence/cost_356_r10.json",
+        "measurements/tot-profile/analysis/stories/React-Stockcharts-SVG/candidate_frontier.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-413",
+      "ledger_id": 413,
+      "key": "layout/layout-svg-text",
+      "title": "#413: `layout/layout-svg-text`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "svg.md",
+      "functions": [
+        "blink::LayoutSVGText::UpdateSVGLayout(blink::SVGLayoutInfo const&)"
+      ],
+      "stories": [
+        "Charts-observable-plot",
+        "React-Stockcharts-SVG"
+      ],
+      "upper_bound": {
+        "target_story": "Charts-observable-plot",
+        "target_story_share_pct": 4.0043,
+        "estimated_avoidable_fraction": 0.507127,
+        "estimated_local_story_impact_pct": 2.0206,
+        "estimated_suite_impact_pct": 0.1588,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 4.00% (Charts-observable-plot), avoidable fraction 0.5071, local story impact 2.02%, suite impact 0.1588%"
+      },
+      "measured_result": "Unmeasured (parked prior to oracle/A/B measurement)",
+      "reason": "User decision 2026-10-12: parked as not worth the effort; decomposition-gate suite-impact upper bound 0.1588% is below the 0.20% cutoff. Unmeasured; revisit only if the bound is revised upward.",
+      "campaign": "speedometer-september",
+      "date": "2026-10-12",
+      "baseline_commit": "bbda0de4ff47bec0172dedca40a851b0af591d7a",
+      "profile_id": "sp3-tot-frontier-1",
+      "revisit_if": "Below a 0.20% suite-impact cutoff (0.1588%); revisit if the bound rises on a newer profile or workload.",
+      "design_docs": [],
+      "evidence_paths": [
+        "measurements/tot-profile/analysis/stories/Charts-observable-plot/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/Charts-observable-plot/candidate_frontier.json",
+        "measurements/tot-lens.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-414",
+      "ledger_id": 414,
+      "key": "paint/recalc-ink-overflow-unchanged",
+      "title": "#414: `paint/recalc-ink-overflow-unchanged`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "canvas_graphics.md",
+      "functions": [
+        "blink::PhysicalBoxFragment::RecalcInkOverflow()"
+      ],
+      "stories": [
+        "Editor-TipTap",
+        "NewsSite-Nuxt",
+        "NewsSite-Next",
+        "TodoMVC-Vue",
+        "TodoMVC-WebComponents",
+        "TodoMVC-Lit-Complex-DOM",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "Editor-CodeMirror",
+        "TodoMVC-Angular-Complex-DOM",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-React-Redux",
+        "TodoMVC-Backbone",
+        "Perf-Dashboard",
+        "Charts-observable-plot",
+        "Charts-chartjs",
+        "React-Stockcharts-SVG"
+      ],
+      "upper_bound": {
+        "target_story": "Editor-TipTap",
+        "target_story_share_pct": 4.2278,
+        "estimated_avoidable_fraction": 0.625651,
+        "estimated_local_story_impact_pct": 2.6118,
+        "estimated_suite_impact_pct": 0.578,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 4.23% (Editor-TipTap), avoidable fraction 0.6257, local story impact 2.61%, suite impact 0.5780%"
+      },
+      "measured_result": "32-block Editor-TipTap oracle A/B (Speedometer3Oracle414): -0.9906% [-1.1795%, -0.8027%]; twin 3.1206% [3.0846%, 3.1573%] dominated by first-time kNotSet fragments (487.81/530.53 calls/rep)",
+      "reason": "Sizing design round (ROUND-199, outbox/DESIGN-414-PREDICTOR.md sha256 3502003a86a6) after the ROUND-197 oracle measured -0.99% on Editor-TipTap. The twin's 3.12% post-hoc avoidable share was mostly an artifact: 487.81 of 530.53 applicable calls/rep are first-time recalcs on freshly built fragments (InkOverflowType kNotSet), whose stored rect defaults to LocalRect() (ink_overflow.cc:208-216), and these cannot be skipped soundly (painters read every FragmentItem's ink overflow). Sound predictors (dirty bits, fragment identity plus generation, layout-cache hits) reach only the 42.72 calls/rep already computed, where FragmentItem::RecalcInkOverflow already short-circuits text ink bounds (fragment_item.cc:1043): estimated +0.08% to +0.18%, below the 1.0% story floor.",
+      "campaign": "speedometer-september",
+      "date": "2026-10-13",
+      "baseline_commit": "bbda0de4ff47bec0172dedca40a851b0af591d7a",
+      "profile_id": "sp3-tot-frontier-1",
+      "revisit_if": "Twin's 3.12% post-hoc share was dominated by first-time recalcs on freshly built fragments (InkOverflowType::kNotSet, 487.81/530.53 calls/rep) whose default rect equals LocalRect() and cannot be skipped soundly; sound predictors reach <= 42.72 calls/rep (+0.08% to +0.18% < 1.0% floor). Revisit only if fragment construction preserves prior InkOverflow across inline rebuilds.",
+      "design_docs": [
+        "outbox/SIZING-414-412-DESIGN.md",
+        "outbox/DESIGN-414-PREDICTOR.md"
+      ],
+      "evidence_paths": [
+        "evidence/oracle_414/oracle-414.patch",
+        "evidence/oracle_414/ab-tiptap/ab_results_manifest.json",
+        "evidence/twin_r197/sizing-414-tiptap.json",
+        "evidence/cost_334_r3.json",
+        "evidence/probe_r185_editor_tiptap__paint_recalc_ink_overflow_unchanged.json",
+        "evidence/cost_344_r74.json",
+        "evidence/probe_r185_newssite_nuxt__paint_recalc_ink_overflow_unchanged.json",
+        "evidence/probes-round185-tot.patch"
+      ]
+    },
+    {
+      "id": "SP3-SEP-415",
+      "ledger_id": 415,
+      "key": "dom/custom-element-reaction-queue-invoke",
+      "title": "#415: `dom/custom-element-reaction-queue-invoke`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "dom_core.md",
+      "functions": [
+        "blink::CustomElementReactionQueue::InvokeReactions(blink::Element&)"
+      ],
+      "stories": [
+        "TodoMVC-WebComponents",
+        "TodoMVC-Lit-Complex-DOM",
+        "Perf-Dashboard"
+      ],
+      "upper_bound": {
+        "target_story": "TodoMVC-WebComponents",
+        "target_story_share_pct": 15.3851,
+        "estimated_avoidable_fraction": 0.956771,
+        "estimated_local_story_impact_pct": 14.2971,
+        "estimated_suite_impact_pct": 0.8634,
+        "opportunity_budget_upper_pct": 1.8247,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 15.39% (TodoMVC-WebComponents), avoidable fraction 0.9568, local story impact 14.30%, suite impact 0.8634%, causal budget aggregate upper 1.82%"
+      },
+      "measured_result": "32-block full-suite oracle A/B (Speedometer3Oracle415): +0.2923% [+0.1683%, +0.4163%] suite, +1.5762% [+1.3312%, +1.8209%] TodoMVC-WebComponents; twin avoidable share 0.9740% [0.9704%, 0.9774%] < 1.100% story floor",
+      "reason": "User decision 2026-10-13 after sizing (ROUND-197/198). The TodoMVC-WebComponents oracle measured +1.58% [+1.33, +1.82] (Speedometer3Oracle415), but the twin avoidable share is 0.974% [0.970, 0.977] (evidence/twin_r198/sizing-415-webcomponents.json), below the 1.100% story floor (campaign.py:11026). The part that removes it (DESIGN-415.md Component A) skips attributeChangedCallback by lexically matching the page's JavaScript source (if (oldValue === newValue) return;), which is benchmark-specific special-casing and not upstreamable. The general part (Component B: reaction-stack fast path and queue pooling) is about 0.71% by subtraction, unmeasured, and below the floor.",
+      "campaign": "speedometer-september",
+      "date": "2026-10-13",
+      "baseline_commit": "bbda0de4ff47bec0172dedca40a851b0af591d7a",
+      "profile_id": "sp3-tot-frontier-1",
+      "revisit_if": "Twin avoidable share on TodoMVC-WebComponents is 0.974% [0.970%, 0.977%] < 1.100% story floor, and the oracle's +1.58% relied on Component A (pattern-matching page JS source `if (oldValue === newValue) return;`), which is disallowed benchmark special-casing; Component B alone is ~0.71% < 1.100% floor. Revisit only if V8/Blink callback boundary overhead is reduced generally across all callbacks.",
+      "design_docs": [
+        "outbox/DESIGN-415.md"
+      ],
+      "evidence_paths": [
+        "evidence/oracle_415/oracle-415.patch",
+        "evidence/oracle_415/ab-suite/ab_results_manifest.json",
+        "evidence/oracle_415/budget-415.json",
+        "evidence/twin_r198/sizing-415-webcomponents.json",
+        "evidence/cost_371_r2.json",
+        "evidence/probe_r185_todomvc_lit_complex_dom__dom_custom_element_reaction_queue_invoke.json",
+        "measurements/tot-profile/analysis/stories/TodoMVC-Lit-Complex-DOM/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/TodoMVC-Lit-Complex-DOM/candidate_frontier.json"
+      ]
+    },
+    {
+      "id": "SP3-SEP-416",
+      "ledger_id": 416,
+      "key": "paint/paint-layer-descendant-flags-unchanged",
+      "title": "#416: `paint/paint-layer-descendant-flags-unchanged`",
+      "kind": "mechanism",
+      "status": "parked",
+      "subsystem_file": "canvas_graphics.md",
+      "functions": [
+        "blink::PaintLayer::UpdateDescendantDependentFlags()"
+      ],
+      "stories": [
+        "TodoMVC-WebComponents",
+        "TodoMVC-Vue",
+        "NewsSite-Nuxt",
+        "NewsSite-Next",
+        "Editor-TipTap",
+        "TodoMVC-JavaScript-ES6-Webpack-Complex-DOM",
+        "TodoMVC-React-Complex-DOM",
+        "TodoMVC-Lit-Complex-DOM",
+        "Editor-CodeMirror",
+        "TodoMVC-Backbone",
+        "TodoMVC-JavaScript-ES5",
+        "TodoMVC-Angular-Complex-DOM",
+        "Charts-observable-plot",
+        "TodoMVC-React-Redux",
+        "Perf-Dashboard",
+        "Charts-chartjs",
+        "React-Stockcharts-SVG"
+      ],
+      "upper_bound": {
+        "target_story": "TodoMVC-WebComponents",
+        "target_story_share_pct": 1.6521,
+        "estimated_avoidable_fraction": 0.485675,
+        "estimated_local_story_impact_pct": 0.7618,
+        "estimated_suite_impact_pct": 0.5685,
+        "opportunity_budget_upper_pct": null,
+        "sized_ceiling_pct": null,
+        "summary": "target-story share 1.65% (TodoMVC-WebComponents), avoidable fraction 0.4857, local story impact 0.76%, suite impact 0.5685%"
+      },
+      "measured_result": "32-block full-suite oracle A/B (Speedometer3Oracle416): -0.6486% [-0.7414%, -0.5557%] vs 0.4031% suite floor (0 audit mismatches)",
+      "reason": "User decision 2026-10-13 after sizing (ROUND-197): 32-block full-suite paired oracle (Speedometer3Oracle416, disjoint from #414, 0 audit mismatches) measured -0.6486% [-0.7414%, -0.5557%] vs the 0.4031% suite floor.",
+      "campaign": "speedometer-september",
+      "date": "2026-10-13",
+      "baseline_commit": "bbda0de4ff47bec0172dedca40a851b0af591d7a",
+      "profile_id": "sp3-tot-frontier-1",
+      "revisit_if": "32-block full-suite oracle (Speedometer3Oracle416) measured -0.6486% [-0.7414%, -0.5557%] vs the 0.4031% suite floor; do not revisit.",
+      "design_docs": [],
+      "evidence_paths": [
+        "evidence/oracle_416/oracle-416.patch",
+        "evidence/oracle_416/ab-suite/ab_results_manifest.json",
+        "evidence/probes-round185-tot.patch",
+        "evidence/cost_397_r140.json",
+        "measurements/tot-profile/analysis/stories/TodoMVC-Vue/candidate_frontier.json",
+        "measurements/tot-profile-2/analysis/stories/TodoMVC-Vue/candidate_frontier.json",
+        "measurements/tot-lens.json",
+        "measurements/tot-profile/analysis/stories/TodoMVC-WebComponents/candidate_frontier.json"
+      ]
+    }
+  ]
+}

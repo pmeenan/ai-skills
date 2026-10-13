@@ -68,3 +68,7 @@ campaign policy defined by the core runbook.
   `../optimize-campaign/assets/speedometer3/performance-mark-monotonic-probe.patch`.
 - Speedometer-calibrated repetition, duration, marginal-share, and checkpoint
   thresholds must not be copied into another benchmark adapter.
+
+### Discarded Candidate Catalog Check (Before Proposing a Mechanism)
+
+Before proposing any `novel` or `algorithmic` mechanism in a decomposition, investigators must check [references/discarded-candidates/INDEX.md](references/discarded-candidates/INDEX.md) and the machine-readable catalog `references/discarded-candidates/discarded-candidates.json` (which combines earlier discarded ideas with all 43 rejected/parked entries from `speedometer-september`). `campaign.py decompose-draft`, `campaign.py decompose`, and `precheck_decomposition.py` automatically emit a non-fatal `WARNING:` when a proposed `novel`/`algorithmic` mechanism key or anchor function matches a discarded entry. Because a mechanism that failed on one story or under an earlier implementation might still apply under different constraints, the match is a warning rather than a hard refusal — the investigator must read the prior failure mode and document why the new proposal avoids it.

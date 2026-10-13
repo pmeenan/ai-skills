@@ -909,3 +909,10 @@ the file the report names, at least 4000 bytes, mentioning every attested
 digest and every check. The orchestrator never writes a reviewer report or
 transcript; a report it authored is a forged review whatever the gate says,
 and the audit reads the transcripts.
+
+## Parallel Decomposition Drafting & Key Reservation
+
+When multiple subagents draft decompositions in parallel against a shared `ledger.json` (for example in `r139`, where `#254` and `#258` raced on `svg-path-Seg-List-Parse-cache`), they must not claim the same `novel` `mechanism_key`:
+- Reserve novel keys up front with `python3 .../campaign.py reserve-key --key <mechanism_key> --opp <discovery_id>` (and release with `--release` if dropped).
+- `precheck_decomposition.py` checks both `reserved_mechanism_keys` in `ledger.json` and sibling `.json` files in the staging directory for colliding `novel`/`algorithmic` mechanism keys before review.
+- Before proposing a `novel` or `algorithmic` row, check the adapter's discarded-candidates catalog (`optimize-speedometer/references/discarded-candidates/INDEX.md` and `discarded-candidates.json`); `decompose-draft`, `precheck_decomposition.py`, and `decompose` print a non-fatal warning when a key or anchor function matches a rejected or parked candidate.
