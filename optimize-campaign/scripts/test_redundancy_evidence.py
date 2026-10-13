@@ -161,5 +161,17 @@ class RedundancyEvidenceTest(unittest.TestCase):
                 re_.load_packet(path)
 
 
+    def test_reduces_iter0_and_iter1_plus_time_per_process(self):
+        # Two iterations in pid 1 (cold 5000 ns, warm 1000 ns) and two in pid 2 (cold 3000 ns, warm 1000 ns).
+        r0_p1 = json.loads(row(calls=10, ns_per_call=500)[len(re_.ROW_PREFIX):]); r0_p1["pid"] = 101
+        r1_p1 = json.loads(row(calls=10, ns_per_call=100)[len(re_.ROW_PREFIX):]); r1_p1["pid"] = 101
+        r0_p2 = json.loads(row(calls=10, ns_per_call=300)[len(re_.ROW_PREFIX):]); r0_p2["pid"] = 102
+        r1_p2 = json.loads(row(calls=10, ns_per_call=100)[len(re_.ROW_PREFIX):]); r1_p2["pid"] = 102
+        summary = re_.reduce_rows([r0_p1, r1_p1, r0_p2, r1_p2], "style/resolve", "TodoMVC-React")
+        self.assertAlmostEqual(2500.0, summary["total_ns_per_repetition_mean"])
+        self.assertAlmostEqual(4000.0, summary["total_ns_per_repetition_iter0_mean"])
+        self.assertAlmostEqual(1000.0, summary["total_ns_per_repetition_iter1_plus_mean"])
+
+
 if __name__ == "__main__":
     unittest.main()

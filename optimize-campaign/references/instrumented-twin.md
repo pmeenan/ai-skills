@@ -365,3 +365,5 @@ arms' activation into its output. The review gate accepts this flag twin:
 both arms bind the staged candidate product tree and the recorded activation
 differs. A same-tree baseline without a recorded flag difference is refused,
 as is a candidate arm bound to any tree but the staged one.
+
+- **Run `--iterations=10` when matching a 10-iteration cycle profile:** In-process iteration `0` carries cold parser, V8 compile, and font/style table initialization costs that warm iterations `1..9` do not. `redundancy_evidence.py` splits per-process rows into `total_ns_per_repetition_iter0_mean` (first scored window per `pid`) and `total_ns_per_repetition_iter1_plus_mean` (subsequent windows per `pid`), and the decomposition gate's `packet_time_coverage` check uses `total_ns_per_repetition_iter1_plus_mean` whenever multiple iterations per process were captured.

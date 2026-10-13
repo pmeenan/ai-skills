@@ -2175,6 +2175,19 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         alone = [{"anchor": "Style()", "disposition": "mandatory", "redundancy_evidence": late}]
         with self.assertRaisesRegex(campaign.CampaignError, "(?s)0.10 of the function's time.*not bound"):
             campaign.enforce_packet_time_coverage(alone, [(1, alone[0])], profile, STORY, self.dir)
+        # Cold iteration-0 skew (rounds 185/186): when total_ns_per_repetition_mean is
+        # inflated to 3x on a sub-frame by iteration 0 warmup, but warm iter1_plus
+        # matches the profile share (40,000 ns), coverage evaluates on iter1_plus and passes.
+        warm_pkt_path = self.dir / whole["path"]
+        warm_pkt = json.loads(warm_pkt_path.read_text())
+        warm_pkt["total_ns_per_repetition_mean"] = 120000.0
+        warm_pkt["total_ns_per_repetition_iter0_mean"] = 840000.0
+        warm_pkt["total_ns_per_repetition_iter1_plus_mean"] = 40000.0
+        warm_pkt_path.write_text(json.dumps(warm_pkt))
+        table_warm, _ = campaign.packet_time_coverage(rows, bound, profile, STORY, self.dir)
+        by_warm = {r["packet"]: r for r in table_warm}
+        self.assertAlmostEqual(1.0, by_warm["evidence/whole.json"]["coverage"], places=3)
+        campaign.enforce_packet_time_coverage(rows, bound, profile, STORY, self.dir)
 
     def test_row_text_quotes_the_bound_packet(self):
         packet = self.write_packet("quoted", applicable=0.3, repeat=0.5, applicable_time=0.25,

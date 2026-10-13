@@ -262,6 +262,17 @@ def reduce_rows(rows: list[dict], site: str, target_story: str, counters: int = 
         build_id = None
     timing = "exclusive" if all(row.get("timing") == "exclusive" for row in selected) else None
     nested = [int(row["nested_calls"]) for row in selected if "nested_calls" in row]
+    iter0_ns, iter1_plus_ns = [], []
+    if time_weighted:
+        seen_pids = set()
+        for row, ns_val in zip(selected, total_ns):
+            pid = row.get("pid")
+            if pid is None or pid not in seen_pids:
+                if pid is not None:
+                    seen_pids.add(pid)
+                iter0_ns.append(ns_val)
+            else:
+                iter1_plus_ns.append(ns_val)
     return {
         "site": site,
         "target_story": target_story,
@@ -272,6 +283,12 @@ def reduce_rows(rows: list[dict], site: str, target_story: str, counters: int = 
         "nested_calls_fraction": (sum(nested) / total_calls) if len(nested) == len(selected) else None,
         "time_weighted": time_weighted,
         "total_ns_per_repetition_mean": statistics.fmean(total_ns) if time_weighted else None,
+        "total_ns_per_repetition_iter0_mean": (
+            statistics.fmean(iter0_ns) if time_weighted and iter0_ns else None
+        ),
+        "total_ns_per_repetition_iter1_plus_mean": (
+            statistics.fmean(iter1_plus_ns) if time_weighted and iter1_plus_ns else None
+        ),
         "applicable_time_fraction": sum(applicable_ns) / ns_total if time_weighted else None,
         "repeat_time_fraction": sum(repeated_ns) / ns_total if time_weighted else None,
         "calls_total": total_calls,

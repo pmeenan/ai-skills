@@ -2759,9 +2759,14 @@ PACKET_DERIVED_FIELDS = (
     "repetitions", "calls_total", "calls_per_repetition_mean",
     "distinct_inputs_mean", "applicable_fraction", "repeat_fraction",
     "distinct_overflow", "time_weighted", "applicable_time_fraction",
-    "repeat_time_fraction", "build_id", "timing", "nested_calls_fraction",
+    "repeat_time_fraction", "total_ns_per_repetition_iter0_mean",
+    "total_ns_per_repetition_iter1_plus_mean", "build_id", "timing",
+    "nested_calls_fraction",
 )
-PACKET_TIME_FIELDS = ("time_weighted", "applicable_time_fraction", "repeat_time_fraction")
+PACKET_TIME_FIELDS = (
+    "time_weighted", "applicable_time_fraction", "repeat_time_fraction",
+    "total_ns_per_repetition_iter0_mean", "total_ns_per_repetition_iter1_plus_mean",
+)
 PACKET_BUILD_FIELDS = ("build_id", "timing", "nested_calls_fraction")
 
 
@@ -4494,11 +4499,19 @@ def packet_time_coverage(paths, bound_rows, profile, story, campaign_dir):
     for path, (packet, indexes) in timed.items():
         symbol = packet["probe_symbol"].strip()
         share = 100.0 * inclusive[symbol] / total if total else 0.0
-        ms = float(packet["total_ns_per_repetition_mean"]) / 1e6
+        ms_all = float(packet["total_ns_per_repetition_mean"]) / 1e6
+        ms_iter0 = (
+            float(packet["total_ns_per_repetition_iter0_mean"]) / 1e6
+            if packet.get("total_ns_per_repetition_iter0_mean") is not None else None
+        )
+        ms_warm = packet_warm_ns_per_rep(packet) / 1e6
         rows.append({
             "packet": path, "probe_symbol": symbol, "rows": indexes,
-            "symbol_share_pct": share, "ms_per_repetition": ms,
-            "ms_per_share_pt": (ms / share) if share > 0 else None,
+            "symbol_share_pct": share, "ms_per_repetition": ms_warm,
+            "ms_per_repetition_all": ms_all,
+            "ms_per_repetition_iter0": ms_iter0,
+            "ms_per_share_pt": (ms_warm / share) if share > 0 else None,
+            "ms_per_share_pt_iter0": (ms_iter0 / share) if (share > 0 and ms_iter0 is not None) else None,
         })
     reference = max(
         (row for row in rows if row["ms_per_share_pt"]),
@@ -4509,8 +4522,22 @@ def packet_time_coverage(paths, bound_rows, profile, story, campaign_dir):
             row["ms_per_share_pt"] / reference["ms_per_share_pt"]
             if reference and row["ms_per_share_pt"] else None
         )
+        row["coverage_iter0"] = (
+            row["ms_per_share_pt_iter0"] / reference["ms_per_share_pt_iter0"]
+            if reference and row.get("ms_per_share_pt_iter0") and reference.get("ms_per_share_pt_iter0") else None
+        )
     rows.sort(key=lambda row: -row["symbol_share_pct"])
     return rows, (reference["packet"] if reference else None)
+
+
+def packet_warm_ns_per_rep(packet):
+    """Warm (in-process iteration 1+) time per repetition when multiple
+    iterations ran per process; falls back to total_ns_per_repetition_mean
+    when only one iteration ran per process or on legacy packets."""
+    warm = packet.get("total_ns_per_repetition_iter1_plus_mean")
+    if warm is not None and float(warm) > 0:
+        return float(warm)
+    return float(packet.get("total_ns_per_repetition_mean") or 0.0)
 
 
 def format_time_coverage(rows, reference):
@@ -4518,6 +4545,8 @@ def format_time_coverage(rows, reference):
     for row in rows:
         cov = f"{row['coverage']:.2f}" if row["coverage"] is not None else "n/a"
         mark = "  <- reference" if row["packet"] == reference else ""
+        if row.get("coverage_iter0") is not None and row.get("ms_per_repetition_all") != row.get("ms_per_repetition"):
+            mark += f"  (iter0 cov={row['coverage_iter0']:.2f})"
         if not row.get("rows"):
             mark += "  (not bound)"
         lines.append(
@@ -6937,7 +6966,7 @@ def union_packet_coverage(ledger, profile, story, packet, symbol, share, files, 
     a bound packet): a scope that times a tenth of the function it names
     sizes a tenth of the candidate."""
     build = packet.get("build_id")
-    ms = float(packet.get("total_ns_per_repetition_mean") or 0.0) / 1e6
+    ms = packet_warm_ns_per_rep(packet) / 1e6
     if not build or not files or not share or ms <= 0:
         return None, None
     best = story_coverage_reference(ledger.dir, story, build, files, cache=reference_cache)
@@ -6957,7 +6986,7 @@ def story_coverage_reference(campaign_dir, story, build, files, cache=None):
     for site, entries in story_site_packets(campaign_dir, story, build).items():
         for other, rel in entries:
             other_symbol = str(other.get("probe_symbol") or "").strip()
-            other_ms = float(other.get("total_ns_per_repetition_mean") or 0.0) / 1e6
+            other_ms = packet_warm_ns_per_rep(other) / 1e6
             if other_symbol and other_ms > 0:
                 candidates.append((other_symbol, other_ms, rel))
     best = None
