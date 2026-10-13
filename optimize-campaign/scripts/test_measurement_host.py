@@ -32,6 +32,22 @@ class DisplayEnvironmentTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'tty9'):
                 host.display_environment(':1', 9)
 
+    def test_omitted_expected_vt_infers_from_xorg_or_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(host, 'X11_SOCKET_DIR', tmp), \
+                mock.patch.object(host, 'active_vt', return_value='tty2'), \
+                mock.patch.object(host, 'x11_server_vt', return_value=9):
+            (pathlib.Path(tmp) / 'X1').write_text('')
+            with self.assertRaisesRegex(RuntimeError, 'tty9'):
+                host.display_environment(':1', None)
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(host, 'X11_SOCKET_DIR', tmp), \
+                mock.patch.object(host, 'active_vt', return_value='tty2'), \
+                mock.patch.object(host, 'x11_server_vt', return_value=None):
+            (pathlib.Path(tmp) / 'X1').write_text('')
+            with self.assertRaisesRegex(RuntimeError, 'active console VT'):
+                host.display_environment(':1', None)
+
     def test_x11_surface_uses_fixed_viewport_and_display(self):
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(host, 'X11_SOCKET_DIR', tmp), \
@@ -77,6 +93,11 @@ class HostObservationTest(unittest.TestCase):
         rows = self.rows(); rows[0]['after']['active_vt'] = 'tty2'
         with self.assertRaisesRegex(ValueError, 'active_vt'):
             host.validate_observations(rows, 1)
+        rows = self.rows()
+        with self.assertRaisesRegex(ValueError, 'tty9'):
+            rows[0]['before']['active_vt'] = 'tty2'
+            rows[0]['after']['active_vt'] = 'tty2'
+            host.validate_observations(rows, 1, expected_vt=9)
 
     def test_foreign_gpu_process_change_invalidates(self):
         rows = self.rows(); rows[0]['after']['gpu'] = {'gpus': [], 'compute_apps': []}

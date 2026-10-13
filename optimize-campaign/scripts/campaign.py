@@ -9433,6 +9433,20 @@ def require_campaign_display(config, environment, label):
         renderer = environment.get("gpu_renderer") or ""
         if not renderer or any(t in renderer.lower() for t in ("swiftshader", "llvmpipe", "subzero")):
             raise CampaignError(f"{label} did not render through the GPU ({renderer or 'unattested'})")
+        if policy.get("vt") is not None:
+            wanted_vt = int(policy["vt"])
+            wanted_tty = f"tty{wanted_vt}"
+            if environment.get("expected_vt") is not None and int(environment["expected_vt"]) != wanted_vt:
+                raise CampaignError(
+                    f"{label} was captured with expected_vt={environment.get('expected_vt')} "
+                    f"but the campaign is frozen to vt={wanted_vt} ({wanted_tty}); rerun with --vt {wanted_vt}"
+                )
+            if environment.get("active_vt") is not None and environment.get("active_vt") != wanted_tty:
+                raise CampaignError(
+                    f"{label} was captured on console VT {environment.get('active_vt')!r} instead of "
+                    f"the campaign's X11 VT {wanted_tty!r} (--vt {wanted_vt}); an inactive X11 VT "
+                    "throttles frame presentation"
+                )
 
 
 def cmd_init(args):

@@ -3122,6 +3122,14 @@ class DisplayPolicyTest(unittest.TestCase):
                 config, {"mode": "x11", "display": ":1", "viewport": "1500x1000",
                          "gpu_renderer": "SwiftShader"}, "run")
         campaign.require_campaign_display({}, {"mode": "headless"}, "legacy")
+        config_vt = {"display": {"mode": "x11", "display": ":1", "vt": 9, "viewport": "1500x1000"}}
+        with self.assertRaisesRegex(campaign.CampaignError, "tty9"):
+            campaign.require_campaign_display(
+                config_vt,
+                {"mode": "x11", "display": ":1", "viewport": "1500x1000",
+                 "gpu_renderer": "ANGLE (NVIDIA)", "active_vt": "tty2", "expected_vt": 9},
+                "run",
+            )
 
 class FleetOverrideTest(unittest.TestCase):
 

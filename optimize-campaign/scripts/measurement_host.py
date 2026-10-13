@@ -268,13 +268,44 @@ def parse_display(display):
     return int(match.group(1))
 
 
+def x11_server_vt(display, proc_root='/proc'):
+    """Infer the console VT (`vtN`) of the X server serving `display` from `/proc`."""
+    number=parse_display(display)
+    target=f':{number}'
+    try:
+        entries=list(pathlib.Path(proc_root).iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw=(entry/'cmdline').read_bytes()
+        except OSError:
+            continue
+        if not raw:
+            continue
+        tokens=[t.decode('utf-8','replace') for t in raw.split(b'\x00') if t]
+        if not tokens:
+            continue
+        exe=pathlib.PurePath(tokens[0]).name
+        if exe not in ('Xorg','X','Xwayland') or target not in tokens:
+            continue
+        for token in tokens[1:]:
+            m=re.fullmatch(r'vt(\d+)',token)
+            if m:
+                return int(m.group(1))
+    return None
+
+
 def display_environment(display=None, expected_vt=None, viewport=None):
     """Describe the rendering surface every runner must share.
 
     `display=None` means Chrome's headless mode (software rendering). An X
-    display must exist and, when `expected_vt` is given, own the console so the
-    GPU actually renders for it. Both cases are recorded in the manifest as
-    part of the calibration identity.
+    display must exist and own the active console VT so the GPU actually
+    renders unthrottled frames for it (an Xorg server on an inactive VT
+    throttles frame presentation and invalidates score/probe runs). Both cases
+    are recorded in the manifest as part of the calibration identity.
     """
     vt=active_vt()
     if not display:
@@ -283,11 +314,17 @@ def display_environment(display=None, expected_vt=None, viewport=None):
     socket=pathlib.Path(X11_SOCKET_DIR)/f'X{number}'
     if not socket.exists():
         raise RuntimeError(f'X display {display} is not running (no {socket}); start the benchmark X server first')
+    if expected_vt is None:
+        expected_vt=x11_server_vt(display)
     if expected_vt is not None:
         wanted=f'tty{int(expected_vt)}'
         if vt!=wanted:
             raise RuntimeError(f'X display {display} needs the console VT {wanted} but {vt} is active; '
-                               'run the measurement inside the tuner session (or `chvt`) first')
+                               f'pass --vt {int(expected_vt)} to tune_benchmark_host.py (or `chvt {int(expected_vt)}`) first')
+    elif vt is not None:
+        raise RuntimeError(f'X display {display} requires an active console VT check (active_vt is {vt!r}, '
+                           'but no expected VT was given and none could be inferred from the Xorg process); '
+                           'pass --display-vt / --vt explicitly')
     return {'mode':'x11','display':display,'viewport':viewport or DEFAULT_VIEWPORT,
             'expected_vt':int(expected_vt) if expected_vt is not None else None,'active_vt':vt}
 
@@ -377,7 +414,7 @@ def foreign_gpu_apps(rows):
     return sorted(set(filter(None,seen.values())))
 
 
-def validate_observations(rows, blocks):
+def validate_observations(rows, blocks, expected_vt=None):
     """Reject incomplete telemetry, topology changes, VT changes and observed throttling.
 
     Frequency and pressure samples are retained for drift diagnosis; a single
@@ -385,6 +422,8 @@ def validate_observations(rows, blocks):
     """
     if not isinstance(rows,list) or len(rows) != blocks:
         raise ValueError('missing per-block host observations')
+    first_vt=rows[0].get('before',{}).get('active_vt') if rows else None
+    wanted_vt=f'tty{int(expected_vt)}' if expected_vt is not None else None
     for i,row in enumerate(rows,1):
         if row.get('block') != i or not row.get('before') or not row.get('after'):
             raise ValueError('incomplete host observation block')
@@ -393,6 +432,10 @@ def validate_observations(rows, blocks):
             raise ValueError('host observation timestamps are not ordered')
         for key in ('online_cpus','cpu_affinity','active_vt'):
             if a.get(key) != b.get(key): raise ValueError(f'host {key} changed during measurement')
+        if a.get('active_vt') != first_vt:
+            raise ValueError('host active_vt changed between measurement blocks')
+        if wanted_vt is not None and a.get('active_vt') is not None and a.get('active_vt') != wanted_vt:
+            raise ValueError(f'host active_vt {a.get("active_vt")!r} does not match expected console VT {wanted_vt!r}')
         for path,value in a.get('counters',{}).items():
             if 'throttle_count' in path:
                 after=b.get('counters',{}).get(path)

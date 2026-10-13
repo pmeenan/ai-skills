@@ -84,3 +84,7 @@ complement local/SSH execution:
   Gerrit URLs are bound to the measurement summary. If a candidate is rejected
   or regresses, the try CL must be promptly abandoned via `pinpoint_measure.py abandon`.
 
+
+### Enforcing Active Console VT on X11 Surfaces
+
+When a campaign's display policy uses an X11 server (`--display :1 --display-vt 9`), every `tune_benchmark_host.py enable` invocation — whether invoked by `remote_measure.py`, `mechanism_evidence.py`, or a manual twin probe script — must include `--vt <N>` matching the X server's VT. `measurement_host.display_environment` resolves the X server's VT (from `--display-vt` or `/proc/<pid>/cmdline` of `Xorg`) and refuses to start when `/sys/class/tty/tty0/active` does not match `tty<N>`, and `campaign.require_campaign_display` refuses any receipt whose `active_vt` differs from the campaign's frozen VT.
