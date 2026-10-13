@@ -3193,5 +3193,77 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         self.assertIn("warning only", err.getvalue())
 
 
+    def test_in_epoch_counter_supersedes_retired_site_name_on_same_function(self):
+        """Regression test for 35e53dbb (round 193): enforce_own_counters drops
+        a retired site name whose newest build predates the current baseline
+        epoch when an in-epoch counter on the same function has a packet for
+        the story, while a function with only retired counters still has to be
+        re-measured."""
+        import datetime as _dt, os as _os, time as _time
+        story_dir = self.dir / "results" / "analysis" / "stories" / STORY
+        story_dir.mkdir(parents=True, exist_ok=True)
+        artifact = story_dir / "candidate_frontier.json"
+        artifact.write_text("{}")
+        (story_dir / "profile.collapsed").write_text(
+            "main;Root;UpdateTextInputStateInternal 50\nmain;Root;OnlyRetired 50\n"
+        )
+        now = _time.time()
+        ledger = campaign.Ledger(self.dir).load()
+        ledger.data["config"]["share_floor_pct"] = 1.0
+        ledger.data["config"]["calibration"] = {"suite_mde_pct": 0.1, "story_mde_pct": {STORY: 0.5}}
+        ledger.data["baseline_epochs"] = [{
+            "ts": _dt.datetime.fromtimestamp(now - 3600, tz=_dt.timezone.utc).isoformat(),
+            "from": "a" * 40,
+            "to": "b" * 40,
+        }]
+        ledger.save()
+        # Pre-epoch build (mtime 2 hours ago) probed both functions on another story.
+        retired_shared = self.write_packet(
+            "retired-shared", story="OtherStory", applicable=0.0, repeat=0.0,
+            site="input/widget-base-update-text-input-state",
+            symbol="UpdateTextInputStateInternal", build_id="1" * 40,
+        )
+        retired_only = self.write_packet(
+            "retired-only", story="OtherStory", applicable=0.0, repeat=0.0,
+            site="input/only-retired", symbol="OnlyRetired", build_id="1" * 40,
+        )
+        for name in ("retired-shared", "retired-only"):
+            _os.utime(self.dir / "logs" / f"{name}.log", (now - 7200, now - 7200))
+        # In-epoch build (current mtime) probes UpdateTextInputStateInternal under a new site name for STORY.
+        active_shared = self.write_packet(
+            "active-shared", story=STORY, applicable=0.0, repeat=0.0,
+            site="widget/update-text-input-state",
+            symbol="UpdateTextInputStateInternal", build_id="2" * 40,
+        )
+        root_pkt = self.write_packet(
+            "root-active", story=STORY, applicable=0.0, repeat=0.0,
+            site="root/update", symbol="Root", build_id="2" * 40,
+        )
+        cfg = ledger.data["config"]
+        # UpdateTextInputStateInternal passes because widget/update-text-input-state is in-epoch and reduced for STORY.
+        rows_ok = [{"anchor": "UpdateTextInputStateInternal", "disposition": "mandatory",
+                    "redundancy_evidence": dict(active_shared)}]
+        campaign.enforce_own_counters(rows_ok, {1: 25.0}, cfg, 1.0, STORY, self.dir, [(1, rows_ok[0])])
+        self.assertEqual(["widget/update-text-input-state"], rows_ok[0]["own_counters"])
+        # OnlyRetired has only a pre-epoch counter and no in-epoch counter on STORY -> still refused.
+        rows_retired = [{"anchor": "OnlyRetired", "disposition": "mandatory",
+                         "redundancy_evidence": dict(root_pkt)}]
+        with self.assertRaisesRegex(campaign.CampaignError, "input/only-retired.*no packet"):
+            campaign.enforce_own_counters(rows_retired, {1: 25.0}, cfg, 1.0, STORY, self.dir, [(1, rows_retired[0])])
+
+    def test_checked_gate_report_rejects_invented_keys_and_approve_verdict(self):
+        report = {
+            "schema_version": 1,
+            "gate": "decomposition",
+            "role": "skeptic",
+            "verdict": "PASS",
+            "checks": {"invented_check": True},
+            "check_evidence": {"invented_check": "artifact.json shows 42 samples in row 1"},
+            "resolved_challenges": [],
+        }
+        with self.assertRaisesRegex(campaign.CampaignError, "check keys do not match.*decompose-review-scaffold"):
+            campaign.validate_checked_gate_report(report, "skeptic", "decomposition")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -605,6 +605,15 @@ def validate_checked_gate_report(report, role, gate):
             f"{gate} {role} review needs checks and check_evidence objects; "
             f"generate it with `campaign.py {scaffold_command}`"
         )
+    unknown_checks = sorted(set(checks) - set(required))
+    missing_checks = [name for name in required if name not in checks]
+    unknown_evidence = sorted(set(evidence) - set(required))
+    if unknown_checks or missing_checks or unknown_evidence:
+        raise CampaignError(
+            f"{gate} {role} review check keys do not match the {gate} {role} schema "
+            f"(required: {list(required)}; missing: {missing_checks}; unknown: {unknown_checks or unknown_evidence}); "
+            f"generate the scaffold with `campaign.py {scaffold_command}` instead of inventing check names"
+        )
     seen = set()
     for name in required:
         if checks.get(name) is not True:
@@ -674,14 +683,22 @@ def validate_gate_challenges(
         statement = report.get("why_this_proves_real_speedup")
         if gate_uses_profile_checks(gate) and not isinstance(statement, str):
             statement = report.get("what_this_frontier_establishes")
+        verdict = report.get("verdict")
+        if verdict != "PASS":
+            hint = " (use exact uppercase 'PASS', not 'approve'/'approved')" if str(verdict).lower() in ("approve", "approved", "pass", "lgtm") else ""
+            raise CampaignError(
+                f"{gate} {role} challenge verdict is {verdict!r}, not PASS{hint}"
+            )
+        if not isinstance(task_id, str) or len(task_id.strip()) < 3 or "REPLACE" in task_id or task_id.strip().lower() in ("skeptic", "adversary", "pending", "todo", "tbd"):
+            raise CampaignError(
+                f"{gate} {role} challenge reviewer_task_id {task_id!r} must be the subagent's real conversation UUID, not a placeholder"
+            )
         if (
             report.get("schema_version") != 1
             or report.get("role") != role
             or report.get("gate") != gate
-            or report.get("verdict") != "PASS"
             or not isinstance(checked, list)
             or not expected.issubset(set(checked))
-            or not isinstance(task_id, str) or len(task_id.strip()) < 3
             or not isinstance(transcript, str) or len(transcript.strip()) < 3
             or report.get("challenges") != []
             or not isinstance(statement, str)
