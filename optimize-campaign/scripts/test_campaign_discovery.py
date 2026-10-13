@@ -3263,6 +3263,46 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
         }
         with self.assertRaisesRegex(campaign.CampaignError, "check keys do not match.*decompose-review-scaffold"):
             campaign.validate_checked_gate_report(report, "skeptic", "decomposition")
+        # Also verify validate_gate_challenges rejects 'approve' verdict and placeholder reviewer_task_id
+        art = self.dir / "art.json"
+        art.write_text("{}")
+        tr = self.dir / "tr.jsonl"
+        tr.write_text("x" * 4500)
+        sk_path = self.dir / "sk.json"
+        ad_path = self.dir / "ad.json"
+        base_rep = {
+            "schema_version": 1,
+            "gate": "decomposition",
+            "role": "skeptic",
+            "verdict": "approve",
+            "reviewer_task_id": "11111111-2222-3333-4444-555555555555",
+            "artifact_digests_checked": [campaign.sha256_file(art)],
+            "challenges": [],
+            "independent_verification": "verified all 42 rows against disk artifacts",
+        }
+        sk_path.write_text(json.dumps(base_rep))
+        ad_rep = dict(base_rep, role="adversary", verdict="PASS", reviewer_task_id="66666666-7777-8888-9999-000000000000")
+        ad_path.write_text(json.dumps(ad_rep))
+        import argparse as _ap, unittest.mock as _mock
+        g_args = _ap.Namespace(gate_skeptic=str(sk_path), gate_adversary=str(ad_path))
+        with _mock.patch.object(campaign, "test_bypass_active", return_value=False):
+            with self.assertRaisesRegex(campaign.CampaignError, "not PASS.*exact uppercase 'PASS'"):
+                campaign.validate_gate_challenges(g_args, gate="decomposition", artifact_digests=[campaign.sha256_file(art)], campaign_dir=self.dir)
+            base_rep["verdict"] = "PASS"
+            base_rep["reviewer_task_id"] = "skeptic"
+            sk_path.write_text(json.dumps(base_rep))
+            with self.assertRaisesRegex(campaign.CampaignError, "real conversation UUID, not a placeholder"):
+                campaign.validate_gate_challenges(g_args, gate="decomposition", artifact_digests=[campaign.sha256_file(art)], campaign_dir=self.dir)
+        # Verify collapsed_stack_files resolves via profile['repository_root'] when CWD is elsewhere
+        prof = {
+            "repository_root": str(self.dir),
+            "capture_provenance": [{"story_frontiers": [{"story": STORY, "artifact": "sub/dir/candidate_frontier.json"}]}],
+        }
+        cdir = self.dir / "sub" / "dir"
+        cdir.mkdir(parents=True, exist_ok=True)
+        cfile = cdir / "profile.collapsed"
+        cfile.write_text("main;Foo 10\n")
+        self.assertEqual([cfile], campaign.collapsed_stack_files(prof, STORY))
 
 
     def test_current_skill_tree_digest_without_repo_root_and_prose_verifiers(self):

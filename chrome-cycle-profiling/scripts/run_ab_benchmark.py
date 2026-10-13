@@ -964,7 +964,7 @@ def main():
     if tune_benchmark_host.get_current_state() != environment["host_settings"]:
         raise RuntimeError("host settings changed during measurement")
     try:
-        measurement_host.validate_observations(host_observations, args.blocks)
+        measurement_host.validate_observations(host_observations, args.blocks, expected_vt=display_env.get("expected_vt"))
     except ValueError as exc:
         print(f"Error: host observations invalidate this run: {exc}", file=sys.stderr)
         sys.exit(1)

@@ -437,7 +437,12 @@ def register_gate_report(campaign_dir, *, gate, role, report, report_path, subje
     if campaign_dir is None or not isinstance(report, dict):
         return
     task_id = report.get("reviewer_task_id")
-    if not isinstance(task_id, str) or len(task_id.strip()) < 3 or "REPLACE" in task_id:
+    if (
+        not isinstance(task_id, str)
+        or len(task_id.strip()) < 3
+        or "REPLACE" in task_id
+        or task_id.strip().lower() in ("skeptic", "adversary", "pending", "todo", "tbd")
+    ):
         return
     digests = sorted(
         str(value) for value in (report.get("artifact_digests_checked") or [])
@@ -3095,7 +3100,7 @@ def enforce_evidence_provenance(campaign_dir, build_id):
     by hand anywhere in the evidence base changes what the gate sees: a
     `time_weighted` flag flipped to false takes a site out of the story's
     packet set. One edited packet refuses every request on that build until
-    it is regenerated or removed."""
+    it is regenerated or invalidated by a host ruling."""
     import redundancy_evidence
     if not build_id:
         return
@@ -3183,6 +3188,14 @@ DISCARDED_CANDIDATES_JSON = (
 )
 
 
+def _discarded_entry_canon_id(entry):
+    camp = str(entry.get("campaign") or "").strip()
+    lid = entry.get("ledger_id")
+    eid = lid if lid is not None else entry.get("id")
+    key = str(entry.get("key") or entry.get("mechanism_key") or "").strip().lower()
+    return (camp, eid, key)
+
+
 def load_discarded_candidates(ledger=None):
     """Load rejected/parked candidates from the cross-campaign catalog and
     the active ledger so decompose-draft and decompose can warn before a
@@ -3194,22 +3207,26 @@ def load_discarded_candidates(ledger=None):
             data = json.loads(DISCARDED_CANDIDATES_JSON.read_text())
             for item in data.get("entries") or []:
                 if isinstance(item, dict):
-                    key = (item.get("campaign"), item.get("id"), item.get("key"))
-                    seen.add(key)
+                    canon = _discarded_entry_canon_id(item)
+                    seen.add(canon)
+                    seen.add((item.get("campaign"), item.get("id"), str(item.get("key") or "").strip().lower()))
                     entries.append(item)
         except (OSError, ValueError):
             pass
     if ledger is not None:
+        camp_name = ledger.data.get("name") or (ledger.dir.name if getattr(ledger, "dir", None) else "current")
         for opp in ledger.data.get("opportunities") or []:
             if opp.get("status") not in ("rejected", "parked"):
                 continue
             key_name = opp.get("mechanism_key") or opp.get("area_key") or ""
-            ident = (ledger.data.get("name"), opp.get("id"), key_name)
+            ident = (camp_name, opp.get("id"), str(key_name).strip().lower())
             if ident in seen:
                 continue
+            seen.add(ident)
             entries.append({
                 "id": opp.get("id"),
-                "campaign": ledger.data.get("name") or "current",
+                "ledger_id": opp.get("id"),
+                "campaign": camp_name,
                 "kind": opp.get("kind"),
                 "status": opp.get("status"),
                 "key": key_name,
@@ -3272,14 +3289,24 @@ def warn_discarded_candidates(paths, campaign_dir=None, ledger=None, include_und
             + (by_func.get(row_fn_short, []) if row_fn_short and row_fn_short != row_fn else [])
         )
         for entry in candidates_for_row:
-            eid = (entry.get("campaign"), entry.get("id"), entry.get("key"))
+            eid = _discarded_entry_canon_id(entry)
             if eid not in seen_ids:
                 seen_ids.add(eid)
                 matched.append(entry)
         for entry in matched[:3]:
-            label = f"#{entry['id']}" if entry.get("id") is not None else (entry.get("title") or entry.get("key"))
+            lid = entry.get("ledger_id")
+            raw_id = entry.get("id")
+            if isinstance(lid, int):
+                label = f"{raw_id} (#{lid})" if isinstance(raw_id, str) and raw_id != str(lid) else f"#{lid}"
+            elif isinstance(raw_id, int):
+                label = f"#{raw_id}"
+            else:
+                label = str(raw_id or entry.get("title") or entry.get("key"))
             reason = " ".join(str(entry.get("reason") or "").split())[:140]
-            ref = entry.get("file") or "references/discarded-candidates/INDEX.md"
+            sub_file = entry.get("subsystem_file")
+            ref = entry.get("file") or (
+                f"references/discarded-candidates/{sub_file}" if sub_file else "references/discarded-candidates/INDEX.md"
+            )
             msg = (
                 f"WARNING: row {index} ({mkey or row_fn}) matches discarded candidate "
                 f"{label} ({entry.get('key')}, {entry.get('status')} in {entry.get('campaign')}): "
@@ -3779,6 +3806,10 @@ def collapsed_stack_files(profile, story):
             if item.get("story") != story or not item.get("artifact"):
                 continue
             candidate = pathlib.Path(item["artifact"]).parent / "profile.collapsed"
+            if not candidate.is_file() and profile.get("repository_root"):
+                alt = (pathlib.Path(profile["repository_root"]) / item["artifact"]).parent / "profile.collapsed"
+                if alt.is_file():
+                    candidate = alt
             if candidate.is_file():
                 files.append(candidate)
     return files

@@ -637,3 +637,10 @@ automatically whenever the lock directory exists (`$HOSTLOCK_DIR`, default
 measurement started inside a shared hold is refused (it would wait for itself).
 Wrap campaign builds and unit-test runs in `hostlock shared` too, so a waiting
 measurement on the same host sees them.
+
+## Report Integrity, Evidence Integrity, Benchmark Independence, and Mailbox Protocol
+
+- **Report integrity (`ROUND-185b`):** Every number, path, SHA-256 digest, commit hash, and `file:line` citation in a campaign or round report must come from a disk-reading script executed in the same turn. Any fact not verified from disk in that turn must be printed literally as `"NOT CHECKED"`. Never hardcode prose claims or fallback numbers inside report-generation scripts, and never complete or guess full hashes from 8–12 character prefixes.
+- **Evidence integrity (`ROUND-188`):** Never move, rename, or hide files under `evidence/` (for example into `evidence/_archived*`) to bypass `precheck_decomposition.py` or a gate check. Invalidating a superseded or contaminated packet/manifest is a host ruling recorded in `evidence/invalidated_manifests.json`.
+- **No benchmark special-casing (`#415` Component A):** Optimizations that pattern-match page JavaScript source strings or a benchmark harness/framework's specific code shape are disallowed.
+- **Host/operator mailbox protocol:** When a campaign runs under a split host/operator mailbox (`outbox/mailbox/to-operator/ROUND-<N>.prompt.md` and `outbox/mailbox/to-host/ROUND-<N>.report.md`), round numbers are strictly sequential (`ROUND-1`, `ROUND-2`, ...), and the operator writes exactly one final report file (`ROUND-<N>.report.md`, never `-FINAL` or `-COMPLETE` variants) after all work and reviews finish; the host monitors that final report file only.

@@ -45,6 +45,9 @@ check. Read the benchmark adapter
 - Score runs keep ASLR on; cycle-probe captures turn it off. The tuner owns VT handoff and clock policy and restores everything.
 - Balanced ABBA/BAAB blocks are the acceptance unit; Bonferroni bounds over all stories plus the suite; no selective reruns.
 - Build/test receipts only from `command_evidence.py`; mechanism rows only from nonce-bound captures; landing evidence recomputed from runner manifests and digest-bound in the ledger.
+- **Evidence integrity:** Never move, rename, or hide files under `evidence/` (such as `evidence/_archived*`) to pass `precheck_decomposition.py` or a gate; invalidating superseded or bad evidence requires a host ruling recorded in `evidence/invalidated_manifests.json`.
+- **Benchmark special-casing disallowed:** Designs that pattern-match page JavaScript source or benchmark-specific code shape (for example `#415` Component A matching `if (oldValue === newValue) return;` in framework glue) are disallowed and cannot be used to clear qualification floors or land.
+- **Report integrity:** Campaign and round reports must source every fact from same-turn disk-reading scripts, print `"NOT CHECKED"` when a fact is not read from disk in that turn, never hardcode prose claims or fallback numbers in report generators, and never complete or guess git/sha256 hash prefixes.
 
 ## Stop and report when
 
