@@ -13343,7 +13343,15 @@ def validate_and_recompute_checkpoint(manifest, manifest_path, config=None):
 def current_skill_tree_digest(repo_root):
     try:
         import remote_measure
-        return remote_measure.skills_digest(pathlib.Path(repo_root))
+        if repo_root is not None:
+            r = pathlib.Path(repo_root)
+            if (r / remote_measure.SKILL_DIRS[0]).is_dir():
+                return remote_measure.skills_digest(r)
+            return skill_manifest_digest(skill_tree_manifest(r))
+        # When invoked outside a Chromium checkout (e.g. from ~/src/ai-skills),
+        # hash the skill tree containing this script directly.
+        skill_root = pathlib.Path(__file__).resolve().parent.parent.parent
+        return skill_manifest_digest(skill_tree_manifest(skill_root))
     except (OSError, RuntimeError, SystemExit) as exc:
         raise CampaignError(f"Cannot compute current skill-tree digest: {exc}") from exc
 
@@ -13376,7 +13384,11 @@ def skill_tree_manifest(root):
     for skill_dir in remote_measure.SKILL_DIRS:
         base = root / skill_dir
         if not base.is_dir():
-            raise CampaignError(f"skill directory missing: {base}")
+            alt = root / pathlib.Path(skill_dir).name
+            if alt.is_dir():
+                base = alt
+            else:
+                raise CampaignError(f"skill directory missing: {base}")
         for dirpath, dirnames, filenames in os.walk(base, followlinks=True):
             dirnames[:] = [d for d in dirnames if d != "__pycache__"]
             for name in filenames:

@@ -76,3 +76,8 @@ resolved before `net_work_removed` can pass.
 
 These are mechanistic CPU results, not Speedometer score predictions. The
 aggregate score verdict still comes from randomized block A/B.
+
+## 1-Block Smoke Test Before Full Twin Sizing & Diagnostic A/Bs
+
+- **1-block smoke test before 8-block sizing (Item 6):** Before launching an 8-block paired twin sizing run (`mechanism_evidence.py`) or a multi-block oracle run, always run a 1-block smoke test (`--repetitions=10`) on the target story and inspect the emitted `[SP3_REDUNDANCY_ROW]` / `[SP3_MECHANISM_TRACE]` counters (`fired > 0`, `audit_mismatch == 0`, expected `active_vt`). In `r197`, a 1-block smoke across 5 oracles (`#411`, `#415`, `#416`, `#414`, `#412`) caught that `#416`'s hook sat inside a layout entry point already skipped by `PositioningPortal`'s `SkipRelayoutIfSameConstraintSpace` before any 8-block sizing time was spent.
+- **Diagnostic isolation A/B when a bundled candidate regresses a story (Item 8):** When a mechanism bundles two sub-optimizations and shows a target-story win alongside an unexpected regression on another story (`r128`/`r129`/`r130` on `#284`), run short 24–32 block diagnostic A/Bs isolating each sub-mechanism on the affected stories. In `#284`, isolating `reuse-only` (`-0.40%` on `Editor-TipTap`) from `curly-only` (`+3.54%` on `Editor-TipTap`, neutral on `TodoMVC-Svelte-Complex-DOM`) turned an `INCONCLUSIVE` bundled patch into a clean landed win (`+3.83%` target story, `+0.178%` full suite).

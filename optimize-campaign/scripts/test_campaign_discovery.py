@@ -3265,5 +3265,13 @@ class DiscoveryRepairTest(test_campaign.CampaignTest):
             campaign.validate_checked_gate_report(report, "skeptic", "decomposition")
 
 
+    def test_current_skill_tree_digest_without_repo_root_and_prose_verifiers(self):
+        import audit_identifiers, verify_numbers
+        digest = campaign.current_skill_tree_digest(None)
+        self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        self.assertEqual(2, verify_numbers.main([]))
+        self.assertEqual(2, audit_identifiers.main([]))
+
+
 if __name__ == "__main__":
     unittest.main()
