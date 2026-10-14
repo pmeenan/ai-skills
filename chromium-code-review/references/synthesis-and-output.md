@@ -231,11 +231,21 @@ Calibration notes:
   caller to violate a documented "call at most once" contract are **P3**, never
   P1/P2.
 - Missing follow-up integrations already tracked by an explicit in-code `TODO`
-  (such as `BrowsingDataRemover` or storage quota enforcement) or by an open
-  Gerrit thread waiting on the reviewer's own input are not new P2 blockers;
-  defer them to non-blocking Questions / Notes unless the landed code causes
-  immediate active harm (such as an unguarded OTR profile writing to the
-  regular profile directory).
+  (such as `BrowsingDataRemover`, storage quota enforcement, or missing
+  DevTools observer wiring on Early Hints preloads) or by an open Gerrit thread
+  waiting on the reviewer's own input are not new P2 blockers; defer them to
+  non-blocking Questions / Notes unless the landed code causes immediate active
+  harm (such as an unguarded OTR profile writing to the regular profile
+  directory).
+- Never fault a CL for lacking unit tests in a file it did not modify (`pin.md`
+  / `gerrit/changed-files.txt`). When a CL already includes a unit test for the
+  changed function and/or an end-to-end test proving the primary new behavior
+  works, requests for extra test permutations (such as latency/throughput cases
+  in addition to offline emulation) or assertions on downstream stages
+  unchanged by the CL are at most optional **P3**, never P2.
+- Only `CL-introduced` (or `introduced-in-PS<N>`) P1/P2 findings block `LGTM`;
+  `pre-existing` findings are reported for reference/follow-up only and never
+  turn a review into `Not LGTM`.
 
 Anchor table — match each finding to the nearest anchor and argue any delta
 explicitly. Anchors beat intuition, especially for test-gap severity:
@@ -254,6 +264,7 @@ explicitly. Anchors beat intuition, especially for test-gap severity:
 | Success-only metric (duration, success count, size/ratio) logged on aborted or cancelled operations | P2 |
 | Load-bearing metadata written fire-and-forget (selectable-but-corrupt state) | P2 until proven unobservable |
 | Missing test coverage for the default/core mode of new behavior | P2 |
+| Extra test permutations when core new behavior is already tested end-to-end, or commit-message body line exceeding 72 columns | P3 |
 | Sidecar (cache/compression/metrics) failure propagated into the primary operation's result | P2 |
 | Untested kill-switch OFF branch whose OFF behavior differs from pre-CL behavior | P2 |
 | Untested kill-switch OFF branch that only gates memoization of an invalidation-free value | P3 |
@@ -287,7 +298,9 @@ to its immutable challenge round and delivery gate; it is not Gerrit prose.
    in the surrounding codebase but not introduced by the CL. These must be clearly
    labeled as pre-existing and do not block landing of this CL.
 3. **High-Level Summary:** State whether the CL accomplishes its goal, name the
-   patchset and revision SHA, and summarize bug alignment.
+   patchset and revision SHA, and summarize bug alignment (citing the exact
+   `Bug:` ID(s) from `pin.md` / `context.md` verbatim; never guess or substitute
+   another issue ID).
 4. **Prior Review Follow-Up:** If prior issues were supplied, summarize their
    status with evidence.
 5. **Positives:** Briefly note important good decisions. A praised safety
@@ -321,7 +334,9 @@ to its immutable challenge round and delivery gate; it is not Gerrit prose.
    state the root-cause/layering pass outcome: candidate count checked, any
    better owner or broader invariant found, and any discovery/verification
    rows reopened because of it.
-8. **Next Steps:** State what is required before `+1 LGTM` and what is optional.
+8. **Next Steps:** State what is required before `+1 LGTM` (only `CL-introduced`
+   or `introduced-in-PS<N>` P1/P2 findings can block `LGTM`; `pre-existing`
+   findings never block `LGTM`) and what is optional.
 
 For full CL reviews, append compact **Gerrit-Ready Comments** unless the user
 asks for a short summary only, following the Verdict Alignment And Gerrit
@@ -368,7 +383,8 @@ latest message.
 
 ## Pre-Output Gate
 
-Copy this checklist verbatim to the bottom of `reconciliation.md`. Before the
+Copy this checklist verbatim to the bottom of `reconciliation.md` under the
+heading `## Pre-output gate`. Before the
 draft, lines may be `pending draft`; before the final challenge only Freshness
 may remain `pending-delivery`. Every other line is answered "yes" with a
 citation or "no" with the deviation disclosed in Verification Notes. Final
@@ -421,9 +437,10 @@ delivery is blocked while any line is pending or blank.
    fix; reopened rows were re-verified, refuted, or converted to questions.
 10. **Severity and origin:** every finding names its anchor-table match (or
    argues the delta) and carries an origin label.
-11. **Verdict consistency:** if any P1/P2 finding stands, the recommendation
-    reads "not LGTM until <finding>"; no approval is combined with blocking
-    conditions.
+11. **Verdict consistency:** if any `CL-introduced` (or `introduced-in-PS<N>`)
+    P1/P2 finding stands, the recommendation reads "not LGTM until <finding>";
+    `pre-existing` findings never block `LGTM`; no approval is combined with
+    blocking conditions.
 12. **Gerrit text:** no local paths or `file://` URLs; no placeholder
     inlines; quoted lines re-checked verbatim against the pinned patchset;
     every applicable Suggested edit has identical apply-ready `suggestion`

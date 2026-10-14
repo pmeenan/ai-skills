@@ -303,6 +303,10 @@ def main() -> int:
             fail(f"build-discovery-brief.py failed for {work_id}: {res.stderr.strip()}")
 
         assigned_extras: list[str] = []
+        if work_id in {"GSS", "GAI"} and (review_dir / "indexes" / "topology.tsv").is_file():
+            assigned_extras.append(
+                f"- `{review_dir / 'indexes' / 'topology.tsv'}` (exact edge list for `## Complexity graph delta` and `## Specialist escalation assessments`: `graph:{','.join(topology_edges) if topology_edges else 'none'}`)"
+            )
         if work_id == "GSS":
             if (review_dir / "mechanical-leads.md").is_file():
                 assigned_extras.append(

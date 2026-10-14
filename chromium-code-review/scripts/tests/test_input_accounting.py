@@ -162,6 +162,30 @@ class InputAccountingTests(unittest.TestCase):
         self.assertFalse(validator.finalizer_freshness_prestate_matches(
             self.root, row, current
         ))
+        # Also authenticate via output-history/<sha256>.bin for control rows when
+        # reconciliation.before-clerical.md is absent.
+        (self.root / 'reconciliation.before-clerical.md').unlink()
+        (self.root / 'delivery-gate.md').write_text(
+            '# Delivery freshness\n- Result: current\n- Gate line: yes \xe2\x80\x94 current\n'
+        )
+        control_row = self.row(reconciliation, original, role='control')
+        archive = self.root / 'output-history' / (control_row['sha256'] + '.bin')
+        archive.parent.mkdir(exist_ok=True)
+        archive.write_bytes(original)
+        archive.chmod(0o444)
+        self.assertTrue(validator.finalizer_freshness_prestate_matches(
+            self.root, control_row, current
+        ))
+        rows = [self.row(self.brief, self.brief.read_bytes(), 'brief'), control_row]
+        (self.root / 'input-manifest.tsv').write_text(encode(INPUT_COLUMNS, rows))
+        orch = dict(phase='8', work_id='FWF001', attempt='2', state='complete',
+                    tier='frontier', task_id='-', brief=str(self.brief),
+                    artifact=str(self.root / 'challenge/round-1/CH001.md'),
+                    remaining_scope='-', depends_on='-')
+        (self.root / 'orchestration.tsv').write_text(encode(ORCHESTRATION_COLUMNS, [orch]))
+        report = validator.Report()
+        validator.validate_input_manifest(self.root, {}, report, {}, False)
+        self.assertEqual([], report.errors)
 
     def test_top_level_revision_archive_requires_exact_manifest_binding(self):
         for name in ('draft-review.md', 'gerrit-comments.md', 'output-coverage.tsv'):

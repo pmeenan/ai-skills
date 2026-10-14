@@ -743,12 +743,27 @@ Delivery requires a fresh scalar Gerrit check (including live `/comments` and
 affirmative validator result, and a passing challenge for the exact delivered
 draft. Material patchset changes restart in a new review directory; no new SHA
 may reuse old ledgers or verdicts. When presenting the final review to the user
-in chat or as a user-facing artifact outside `⟨review-dir⟩`, strip internal
-gate-accounting fields (`Synthesis item`, `Fix status`, `Suggested edit:
-omitted — ...`, `Rows`, severity anchor/delta parentheticals, and the raw
-`plan.md` roster table), use repo-relative `path:line` references (never local
-worktree paths or `file://` URLs into the codereview worktree), and keep Gerrit
-inline comments concise (1–3 sentences).
+in chat or as a user-facing artifact outside `⟨review-dir⟩`:
+- **Never guess, paraphrase, or reconstruct from memory any bug ID, file-change
+  claim, symbol name, line number, or quoted source line.** Read `pin.md` and
+  `context.md` (plus `synthesis/*.md` if needed for `Verbatim changed line`)
+  alongside `draft-review.md`, `gerrit-comments.md`, and `delivery-gate.md`.
+  Take the bug number verbatim from `pin.md`/`context.md`, never claim the CL
+  modifies a file absent from `pin.md`, and never invent or paraphrase quoted
+  code in Gerrit inline comments.
+- **Never rewrite repo-relative `path:line` citations into `file://` URLs**
+  pointing to the host workspace checkout (`CHROMIUM_SRC` or ambient `pwd`,
+  which does not have the reviewed patchset checked out and will have wrong line
+  numbers) or into the temporary codereview worktree. Keep all code references
+  as repo-relative `path:line`.
+- **Keep user-facing output concise and free of pipeline jargon.** Strip
+  internal gate-accounting fields (`- Draft revision:`, `Synthesis item`, `Fix
+  status`, `Suggested edit: omitted — ...`, `Rows`, severity anchor/delta
+  boilerplate), internal worker/row IDs (`GAI`, `GSS`, `V001`, `RC001`, `RF001`,
+  `F001`, `ORC-1`), and the raw `plan.md` roster table. Omit empty sections
+  (`Prior Review Follow-Up: none`, `Positives: none`, `Questions: none`), do not
+  repeat findings three times across sections, and keep Gerrit inline comments
+  concise (1–3 sentences with the verbatim quoted line).
 
 After the delivery gate passes, run `scripts/report-review-costs.py
 ⟨review-dir⟩` and append its one-line summary to `progress.md`. The report is

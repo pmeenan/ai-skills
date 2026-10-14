@@ -149,6 +149,25 @@ if ! G diff --name-status "$PARENT" "$REV" -- "${PATHS[@]}" > "$SCAN_OUT" 2> "$S
 fi
 emit_file "$SCAN_OUT"
 
+section "Commit message lines exceeding 72 columns (git log -1 --format=%B)"
+python3 - "$REPO" "$REV" > "$SCAN_OUT" 2> "$SCAN_ERR" <<'PYEOF'
+import re
+import subprocess
+import sys
+
+repo, rev = sys.argv[1], sys.argv[2]
+msg = subprocess.check_output(
+    ["git", "-C", repo, "log", "-1", "--format=%B", rev],
+    text=True,
+    errors="surrogateescape",
+)
+trailer_re = re.compile(r"^[A-Za-z0-9-]+:\s|\s*https?://\S+\s*$")
+for lineno, line in enumerate(msg.splitlines(), start=1):
+    if len(line) > 72 and not trailer_re.match(line):
+        print(f"COMMIT_MSG:{lineno} ({len(line)} cols): {line}")
+PYEOF
+emit_file "$SCAN_OUT"
+
 section "Whitespace and conflict markers (git diff --check)"
 status=0
 G diff --check "$PARENT" "$REV" -- "${PATHS[@]}" > "$SCAN_OUT" 2> "$SCAN_ERR" || status=$?

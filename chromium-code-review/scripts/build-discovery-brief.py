@@ -134,6 +134,22 @@ def main() -> int:
             "Generalist Adversarial And Integration Discovery",
         )
     ):
+        topology_edges: list[str] = []
+        topology_tsv = review_dir / "indexes" / "topology.tsv"
+        if topology_tsv.is_file():
+            import csv
+
+            with topology_tsv.open(encoding="utf-8", newline="") as stream:
+                topology_edges = sorted(
+                    {
+                        row.get("edge", "").strip()
+                        for row in csv.DictReader(stream, delimiter="\t")
+                        if row.get("edge", "").strip()
+                    }
+                )
+        explicit_edge_scope = (
+            f"graph:{','.join(topology_edges)}" if topology_edges else "graph:none"
+        )
         combined += (
             "\n6. Schema-3 Generalist Deliverable Requirements (mandatory for "
             f"{args.work_id}):\n"
@@ -141,7 +157,8 @@ def main() -> int:
             "candidate rows, and candidate descriptors, you MUST include:\n"
             "   - `## Complexity graph delta` table: `| edge | status | evidence "
             "| candidate | next obligation |` covering every edge assigned to "
-            "your shard (`status` in `open`, `resolved`, `candidate`, "
+            f"your shard ({', '.join(topology_edges) if topology_edges else 'none'}; "
+            "`status` in `open`, `resolved`, `candidate`, "
             "`unreviewed`, `disputed`; `evidence` cites code; `candidate` lists "
             "candidate IDs or `-`; `next obligation` lists any next obligation "
             "or `-`).\n"
@@ -152,8 +169,11 @@ def main() -> int:
             "Sandbox`, `Performance And Resource Scaling`, `Platform And "
             "Language Semantics`, `Build API And Generated Assets`, `Privacy And "
             "Telemetry`, `Accessibility And Internationalization`, `Network "
-            "Semantics`, `Fuzzing And Test Strategy`) over your exact `graph:...` "
-            "scope using only `low`, `medium`, or `high` and citing signals plus "
+            "Semantics`, `Fuzzing And Test Strategy`) using explicit `graph:E-...` "
+            f"edge IDs (for example `{explicit_edge_scope}` or a subset of those "
+            "edges, or `graph:none` for a low-likelihood lens; never write the "
+            "literal token `graph:all-inventory-edges`), `likelihood` in "
+            "`low`, `medium`, or `high`, and citing signals plus "
             "counterevidence.\n"
         )
     elif "specialist:probe" in scope_str.lower():

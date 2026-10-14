@@ -282,9 +282,33 @@ def finalizer_freshness_prestate_matches(
         if path.resolve() != (root / "reconciliation.md").resolve():
             return False
         before = root / "reconciliation.before-clerical.md"
-        original = before.read_bytes()
-        if (str(len(original)) != row.get("bytes")
-                or hashlib.sha256(original).hexdigest() != row.get("sha256")):
+        expected_sha = row.get("sha256", "")
+        archive = (
+            root / "output-history" / f"{expected_sha}.bin"
+            if re.fullmatch(r"[0-9a-f]{64}", expected_sha) else None
+        )
+        original: bytes | None = None
+        if before.is_file():
+            candidate_bytes = before.read_bytes()
+            if (
+                str(len(candidate_bytes)) == row.get("bytes")
+                and hashlib.sha256(candidate_bytes).hexdigest() == expected_sha
+            ):
+                original = candidate_bytes
+        if (
+            original is None
+            and archive is not None
+            and archive.is_file()
+            and not archive.is_symlink()
+            and archive.stat().st_mode & 0o222 == 0
+        ):
+            candidate_bytes = archive.read_bytes()
+            if (
+                str(len(candidate_bytes)) == row.get("bytes")
+                and hashlib.sha256(candidate_bytes).hexdigest() == expected_sha
+            ):
+                original = candidate_bytes
+        if original is None:
             return False
         gate = (root / "delivery-gate.md").read_text(encoding="utf-8")
         result = field(gate, "Result") or ""
@@ -2574,7 +2598,10 @@ def procedural_repair_supersessions(
             if (artifact is not None and required_input == artifact.resolve()
                     and len(prestate_rows) == 1
                     and (manifest_row_matches(prestate_rows[0], prefix=True)
-                         or archived_output_matches(root, prestate_rows[0]))):
+                         or archived_output_matches(root, prestate_rows[0])
+                         or finalizer_freshness_prestate_matches(
+                             root, prestate_rows[0], required_input.read_bytes()
+                         ))):
                 continue
             matching = [
                 (row_index, item)
@@ -2587,6 +2614,9 @@ def procedural_repair_supersessions(
             if not required_input.is_file() or not any(
                 manifest_row_matches(item)
                 or archived_output_matches(root, item)
+                or finalizer_freshness_prestate_matches(
+                    root, item, required_input.read_bytes()
+                )
                 or (
                     (
                         item.get("input_path", ""),
@@ -2818,8 +2848,11 @@ def validate_input_manifest(
                 ) in append_only_versions
                 and manifest_row_matches(row, prefix=True)
             )
-            historical_deterministic = (row_index in deterministic_history
-                                        or archived_output_matches(root, row))
+            historical_deterministic = (
+                row_index in deterministic_history
+                or archived_output_matches(root, row)
+                or finalizer_freshness_prestate_matches(root, row, payload)
+            )
             if (
                 declared is not None
                 and declared != len(payload)
@@ -4569,13 +4602,15 @@ def validate_reconciliation(
             )
 
     if final:
-        gate = text.split("## Pre-output gate", 1)
+        gate = re.split(r"(?im)^## Pre-output gate\s*$", text, maxsplit=1)
         if len(gate) != 2:
             report.error("reconciliation.md lacks ## Pre-output gate")
         else:
             answers = {}
             for line in gate[1].splitlines():
-                match = re.match(r"^(\d+)\.\s+\*\*[^*]+:\*\*\s*(.*)$", line)
+                match = re.match(
+                    r"^(\d+)\.\s+(?:\*\*[^*]+:\*\*|[^*:]+:)\s*(.*)$", line
+                )
                 if match:
                     answers[int(match.group(1))] = match.group(2)
             for number in range(1, 14):

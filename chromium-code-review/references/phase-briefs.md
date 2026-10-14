@@ -1220,7 +1220,7 @@ review fragment and do not invent a partial snippet.
 Deliverables: ⟨review-dir⟩/draft-review.md,
 ⟨review-dir⟩/gerrit-comments.md, every exact per-item fragment,
 ⟨review-dir⟩/output-coverage.tsv with measured sizes/hashes, and completed
-draft-dependent gate lines in reconciliation.md. The coverage item set must
+draft-dependent gate lines in ⟨review-dir⟩/reconciliation.md. The coverage item set must
 exactly equal synthesis/index.md; each draft fragment occurs exactly once in
 the review and each finding's Gerrit fragment occurs exactly once in the
 Gerrit output. Do not mark Freshness yes: it remains

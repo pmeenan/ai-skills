@@ -38,11 +38,21 @@ Calibration notes:
   caller to violate a documented "call at most once" contract are **P3**, never
   P1/P2.
 - Missing follow-up integrations already tracked by an explicit in-code `TODO`
-  (such as `BrowsingDataRemover` or storage quota enforcement) or by an open
-  Gerrit thread waiting on the reviewer's own input are not new P2 blockers;
-  defer them to non-blocking Questions / Notes unless the landed code causes
-  immediate active harm (such as an unguarded OTR profile writing to the
-  regular profile directory).
+  (such as `BrowsingDataRemover`, storage quota enforcement, or missing
+  DevTools observer wiring on Early Hints preloads) or by an open Gerrit thread
+  waiting on the reviewer's own input are not new P2 blockers; defer them to
+  non-blocking Questions / Notes unless the landed code causes immediate active
+  harm (such as an unguarded OTR profile writing to the regular profile
+  directory).
+- Never fault a CL for lacking unit tests in a file it did not modify (`pin.md`
+  / `gerrit/changed-files.txt`). When a CL already includes a unit test for the
+  changed function and/or an end-to-end test proving the primary new behavior
+  works, requests for extra test permutations (such as latency/throughput cases
+  in addition to offline emulation) or assertions on downstream stages
+  unchanged by the CL are at most optional **P3**, never P2.
+- Only `CL-introduced` (or `introduced-in-PS<N>`) P1/P2 findings block `LGTM`;
+  `pre-existing` findings are reported for reference/follow-up only and never
+  turn a review into `Not LGTM`.
 
 Anchor table — match each finding to the nearest anchor and argue any delta
 explicitly. Anchors beat intuition, especially for test-gap severity:
@@ -61,6 +71,7 @@ explicitly. Anchors beat intuition, especially for test-gap severity:
 | Success-only metric (duration, success count, size/ratio) logged on aborted or cancelled operations | P2 |
 | Load-bearing metadata written fire-and-forget (selectable-but-corrupt state) | P2 until proven unobservable |
 | Missing test coverage for the default/core mode of new behavior | P2 |
+| Extra test permutations when core new behavior is already tested end-to-end, or commit-message body line exceeding 72 columns | P3 |
 | Sidecar (cache/compression/metrics) failure propagated into the primary operation's result | P2 |
 | Untested kill-switch OFF branch whose OFF behavior differs from pre-CL behavior | P2 |
 | Untested kill-switch OFF branch that only gates memoization of an invalidation-free value | P3 |

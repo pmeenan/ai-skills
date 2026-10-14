@@ -435,6 +435,9 @@ def main() -> int:
     )
     if affirmative and reconciliation_update:
         archive_prior_bytes(root, root / "reconciliation.md")
+        before_clerical = root / "reconciliation.before-clerical.md"
+        if not before_clerical.exists():
+            atomic_write(before_clerical, reconciliation_update[0])
         atomic_write(root / "reconciliation.md", reconciliation_update[1])
         if (root / "indexes").is_dir():
             subprocess.run(

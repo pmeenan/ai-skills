@@ -1076,7 +1076,13 @@ class MechanicalLeadsTest(unittest.TestCase):
             (repo / "b.cc").write_text("bool other_name_; // —\n", encoding="utf-8")
             (repo / "Foo.java").write_text(
                 "class Foo { NetworkIsolationKey key; }\n", encoding="utf-8")
-            subprocess.run(["git", "-C", str(repo), "commit", "-qam", "change"], check=True)
+            long_body = (
+                "change\n\n"
+                "This commit message body line is intentionally longer than "
+                "seventy-two columns.\n\n"
+                "Bug: 573314320, https://crbug.com/573314320/very/long/trailer/url/exempt\n"
+            )
+            subprocess.run(["git", "-C", str(repo), "commit", "-qam", long_body], check=True)
             revision = subprocess.run(
                 ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
                 text=True, stdout=subprocess.PIPE).stdout.strip()
@@ -1092,6 +1098,8 @@ class MechanicalLeadsTest(unittest.TestCase):
                 stderr=subprocess.PIPE)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn("a.cc:35", run.stdout)
+            self.assertIn("COMMIT_MSG:3", run.stdout)
+            self.assertNotIn("COMMIT_MSG:5", run.stdout)
             self.assertNotIn("b.cc:", run.stdout)
             self.assertNotIn("CAPPED", run.stdout)
 

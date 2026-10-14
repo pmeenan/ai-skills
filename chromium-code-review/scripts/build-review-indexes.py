@@ -369,15 +369,24 @@ def specialist_prior_rows(
                 scope_match = re.fullmatch(
                     r"GRAPH:((?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*)", scope
                 )
+                all_edges_scope = (
+                    scope == "GRAPH:ALL-INVENTORY-EDGES"
+                    and path.stem.upper() in {"GSS", "GAI"}
+                    and bool(inventory_edges)
+                )
                 empty_scope = scope == "GRAPH:NONE"
-                if not scope_match and not empty_scope:
+                if not scope_match and not all_edges_scope and not empty_scope:
                     fail(
                         f"{source}: {lens} graph scope must be exact "
                         "graph:E-... edge IDs, or graph:none for a low assessment"
                     )
                 edges = (
-                    tuple(sorted(scope_match.group(1).split(",")))
-                    if scope_match else tuple()
+                    tuple(sorted(inventory_edges))
+                    if all_edges_scope
+                    else (
+                        tuple(sorted(scope_match.group(1).split(",")))
+                        if scope_match else tuple()
+                    )
                 )
                 if len(edges) != len(set(edges)):
                     fail(f"{source}: {lens} graph scope repeats an edge")

@@ -275,7 +275,11 @@ def ledger_check(parsed: list[tuple[str, list[str], list[dict[str, str]]]],
                 fail(f"{artifact} {lens} must use low, medium, or high")
             graph_scope = row.get("graph scope", "").strip()
             empty_scope = graph_scope.lower() == "graph:none"
-            if not empty_scope and not re.fullmatch(
+            all_edges_scope = (
+                graph_scope.lower() == "graph:all-inventory-edges"
+                and artifact.stem.upper() in {"GSS", "GAI"}
+            )
+            if not empty_scope and not all_edges_scope and not re.fullmatch(
                 r"(?i)graph:(?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*",
                 graph_scope,
             ):
@@ -607,6 +611,31 @@ def plan_check(
             )
 
 
+def reconciliation_check(
+    text: str,
+    parsed: list[tuple[str, list[str], list[dict[str, str]]]],
+    artifact: Path,
+) -> None:
+    disp_tables = [
+        (header, rows)
+        for _, header, rows in parsed
+        if {"row", "thread", "disposition"}.issubset(header)
+    ]
+    if not disp_tables:
+        fail(f"{artifact} lacks a '| row | thread | disposition |' table")
+    gate_parts = re.split(r"(?im)^## Pre-output gate\s*$", text, maxsplit=1)
+    if len(gate_parts) != 2:
+        fail(f"{artifact} lacks '## Pre-output gate' section")
+    answers: dict[int, str] = {}
+    for line in gate_parts[1].splitlines():
+        match = re.match(r"^(\d+)\.\s+(?:\*\*[^*]+:\*\*|[^*:]+:)\s*(.*)$", line)
+        if match:
+            answers[int(match.group(1))] = match.group(2).strip()
+    for number in range(1, 14):
+        if number not in answers or not answers[number]:
+            fail(f"{artifact} pre-output gate lacks non-empty item {number}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("review_dir", type=Path)
@@ -615,7 +644,7 @@ def main() -> int:
         "--kind",
         choices=(
             "auto", "inventory", "plan", "ledger", "verdict", "affinity",
-            "generic",
+            "reconciliation", "generic",
         ),
         default="auto",
     )
@@ -652,6 +681,8 @@ def main() -> int:
             kind = "verdict"
         elif relative.as_posix() == "verification/affinity.md":
             kind = "affinity"
+        elif relative.as_posix() == "reconciliation.md":
+            kind = "reconciliation"
         else:
             kind = "generic"
     if kind == "inventory":
@@ -664,6 +695,8 @@ def main() -> int:
         verdict_check(root, parsed, artifact)
     elif kind == "affinity":
         affinity_check(root, parsed, artifact)
+    elif kind == "reconciliation":
+        reconciliation_check(text, parsed, artifact)
     print(f"valid {kind}: {artifact}")
     return 0
 

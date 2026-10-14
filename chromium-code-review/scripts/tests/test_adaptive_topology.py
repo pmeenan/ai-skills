@@ -452,6 +452,64 @@ class AdaptiveTopologyPlanTests(unittest.TestCase):
         self.assertTrue(any("clean probe has a candidate" in error
                             for error in errors), errors)
 
+    def test_unsharded_generalist_accepts_all_inventory_edges_and_reconciliation_gate_casing(self) -> None:
+        (self.root / "ledger").mkdir(exist_ok=True)
+        (self.root / "indexes" / "topology.tsv").write_text(
+            "edge\tcandidate\nE-A\t-\nE-B\t-\n", encoding="utf-8")
+        for worker in ("GSS", "GAI"):
+            text = """# Discovery
+
+## Compliance matrix
+
+| question | answer | evidence |
+| --- | --- | --- |
+| all assigned edges inspected? | yes | foo.cc:10 |
+
+## Candidate rows
+
+| id | claim | location | evidence / hypothesis | origin | severity | status |
+| --- | --- | --- | --- | --- | --- | --- |
+
+## Complexity graph delta
+
+| edge | status | evidence | candidate | next obligation |
+| --- | --- | --- | --- | --- |
+| E-A | resolved | foo.cc:10 | - | - |
+| E-B | resolved | foo.cc:11 | - | - |
+
+## Specialist escalation assessments
+
+| lens | graph scope | likelihood | signals | counterevidence |
+| --- | --- | --- | --- | --- |
+"""
+            for lens in VALIDATOR.SPECIALIST_LENSES:
+                text += f"| {lens} | graph:all-inventory-edges | low | foo.cc:10 signal | foo.cc:12 counter |\n"
+            path = self.root / "ledger" / f"{worker}.md"
+            path.write_text(text, encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT.parent / "validate-worker-artifact.py"), str(self.root), str(path)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+        priors = INDEXER.specialist_prior_rows(self.root, {"E-A", "E-B"})
+        self.assertTrue(all(row[1] == "graph:E-A,E-B" for row in priors), priors)
+
+        recon = self.root / "reconciliation.md"
+        gate_lines = "\n".join(
+            f"{n}. **Item {n}:** {'pending-delivery' if n == 2 else 'yes — foo.cc:10'}"
+            for n in range(1, 14)
+        )
+        recon.write_text(
+            "# Reconciliation\n\n| row | thread | disposition |\n| --- | --- | --- |\n"
+            "| GSS-1 | GSS | refuted (foo.cc:10) |\n\n## Pre-Output Gate\n\n" + gate_lines + "\n",
+            encoding="utf-8",
+        )
+        res = subprocess.run(
+            [sys.executable, str(SCRIPT.parent / "validate-worker-artifact.py"), str(self.root), str(recon)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(0, res.returncode, res.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

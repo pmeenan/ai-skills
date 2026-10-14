@@ -2059,7 +2059,10 @@ fragments and contains only complete replacement text. Empty replacement text
 is allowed for a validated deletion.
 
 `gerrit-parts/F001.md` contains only the exact target/comment block intended
-for Gerrit, including its repo-relative `path:line`; it contains no internal
+for Gerrit, including its repo-relative `path:line` heading, its
+`- Line: \`<verbatim changed line>\`` field copied verbatim from the card's
+`Verbatim changed line`, and its `- Comment:` body (plus any applicable fenced
+`suggestion` block); it contains no internal
 item marker. `output-coverage.tsv` binds both fragments to the card:
 
 ```tsv

@@ -12,14 +12,19 @@ in `references/synthesis-and-output.md`.
 
 ### Verdict Formatting
 
-Avoid contradictory verdicts. If there is a blocking defect (P1 or P2),
-the verdict must explicitly state that the change is blocked. Do not combine
-approvals with blocking conditions.
+Avoid contradictory verdicts. If there is a **CL-introduced** (or
+`introduced-in-PS<N>`) blocking defect (P1 or P2), the verdict must explicitly
+state that the change is blocked. Pre-existing codebase issues (`Origin:
+pre-existing`) are informational follow-ups and NEVER block `LGTM`. Do not
+combine approvals with blocking conditions.
 
 - *Incorrect:* "LGTM with optional Polish (P3) after resolving one blocking
   P2 defect"
-- *Correct:* "Not LGTM until the P2 telemetry bug is fixed; remaining items
-  are optional P3."
+- *Incorrect:* "Not LGTM until the pre-existing P1 ordering bug is fixed"
+- *Correct:* "Not LGTM until the CL-introduced P2 telemetry bug is fixed;
+  remaining items are optional P3."
+- *Correct:* "LGTM with optional P3 polish (plus one pre-existing follow-up
+  noted for reference)."
 
 ### Gerrit-Ready Comments Constraints
 
@@ -30,6 +35,8 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   `/codereview/worktrees/...`, `/tmp/...`, `/home/...`) or local `file:///`
   URLs. Use repo-relative references only (e.g.
   `net/http/http_cache_writers.cc:1010`).
+- **Verbatim quoted code line required:** Every new inline comment in
+  `gerrit-parts/<item>.md` and `gerrit-comments.md` must include `- Line: \`<verbatim line from the pinned patchset>\`` copied directly from the card's `Verbatim changed line` field (which itself must be extracted verbatim from the worktree at the pinned revision, never paraphrased from memory).
 - **No placeholder or fake inlines:** do not output generic placeholder
   inline comments (e.g., `L16500 (General Nit) // General Nit`). General
   feedback belongs in the main comment body; inline comments must target

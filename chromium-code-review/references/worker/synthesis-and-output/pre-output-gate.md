@@ -12,7 +12,8 @@ contradiction checklist and Gerrit output rules live in
 
 ## Pre-Output Gate
 
-Copy this checklist verbatim to the bottom of `reconciliation.md`. Before the
+Copy this checklist verbatim to the bottom of `reconciliation.md` under the
+heading `## Pre-output gate`. Before the
 draft, lines may be `pending draft`; before the final challenge only Freshness
 may remain `pending-delivery`. Every other line is answered "yes" with a
 citation or "no" with the deviation disclosed in Verification Notes. Final
@@ -65,9 +66,10 @@ delivery is blocked while any line is pending or blank.
    fix; reopened rows were re-verified, refuted, or converted to questions.
 10. **Severity and origin:** every finding names its anchor-table match (or
    argues the delta) and carries an origin label.
-11. **Verdict consistency:** if any P1/P2 finding stands, the recommendation
-    reads "not LGTM until <finding>"; no approval is combined with blocking
-    conditions.
+11. **Verdict consistency:** if any `CL-introduced` (or `introduced-in-PS<N>`)
+    P1/P2 finding stands, the recommendation reads "not LGTM until <finding>";
+    `pre-existing` findings never block `LGTM`; no approval is combined with
+    blocking conditions.
 12. **Gerrit text:** no local paths or `file://` URLs; no placeholder
     inlines; quoted lines re-checked verbatim against the pinned patchset;
     every applicable Suggested edit has identical apply-ready `suggestion`

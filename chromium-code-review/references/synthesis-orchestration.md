@@ -143,14 +143,28 @@ Run `scripts/validate-review-dir.py <review-dir> --phase final
 --require-active-lease`. Only after it
 passes, the latest draft has a passing challenge, and `delivery-gate.md` is
 affirmative may the orchestrator read `draft-review.md`, `gerrit-comments.md`,
-and `delivery-gate.md` for delivery. Limit the final check to formatting and
-verdict/finding consistency; route content changes back through Phase 8. When
-presenting the final review to the user in chat or as a user-facing artifact
-outside `<review-dir>`, strip internal gate-accounting fields (`- **Synthesis
-item:**`, `- **Fix status:**`, `- **Suggested edit:** omitted — ...`,
-`- **Rows:**`, severity anchor/delta parentheticals, and the raw `plan.md`
-roster table), use repo-relative `path:line` references (never local worktree
-paths), and keep Gerrit inline comments concise (1–3 sentences).
+`delivery-gate.md`, `pin.md`, `context.md`, and `synthesis/*.md` (for
+`Verbatim changed line` verification) for delivery. Limit the final check to
+formatting and verdict/finding consistency; route content changes back through
+Phase 8. When presenting the final review to the user in chat or as a
+user-facing artifact outside `<review-dir>`:
+- Never guess, paraphrase, or reconstruct from memory any bug ID, file-change
+  claim, symbol name, line number, or quoted source line. Take the bug ID
+  verbatim from `pin.md`/`context.md`, never claim the CL modifies a file absent
+  from `pin.md`, and quote source lines in Gerrit inline comments verbatim from
+  `gerrit-comments.md` / `synthesis/*.md`.
+- Never rewrite repo-relative `path:line` references into `file://` URLs
+  pointing to the host workspace checkout (which is not checked out at the
+  reviewed patchset) or the local worktree path; use repo-relative `path:line`
+  references only.
+- Strip internal gate-accounting fields (`- Draft revision:`, `- **Synthesis
+  item:**`, `- **Fix status:**`, `- **Suggested edit:** omitted — ...`,
+  `- **Rows:**`, severity anchor/delta parentheticals), internal pipeline IDs
+  (`GAI`, `GSS`, `V001`, `RC001`, `RF001`, `F001`, `ORC-1`), and the raw
+  `plan.md` roster table; omit empty sections (`Prior Review Follow-Up: none`,
+  `Positives: none`, `Questions: none`); avoid repeating the same findings
+  across multiple sections; and keep Gerrit inline comments concise (1–3
+  sentences).
 
 After final artifacts are read, run `scripts/worktree-lease.py release
 <review-dir> "review complete"` for every pin owned by the review. This is the

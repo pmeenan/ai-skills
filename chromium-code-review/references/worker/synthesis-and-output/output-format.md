@@ -25,7 +25,9 @@ to its immutable challenge round and delivery gate; it is not Gerrit prose.
    in the surrounding codebase but not introduced by the CL. These must be clearly
    labeled as pre-existing and do not block landing of this CL.
 3. **High-Level Summary:** State whether the CL accomplishes its goal, name the
-   patchset and revision SHA, and summarize bug alignment.
+   patchset and revision SHA, and summarize bug alignment (citing the exact
+   `Bug:` ID(s) from `pin.md` / `context.md` verbatim; never guess or substitute
+   another issue ID).
 4. **Prior Review Follow-Up:** If prior issues were supplied, summarize their
    status with evidence.
 5. **Positives:** Briefly note important good decisions. A praised safety
@@ -59,7 +61,9 @@ to its immutable challenge round and delivery gate; it is not Gerrit prose.
    state the root-cause/layering pass outcome: candidate count checked, any
    better owner or broader invariant found, and any discovery/verification
    rows reopened because of it.
-8. **Next Steps:** State what is required before `+1 LGTM` and what is optional.
+8. **Next Steps:** State what is required before `+1 LGTM` (only `CL-introduced`
+   or `introduced-in-PS<N>` P1/P2 findings can block `LGTM`; `pre-existing`
+   findings never block `LGTM`) and what is optional.
 
 For full CL reviews, append compact **Gerrit-Ready Comments** unless the user
 asks for a short summary only, following the Verdict Alignment And Gerrit

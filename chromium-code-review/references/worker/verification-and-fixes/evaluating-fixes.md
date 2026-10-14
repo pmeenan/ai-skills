@@ -58,6 +58,12 @@ Heuristics for choosing between fixes:
   narrower helper or an explicit path. (Example pattern: a fix funnels a new
   failure path through a helper that unconditionally records success and runs
   completion cleanup.)
+- **Protocol event ordering and preconditions.** Never propose or endorse a fix
+  that emits secondary or extra-info protocol events (such as
+  `DevToolsObserver::OnRawRequest` / `Network.requestWillBeSentExtraInfo` with a
+  synthesized `devtools_request_id`) when the primary lifecycle event
+  (`Network.requestWillBeSent`) is never emitted for that request. Emitting
+  orphan secondary events violates protocol ordering contracts.
 - **Observable cascade analysis.** For state cleanup, flag-reset, or retry
   bugs, trace the downstream observable effect — a lost callback, mismatched
   result, corrupt persisted data, spurious retry, or double failure — before
