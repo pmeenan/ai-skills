@@ -59,8 +59,11 @@ contradictions between findings and other caller paths or feature gates,
 miscalibrated severities (check each against the anchor table in
 ⟨skill-dir⟩/references/worker/synthesis-and-output/severity-calibration.md),
 verdict/finding
-inconsistencies, gate lines answered untruthfully, and Gerrit-text rule
-violations. Remember the restriction-feature inversion: silently degrading
+inconsistencies, gate lines answered untruthfully, Gerrit-text rule
+violations, and any inaccurate file paths, out-of-bounds or off-by-one line
+numbers, paraphrased `- Line:` quotes, or hallucinated/mismatched backticked
+functions, methods, or variables against the pinned worktree. Remember the
+restriction-feature inversion: silently degrading
 to unrestricted behavior is a finding, not graceful fallback.
 
 Deliverable: ⟨review-dir⟩/challenge/round-⟨round⟩/⟨CH-batch⟩.md — immutable shard file in

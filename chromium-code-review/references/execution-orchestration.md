@@ -35,7 +35,8 @@ and execute the brief at ⟨absolute path to briefs/THREAD.md⟩. It defines you
 pin, scope, procedure, deliverable, and rules." Never inline a brief's body into
 the spawn prompt.** The two generalist passes are independent; their shards may
 run in parallel, but every shard covers one pass's exact edge slice and the two
-passes use the same partition. Collect all generalist shards, rebuild
+passes use the same partition. When `In-Tree Code Review` (`ICR`) is in `plan.md`,
+seal both `ICRR` (`--phase 4 --work-id ICRR --attempt 1 --tier frontier --brief <review-dir>/briefs/ICRR.md --artifact <review-dir>/internal-review-raw.md`) and `ICR` (`--phase 4 --work-id ICR --attempt 1 --tier frontier --brief <review-dir>/briefs/ICR.md --artifact <review-dir>/ledger/ICR.md --depends-on ICRR:1`), spawn `ICRR` in the initial wave alongside `GSS` and `GAI`, and spawn `ICR` as soon as `ICRR` completes so `ICR` reformats `internal-review-raw.md` into `ledger/ICR.md`. Collect all generalist shards, rebuild
 `indexes/topology.tsv` and `indexes/specialist-priors.tsv`, then respawn the
 Planner to append the graph-routing continuation before launching any targeted
 lens. This fan-in is mandatory even when the next continuation is empty. The

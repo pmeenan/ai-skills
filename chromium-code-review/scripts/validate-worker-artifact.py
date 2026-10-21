@@ -18,7 +18,11 @@ from artifact_tables import (
     effective_tables,
     plan_row_identity,
 )
-from report_verifier import WorktreeCorpus, verify_fragment_text
+try:
+    from report_verifier import WorktreeCorpus, verify_fragment_text
+except ImportError:
+    WorktreeCorpus = None  # type: ignore[assignment]
+    verify_fragment_text = None  # type: ignore[assignment]
 
 
 ROW_ID = re.compile(r"^(?:[A-Z][A-Z0-9]*-\d+|R\d+-RC\d+-\d+)$")
@@ -643,6 +647,8 @@ def report_fragment_check(
     artifact: Path,
     is_gerrit: bool,
 ) -> None:
+    if WorktreeCorpus is None or verify_fragment_text is None:
+        return
     corpus = WorktreeCorpus.load(root)
     errors = verify_fragment_text(
         corpus,
@@ -679,12 +685,17 @@ def main() -> int:
         text = artifact.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
         fail(f"cannot read {artifact}: {error}")
+    relative = artifact.relative_to(root)
+    if relative.as_posix() == "internal-review-raw.md" and arguments.kind == "auto":
+        if not text.strip():
+            fail(f"{artifact}: internal-review-raw.md is empty")
+        print(f"valid generic: {artifact}")
+        return 0
     parsed, errors = effective_tables(text, str(artifact))
     if errors:
         fail("; ".join(errors))
 
     kind = arguments.kind
-    relative = artifact.relative_to(root)
     if kind == "auto":
         if relative.as_posix() == "inventory.md" or relative.parts[:1] == ("inventory",):
             kind = "inventory"

@@ -745,6 +745,7 @@ def main() -> int:
     if args.stdout and args.check:
         fail("--stdout and --check are mutually exclusive")
     review_dir = args.review_dir.resolve()
+    existing: dict[str, Any] | None = None
     if args.check and (review_dir / "profile.json").is_file():
         try:
             existing = json.loads((review_dir / "profile.json").read_text(encoding="utf-8"))
@@ -916,6 +917,43 @@ def main() -> int:
         "evidence_card_budget_bytes": min(worker_budget, 32768, max(8192, worker_budget // 4)),
         "estimation": estimation,
     }
+    internal_cr: dict[str, Any] = {"available": False}
+    try:
+        import importlib.util
+
+        icr_script = (
+            Path(__file__).resolve().parent
+            / "resolve-internal-review-capabilities.py"
+        )
+        if icr_script.is_file():
+            spec = importlib.util.spec_from_file_location(
+                "resolve_internal_review_capabilities", icr_script
+            )
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                cap_out = (
+                    None
+                    if (args.stdout or args.check)
+                    else review_dir / "internal-review-capabilities.md"
+                )
+                internal_cr = mod.resolve_internal_review_capabilities(
+                    worktree,
+                    parent,
+                    revision,
+                    output_md=cap_out,
+                    max_bytes=max(32768, worker_budget // 3),
+                )
+    except Exception:
+        internal_cr = {"available": False}
+    profile["internal_code_review"] = internal_cr
+    if (
+        args.check
+        and isinstance(existing, dict)
+        and "internal_code_review" not in existing
+    ):
+        profile.pop("internal_code_review", None)
+
     encoded = json.dumps(profile, indent=2, sort_keys=True) + "\n"
     if args.stdout:
         sys.stdout.write(encoded)
@@ -944,7 +982,7 @@ def main() -> int:
                         worktree,
                         review_dir / "callers",
                         changed_paths,
-                        revision_sha,
+                        revision,
                     )
         except Exception:
             pass

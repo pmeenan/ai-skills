@@ -21,6 +21,18 @@ review:
 - Is the selected fix layer the invariant owner or intentionally below/above
   it for a cited reason?
 - Are findings derived from actual code traces rather than assumptions?
+- **Citation, symbol, variable, and line-number verification:** Does every
+  `path:line` or `path:start-end` citation in `draft-parts/*.md`,
+  `gerrit-parts/*.md`, `draft-review.md`, and `gerrit-comments.md` resolve to an
+  existing file in the pinned worktree with in-bounds line numbers
+  (`1 <= start <= end <= total_lines`)? Does every `- Line: \`...\`` quote in
+  `gerrit-parts/*.md` and `gerrit-comments.md` match the pinned worktree's line
+  text verbatim? Do all backticked functions, methods, classes, member
+  variables, parameters, and constants cited at a `path:line` (or in the
+  finding's `Claim`, `Location`, `Evidence`, `Fix status`, and Gerrit `Comment`)
+  actually exist in the cited file and at the cited line (not hallucinated
+  identifiers, wrong `.h` vs `.cc` files, or off-by-one line numbers pointing to
+  an adjacent declaration)?
 - Do proposed fixes preserve the documented contract and nearby Chromium
   idioms? Have API-shaping fixes been weighed against reasonable alternatives?
 - **Cross-finding fix compatibility & no grab-bag bundling:** Do any two

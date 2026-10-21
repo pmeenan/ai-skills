@@ -35,6 +35,13 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   `/codereview/worktrees/...`, `/tmp/...`, `/home/...`) or local `file:///`
   URLs. Use repo-relative references only (e.g.
   `net/http/http_cache_writers.cc:1010`).
+- **Patchset-level summary comment required:** `gerrit-comments.md` must always
+  include a `## Main comment` (or `## Patchset-Level Comment`) section before
+  inline comments (emitted via `gerrit-parts/FRAME.md` in sharded drafts) that
+  gives the author a concise landing-readiness summary, blocking `P1`/`P2` vs
+  optional `P3` counts, and any non-blocking **Launch-Gate Note** for explicit
+  `TODO`-tracked production prerequisites (such as quota/eviction wiring on a
+  default-off feature).
 - **Verbatim quoted code line required:** Every new inline comment in
   `gerrit-parts/<item>.md` and `gerrit-comments.md` must include `- Line: \`<verbatim line from the pinned patchset>\`` copied directly from the card's `Verbatim changed line` field (which itself must be extracted verbatim from the worktree at the pinned revision, never paraphrased from memory).
 - **No placeholder or fake inlines:** do not output generic placeholder
@@ -44,10 +51,13 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
 - **Concise, query-based inlines (1–3 sentences):** frame inline feedback as
   concise questions or direct observations (1–3 sentences stating the concrete
   bug/impact and the ask, e.g., "Can we gate these success-only metrics...?").
-  Never paste multi-paragraph trace dumps or internal gate metadata (`Rows`,
-  `Synthesis item`, `Fix status`, anchor names) into Gerrit comments. Avoid
-  repeating the same suggestion across multiple files/declarations; place a
-  single comment at the most relevant site.
+  Prefix every P3 optional-polish inline comment with `nit:`. Never paste
+  multi-paragraph trace dumps, internal gate metadata (`Rows`, `Synthesis item`,
+  `Fix status`, anchor names), or unmodified external subsystem `path:line`
+  coordinates into author-facing Gerrit inline comments (name the external
+  class/method concisely in prose instead). Avoid repeating the same suggestion
+  across multiple files/declarations; place a single comment at the most
+  relevant site.
 - **Make applicable edits directly actionable:** every promoted finding has a
   `Suggested edit` decision inherited from its evidence card. Mark it
   `applicable` only when the validated fix is fully determined, replaces one

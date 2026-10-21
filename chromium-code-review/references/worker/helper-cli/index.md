@@ -23,5 +23,5 @@ preamble, so its rules travel with every section.
 | Leases and the shared worktree | leases-and-the-shared-worktree.md | 59 |
 | Pin and snapshot | pin-and-snapshot.md | 21 |
 | Progress and cost | progress-and-cost.md | 17 |
-| Materialization and indexes | materialization-and-indexes.md | 32 |
+| Materialization and indexes | materialization-and-indexes.md | 34 |
 | Mechanical collection | mechanical-collection.md | 13 |

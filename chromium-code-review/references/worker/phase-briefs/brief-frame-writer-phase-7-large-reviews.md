@@ -43,8 +43,12 @@ directives.md, plan.md, orchestration.tsv, ledger/PR.md if present, and
 root-cause/batches.md summary. Extract only compact outcome fields.
 
 Deliverable: draft-parts/FRAME.md with High-Level Summary, Prior Review
-Follow-Up, cited Positives, Verification Notes, Next Steps, verdict sentence,
-and the complete ordered card-part list. The list must name every card in
+Follow-Up, cited Positives, Verification Notes, Next Steps (including any
+non-blocking **Launch-Gate Note** for explicit `TODO`-deferred production
+prerequisites such as quota/eviction on a default-off feature), verdict sentence,
+and the complete ordered card-part list, plus `gerrit-parts/FRAME.md` containing
+the `## Main comment` (Patchset-Level Comment) for `gerrit-comments.md`. The
+ordered card-part list must name every card in
 synthesis/index.md with no omission; a missing card part is a truncation
 defect, not an editorial choice. Apply verdict alignment. Freshness remains
 pending-delivery.

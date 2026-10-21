@@ -86,7 +86,12 @@ Use these drills to fill the row:
 - For async operations, trace the ownership of the pending operation, the
   cancellation/reset/destruction path, and the callback completion contract.
   A local waiter fix is insufficient if the operation itself can still drop,
-  duplicate, or reorder completion.
+  duplicate, or reorder completion. When a fix threads an async result struct
+  across `PostTaskAndReplyWithResult` or `SequenceBound::AsyncCall(...).Then(...)`
+  into a `WeakPtr`-guarded callback, verify that every resource on the reply
+  struct (such as `scoped_refptr`, `std::unique_ptr`, file descriptors, or Mojo
+  handles) uses RAII cleanup in its destructor if the `WeakPtr` is invalidated
+  before the reply runs.
 
 If this pass changes the likely invariant owner, exposes a missing caller
 family, reveals duplicated canonical state, or opens a new state-machine or

@@ -255,7 +255,8 @@ Orchestrator-facing (the only skill files the orchestrator loads):
 
 The helpers themselves live in `scripts/`. The ones an orchestrator drives
 directly are `fetch-cl.sh`, `snapshot-skill.py`, `profile-review.py`,
-`build-review-indexes.py`, `build-caller-index.py`,
+`resolve-internal-review-capabilities.py`, `build-review-indexes.py`,
+`build-caller-index.py`, `build-initial-plan.py`,
 `extract-unresolved-comments.py`, `build-phase-brief.py`,
 `build-scope-packets.py`, `seal-work-unit.py`, `await-workers.py`,
 `set-work-state.py`, `refresh-manifest.py`, `log-progress.py`,
@@ -551,9 +552,14 @@ a `standard`, `high-risk`, or `large` profile.
   pipeline's fixed ceremony, not the CL, set that cost.
 
 Run `⟨review-dir⟩/skill-snapshot/scripts/profile-review.py` and record
-`profile.json`/`profile.md`. Apply the topology and input-budget contract in
-`references/scaling-and-indexes.md`; Inventory may escalate the conservative
-class but never silently downgrade it.
+`profile.json`/`profile.md`. When the checkout includes `src-internal`
+(`internal/agents/skills/experimental-code-review`), `profile-review.py`
+automatically invokes `resolve-internal-review-capabilities.py` to resolve
+in-tree `DIR_METADATA` and `COMMON_METADATA` `agentic_review` capability groups
+into `⟨review-dir⟩/internal-review-capabilities.md` and sets
+`internal_code_review.available: true` in `profile.json`. Apply the topology and
+input-budget contract in `references/scaling-and-indexes.md`; Inventory may
+escalate the conservative class but never silently downgrade it.
 
 Keep Context and Inventory ownership separate:
 
@@ -623,7 +629,12 @@ inventory complexity graph fits in a single unsharded pass (`<= 12` edges), run
 directly instead of spawning an LLM Planner agent for the initial round.
 Otherwise spawn the **Planner agent** (brief in `phase-briefs.md`). For profile schema 3
 `evidence-graph-v1`, it starts two independent bounded generalist **passes** over
-all inventory graph edges. Each pass is one row only when it fits; large graphs
+all inventory graph edges, plus — when `profile.json` sets
+`internal_code_review.available: true` and `topology.collapsed` is false — the
+`In-Tree Code Review` (`ICR`) roster row paired with its raw runner (`ICRR`
+$\rightarrow$ `ICR`), which executes the in-tree `experimental-code-review`
+skill (`internal/agents/skills/experimental-code-review`) in parallel during the
+first discovery wave and wraps its findings into `ledger/ICR.md`. Each generalist pass is one row only when it fits; large graphs
 shard both passes over the same connected-component/budget partition, so every
 edge is assigned exactly once in each pass. Each pass independently records
 low/medium/high specialist escalation likelihoods with cited signals and

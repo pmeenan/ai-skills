@@ -57,7 +57,14 @@ statuses. Ambiguous specialist evidence uses the two-pass likelihood contract
 below; it never becomes an unsupported not-applicable status.
 
 For `evidence-graph-v1`, first plan the two passes `Generalist Semantic And
-State Discovery` and `Generalist Adversarial And Integration Discovery`. Use
+State Discovery` and `Generalist Adversarial And Integration Discovery`. When
+`profile.json` sets `internal_code_review.available: true` and
+`topology.collapsed` is false, also include `In-Tree Code Review` (`status:
+spawn`, `tier: frontier`, `scope: graph:all-inventory-edges` or `graph:none`) in
+the initial `D01` batch and generate both `briefs/ICRR.md` (`--work-id ICRR`)
+and `briefs/ICR.md` (`--work-id ICR`) pointing at
+`worker/chromium-specialist-checklists/in-tree-experimental-code-review-icrr-icr.md`
+and sharing `packets/ICR-code.md`. Use
 one `graph:all-inventory-edges` row per pass only when it fits; otherwise give
 both passes the same connected-component/budget shards, with every edge
 assigned exactly once per pass. Every generalist shard emits `Specialist

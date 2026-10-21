@@ -17,7 +17,7 @@ preamble, so its rules travel with every section.
 | Brief — Inventory Shard (Phase 1, one per file group or dense hunk range) | brief-inventory-shard-phase-1-one-per-file-group-or-dense-hunk-range.md | 55 |
 | Brief — Gerrit Thread Normalizer (after Phase 0, all review modes) | brief-gerrit-thread-normalizer-after-phase-0-all-review-modes.md | 34 |
 | Brief — Prior Feedback (Phase 2, follow-up reviews only) | brief-prior-feedback-phase-2-follow-up-reviews-only.md | 37 |
-| Brief — Planner (Phase 3) | brief-planner-phase-3.md | 136 |
+| Brief — Planner (Phase 3) | brief-planner-phase-3.md | 143 |
 | Brief — TER Gate-Brief Builder (Phase 4, only after the TER thread collects) | brief-ter-gate-brief-builder-phase-4-only-after-the-ter-thread-collects.md | 40 |
 | Brief — Collection Audit (Phase 4.5) | brief-collection-audit-phase-4-5.md | 59 |
 | Brief — Collection-Audit Shard (Phase 4.5, when indexed) | brief-collection-audit-shard-phase-4-5-when-indexed.md | 25 |
@@ -34,11 +34,11 @@ preamble, so its rules travel with every section.
 | Brief — Reconciliation Shard (Phase 6, when indexed) | brief-reconciliation-shard-phase-6-when-indexed.md | 33 |
 | Brief — Reconciliation Exact-Coverage Collector (Phase 6, sharded) | brief-reconciliation-exact-coverage-collector-phase-6-sharded.md | 28 |
 | Brief — Draft Writer (Phase 7, only when bounded) | brief-draft-writer-phase-7-only-when-bounded.md | 60 |
-| Brief — Finding Writer (Phase 7, large reviews, one per card) | brief-finding-writer-phase-7-large-reviews-one-per-card.md | 38 |
-| Brief — Frame Writer (Phase 7, large reviews) | brief-frame-writer-phase-7-large-reviews.md | 22 |
-| Brief — Draft Assembly (Phase 7, large reviews, one per assembly node) | brief-draft-assembly-phase-7-large-reviews-one-per-assembly-node.md | 37 |
+| Brief — Finding Writer (Phase 7, large reviews, one per card) | brief-finding-writer-phase-7-large-reviews-one-per-card.md | 44 |
+| Brief — Frame Writer (Phase 7, large reviews) | brief-frame-writer-phase-7-large-reviews.md | 26 |
+| Brief — Draft Assembly (Phase 7, large reviews, one per assembly node) | brief-draft-assembly-phase-7-large-reviews-one-per-assembly-node.md | 39 |
 | Brief — Synthesis Challenge Planner (Phase 8) | brief-synthesis-challenge-planner-phase-8.md | 45 |
-| Brief — Synthesis Challenger (Phase 8, one per CH shard) | brief-synthesis-challenger-phase-8-one-per-ch-shard.md | 40 |
+| Brief — Synthesis Challenger (Phase 8, one per CH shard) | brief-synthesis-challenger-phase-8-one-per-ch-shard.md | 43 |
 | Brief — Challenge Collector (Phase 8) | brief-challenge-collector-phase-8.md | 38 |
 | Brief — Patchset-Delta Inspector (Phase 9, only if a newer patchset appeared) | brief-patchset-delta-inspector-phase-9-only-if-a-newer-patchset-appeared.md | 29 |
 | Brief — Delivery Gate Finalizer (Phase 9, after the final challenge) | brief-delivery-gate-finalizer-phase-9-after-the-final-challenge.md | 57 |

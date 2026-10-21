@@ -69,8 +69,11 @@ For full CL reviews, append compact **Gerrit-Ready Comments** unless the user
 asks for a short summary only, following the Verdict Alignment And Gerrit
 Output Rules section of `references/verification-and-fixes.md`:
 
-- **Main body:** brief landing-readiness summary, blockers, optional items,
-  prior review status, and verification notes.
+- **Main body (`## Main comment` / `## Patchset-Level Comment`):** brief
+  landing-readiness summary, blockers (`P1`/`P2`) vs optional polish (`P3`),
+  any non-blocking **Launch-Gate Note** for explicit `TODO`-deferred production
+  requirements (such as quota/eviction on a default-off feature), prior review
+  status, and verification notes.
 - **Replies to existing unresolved threads:** file and thread line, status, and
   the exact response, using normalized root/latest IDs from
   `gerrit/unresolved-threads.json`. Do not open duplicate new threads for an
@@ -80,15 +83,21 @@ Output Rules section of `references/verification-and-fixes.md`:
   an open thread whose latest comment is explicitly waiting on the human
   reviewer's own input.
 - **New inline comments:** repo-relative file, exact line or range, verbatim line
-  text from the reviewed patchset, and concise comment text (1–3 sentences).
+  text from the reviewed patchset, and concise author-facing comment text (1–3
+  sentences stating the bug/impact and the concrete ask, without internal trace
+  dumps or unmodified external subsystem `path:line` coordinates).
   When the finding's Suggested edit decision is applicable, attach the comment
   to that exact selected range and include its fenced `suggestion` block;
-  Gerrit replaces the attached lines with the block contents. Prefix optional
-  polish with `nit:`.
+  Gerrit replaces the attached lines with the block contents. Prefix all P3
+  optional polish comments with `nit:`.
 
 For both `draft-review.md` and `gerrit-comments.md`, cite all code locations as
 repo-relative `path:line` against the reviewed patchset, extract quoted code
-verbatim, and re-check line numbers before sending. Neither file may ever
+verbatim, and verify every file path, line number, and backticked
+function/method/variable/symbol identifier against the pinned worktree before
+sending (the validator mechanically checks file existence, line-number bounds,
+verbatim `- Line:` quotes, symbol existence in the cited file, and off-by-one
+line citations). Neither file may ever
 contain local filesystem or worktree paths (`/codereview/worktrees/`,
 `/usr/local/`, `/tmp/`, `/home/`), `file://` URLs, or LaTeX math notation
 (`$...$`, which Gerrit does not render — use backticked plain text such as

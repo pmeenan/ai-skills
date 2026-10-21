@@ -34,5 +34,6 @@ roster**, copied verbatim with one line each — never derived from memory:
   Performance And Resource Scaling, Platform And Language Semantics,
   Build API And Generated Assets, Privacy And Telemetry,
   Accessibility And Internationalization, Network Semantics,
-  Fuzzing And Test Strategy.
+  Fuzzing And Test Strategy, In-Tree Code Review (when `profile.json` sets
+  `internal_code_review.available: true`).
 - Always: the holistic thread.

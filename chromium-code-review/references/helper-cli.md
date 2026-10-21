@@ -372,6 +372,8 @@ itself and validates the shape. Work IDs are opaque whitespace-free tokens.
 ```
 build-review-indexes.py [--output-dir DIR] [--check] <review-dir>
 build-caller-index.py --worktree W --revision R [--pathspec P] <review-dir>
+resolve-internal-review-capabilities.py --base P [--revision R] --output OUT [--json-out JSON] <worktree>
+build-initial-plan.py [--worktree W] [--max-unsharded-edges N] <review-dir>
 build-scope-packets.py --worktree W --parent P --revision R [--spec SPEC] [--output OUT] <review-dir> <work_id>
 build-discovery-brief.py --work-id ID [--attempt N] --entry E --procedure P [--pathspec SPEC] [--output OUT] <review-dir>
 build-batch-briefs.py --phase {verification,root-cause} [--attempt N] [--round R] [--seal] <review-dir>

@@ -13,7 +13,7 @@ preamble, so its rules travel with every section.
 | 1. Legal enum values (read from source, do not guess) | 1-legal-enum-values-read-from-source-do-not-guess.md | 46 |
 | 2. Fast index for the failures seen most often | 2-fast-index-for-the-failures-seen-most-often.md | 26 |
 | 3. CLI argument rejections (all scripts) | 3-cli-argument-rejections-all-scripts.md | 16 |
-| 4. `validate-review-dir.py` | 4-validate-review-dir-py.md | 588 |
+| 4. `validate-review-dir.py` | 4-validate-review-dir-py.md | 595 |
 | 5. `seal-work-unit.py` | 5-seal-work-unit-py.md | 37 |
 | 6. `snapshot-skill.py` | 6-snapshot-skill-py.md | 21 |
 | 7. `worktree-lease.py` | 7-worktree-lease-py.md | 56 |

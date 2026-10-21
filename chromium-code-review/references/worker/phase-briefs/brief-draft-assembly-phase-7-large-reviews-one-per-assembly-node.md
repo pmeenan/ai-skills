@@ -51,7 +51,9 @@ gerrit-comments.md every finding's Gerrit fragment exactly once. A non-root
 node writes
 draft-assembly/⟨node-ID⟩.md. The root writes draft-review.md and
 gerrit-comments.md and updates the draft-dependent gate lines, with Freshness
-still pending-delivery. The root must include `FRAME.md` and start
+still pending-delivery. The root must include `FRAME.md` (and place the
+`## Main comment` / `## Patchset-Level Comment` summary at the top of
+`gerrit-comments.md` before inline comments) and start
 draft-review.md with `- Draft revision: ⟨draft-revision⟩`. Append the node row
 to draft-assembly/manifest.md. At the root, collect every per-item coverage row
 into `output-coverage.tsv`, rejecting duplicate/missing/foreign items and

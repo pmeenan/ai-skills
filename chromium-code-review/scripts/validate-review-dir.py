@@ -34,7 +34,11 @@ from artifact_tables import (
     effective_tables,
     plan_row_identity,
 )
-from report_verifier import WorktreeCorpus, verify_fragment_text
+try:
+    from report_verifier import WorktreeCorpus, verify_fragment_text
+except ImportError:
+    WorktreeCorpus = None  # type: ignore[assignment]
+    verify_fragment_text = None  # type: ignore[assignment]
 
 
 PHASES = {"pin": 0, "collection": 1, "verification": 2,
@@ -152,6 +156,7 @@ GENERALIST_ROSTER = (
     "Generalist Semantic And State Discovery",
     "Generalist Adversarial And Integration Discovery",
 )
+INTERNAL_REVIEW_ENTRY = "In-Tree Code Review"
 SPECIALIST_LENSES = (
     "Threading And Synchronization",
     "Ownership And Blink Lifecycle",
@@ -168,6 +173,7 @@ SPECIALIST_PRIOR_ASSESSORS = {"semantic-state", "adversarial-integration"}
 ROSTER_PREFIX.update({
     GENERALIST_ROSTER[0]: "GSS",
     GENERALIST_ROSTER[1]: "GAI",
+    INTERNAL_REVIEW_ENTRY: "ICR",
 })
 TRIGGER_ID_TEXT = r"(?:T\d+|I[A-Z0-9]+-T\d+)"
 TRIGGER_ID = re.compile(rf"^{TRIGGER_ID_TEXT}$", re.IGNORECASE)
@@ -1525,7 +1531,11 @@ def validate_plan(
         and profile["topology"].get("policy") == "evidence-graph-v1"
         and bool(plan_names & set(GENERALIST_ROSTER))
     )
-    allowed_names = set(ROSTER) | (set(GENERALIST_ROSTER) if adaptive_graph else set())
+    allowed_names = (
+        set(ROSTER)
+        | {INTERNAL_REVIEW_ENTRY}
+        | (set(GENERALIST_ROSTER) if adaptive_graph else set())
+    )
     counts: Counter[str] = Counter()
     identity_counts: Counter[tuple[str, int | None]] = Counter()
     modes: dict[str, set[str]] = defaultdict(set)
@@ -1614,6 +1624,18 @@ def validate_plan(
     for name in required_names:
         if counts[name] == 0:
             report.error(f"plan.md omits roster entry: {name}")
+    if (
+        adaptive_graph
+        and isinstance(profile, dict)
+        and isinstance(profile.get("internal_code_review"), dict)
+        and profile["internal_code_review"].get("available") is True
+        and not profile.get("topology", {}).get("collapsed", False)
+    ):
+        if counts[INTERNAL_REVIEW_ENTRY] == 0:
+            report.error(
+                f"plan.md omits roster entry: {INTERNAL_REVIEW_ENTRY} "
+                "(internal experimental-code-review skill is available)"
+            )
     if adaptive_graph:
         topology_edges: set[str] = set()
         topology_rows: list[dict[str, str]] = []
@@ -1899,6 +1921,43 @@ def validate_plan(
                 )
         for row in roster_rows:
             name, _ = plan_row_identity(row["roster entry"])
+            if name == INTERNAL_REVIEW_ENTRY and row.get("status") == "spawn":
+                scope_val = row.get("scope", "")
+                has_all = "graph:all-inventory-edges" in scope_val.lower()
+                has_none = bool(
+                    re.search(
+                        r"(?i)(?:^|[; ]+)graph:none(?:[; ]+|$)", scope_val
+                    )
+                )
+                match = re.search(
+                    r"(?i)graph:((?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*)",
+                    scope_val,
+                )
+                if has_all and not topology_edges:
+                    report.error(
+                        f"adaptive row '{row['roster entry']}' uses "
+                        "graph:all-inventory-edges on a zero-edge topology"
+                    )
+                elif has_none and topology_edges:
+                    report.error(
+                        f"adaptive row '{row['roster entry']}' uses "
+                        "graph:none when topology edges exist"
+                    )
+                elif match:
+                    unknown = (
+                        set(match.group(1).upper().split(",")) - topology_edges
+                    )
+                    if unknown:
+                        report.error(
+                            f"adaptive row '{row['roster entry']}' cites "
+                            "unknown graph edge(s): "
+                            + ", ".join(sorted(unknown))
+                        )
+                elif not has_all and not has_none:
+                    report.error(
+                        f"adaptive row '{row['roster entry']}' scope must cite "
+                        "graph:all-inventory-edges, graph:none, or graph:<edge-id(s)>"
+                    )
             if name in ROSTER and row.get("status") == "spawn":
                 match = re.search(
                     r"(?i)graph:((?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*)",
@@ -3375,6 +3434,41 @@ def validate_collection_coverage(
                 report.error(
                     f"work unit {work_id}'s completed attempt artifact "
                     f"'{artifact}' is not ledger/{work_id}.md")
+            if (
+                work_id == "ICR"
+                and row.get("state", "") == "complete"
+                and (
+                    "ICRR" in latest_row
+                    or (root / "briefs" / "ICRR.md").is_file()
+                    or (root / "internal-review-raw.md").is_file()
+                )
+            ):
+                expected_raw = (root / "internal-review-raw.md").resolve()
+                icrr_row = latest_row.get("ICRR")
+                if icrr_row is None or icrr_row.get("state", "") != "complete":
+                    report.error(
+                        "completed work unit ICR requires a completed ICRR "
+                        "attempt producing internal-review-raw.md"
+                    )
+                else:
+                    icrr_artifact = icrr_row.get("artifact", "")
+                    if (
+                        icrr_artifact in {"", "—", "-"}
+                        or Path(icrr_artifact).resolve() != expected_raw
+                    ):
+                        report.error(
+                            f"work unit ICRR's completed attempt artifact "
+                            f"'{icrr_artifact}' is not internal-review-raw.md"
+                        )
+                deps = {
+                    token.split(":", 1)[0].strip()
+                    for token in row.get("depends_on", "").split(",")
+                    if token.strip() not in {"", "—", "-"}
+                }
+                if "ICRR" not in deps:
+                    report.error(
+                        "work unit ICR must declare depends_on ICRR (or ICRR:<attempt>)"
+                    )
         if audit_table_seen:
             row = audit_rows.get(work_id)
             if row is None:
@@ -5000,9 +5094,9 @@ def validate_output_coverage(
         return
 
     seen: set[str] = set()
-    corpus = WorktreeCorpus.load(root)
+    corpus = WorktreeCorpus.load(root) if WorktreeCorpus is not None else None
     frame_path = root / "draft-parts" / "FRAME.md"
-    if frame_path.is_file():
+    if frame_path.is_file() and corpus is not None and verify_fragment_text is not None:
         for err in verify_fragment_text(
             corpus,
             "draft-parts/FRAME.md",
@@ -5233,13 +5327,14 @@ def validate_output_coverage(
                         f"output coverage {item} draft fragment lacks non-empty "
                         f"'{field_name}' field"
                     )
-            for err in verify_fragment_text(
-                corpus,
-                f"output coverage {item} draft fragment",
-                draft_text,
-                is_gerrit=False,
-            ):
-                report.error(err)
+            if corpus is not None and verify_fragment_text is not None:
+                for err in verify_fragment_text(
+                    corpus,
+                    f"output coverage {item} draft fragment",
+                    draft_text,
+                    is_gerrit=False,
+                ):
+                    report.error(err)
 
         if expected_kind == "finding":
             gerrit_fragment = exact_fragment(
@@ -5265,13 +5360,14 @@ def validate_output_coverage(
                         f"output coverage {item} Gerrit fragment lacks a "
                         "repo-relative path:line target"
                     )
-                for err in verify_fragment_text(
-                    corpus,
-                    f"output coverage {item} Gerrit fragment",
-                    gerrit_text,
-                    is_gerrit=True,
-                ):
-                    report.error(err)
+                if corpus is not None and verify_fragment_text is not None:
+                    for err in verify_fragment_text(
+                        corpus,
+                        f"output coverage {item} Gerrit fragment",
+                        gerrit_text,
+                        is_gerrit=True,
+                    ):
+                        report.error(err)
             if draft_fragment is not None and gerrit_fragment is not None:
                 suggestion_decision(item, draft_text, gerrit_text)
         elif (

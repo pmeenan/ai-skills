@@ -46,13 +46,13 @@ GENERALIST_ROWS = (
 SPECIALIST_PREFIX_TO_NAME = {
     "TSY": "Threading And Synchronization",
     "OBL": "Ownership And Blink Lifecycle",
-    "MIS": "Mojo And IPC Security",
+    "MIS": "Mojo IPC Authorization And Sandbox",
     "PRS": "Performance And Resource Scaling",
     "PLS": "Platform And Language Semantics",
-    "BAG": "Build, API, And Generated Assets",
-    "PAT": "Privacy, Abuse, And Telemetry",
-    "AXI": "Accessibility And UI Integration",
-    "NET": "Networking, Storage, And Protocols",
+    "BAG": "Build API And Generated Assets",
+    "PAT": "Privacy And Telemetry",
+    "AXI": "Accessibility And Internationalization",
+    "NET": "Network Semantics",
     "FTS": "Fuzzing And Test Strategy",
 }
 
@@ -200,6 +200,19 @@ def main() -> int:
         plan_table_rows.append((roster_name, graph_scope, "spawn", "frontier", "D01"))
         spawn_units.append((roster_name, work_id, graph_scope, "generalist"))
 
+    internal_cr_available = (
+        isinstance(profile.get("internal_code_review"), dict)
+        and profile["internal_code_review"].get("available") is True
+        and not profile.get("topology", {}).get("collapsed", False)
+    )
+    if internal_cr_available:
+        plan_table_rows.append(
+            ("In-Tree Code Review", graph_scope, "spawn", "frontier", "D01")
+        )
+        spawn_units.append(
+            ("In-Tree Code Review", "ICR", graph_scope, "internal-code-review")
+        )
+
     for prefix, edges in sorted(hard_triggers.items()):
         roster_name = SPECIALIST_PREFIX_TO_NAME[prefix]
         spec_scope = f"specialist:full; graph:{','.join(sorted(edges))}"
@@ -242,6 +255,8 @@ def main() -> int:
     procedure_for = {
         "GSS": "worker/discovery-checklists/contracts-and-api-shape.md",
         "GAI": "worker/discovery-checklists/async-and-lifecycle.md",
+        "ICRR": "worker/chromium-specialist-checklists/in-tree-experimental-code-review-icrr-icr.md",
+        "ICR": "worker/chromium-specialist-checklists/in-tree-experimental-code-review-icrr-icr.md",
         "TSY": "worker/chromium-specialist-checklists/threading-and-synchronization-tsy.md",
         "OBL": "worker/chromium-specialist-checklists/ownership-and-blink-lifecycle-obl.md",
         "MIS": "worker/chromium-specialist-checklists/mojo-ipc-authorization-and-sandbox-mis.md",
@@ -250,7 +265,7 @@ def main() -> int:
         "BAG": "worker/chromium-specialist-checklists/build-api-and-generated-assets-bag.md",
         "PAT": "worker/chromium-specialist-checklists/privacy-and-telemetry-pat.md",
         "AXI": "worker/chromium-specialist-checklists/accessibility-and-internationalization-axi.md",
-        "NET": "worker/chromium-specialist-checklists/networking-and-storage-net.md",
+        "NET": "worker/chromium-specialist-checklists/network-semantics-net.md",
         "FTS": "worker/chromium-specialist-checklists/fuzzing-and-test-strategy-fts.md",
     }
 
@@ -301,6 +316,31 @@ def main() -> int:
         res = subprocess.run(brief_cmd, capture_output=True, text=True, check=False)
         if res.returncode != 0:
             fail(f"build-discovery-brief.py failed for {work_id}: {res.stderr.strip()}")
+
+        if work_id == "ICR":
+            icrr_brief_path = review_dir / "briefs" / "ICRR.md"
+            icrr_cmd = [
+                sys.executable,
+                str(discovery_brief_script),
+                str(review_dir),
+                "--work-id",
+                "ICRR",
+                "--entry",
+                "In-Tree Code Review Runner",
+                "--procedure",
+                procedure_for["ICRR"],
+                "--pathspec",
+                f"{scope_cell}; surfaces: {','.join(surface_ids)}",
+                "--output",
+                str(icrr_brief_path),
+            ]
+            res_icrr = subprocess.run(
+                icrr_cmd, capture_output=True, text=True, check=False
+            )
+            if res_icrr.returncode != 0:
+                fail(
+                    f"build-discovery-brief.py failed for ICRR: {res_icrr.stderr.strip()}"
+                )
 
         assigned_extras: list[str] = []
         if work_id in {"GSS", "GAI"} and (review_dir / "indexes" / "topology.tsv").is_file():

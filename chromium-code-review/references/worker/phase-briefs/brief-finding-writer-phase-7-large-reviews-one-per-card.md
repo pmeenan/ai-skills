@@ -51,7 +51,13 @@ Procedure: read these exact reference files:
 ⟨skill-dir⟩/references/worker/verification-and-fixes/verdict-alignment-and-gerrit-output-rules.md. Draft the
 finding or question exactly from the reconciled evidence; do not re-adjudicate.
 Include the exact `Synthesis item: ⟨card-ID⟩` field and internal source-row
-trail in the review fragment. For a finding, copy its Suggested edit decision:
+trail in the review fragment. Verify every `path:line` citation, `- Line: \`...\``
+verbatim quote, and backticked function/method/variable/symbol identifier against
+the pinned worktree before writing — never paraphrase a `- Line:` quote or cite a
+declaration at an off-by-one line number. Keep `gerrit-parts/⟨card-ID⟩.md` to a
+concise 1–3 sentence author-facing comment (prefix P3 comments with `nit:`, and
+never include internal trace dumps or unmodified external subsystem `path:line`
+coordinates). For a finding, copy its Suggested edit decision:
 an applicable edit has the identical fenced `suggestion` replacement in the
 review and Gerrit fragments at the card's exact target range; an omitted edit
 keeps the card's specific reason and has no suggestion block.

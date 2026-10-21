@@ -17,7 +17,7 @@ only the user directives and skill brief.
 
 ## Plan-Construction Rules
 
-Write the initial plan into `plan.md` before any thread is spawned. It has the two generalist passes, sharded when required; later graph-routed work is append-only, in the roster shape from `references/templates.md`. Hard rules, each learned from a measured failure:
+Write the initial plan into `plan.md` before any thread is spawned. It has the two generalist passes, sharded when required (plus `In-Tree Code Review` with `status: spawn`, `tier: frontier`, and `graph:all-inventory-edges` or `graph:none` whenever `profile.json` sets `internal_code_review.available: true` and `topology.collapsed` is false); later graph-routed work is append-only, in the roster shape from `references/templates.md`. Hard rules, each learned from a measured failure:
 
 **Every graph obligation appears in topology and every effective plan row has
 a status.** An omitted edge is invisible; a wrong not-applicable proof is catchable.

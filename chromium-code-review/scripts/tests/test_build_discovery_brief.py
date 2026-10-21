@@ -130,6 +130,54 @@ class BuildDiscoveryBriefTests(unittest.TestCase):
         probe_text = (self.review_dir / "briefs" / "OBL.md").read_text(encoding="utf-8")
         self.assertIn("## Specialist probe outcome", probe_text)
 
+    def test_icrr_and_icr_briefs(self) -> None:
+        res_icrr = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                str(self.review_dir),
+                "--work-id",
+                "ICRR",
+                "--entry",
+                "In-Tree Code Review Runner",
+                "--procedure",
+                "worker/chromium-specialist-checklists/in-tree-experimental-code-review-icrr-icr.md",
+                "--pathspec",
+                "graph:all-inventory-edges",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_icrr.returncode, 0, msg=res_icrr.stderr)
+        icrr_text = (self.review_dir / "briefs" / "ICRR.md").read_text(encoding="utf-8")
+        self.assertIn("internal-review-raw.md", icrr_text)
+        self.assertIn("internal-review-capabilities.md", icrr_text)
+        self.assertIn("packets/ICR-code.md", icrr_text)
+
+        res_icr = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                str(self.review_dir),
+                "--work-id",
+                "ICR",
+                "--entry",
+                "In-Tree Code Review",
+                "--procedure",
+                "worker/chromium-specialist-checklists/in-tree-experimental-code-review-icrr-icr.md",
+                "--pathspec",
+                "graph:all-inventory-edges",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_icr.returncode, 0, msg=res_icr.stderr)
+        icr_text = (self.review_dir / "briefs" / "ICR.md").read_text(encoding="utf-8")
+        self.assertIn("In-Tree Code Review Wrapper Requirements", icr_text)
+        self.assertIn("internal-review-raw.md", icr_text)
+        self.assertIn("ledger/ICR.md", icr_text)
+        self.assertIn("row IDs ICR-1, ICR-2, ...", icr_text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -456,7 +456,8 @@ roster**, copied verbatim with one line each — never derived from memory:
   Performance And Resource Scaling, Platform And Language Semantics,
   Build API And Generated Assets, Privacy And Telemetry,
   Accessibility And Internationalization, Network Semantics,
-  Fuzzing And Test Strategy.
+  Fuzzing And Test Strategy, In-Tree Code Review (when `profile.json` sets
+  `internal_code_review.available: true`).
 - Always: the holistic thread.
 
 ## Specialist Trigger Decisions
@@ -581,7 +582,7 @@ member counts as the trigger evidence.
 
 ## Plan-Construction Rules
 
-Write the initial plan into `plan.md` before any thread is spawned. It has the two generalist passes, sharded when required; later graph-routed work is append-only, in the roster shape from `references/templates.md`. Hard rules, each learned from a measured failure:
+Write the initial plan into `plan.md` before any thread is spawned. It has the two generalist passes, sharded when required (plus `In-Tree Code Review` with `status: spawn`, `tier: frontier`, and `graph:all-inventory-edges` or `graph:none` whenever `profile.json` sets `internal_code_review.available: true` and `topology.collapsed` is false); later graph-routed work is append-only, in the roster shape from `references/templates.md`. Hard rules, each learned from a measured failure:
 
 **Every graph obligation appears in topology and every effective plan row has
 a status.** An omitted edge is invisible; a wrong not-applicable proof is catchable.
@@ -685,7 +686,7 @@ not an answer.
 Subagents start cold: no conversation memory and no loaded skill. A thread
 is only as good as its brief, so fill in the template in
 `references/templates.md` (Subagent Brief — Discovery Thread) rather than
-composing briefs freehand. Always generate discovery briefs mechanically using `python3 ⟨skill-dir⟩/scripts/build-discovery-brief.py ⟨review-dir⟩ --work-id ⟨THREAD⟩ --entry "⟨roster entry⟩" --procedure "⟨procedure path⟩" [--pathspec "⟨pathspec⟩"]` instead of composing markdown or writing custom template scripts. For `Generalist Semantic And State Discovery` and `Generalist Adversarial And Integration Discovery`, pass `--procedure "worker/discovery-checklists/state-persistence-and-cache.md"` and `--procedure "worker/discovery-checklists/integration-and-feature-control.md"` respectively (or the primary matching checklist file under `worker/discovery-checklists/`). Write each brief to
+composing briefs freehand. Always generate discovery briefs mechanically using `python3 ⟨skill-dir⟩/scripts/build-discovery-brief.py ⟨review-dir⟩ --work-id ⟨THREAD⟩ --entry "⟨roster entry⟩" --procedure "⟨procedure path⟩" [--pathspec "⟨pathspec⟩"]` instead of composing markdown or writing custom template scripts. For `Generalist Semantic And State Discovery` and `Generalist Adversarial And Integration Discovery`, pass `--procedure "worker/discovery-checklists/state-persistence-and-cache.md"` and `--procedure "worker/discovery-checklists/integration-and-feature-control.md"` respectively (or the primary matching checklist file under `worker/discovery-checklists/`). When `profile.json` sets `internal_code_review.available: true`, generate both `briefs/ICRR.md` (`--work-id ICRR --entry "In-Tree Code Review Runner" --procedure "worker/chromium-specialist-checklists/in-tree-experimental-code-review-icrr-icr.md"`) and `briefs/ICR.md` (`--work-id ICR --entry "In-Tree Code Review" --procedure "worker/chromium-specialist-checklists/in-tree-experimental-code-review-icrr-icr.md"`) sharing `packets/ICR-code.md`. Write each brief to
 `<review-dir>/briefs/<THREAD>.md`. Every path in a brief (worktree,
 reference files, ledger file) must be absolute.
 
