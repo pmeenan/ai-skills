@@ -309,6 +309,14 @@ class NamedBriefInputsAgreementTests(unittest.TestCase):
                 f"Inputs: {root}/kept.md\n"
                 f"Rules: never read {root}/ignored.md\n"
             ),
+            "markdown-heading-stops-collection-and-ignores-cpp-comments": (
+                f"Inputs: {root}/kept.md\n\n"
+                "## Assigned Candidate Rows\n\n"
+                "| id | claim |\n"
+                "| --- | --- |\n"
+                "| ICR-10 | Remove redundant `// static` comment on trusted/untrustworthy input |\n\n"
+                f"Procedure:\n1. Read {root}/procedure.md and ignore `// static` comments.\n"
+            ),
             "procedure-counts-as-inputs": (
                 f"Procedure: read {root}/procedure.md then stop.\n"
             ),

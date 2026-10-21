@@ -39,13 +39,13 @@ def named_brief_inputs(brief: Path) -> set[Path]:
         if re.match(r"^(?:Inputs?|Procedure):", line, re.I):
             active = True
         elif active and re.match(
-                r"^(?:Scope|Deliverables?|Return|Rules|Precondition):", line,
-                re.I):
+                r"^(?:(?:Scope|Deliverables?|Return|Rules|Precondition):|#+\s)",
+                line, re.I):
             active = False
         if re.match(r"^Deliverables?:", line, re.I):
             deliverables_active = True
         elif deliverables_active and re.match(
-                r"^(?:Inputs?|Procedure|Scope|Return|Rules|Precondition):",
+                r"^(?:(?:Inputs?|Procedure|Scope|Return|Rules|Precondition):|#+\s)",
                 line, re.I):
             deliverables_active = False
         if not active and not deliverables_active:
@@ -56,7 +56,7 @@ def named_brief_inputs(brief: Path) -> set[Path]:
             # Otherwise recognize shell-tokenized commands whose executable
             # exists, without treating the whole invocation as a filename.
             literal = Path(quoted)
-            if literal.is_absolute() and literal.exists():
+            if not quoted.startswith("//") and literal.is_absolute() and literal.exists():
                 tokens = [quoted]
             else:
                 try:
@@ -64,12 +64,16 @@ def named_brief_inputs(brief: Path) -> set[Path]:
                 except ValueError:
                     shell_tokens = []
                 if (len(shell_tokens) == 1
-                        or (shell_tokens and Path(shell_tokens[0]).is_absolute()
+                        or (shell_tokens
+                            and not shell_tokens[0].startswith("//")
+                            and Path(shell_tokens[0]).is_absolute()
                             and Path(shell_tokens[0]).is_file())):
                     tokens = shell_tokens
                 else:
                     tokens = [quoted]
             for token in tokens:
+                if token.startswith("//"):
+                    continue
                 candidate = Path(token)
                 if candidate.is_absolute() and not token.endswith("/") and not candidate.is_dir():
                     destination.add(candidate.resolve())

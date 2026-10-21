@@ -411,16 +411,17 @@ def build_verification(review_dir: Path, skill_dir: Path, pin_info: dict[str, st
         }.items():
             hdr_filled = hdr_filled.replace(k, v)
 
-        ledger_inputs = ", ".join(str(p) for p in sorted(source_ledgers))
+        ledger_inputs = ", ".join(p.relative_to(review_dir).as_posix() for p in sorted(source_ledgers))
         body = (
             f"Scope: verify batch {work_id} ONLY — candidate rows {', '.join(cand_ids)}.\n\n"
-            f"Inputs: {code_packet_path}, {review_dir / 'callers/index.tsv'}, "
-            f"{review_dir / 'callers/directory-docs.md'}, and source candidate ledgers {ledger_inputs}.\n\n"
-            f"Embedded candidate rows for {work_id}:\n\n"
+            f"Inputs: {code_packet_path}, {review_dir / 'callers/index.tsv'}, and "
+            f"{review_dir / 'callers/directory-docs.md'} (inline candidate rows extracted from {ledger_inputs}).\n\n"
+            f"## Assigned Candidate Rows\n\n"
             + "\n".join(embedded_rows)
             + "\n\nProcedure:\n"
-            f"1. Read {skill_dir / 'references/worker/verification-and-fixes/phase-5-adversarial-verification-protocol.md'}, "
-            f"{skill_dir / 'references/worker/verification-and-fixes/existence-verification-and-style-authority.md'}, and "
+            f"1. Read {skill_dir / 'references/worker/verification-and-fixes/verifying-candidate-findings.md'}, "
+            f"{skill_dir / 'references/worker/verification-and-fixes/skeptic-verdicts.md'}, "
+            f"{skill_dir / 'references/worker/verification-and-fixes/evaluating-fixes.md'}, and "
             f"{skill_dir / 'references/worker/synthesis-and-output/severity-calibration.md'}.\n"
             f"2. Verify each candidate in {', '.join(cand_ids)} against the pinned worktree and emit one verdict row ({work_id}-1, {work_id}-2, ...) "
             f"plus `## Trace closure` and `## Verified affinity` in the exact shape from "
@@ -428,6 +429,8 @@ def build_verification(review_dir: Path, skill_dir: Path, pin_info: dict[str, st
             f"Deliverable: {review_dir / 'verification' / f'{work_id}.md'}.\n"
         )
         brief_path.parent.mkdir(parents=True, exist_ok=True)
+        if brief_path.exists():
+            brief_path.chmod(0o644)
         brief_path.write_text(f"{hdr_filled}\n\n{body}", encoding="utf-8")
 
         extra_roles = {p: "candidate-packet" for p in source_ledgers}
@@ -440,7 +443,7 @@ def build_verification(review_dir: Path, skill_dir: Path, pin_info: dict[str, st
             work_id=work_id,
             attempt=attempt,
             tier="frontier",
-            artifact=f"verification/{work_id}.md",
+            artifact=str((review_dir / f"verification/{work_id}.md").resolve()),
             extra_roles=extra_roles,
         )
         print(" ".join(shlex.quote(part) for part in cmd))
@@ -501,6 +504,8 @@ def build_root_cause(review_dir: Path, skill_dir: Path, pin_info: dict[str, str]
             if embedded_bytes > budget:
                 fail(f"{work_id} assigned and comparison rows exceed candidate-packet budget; split rather than truncate")
             support_path.parent.mkdir(parents=True, exist_ok=True)
+            if support_path.exists():
+                support_path.chmod(0o644)
             support_path.write_text(support, encoding="utf-8")
 
         hdr_filled = header_text
@@ -524,8 +529,14 @@ def build_root_cause(review_dir: Path, skill_dir: Path, pin_info: dict[str, str]
             "⟨review-dir⟩": str(review_dir),
             "⟨skill-dir⟩": str(skill_dir),
             "⟨IDs, e.g.\nRF001 (EPW-2/V001-1, AL-4/V002-2), T001⟩": items_str,
-            "⟨review-dir⟩/verification/*.md": ", ".join(str(p) for p in sorted(source_verdicts)) or str(review_dir / "verification/batches.md"),
-            "⟨review-dir⟩/ledger/*.md": ", ".join(str(p) for p in sorted(source_ledgers)) or str(review_dir / "collection.md"),
+            "⟨review-dir⟩/verification/*.md": (
+                ", ".join(p.relative_to(review_dir).as_posix() for p in sorted(source_verdicts)) + " (embedded below)"
+                if source_verdicts else "verification/batches.md"
+            ),
+            "⟨review-dir⟩/ledger/*.md": (
+                ", ".join(p.relative_to(review_dir).as_posix() for p in sorted(source_ledgers)) + " (embedded below)"
+                if source_ledgers else "collection.md"
+            ),
             "R⟨round⟩-RC⟨batch⟩-1, -2, ...": f"R{round_num}-RC{batch_num}-⟨n⟩ (numbered from 1)",
         }.items():
             body_filled = body_filled.replace(k, v)
@@ -540,6 +551,8 @@ def build_root_cause(review_dir: Path, skill_dir: Path, pin_info: dict[str, str]
             embed_block += (f"\nInputs: {support_path} — bounded comparison context for provisional aliases only; "
                             "not additional assigned candidates and not accepted merge equivalence.\n")
         brief_path.parent.mkdir(parents=True, exist_ok=True)
+        if brief_path.exists():
+            brief_path.chmod(0o644)
         brief_path.write_text(f"{hdr_filled}\n\n{body_filled}{embed_block}", encoding="utf-8")
 
         extra_roles = {p: "candidate-packet" for p in source_ledgers}
@@ -555,7 +568,7 @@ def build_root_cause(review_dir: Path, skill_dir: Path, pin_info: dict[str, str]
             work_id=work_id,
             attempt=attempt,
             tier="frontier",
-            artifact=f"root-cause/{work_id}.md",
+            artifact=str((review_dir / f"root-cause/{work_id}.md").resolve()),
             extra_roles=extra_roles,
         )
         print(" ".join(shlex.quote(part) for part in cmd))
