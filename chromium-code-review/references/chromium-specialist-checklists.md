@@ -170,6 +170,28 @@ binder-to-implementation flow, sandbox capability delta, and `MIS-*` rows.
   separately from permission to operate on it.
 - Ensure `ReceiverSet` context is authentic and fresh across navigation,
   process swap, profile/storage partition, permission changes, and object reuse.
+- For browser-process storage, origin, or capability binders (`content/browser/`
+  frame and worker binders), verify all three orthogonal isolation and lifetime
+  checks separately:
+  1. **Profile & `StoragePartitionConfig` isolation:** check both
+     `BrowserContext::IsOffTheRecord()` and `StoragePartitionConfig::in_memory()`
+     / non-default `StoragePartition`s (such as non-persistent `<webview>`
+     guests inside a regular `BrowserContext`) so in-memory or isolated guest
+     partitions never share a regular profile's persistent on-disk store.
+  2. **`StorageKey` nonce & partitioning:** check
+     `storage_key.ForbidsUnpartitionedStorageAccess()` (`storage_key.nonce()`)
+     and third-party `StorageKey` partitioning (`storage_key.top_level_site()`);
+     never extract `storage_key.origin()` alone while dropping `nonce()`, which
+     lets `<iframe credentialless>` and fenced frames read or write persistent
+     unpartitioned storage.
+  3. **Process authorization & host-scoped lifetime:** check
+     `ChildProcessSecurityPolicy::CanAccessDataForOrigin(process_id, origin)`
+     at bind/request time (even when `origin` comes from browser-side
+     `GetStorageKey()`, because `CanAccessDataForOrigin` blocks restricted
+     processes such as PDF renderer processes), null-check
+     `ServiceWorkerHost::GetProcessHost()` during worker shutdown races, and
+     scope per-frame receivers with `content::DocumentService` (and worker
+     bindings with host-owned `ReceiverSet`s) rather than `MakeSelfOwnedReceiver`.
 - Trace binder exposure through every factory. Do not expose an interface to a
   broader process/origin/frame state or feature configuration than intended.
 - Verify associated-interface ordering only within its guarantee; handle
@@ -451,6 +473,26 @@ faithful level | test | negative case | configuration`, and `FTS-*` rows.
   for wiring/navigation/profile/process boundaries, WebTest for Blink behavior,
   WPT for portable web standards, platform test for OS/device integration, and
   fuzzer for hostile structured/state space.
+- When a CL introduces new browser-process Mojo implementations (`*Impl`) that
+  accept untrusted renderer input or implement a stateful protocol alongside a
+  web-exposed API, audit all three test layers as one cohesive test-architecture
+  family:
+  1. **Unit tests (`*_unittest.cc`)** driving the browser-side Mojo
+     implementations directly over Mojo remotes to cover browser-side validation,
+     `mojo::ReportBadMessage` paths (`mojo::test::BadMessageObserver`),
+     untrustworthy-origin/OTR/partition rejections that Blink pre-validation
+     makes unreachable from JS `EvalJs`, and state-machine/disconnect
+     interleavings (and flag pure C++ stack-constructed unit tests placed inside
+     `*_browsertest.cc` fixtures that never use the browser or test server).
+  2. **Web Platform Tests (WPTs)** (`external/wpt/` or `wpt_internal/` behind a
+     virtual suite) for portable W3C/WHATWG/WICG spec-observable behavior
+     rather than asserting JS spec behavior only via `EvalJs` in C++
+     `browsertest.cc`.
+  3. **Browser tests (`*_browsertest.cc`)** focused on browser-only integration
+     boundaries: disabled-feature binding rejection, OTR/Incognito and
+     in-memory/nonce'd partitions, worker contexts, mid-flight frame detach or
+     navigation, multi-chunk streaming backpressure, and cross-context handle
+     transfer (`postMessage`/`structuredClone`).
 - For web-exposed behavior changes, cite the governing spec section and
   require WPT coverage (or a concrete reason none is possible — then a
   WebTest). Check that a `RuntimeEnabledFeatures` status matches the change's

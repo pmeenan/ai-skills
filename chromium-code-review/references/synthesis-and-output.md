@@ -236,13 +236,24 @@ Calibration notes:
   waiting on the reviewer's own input are not new P2 blockers; defer them to
   non-blocking Questions / Notes unless the landed code causes immediate active
   harm (such as an unguarded OTR profile writing to the regular profile
-  directory).
+  directory). When an explicit `TODO` defers cumulative quota/eviction or cap
+  enforcement on a newly web-exposed write path behind a default-off feature
+  flag, surface it prominently as a non-blocking **Launch-Gate Note** in the
+  High-Level Summary / Next Steps and the Patchset-Level Gerrit comment rather
+  than burying it or promoting it as a P1/P2 blocker.
 - Never fault a CL for lacking unit tests in a file it did not modify (`pin.md`
   / `gerrit/changed-files.txt`). When a CL already includes a unit test for the
   changed function and/or an end-to-end test proving the primary new behavior
   works, requests for extra test permutations (such as latency/throughput cases
   in addition to offline emulation) or assertions on downstream stages
-  unchanged by the CL are at most optional **P3**, never P2.
+  unchanged by the CL are at most optional **P3**, never P2. However, when a CL
+  introduces a new multi-branch browser-process Mojo `*Impl`, service, or storage
+  backend tested only via happy-path `content_browsertests` (zero
+  `*_unittest.cc` exercising validation/error/edge branches over a bound
+  `mojo::Remote`), or tests portable web-exposed Blink IDL/spec behavior only via
+  C++ `EvalJs` in `browsertest.cc` instead of WPTs, that missing test layer is a
+  **P2** gap — consolidate all missing test-layer and test-placement findings
+  into a single P2 finding rather than splitting them across multiple findings.
 - Only `CL-introduced` (or `introduced-in-PS<N>`) P1/P2 findings block `LGTM`;
   `pre-existing` findings are reported for reference/follow-up only and never
   turn a review into `Not LGTM`.
@@ -263,8 +274,10 @@ explicitly. Anchors beat intuition, especially for test-gap severity:
 | Restriction feature (throttle, quota, block, isolation) silently degrading to unrestricted behavior on the common path | P1; P2 when the bypass needs an uncommon mode |
 | Success-only metric (duration, success count, size/ratio) logged on aborted or cancelled operations | P2 |
 | Load-bearing metadata written fire-and-forget (selectable-but-corrupt state) | P2 until proven unobservable |
-| Missing test coverage for the default/core mode of new behavior | P2 |
-| Extra test permutations when core new behavior is already tested end-to-end, or commit-message body line exceeding 72 columns | P3 |
+| Missing test coverage for the default/core mode of new behavior, or missing `*_unittest.cc` / WPT test layer for a new browser Mojo `*Impl` or web-exposed API (consolidated into one finding) | P2 |
+| Extra test permutations when core new behavior is already unit-tested, or commit-message body line exceeding 72 columns | P3 |
+| Async sequencing race on a single `SequenceBound<T>` FIFO runner with sticky error latching where only UI-thread callback ordering on raw Mojo IPC is affected | P3 |
+| Mojom/IDL comment vs implementation mismatch behind an unenabled `Experimental` flag when a dedicated test asserts the implemented behavior and no security boundary is weakened | P3 |
 | Sidecar (cache/compression/metrics) failure propagated into the primary operation's result | P2 |
 | Untested kill-switch OFF branch whose OFF behavior differs from pre-CL behavior | P2 |
 | Untested kill-switch OFF branch that only gates memoization of an invalidation-free value | P3 |
@@ -342,8 +355,11 @@ For full CL reviews, append compact **Gerrit-Ready Comments** unless the user
 asks for a short summary only, following the Verdict Alignment And Gerrit
 Output Rules section of `references/verification-and-fixes.md`:
 
-- **Main body:** brief landing-readiness summary, blockers, optional items,
-  prior review status, and verification notes.
+- **Main body (`## Main comment` / `## Patchset-Level Comment`):** brief
+  landing-readiness summary, blockers (`P1`/`P2`) vs optional polish (`P3`),
+  any non-blocking **Launch-Gate Note** for explicit `TODO`-deferred production
+  requirements (such as quota/eviction on a default-off feature), prior review
+  status, and verification notes.
 - **Replies to existing unresolved threads:** file and thread line, status, and
   the exact response, using normalized root/latest IDs from
   `gerrit/unresolved-threads.json`. Do not open duplicate new threads for an
@@ -353,15 +369,21 @@ Output Rules section of `references/verification-and-fixes.md`:
   an open thread whose latest comment is explicitly waiting on the human
   reviewer's own input.
 - **New inline comments:** repo-relative file, exact line or range, verbatim line
-  text from the reviewed patchset, and concise comment text (1–3 sentences).
+  text from the reviewed patchset, and concise author-facing comment text (1–3
+  sentences stating the bug/impact and the concrete ask, without internal trace
+  dumps or unmodified external subsystem `path:line` coordinates).
   When the finding's Suggested edit decision is applicable, attach the comment
   to that exact selected range and include its fenced `suggestion` block;
-  Gerrit replaces the attached lines with the block contents. Prefix optional
-  polish with `nit:`.
+  Gerrit replaces the attached lines with the block contents. Prefix all P3
+  optional polish comments with `nit:`.
 
 For both `draft-review.md` and `gerrit-comments.md`, cite all code locations as
 repo-relative `path:line` against the reviewed patchset, extract quoted code
-verbatim, and re-check line numbers before sending. Neither file may ever
+verbatim, and verify every file path, line number, and backticked
+function/method/variable/symbol identifier against the pinned worktree before
+sending (the validator mechanically checks file existence, line-number bounds,
+verbatim `- Line:` quotes, symbol existence in the cited file, and off-by-one
+line citations). Neither file may ever
 contain local filesystem or worktree paths (`/codereview/worktrees/`,
 `/usr/local/`, `/tmp/`, `/home/`), `file://` URLs, or LaTeX math notation
 (`$...$`, which Gerrit does not render — use backticked plain text such as

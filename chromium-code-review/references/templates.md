@@ -2078,9 +2078,13 @@ validation checks every measured fragment occurs byte-for-byte exactly once
 in its destination output. An ID in a frame/list does not count, and a
 finding without a Gerrit fragment cannot pass.
 
-`FRAME.md` contains only High-Level Summary, Prior Review Follow-Up, Positives,
-Verification Notes, Next Steps, verdict sentence, and the ordered part list; it
-does not repeat per-finding evidence.
+`FRAME.md` (`draft-parts/FRAME.md`) contains only High-Level Summary, Prior Review
+Follow-Up, Positives, Verification Notes, Next Steps (including any non-blocking
+**Launch-Gate Note** for explicit `TODO`-deferred production requirements on a
+default-off feature), verdict sentence, and the ordered part list; it does not
+repeat per-finding evidence. On sharded drafts, the Frame Writer also writes
+`gerrit-parts/FRAME.md` containing the `## Main comment` / `## Patchset-Level Comment`
+summary placed at the top of `gerrit-comments.md`.
 
 Assembly is hierarchical. Every assembly node consumes at most 12 input cards
 or fragments and no more than `worker_input_budget_bytes` total, writes one

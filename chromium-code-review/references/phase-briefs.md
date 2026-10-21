@@ -1256,7 +1256,13 @@ Procedure: read these exact reference files:
 ⟨skill-dir⟩/references/worker/verification-and-fixes/verdict-alignment-and-gerrit-output-rules.md. Draft the
 finding or question exactly from the reconciled evidence; do not re-adjudicate.
 Include the exact `Synthesis item: ⟨card-ID⟩` field and internal source-row
-trail in the review fragment. For a finding, copy its Suggested edit decision:
+trail in the review fragment. Verify every `path:line` citation, `- Line: \`...\``
+verbatim quote, and backticked function/method/variable/symbol identifier against
+the pinned worktree before writing — never paraphrase a `- Line:` quote or cite a
+declaration at an off-by-one line number. Keep `gerrit-parts/⟨card-ID⟩.md` to a
+concise 1–3 sentence author-facing comment (prefix P3 comments with `nit:`, and
+never include internal trace dumps or unmodified external subsystem `path:line`
+coordinates). For a finding, copy its Suggested edit decision:
 an applicable edit has the identical fenced `suggestion` replacement in the
 review and Gerrit fragments at the card's exact target range; an omitted edit
 keeps the card's specific reason and has no suggestion block.
@@ -1286,8 +1292,12 @@ directives.md, plan.md, orchestration.tsv, ledger/PR.md if present, and
 root-cause/batches.md summary. Extract only compact outcome fields.
 
 Deliverable: draft-parts/FRAME.md with High-Level Summary, Prior Review
-Follow-Up, cited Positives, Verification Notes, Next Steps, verdict sentence,
-and the complete ordered card-part list. The list must name every card in
+Follow-Up, cited Positives, Verification Notes, Next Steps (including any
+non-blocking **Launch-Gate Note** for explicit `TODO`-deferred production
+prerequisites such as quota/eviction on a default-off feature), verdict sentence,
+and the complete ordered card-part list, plus `gerrit-parts/FRAME.md` containing
+the `## Main comment` (Patchset-Level Comment) for `gerrit-comments.md`. The
+ordered card-part list must name every card in
 synthesis/index.md with no omission; a missing card part is a truncation
 defect, not an editorial choice. Apply verdict alignment. Freshness remains
 pending-delivery.
@@ -1316,7 +1326,9 @@ gerrit-comments.md every finding's Gerrit fragment exactly once. A non-root
 node writes
 draft-assembly/⟨node-ID⟩.md. The root writes draft-review.md and
 gerrit-comments.md and updates the draft-dependent gate lines, with Freshness
-still pending-delivery. The root must include `FRAME.md` and start
+still pending-delivery. The root must include `FRAME.md` (and place the
+`## Main comment` / `## Patchset-Level Comment` summary at the top of
+`gerrit-comments.md` before inline comments) and start
 draft-review.md with `- Draft revision: ⟨draft-revision⟩`. Append the node row
 to draft-assembly/manifest.md. At the root, collect every per-item coverage row
 into `output-coverage.tsv`, rejecting duplicate/missing/foreign items and
@@ -1406,8 +1418,11 @@ contradictions between findings and other caller paths or feature gates,
 miscalibrated severities (check each against the anchor table in
 ⟨skill-dir⟩/references/worker/synthesis-and-output/severity-calibration.md),
 verdict/finding
-inconsistencies, gate lines answered untruthfully, and Gerrit-text rule
-violations. Remember the restriction-feature inversion: silently degrading
+inconsistencies, gate lines answered untruthfully, Gerrit-text rule
+violations, and any inaccurate file paths, out-of-bounds or off-by-one line
+numbers, paraphrased `- Line:` quotes, or hallucinated/mismatched backticked
+functions, methods, or variables against the pinned worktree. Remember the
+restriction-feature inversion: silently degrading
 to unrestricted behavior is a finding, not graceful fallback.
 
 Deliverable: ⟨review-dir⟩/challenge/round-⟨round⟩/⟨CH-batch⟩.md — immutable shard file in

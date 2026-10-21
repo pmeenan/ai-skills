@@ -34,6 +34,7 @@ from artifact_tables import (
     effective_tables,
     plan_row_identity,
 )
+from report_verifier import WorktreeCorpus, verify_fragment_text
 
 
 PHASES = {"pin": 0, "collection": 1, "verification": 2,
@@ -4999,6 +5000,16 @@ def validate_output_coverage(
         return
 
     seen: set[str] = set()
+    corpus = WorktreeCorpus.load(root)
+    frame_path = root / "draft-parts" / "FRAME.md"
+    if frame_path.is_file():
+        for err in verify_fragment_text(
+            corpus,
+            "draft-parts/FRAME.md",
+            read_text(frame_path, report),
+            is_gerrit=False,
+        ):
+            report.error(err)
     draft_path = root / "draft-review.md"
     gerrit_path = root / "gerrit-comments.md"
     draft_payload = (
@@ -5222,6 +5233,13 @@ def validate_output_coverage(
                         f"output coverage {item} draft fragment lacks non-empty "
                         f"'{field_name}' field"
                     )
+            for err in verify_fragment_text(
+                corpus,
+                f"output coverage {item} draft fragment",
+                draft_text,
+                is_gerrit=False,
+            ):
+                report.error(err)
 
         if expected_kind == "finding":
             gerrit_fragment = exact_fragment(
@@ -5247,6 +5265,13 @@ def validate_output_coverage(
                         f"output coverage {item} Gerrit fragment lacks a "
                         "repo-relative path:line target"
                     )
+                for err in verify_fragment_text(
+                    corpus,
+                    f"output coverage {item} Gerrit fragment",
+                    gerrit_text,
+                    is_gerrit=True,
+                ):
+                    report.error(err)
             if draft_fragment is not None and gerrit_fragment is not None:
                 suggestion_decision(item, draft_text, gerrit_text)
         elif (
@@ -5440,8 +5465,8 @@ def contains_local_path_url_or_placeholder(text: str) -> bool:
     if contains_local_path_or_url(text):
         return True
     for match in re.finditer(r"<[^>\n]+>", text):
-        if match.group(0)[1:-1].strip().lower() in {
-                "replacement", "code", "placeholder"}:
+        token = match.group(0)[1:-1].strip().lower()
+        if token in {"replacement", "code", "placeholder"}:
             return True
         prefix = text[:match.start()]
         # C++ template arguments are attached to the template name. This also
@@ -5450,6 +5475,16 @@ def contains_local_path_url_or_placeholder(text: str) -> bool:
         if re.search(r"(?:[A-Za-z_]\w*|>)$", prefix):
             continue
         if match.group(0) == "<=>":
+            continue
+        # Allow standard C/C++ angle-bracket headers in `#include <...>` or backticks.
+        if re.search(r"#\s*include\s*$", prefix) or (
+            prefix.endswith("`")
+            and text[match.end():].startswith("`")
+            and re.fullmatch(
+                r"(?:[a-z][a-z0-9_./]*\.h|c?(?:assert|ctype|errno|fenv|float|inttypes|iso646|limits|locale|math|setjmp|signal|stdarg|stdbool|stddef|stdint|stdio|stdlib|string|tgmath|time|uchar|wchar|wctype)|algorithm|any|array|atomic|barrier|bit|bitset|charconv|chrono|codecvt|compare|complex|concepts|condition_variable|coroutine|deque|exception|execution|expected|filesystem|flat_map|flat_set|format|forward_list|fstream|functional|future|generator|hazard_pointer|initializer_list|iomanip|ios|iosfwd|iostream|istream|iterator|latch|list|map|mdspan|memory|memory_resource|mutex|new|numbers|numeric|optional|ostream|print|queue|random|ranges|ratio|regex|scoped_allocator|semaphore|set|shared_mutex|source_location|span|spanstream|sstream|stack|stacktrace|stdexcept|stdfloat|stop_token|streambuf|string_view|strstream|syncstream|system_error|text_encoding|thread|tuple|type_traits|typeindex|typeinfo|unordered_map|unordered_set|utility|valarray|variant|vector|version)",
+                token,
+            )
+        ):
             continue
         return True
     return False

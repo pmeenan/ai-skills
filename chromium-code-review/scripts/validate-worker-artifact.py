@@ -18,6 +18,7 @@ from artifact_tables import (
     effective_tables,
     plan_row_identity,
 )
+from report_verifier import WorktreeCorpus, verify_fragment_text
 
 
 ROW_ID = re.compile(r"^(?:[A-Z][A-Z0-9]*-\d+|R\d+-RC\d+-\d+)$")
@@ -636,6 +637,23 @@ def reconciliation_check(
             fail(f"{artifact} pre-output gate lacks non-empty item {number}")
 
 
+def report_fragment_check(
+    root: Path,
+    text: str,
+    artifact: Path,
+    is_gerrit: bool,
+) -> None:
+    corpus = WorktreeCorpus.load(root)
+    errors = verify_fragment_text(
+        corpus,
+        artifact.relative_to(root).as_posix(),
+        text,
+        is_gerrit=is_gerrit,
+    )
+    if errors:
+        fail("; ".join(errors))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("review_dir", type=Path)
@@ -644,7 +662,7 @@ def main() -> int:
         "--kind",
         choices=(
             "auto", "inventory", "plan", "ledger", "verdict", "affinity",
-            "reconciliation", "generic",
+            "reconciliation", "draft-fragment", "gerrit-fragment", "generic",
         ),
         default="auto",
     )
@@ -683,6 +701,16 @@ def main() -> int:
             kind = "affinity"
         elif relative.as_posix() == "reconciliation.md":
             kind = "reconciliation"
+        elif (
+            relative.parts[:1] == ("draft-parts",)
+            or relative.as_posix() == "draft-review.md"
+        ):
+            kind = "draft-fragment"
+        elif (
+            relative.parts[:1] == ("gerrit-parts",)
+            or relative.as_posix() == "gerrit-comments.md"
+        ):
+            kind = "gerrit-fragment"
         else:
             kind = "generic"
     if kind == "inventory":
@@ -697,6 +725,15 @@ def main() -> int:
         affinity_check(root, parsed, artifact)
     elif kind == "reconciliation":
         reconciliation_check(text, parsed, artifact)
+    elif kind == "draft-fragment":
+        report_fragment_check(root, text, artifact, is_gerrit=False)
+    elif kind == "gerrit-fragment":
+        report_fragment_check(
+            root,
+            text,
+            artifact,
+            is_gerrit=(artifact.name != "FRAME.md"),
+        )
     print(f"valid {kind}: {artifact}")
     return 0
 
