@@ -42,7 +42,8 @@ code, not from memory.
 - Apply Universal Verification Principles during refutation:
   - **Contract Authority Hierarchy & Verbatim Spec Quotes (External Specs & Subsystem Invariants Outrank Local Comments/Tests):** Normative external specifications (W3C, WHATWG, WICG, IETF RFCs, WebIDL/Mojo wire contracts) and documented subsystem invariants (`context.md`, `callers/directory-docs.md`) outrank CL-local header comments, inline comments, and CL-introduced unit tests. Local comments or unit tests that codify a misreading of the governing external specification **never** refute a spec-mismatch candidate; unless the CL explicitly marks the divergence as an intentional staged `TODO` with safe gating/fallback, confirm the mismatch (or record `UNPROVEN` as an owner question when specification intent is genuinely ambiguous). Whenever quoting a specification in a verdict or finding, quote the spec's exact words verbatim (e.g. `"origins"`, `"globally disclosable"`), never paraphrasing code identifiers inside quotation marks or citing unverified section numbers.
   - **Documented Intent Overrides Syntactic Omissions:** Within the bounds of the Contract Authority Hierarchy above, adjacent inline comments, docstrings, and header contracts are binding design specifications for internal implementation choices. An omitted branch or conditional that is explicitly documented in code comments or header docs as intentional design is NOT a defect unless it violates a governing external specification, base-interface contract, or higher-level subsystem invariant.
-  - **Burden of Proof Requires Reachable Harm & Trusted-Caller Calibration:** A missing `if` check or omitted pre-filter is ONLY a blocking bug if a reachable trace produces a concrete bad state (memory corruption, security bypass, data loss, or broken invariant). Defense-in-depth checks on inputs supplied exclusively by trusted browser-process code (e.g. re-verifying a browser-computed staging digest at commit time, or guarding against `>2 GiB` buffers that cannot cross a single Mojo message) and hazards that require a caller to violate a documented "call at most once" contract (e.g. calling `Finish()` after `Discard()`) are at most **P3** (or a P3 doc/behavior mismatch if `Discard()` after `Finish()` deletes the committed file because `path_` is not cleared), never P1/P2 blockers, unless reachable from untrusted input without a browser bug.
+  - **Burden of Proof Requires Reachable Harm, Stubbed-Consumer Discounting, & Trusted-Caller Calibration:** A missing `if` check or omitted pre-filter is ONLY a blocking bug if a reachable trace produces a concrete bad state (memory corruption, security bypass, data loss, or broken invariant). Defense-in-depth checks on inputs supplied exclusively by trusted browser-process code (e.g. re-verifying a browser-computed staging digest at commit time, guarding a browser-constructed file path where a side effect inside `DLOG(ERROR)` is unreachable in production, or guarding against `>2 GiB` buffers that cannot cross a single Mojo message), interface contract discrepancies where no external caller can hold or mint the required token/handle (e.g. an untrusted WebUI origin that cannot call a restricted Mojo capability), and hazards that require a caller to violate a documented "call at most once" contract (e.g. calling `Finish()` after `Discard()`) are at most **P3** (`nit:`), never P1/P2 blockers, unless reachable from untrusted input without a browser bug. Likewise, if a state propagation or bookkeeping bug (such as copying a permission flag by value instead of sharing state) only affects a consumer method that is explicitly unimplemented/stubbed (`TODO`, `NOTIMPLEMENTED`, `kOperationFailed`) in the current CL, cap severity at **P3** (non-blocking) and frame it as "fix before or with the follow-up CL that implements `<consumer>`," never P1/P2.
+  - **Cross-Context / IPC Delivery-Channel Plausibility:** Whenever a candidate claims a token, handle, capability, or message can be transferred between two execution contexts, origins, `StorageKey`s, frames, or processes, verify that each named transport/delivery mechanism (`postMessage`, `BroadcastChannel`, `SharedWorker`, `ServiceWorker`, `IndexedDB`, `window.opener`, etc.) can actually connect those two contexts under web-platform partitioning and frame-messaging rules (for example, `BroadcastChannel`, `SharedWorker`, and `ServiceWorker` are partitioned by `StorageKey` / top-level site and cannot cross top-level sites, and fenced frames block embedder `postMessage`). Prune any impossible delivery mechanism via an amendment before confirming the finding.
   - **`SequenceBound` / Single-Sequence FIFO Serialization & Error Latching:** Before confirming a P1/P2 concurrency or state-machine corruption claim on a UI-thread Mojo wrapper, check whether all backend operations funnel through a single `base::SequenceBound<T>` or `SequencedTaskRunner` (running FIFO on one sequence) that latches error state on failure, and whether normal renderer callers serialize operations (e.g. `WritableStream`). If backend state cannot be corrupted and only UI-thread status callback ordering on out-of-order raw Mojo IPC is affected, calibrate as **P3**, never P1/P2.
   - **Experimental-Flag & Deliberate-Test Cross-Check:** When evaluating a Mojom/IDL comment or contract mismatch, check whether the WebIDL method is gated behind an unenabled `Experimental` runtime feature flag (or another finding notes it is dead in the default config) and whether a test in the CL explicitly asserts the implemented behavior. If it is not web-exposed by default, has no security/privacy impact, and appears deliberate from the test, calibrate as a **P3 question/nit** (asking whether the mojom comment or the implementation should change), never a P2 blocker.
   - **Explicit `TODO`-Tracked Scope, Launch-Gate Notes, & Open Reviewer Threads:** Before confirming that a request, factory, or pipeline stage lacks an observer, token, or subsystem integration (for example, `devtools_observer` or `devtools_request_id` being `mojo::NullRemote()` / empty), trace the factory construction helper and its caller chain (such as `NavigationRequest` calling `URLLoaderFactoryParamsHelper::CreateForEarlyHintsPreload`) for existing `TODO(crbug.com/...)` comments. In any CL—including small bug fixes as well as foundation or stacked CLs—missing integrations or pre-existing gaps that are already tracked by an explicit in-code `TODO` (such as `BrowsingDataRemover` wiring, storage quota enforcement, or missing DevTools instrumentation on Early Hints preloads) or by an open Gerrit thread waiting on the reviewer's own input are not P1/P2 findings: refute them as `REFUTED` (citing the `TODO` `path:line` or open thread ID) or record a non-blocking design question (`UNPROVEN`), unless the code being landed actively causes new harm today (for example, an unguarded OTR profile writing to the regular profile directory). However, when a CL is the first to web-expose writes or persistence behind a default-disabled feature flag (`FEATURE_DISABLED_BY_DEFAULT` / `status: "test"`) and defers cumulative quota, eviction, or resource caps via a `TODO`, surface it as an explicit non-blocking **Launch-Gate Note** in both the review summary (`draft-parts/FRAME.md`) and the Patchset-Level Gerrit comment (`gerrit-parts/FRAME.md`), noting that the default-off flag is why it doesn't block this CL and that it must land before any field trial or default-on launch. Likewise, generic requests to "add UMA histograms, tracing, or benchmarks" in a foundation CL with no callers and no `histograms.xml` in scope are `REFUTED`.
@@ -83,11 +84,28 @@ code, not from memory.
   and callers guarding their own state with `WeakPtr` is the standard Chromium
   contract (`REFUTED`); also do not claim `weak_factory_` is "unused" when
   `GetWeakPtr()` is public API.
-- For style claims, cite authority applicable to the changed directory.
-  Blink/WebKit naming guidance is not a Chromium-wide convention, a
-  mechanical `bool` hit without local authority or concrete callsite ambiguity
-  is REFUTED, and valid UTF-8 section symbols (`§`, e.g. `§ 8.4`) in
-  specification citations are permitted by Chromium style (`REFUTED`).
+- For style and idiom claims, cite authority applicable to the changed directory
+  and check both prior-patchset history (`ledger/PR.md`) and local convention in
+  the changed and sibling directories:
+  - Blink/WebKit naming guidance is not a Chromium-wide convention, a mechanical
+    `bool` hit without local authority or concrete callsite ambiguity is
+    `REFUTED`, and valid UTF-8 section symbols (`§`, e.g. `§ 8.4`) in
+    specification citations are permitted by Chromium style (`REFUTED`).
+  - Never confirm a style or idiom candidate that reverts a deliberate
+    prior-patchset fix recorded in `ledger/PR.md` or contradicts a documented
+    lifetime/error-path contract in adjacent header comments (specifically: a
+    `base::OnceCallback` parameter that is only conditionally consumed so the
+    caller can invoke `mojo::ReportBadMessage` before the callback is destroyed
+    on validation-failure paths uses a non-const lvalue reference
+    `OnceCallback&` or pointer, not `OnceCallback&&`, which Google C++ style
+    discourages when the callee does not unconditionally move-from the
+    parameter).
+  - Before confirming any style/convention claim not backed by an explicit rule
+    in the Chromium C++ Style Guide (for example, claiming `// static` comments
+    above out-of-line static member definitions are non-standard when they are
+    standard Chromium idiom), grep the changed directory and sibling directories
+    in the pinned worktree; refute (`REFUTED`) any claim that contradicts
+    prevalent Chromium usage.
 
 ## Skeptic Verdicts
 
@@ -311,7 +329,14 @@ or new state holder, record a root-cause row with these fields:
   `omitted — <specific reason>`. For an applicable edit, record the
   repo-relative changed-side range, the verbatim selected lines, and the exact
   replacement. Re-trace the replacement through the same edge cases as the
-  chosen fix; a plausible code sketch is not an applicable edit. Use the
+  chosen fix; a plausible code sketch is not an applicable edit. When the
+  selected range `path:start-end` ends with a blank separator line in the pinned
+  file, the replacement block must preserve that trailing blank line so applying
+  the suggestion does not concatenate adjacent blocks or functions. In any P3 /
+  style / assertion / test-cleanup finding on a modified file, scope the
+  requested changes strictly to lines, call sites, and classes touched or
+  extended by the CL's diff hunks — never bundle untouched pre-existing lines or
+  unmodified sibling classes in the same file into the ask. Use the
   canonical multiline RC-row fields from `templates.md`; never compress
   multiline selected/replacement text into a root-family table cell. The
   table cell references the owning RC row, and reconciliation copies that
@@ -415,7 +440,14 @@ review:
   finding's `Claim`, `Location`, `Evidence`, `Fix status`, and Gerrit `Comment`)
   actually exist in the cited file and at the cited line (not hallucinated
   identifiers, wrong `.h` vs `.cc` files, or off-by-one line numbers pointing to
-  an adjacent declaration)?
+  an adjacent declaration)? In any P3 / style / assertion / test-cleanup finding
+  on a modified file, are all cited line numbers and class names in `Evidence`,
+  `Fix status`, and Gerrit `Comment` strictly inside the CL's diff hunks (never
+  bundling untouched pre-existing lines or unmodified sibling classes in the same
+  file)? And if a finding names cross-context delivery mechanisms (such as
+  `BroadcastChannel`, `postMessage`, `SharedWorker`, or `fenced-frame`), can
+  each named channel actually cross the boundary in question under web-platform
+  partitioning rules?
 - Do proposed fixes preserve the documented contract and nearby Chromium
   idioms? Have API-shaping fixes been weighed against reasonable alternatives?
 - **Cross-finding fix compatibility & no grab-bag bundling:** Do any two
@@ -495,9 +527,12 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   include a `## Main comment` (or `## Patchset-Level Comment`) section before
   inline comments (emitted via `gerrit-parts/FRAME.md` in sharded drafts) that
   gives the author a concise landing-readiness summary, blocking `P1`/`P2` vs
-  optional `P3` counts, and any non-blocking **Launch-Gate Note** for explicit
-  `TODO`-tracked production prerequisites (such as quota/eviction wiring on a
-  default-off feature).
+  optional `P3` counts, prior review status, and any non-blocking **Launch-Gate
+  Note** for explicit `TODO`-tracked production prerequisites (such as
+  quota/eviction wiring on a default-off feature). Keep internal `Verification
+  Notes` (such as `"No local test execution was performed during this review"` or
+  thread-audit summaries) inside `draft-review.md` only — do not include an
+  internal `Verification notes:` bullet in `gerrit-comments.md`.
 - **Verbatim quoted code line required:** Every new inline comment in
   `gerrit-parts/<item>.md` and `gerrit-comments.md` must include `- Line: \`<verbatim line from the pinned patchset>\`` copied directly from the card's `Verbatim changed line` field (which itself must be extracted verbatim from the worktree at the pinned revision, never paraphrased from memory).
 - **No placeholder or fake inlines:** do not output generic placeholder
@@ -511,9 +546,12 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   multi-paragraph trace dumps, internal gate metadata (`Rows`, `Synthesis item`,
   `Fix status`, anchor names), or unmodified external subsystem `path:line`
   coordinates into author-facing Gerrit inline comments (name the external
-  class/method concisely in prose instead). Avoid repeating the same suggestion
-  across multiple files/declarations; place a single comment at the most
-  relevant site.
+  class/method concisely in prose instead). In any P3 style, assertion, or
+  test-cleanup inline comment on a modified file, cite and request changes only
+  on lines and classes touched by the CL's diff hunks — never bundle untouched
+  pre-existing lines or unmodified sibling classes in the same file. Avoid
+  repeating the same suggestion across multiple files/declarations; place a
+  single comment at the most relevant site.
 - **Make applicable edits directly actionable:** every promoted finding has a
   `Suggested edit` decision inherited from its evidence card. Mark it
   `applicable` only when the validated fix is fully determined, replaces one
@@ -523,7 +561,10 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   `suggestion` block in both the review finding and its Gerrit fragment. The
   block contains replacement text only — no diff markers, ellipses,
   placeholders, or explanatory prose — and its target range must be the lines
-  Gerrit should replace. This is an apply-ready edit, not pseudocode.
+  Gerrit should replace. When the replaced range `path:start-end` ends with a
+  blank separator line in the pinned file, preserve that trailing blank line in
+  the `suggestion` block so applying the edit does not join adjacent blocks.
+  This is an apply-ready edit, not pseudocode.
   Re-check the path is normalized and repo-relative, the positive range is
   in-bounds and intersects the pinned patch's changed side, and the selected
   text exactly equals those lines in the pinned revision. The Gerrit fragment
@@ -551,9 +592,16 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   ID tie-break), and take unresolved state from that thread's latest comment.
   Target the normalized root/latest IDs in `gerrit/unresolved-threads.json`.
   Never use the last file-array element or the change's latest message as
-  unresolved-thread state, never emit a `### Thread <root_id>` reply for a
-  thread that is already resolved on Gerrit (absent from
-  `gerrit/unresolved-threads.json`), never attach unrelated new findings to an
-  existing or resolved thread, and when an open thread is explicitly waiting on
-  the human reviewer's own input, note that status instead of posting a
+  unresolved-thread state, never emit a `### Thread <root_id>` or `- Reply-To:
+  root <root_id>, latest <latest_id>` reply for a thread that is already
+  resolved on Gerrit (absent from `gerrit/unresolved-threads.json`), never
+  attach `- Reply-To:` to a `### path:line` inline comment whose `path` or
+  `line` differs from the thread root's location in
+  `gerrit/unresolved-threads.json` (place replies to existing threads under
+  `## Replies to existing unresolved threads` at the thread's own `path:line` and
+  omit `Reply-To:` on standalone inline comments at other locations), and when
+  an open thread is awaiting a decision from the reviewer running the review
+  (`Reviewer email` in `pin.md`), present a `[Reviewer decision on thread <id>:
+  Option A ... / Option B ...]` placeholder in `## Main comment` instead of
+  writing third-person `"awaiting reviewer confirmation"` or posting a
   prescriptive agent reply.

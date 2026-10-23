@@ -58,6 +58,12 @@ changed surface.
   state being observable through a status predicate before the operation runs,
   not only the case where a previous operation already latched the terminal
   result internally.
+- For compound conditions or filtered invalidation/notification paths (where
+  an update on `A` is gated on live condition `B`), tests must cover **both
+  temporal orderings**: (`B` becomes true, then `A` occurs) **and** (`A`
+  occurs while `B` is false so the fast path skips work, and `B` transitions
+  to true afterward) — not only static cases where `B` is already true or
+  permanently false when `A` runs.
 - For each important test: would it fail without the claimed fix? Does it
   exercise the edge case named by its name or comment, or merely codify the
   current implementation? Trace the test's control flow and assertions

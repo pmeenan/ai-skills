@@ -72,16 +72,24 @@ Output Rules section of `references/verification-and-fixes.md`:
 - **Main body (`## Main comment` / `## Patchset-Level Comment`):** brief
   landing-readiness summary, blockers (`P1`/`P2`) vs optional polish (`P3`),
   any non-blocking **Launch-Gate Note** for explicit `TODO`-deferred production
-  requirements (such as quota/eviction on a default-off feature), prior review
-  status, and verification notes.
+  requirements (such as quota/eviction on a default-off feature), and prior
+  review status. Keep internal `Verification Notes` (such as `"No local test
+  execution was performed during this review"` or subagent audit summaries) in
+  `draft-review.md` only — omit internal verification-note bullets from
+  `gerrit-comments.md`.
 - **Replies to existing unresolved threads:** file and thread line, status, and
   the exact response, using normalized root/latest IDs from
   `gerrit/unresolved-threads.json`. Do not open duplicate new threads for an
   existing topic, never reply to a thread that is already resolved on Gerrit
-  (absent from `gerrit/unresolved-threads.json`), never attach unrelated new
-  findings to a resolved thread, and do not post a prescriptive agent reply on
-  an open thread whose latest comment is explicitly waiting on the human
-  reviewer's own input.
+  (absent from `gerrit/unresolved-threads.json`), never attach `- Reply-To: root
+  <root_id>, latest <latest_id>` to a `### path:line` inline comment whose
+  `path` or `line` differs from the thread root's location in
+  `gerrit/unresolved-threads.json`, never attach unrelated new findings to a
+  resolved thread, and when an open thread is awaiting a decision from the
+  reviewer running the review (`Reviewer email` in `pin.md`), present a
+  `[Reviewer decision on thread <id>: Option A ... / Option B ...]` placeholder
+  in `## Main comment` instead of emitting an open `Q<N>` question to the CL
+  author or writing third-person `"awaiting reviewer confirmation"`.
 - **New inline comments:** repo-relative file, exact line or range, verbatim line
   text from the reviewed patchset, and concise author-facing comment text (1–3
   sentences stating the bug/impact and the concrete ask, without internal trace

@@ -4731,6 +4731,23 @@ def validate_synthesis(
     index = root / "synthesis" / "index.md"
     text = read_text(index, report)
     rc_suggestions = root_suggestion_decisions(root, report)
+    unresolved_thread_roots: set[str] | None = None
+    threads_path = root / "gerrit" / "unresolved-threads.json"
+    if threads_path.is_file():
+        try:
+            threads_data = json.loads(threads_path.read_text(encoding="utf-8"))
+            if isinstance(threads_data, dict) and isinstance(
+                threads_data.get("threads"), list
+            ):
+                unresolved_thread_roots = {
+                    str(thread.get("root_id") or "").strip()
+                    for thread in threads_data["threads"]
+                    if isinstance(thread, dict)
+                    and thread.get("unresolved") is True
+                    and thread.get("root_id")
+                }
+        except (OSError, json.JSONDecodeError):
+            pass
     cards: dict[str, str] = {}
     total_bytes = 0
     evidence_budget = budgets.get("evidence_card_budget_bytes")
@@ -4758,6 +4775,26 @@ def validate_synthesis(
                 report.error(f"synthesis card is missing: {card}")
                 continue
             card_text = read_text(card, report)
+            if unresolved_thread_roots is not None:
+                existing_thread_match = re.search(
+                    r"(?im)^-\s*Existing Gerrit thread:\s*(.+?)\s*$", card_text
+                )
+                if existing_thread_match is not None:
+                    raw_thread = existing_thread_match.group(1).strip().strip("`")
+                    if raw_thread.lower() not in {"none", "-", "—", ""}:
+                        thread_root = (
+                            re.sub(r"(?i)^root\s+", "", raw_thread)
+                            .split(",")[0]
+                            .split()[0]
+                            .strip()
+                            .strip("`")
+                        )
+                        if thread_root and thread_root not in unresolved_thread_roots:
+                            report.error(
+                                f"synthesis card {item} cites resolved or unknown "
+                                f"Existing Gerrit thread '{thread_root}' "
+                                "(absent from gerrit/unresolved-threads.json)"
+                            )
             if kind == "finding":
                 decision = CARD_SUGGESTED_EDIT_FIELD.search(card_text)
                 if decision is None:
@@ -5591,7 +5628,7 @@ def contains_local_path_url_or_placeholder(text: str) -> bool:
 
 
 def validate_gerrit_thread_replies(
-    root: Path, gerrit: str, report: Report
+    root: Path, gerrit: str, report: Report, draft: str = ""
 ) -> None:
     """Reject Gerrit replies targeting resolved, unknown, or stale threads."""
     threads_path = root / "gerrit" / "unresolved-threads.json"
@@ -5603,13 +5640,17 @@ def validate_gerrit_thread_replies(
         return
     if not isinstance(data, dict) or not isinstance(data.get("threads"), list):
         return
-    unresolved_by_root: dict[str, str] = {}
+    unresolved_by_root: dict[str, dict[str, Any]] = {}
     for thread in data["threads"]:
         if isinstance(thread, dict) and thread.get("unresolved") is True:
             root_id = str(thread.get("root_id") or "").strip()
             latest_id = str(thread.get("latest_id") or "").strip()
             if root_id:
-                unresolved_by_root[root_id] = latest_id
+                unresolved_by_root[root_id] = {
+                    "latest_id": latest_id,
+                    "path": str(thread.get("path") or "").strip(),
+                    "line": thread.get("line"),
+                }
     matches = list(re.finditer(r"(?m)^###\s+Thread\s+([^\s—]+).*$", gerrit))
     for index, match in enumerate(matches):
         root_id = match.group(1).strip().strip("`")
@@ -5630,12 +5671,78 @@ def validate_gerrit_thread_replies(
         )
         if latest_match:
             cited_latest = latest_match.group(1).strip().strip("`")
-            expected_latest = unresolved_by_root[root_id]
+            expected_latest = unresolved_by_root[root_id]["latest_id"]
             if expected_latest and cited_latest != expected_latest:
                 report.error(
                     f"gerrit-comments.md thread {root_id} cites stale latest "
                     f"comment id {cited_latest}, expected {expected_latest}"
                 )
+    for block_match in re.finditer(r"(?m)^###\s+(.+?)\s*$", gerrit):
+        heading = block_match.group(1).strip()
+        next_heading = re.search(r"(?m)^##", gerrit[block_match.end():])
+        end = (
+            block_match.end() + next_heading.start()
+            if next_heading is not None else len(gerrit)
+        )
+        section = gerrit[block_match.end():end]
+        for reply_match in re.finditer(
+            r"(?im)^-\s*Reply-To:\s*root\s+([^\s,]+)\s*,\s*latest\s+([^\s,]+)",
+            section,
+        ):
+            root_id = reply_match.group(1).strip().strip("`")
+            cited_latest = reply_match.group(2).strip().strip("`")
+            if root_id not in unresolved_by_root:
+                report.error(
+                    f"gerrit-comments.md replies to resolved or unknown Gerrit "
+                    f"thread {root_id}"
+                )
+                continue
+            thread_info = unresolved_by_root[root_id]
+            expected_latest = thread_info["latest_id"]
+            if expected_latest and cited_latest != expected_latest:
+                report.error(
+                    f"gerrit-comments.md thread {root_id} cites stale latest "
+                    f"comment id {cited_latest}, expected {expected_latest}"
+                )
+            anchor_match = re.fullmatch(
+                r"([A-Za-z0-9_.+@{}\-/]+):([1-9]\d*)(?:-([1-9]\d*))?",
+                heading,
+            )
+            if anchor_match is not None:
+                anchor_path = anchor_match.group(1)
+                anchor_start = int(anchor_match.group(2))
+                thread_path = thread_info["path"]
+                thread_line = thread_info["line"]
+                if (
+                    thread_path != anchor_path
+                    or (isinstance(thread_line, int) and thread_line != anchor_start)
+                ):
+                    report.error(
+                        f"gerrit-comments.md Reply-To for thread {root_id} "
+                        f"({thread_path}:{thread_line}) is attached to conflicting "
+                        f"inline anchor {anchor_path}:{anchor_start}; place thread "
+                        "replies under '## Replies to existing unresolved threads' "
+                        f"at {thread_path}:{thread_line} or omit Reply-To on "
+                        "standalone inline comments"
+                    )
+    for label, text_payload in (
+        ("gerrit-comments.md", gerrit),
+        ("draft-review.md", draft),
+    ):
+        for line in text_payload.splitlines():
+            for thread_match in re.finditer(
+                r"(?i)\bthread\s+`?([0-9a-f]{8}_[0-9a-f]{8})`?", line
+            ):
+                tid = thread_match.group(1).lower()
+                if (
+                    tid not in unresolved_by_root
+                    and re.search(r"(?i)\b(?:remains\s+open|still\s+open)\b", line)
+                    and not re.search(r"(?i)\bresolved\b", line)
+                ):
+                    report.error(
+                        f"{label} describes Gerrit thread {tid} as open, "
+                        "but it is resolved or absent from gerrit/unresolved-threads.json"
+                    )
 
 
 def validate_final(root: Path, sha: str | None, source_ids: dict[str, Path],
@@ -5658,7 +5765,7 @@ def validate_final(root: Path, sha: str | None, source_ids: dict[str, Path],
         report.error("draft-review.md contains a local filesystem path or file:// URL")
     if contains_local_path_url_or_placeholder(gerrit):
         report.error("gerrit-comments.md contains a local path/URL or placeholder inline")
-    validate_gerrit_thread_replies(root, gerrit, report)
+    validate_gerrit_thread_replies(root, gerrit, report, draft)
     validate_output_coverage(root, synthesis_items, draft, gerrit, report)
     sections = validate_draft_sections(
         root, draft_revision, budgets.get("worker_input_budget_bytes"), report

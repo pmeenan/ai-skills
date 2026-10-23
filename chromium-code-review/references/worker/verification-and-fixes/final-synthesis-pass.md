@@ -32,7 +32,14 @@ review:
   finding's `Claim`, `Location`, `Evidence`, `Fix status`, and Gerrit `Comment`)
   actually exist in the cited file and at the cited line (not hallucinated
   identifiers, wrong `.h` vs `.cc` files, or off-by-one line numbers pointing to
-  an adjacent declaration)?
+  an adjacent declaration)? In any P3 / style / assertion / test-cleanup finding
+  on a modified file, are all cited line numbers and class names in `Evidence`,
+  `Fix status`, and Gerrit `Comment` strictly inside the CL's diff hunks (never
+  bundling untouched pre-existing lines or unmodified sibling classes in the same
+  file)? And if a finding names cross-context delivery mechanisms (such as
+  `BroadcastChannel`, `postMessage`, `SharedWorker`, or `fenced-frame`), can
+  each named channel actually cross the boundary in question under web-platform
+  partitioning rules?
 - Do proposed fixes preserve the documented contract and nearby Chromium
   idioms? Have API-shaping fixes been weighed against reasonable alternatives?
 - **Cross-finding fix compatibility & no grab-bag bundling:** Do any two

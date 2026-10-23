@@ -34,8 +34,8 @@ preamble, so its rules travel with every section.
 | Brief — Reconciliation Shard (Phase 6, when indexed) | brief-reconciliation-shard-phase-6-when-indexed.md | 33 |
 | Brief — Reconciliation Exact-Coverage Collector (Phase 6, sharded) | brief-reconciliation-exact-coverage-collector-phase-6-sharded.md | 28 |
 | Brief — Draft Writer (Phase 7, only when bounded) | brief-draft-writer-phase-7-only-when-bounded.md | 60 |
-| Brief — Finding Writer (Phase 7, large reviews, one per card) | brief-finding-writer-phase-7-large-reviews-one-per-card.md | 44 |
-| Brief — Frame Writer (Phase 7, large reviews) | brief-frame-writer-phase-7-large-reviews.md | 26 |
+| Brief — Finding Writer (Phase 7, large reviews, one per card) | brief-finding-writer-phase-7-large-reviews-one-per-card.md | 49 |
+| Brief — Frame Writer (Phase 7, large reviews) | brief-frame-writer-phase-7-large-reviews.md | 33 |
 | Brief — Draft Assembly (Phase 7, large reviews, one per assembly node) | brief-draft-assembly-phase-7-large-reviews-one-per-assembly-node.md | 39 |
 | Brief — Synthesis Challenge Planner (Phase 8) | brief-synthesis-challenge-planner-phase-8.md | 45 |
 | Brief — Synthesis Challenger (Phase 8, one per CH shard) | brief-synthesis-challenger-phase-8-one-per-ch-shard.md | 43 |

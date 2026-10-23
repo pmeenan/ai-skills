@@ -568,6 +568,12 @@ owner = detail.get("owner", {})
 def one_line(value):
     return " ".join(str(value or "").splitlines())
 
+reviewer_email = subprocess.run(
+    ["git", "-C", repo, "config", "user.email"],
+    check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, encoding="utf-8", errors="surrogateescape"
+).stdout.strip()
+
 is_current = "yes" if ps == current_ps else "no"
 current_sha = detail.get("current_revision", "")
 fetched_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -576,6 +582,10 @@ lines.extend([
     f"- Subject: {one_line(detail.get('subject', ''))}",
     f"- Status: {one_line(detail.get('status', ''))}",
     f"- Owner: {one_line(owner.get('name', '?'))} <{one_line(owner.get('email', '?'))}>",
+])
+if reviewer_email:
+    lines.append(f"- Reviewer email: {one_line(reviewer_email)}")
+lines.extend([
     f"- Updated: {one_line(detail.get('updated', ''))}",
     f"- Pinned patchset: {ps}",
     f"- Revision SHA: {sha}",

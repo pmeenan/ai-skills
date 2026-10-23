@@ -33,10 +33,18 @@ Calibration notes:
 - Avoid blocking on speculative problems, style preferences, or fixes whose
   tradeoffs have not been validated.
 - Defense-in-depth checks on inputs supplied exclusively by trusted
-  browser-process code (e.g. re-verifying a browser-computed staging digest or
-  guarding against `>2 GiB` single-message buffers) and hazards that require a
-  caller to violate a documented "call at most once" contract are **P3**, never
-  P1/P2.
+  browser-process code (e.g. re-verifying a browser-computed staging digest,
+  guarding a browser-constructed file path where a side effect inside
+  `DLOG(ERROR)` is unreachable in production, or guarding against `>2 GiB`
+  single-message buffers), base-interface contract discrepancies where no
+  external caller can hold or mint the required token/handle, and hazards that
+  require a caller to violate a documented "call at most once" contract are
+  **P3**, never P1/P2.
+- State propagation or bookkeeping bugs (e.g. copying a permission flag by
+  value instead of sharing state) whose sole consumer method is explicitly
+  unimplemented/stubbed (`TODO`, `NOTIMPLEMENTED`, `kOperationFailed`) in the
+  current CL are capped at **P3** (non-blocking) and framed as "fix before or
+  with the follow-up CL that implements `<consumer>`," never P1/P2.
 - Missing follow-up integrations already tracked by an explicit in-code `TODO`
   (such as `BrowsingDataRemover`, storage quota enforcement, or missing
   DevTools observer wiring on Early Hints preloads) or by an open Gerrit thread
@@ -97,6 +105,7 @@ explicitly. Anchors beat intuition, especially for test-gap severity:
 | Bulk-migration call site that can observe a proven old-vs-new behavioral difference (null/error/encoding/lifetime), unaccounted by the CL | P1 |
 | Residue hunk in a claimed-mechanical change that alters behavior beyond the proven transformation spec | P1; P3 when provably cosmetic |
 | Defense-in-depth validation on trusted browser-internal caller inputs or caller misuse of a documented one-shot API contract | P3 |
+| State propagation / bookkeeping bug whose sole consumer method is unimplemented/stubbed (`TODO` / `kOperationFailed`) in the current CL, or base-interface / `DLOG` guard discrepancy with no reachable untrusted caller path | P3 |
 | Doc/behavior mismatch on out-of-order post-`Finish()`/post-`Discard()` cleanup or redundant no-op I/O / rehash | P3 |
 | Include hygiene, missing `OWNERS` file, dead enum enumerator, or internal numeric sentinel preferring `std::optional` | P3 |
 | Ambiguous boolean name (policy vs state, `should_` vs `is_`) | P3 |

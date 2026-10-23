@@ -321,6 +321,22 @@ loop as a wall-time nuisance.
   lifecycle model, or only under test lifecycles? If strictly test-time,
   test-scoped invalidation helpers beat runtime overhead on production hot
   paths — but verify the reachability claim instead of assuming it.
+- **Filtered / narrowed invalidation and multi-step state transitions:** When
+  a CL narrows an invalidation, dirty-marking, recomputation, or notification
+  pass on trigger `A` by skipping targets that do not currently satisfy a live
+  condition `B` (or adds an early-out based on live state `B`):
+  1. *Skipped side effects:* Did the broader pass previously establish latent
+     state on targets in `!B` (such as dependency/subscription bits, observer
+     registrations, cached parent/owner links, or dirty-propagation markers)
+     that a future `!B -> B` transition relies on?
+  2. *Two-step transition trace (`A` while `!B`, then `B`):* Do not only trace
+     `B` already true when `A` fires. Explicitly trace the sequence where **`A`
+     occurs while `B` is false (so the target is skipped by the new filter),
+     and then `B` transitions from false to true later**. Enumerate every state
+     mutator that can change `B`'s truth value — including indirect mutators or
+     secondary flags that participate in `B` — with `path:line` citations, and
+     verify that each one independently invalidates or notifies the target
+     without relying on work that `A` skipped.
 - For same-origin or security-origin caching optimizations, verify standard
   vs non-standard URL scheme properties against the registry constants in
   `url/url_util.cc` (such as `kFileSystemScheme` or `kBlobScheme`) instead of
@@ -571,6 +587,12 @@ changed surface.
   state being observable through a status predicate before the operation runs,
   not only the case where a previous operation already latched the terminal
   result internally.
+- For compound conditions or filtered invalidation/notification paths (where
+  an update on `A` is gated on live condition `B`), tests must cover **both
+  temporal orderings**: (`B` becomes true, then `A` occurs) **and** (`A`
+  occurs while `B` is false so the fast path skips work, and `B` transitions
+  to true afterward) — not only static cases where `B` is already true or
+  permanently false when `A` runs.
 - For each important test: would it fail without the claimed fix? Does it
   exercise the edge case named by its name or comment, or merely codify the
   current implementation? Trace the test's control flow and assertions

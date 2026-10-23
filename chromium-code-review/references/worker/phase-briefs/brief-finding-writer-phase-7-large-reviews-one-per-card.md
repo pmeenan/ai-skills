@@ -55,11 +55,16 @@ trail in the review fragment. Verify every `path:line` citation, `- Line: \`...\
 verbatim quote, and backticked function/method/variable/symbol identifier against
 the pinned worktree before writing — never paraphrase a `- Line:` quote or cite a
 declaration at an off-by-one line number. Keep `gerrit-parts/⟨card-ID⟩.md` to a
-concise 1–3 sentence author-facing comment (prefix P3 comments with `nit:`, and
+concise 1–3 sentence author-facing comment (prefix P3 comments with `nit:`,
 never include internal trace dumps or unmodified external subsystem `path:line`
-coordinates). For a finding, copy its Suggested edit decision:
+coordinates, never bundle untouched pre-existing lines or unmodified sibling
+classes in the same file into a P3 style/assertion ask, and never attach
+`- Reply-To: root <root_id>, latest <latest_id>` to a `### path:line` inline
+anchor that differs from the thread root's file and line in
+`gerrit/unresolved-threads.json`). For a finding, copy its Suggested edit decision:
 an applicable edit has the identical fenced `suggestion` replacement in the
-review and Gerrit fragments at the card's exact target range; an omitted edit
+review and Gerrit fragments at the card's exact target range (preserving any
+trailing blank separator line in the replaced range); an omitted edit
 keeps the card's specific reason and has no suggestion block.
 
 Deliverables: exact final-output bytes in

@@ -38,7 +38,14 @@ or new state holder, record a root-cause row with these fields:
   `omitted — <specific reason>`. For an applicable edit, record the
   repo-relative changed-side range, the verbatim selected lines, and the exact
   replacement. Re-trace the replacement through the same edge cases as the
-  chosen fix; a plausible code sketch is not an applicable edit. Use the
+  chosen fix; a plausible code sketch is not an applicable edit. When the
+  selected range `path:start-end` ends with a blank separator line in the pinned
+  file, the replacement block must preserve that trailing blank line so applying
+  the suggestion does not concatenate adjacent blocks or functions. In any P3 /
+  style / assertion / test-cleanup finding on a modified file, scope the
+  requested changes strictly to lines, call sites, and classes touched or
+  extended by the CL's diff hunks — never bundle untouched pre-existing lines or
+  unmodified sibling classes in the same file into the ask. Use the
   canonical multiline RC-row fields from `templates.md`; never compress
   multiline selected/replacement text into a root-family table cell. The
   table cell references the owning RC row, and reconciliation copies that

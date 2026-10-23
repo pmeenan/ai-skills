@@ -142,6 +142,46 @@ def refresh_comment_threads(root: Path, live_comments: dict[str, Any]) -> str | 
                     stale_replies.append(
                         f"thread {root_id} latest_id {cited_latest} != {live_by_root[root_id]}"
                     )
+        for reply_match in re.finditer(
+            r"(?im)^-\s*Reply-To:\s*root\s+([^\s,]+)\s*,\s*latest\s+([^\s,]+)",
+            gerrit_text,
+        ):
+            root_id = reply_match.group(1).strip().strip("`")
+            cited_latest = reply_match.group(2).strip().strip("`")
+            if root_id not in live_by_root:
+                stale_replies.append(f"resolved/unknown thread {root_id}")
+            elif live_by_root[root_id] and cited_latest != live_by_root[root_id]:
+                stale_replies.append(
+                    f"thread {root_id} latest_id {cited_latest} != {live_by_root[root_id]}"
+                )
+        for line in gerrit_text.splitlines():
+            for thread_match in re.finditer(
+                r"(?i)\bthread\s+`?([0-9a-f]{8}_[0-9a-f]{8})`?", line
+            ):
+                tid = thread_match.group(1).lower()
+                if (
+                    tid not in live_by_root
+                    and re.search(r"(?i)\b(?:remains\s+open|still\s+open)\b", line)
+                    and not re.search(r"(?i)\bresolved\b", line)
+                ):
+                    stale_replies.append(
+                        f"resolved thread {tid} described as open in gerrit-comments.md"
+                    )
+    draft_path = root / "draft-review.md"
+    if draft_path.is_file():
+        for line in draft_path.read_text(encoding="utf-8").splitlines():
+            for thread_match in re.finditer(
+                r"(?i)\bthread\s+`?([0-9a-f]{8}_[0-9a-f]{8})`?", line
+            ):
+                tid = thread_match.group(1).lower()
+                if (
+                    tid not in live_by_root
+                    and re.search(r"(?i)\b(?:remains\s+open|still\s+open)\b", line)
+                    and not re.search(r"(?i)\bresolved\b", line)
+                ):
+                    stale_replies.append(
+                        f"resolved thread {tid} described as open in draft-review.md"
+                    )
     threads_changed = existing_by_root is not None and existing_by_root != live_by_root
     if not threads_changed and not stale_replies:
         return None

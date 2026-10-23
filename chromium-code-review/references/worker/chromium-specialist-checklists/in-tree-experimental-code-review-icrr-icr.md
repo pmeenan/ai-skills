@@ -63,5 +63,13 @@ threads:
      surface ID in `indexes/inventory.tsv` when applicable, preserve any
      in-tree `Rule: <rule-id>` citation in `claim`/`evidence`, and include
      `style-convention` / `style-authority` in `Candidate descriptors` when
-     backed by an authoritative in-tree rule. Leave the candidate `severity`
-     column blank for Phase 6 synthesis.
+     backed by an authoritative in-tree rule. When an `ICR-*` candidate proposes
+     changing a parameter/callback passing convention (e.g. changing a
+     conditionally consumed `OnceCallback&` to `&&`), altering an interface
+     contract, or touching lines/classes outside the CL's diff hunks, also
+     include `base-contract` / `caller-reachability` obligations and note in
+     `evidence` whether it conflicts with a prior-patchset fix in
+     `ledger/PR.md`, an adjacent header comment, or prevalent local convention in
+     the changed/sibling directories (such as standard Chromium `// static`
+     comments above out-of-line static member definitions). Leave the candidate
+     `severity` column blank for Phase 6 synthesis.
