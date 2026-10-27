@@ -13,7 +13,7 @@ preamble, so its rules travel with every section.
 | Deterministic Review Profile And Effort Class | deterministic-review-profile-and-effort-class.md | 17 |
 | Gather Context (Pass 1) | gather-context-pass-1.md | 61 |
 | Pass 1 — Changed-Surface Inventory And Risk-Area Map | pass-1-changed-surface-inventory-and-risk-area-map.md | 115 |
-| Pass 2 — Prior-Feedback Reconciliation | pass-2-prior-feedback-reconciliation.md | 56 |
+| Pass 2 — Prior-Feedback Reconciliation | pass-2-prior-feedback-reconciliation.md | 84 |
 | Pass 3 — The Thread Plan | pass-3-the-thread-plan.md | 169 |
 | The Roster | the-roster.md | 23 |
 | Specialist Trigger Decisions | specialist-trigger-decisions.md | 120 |

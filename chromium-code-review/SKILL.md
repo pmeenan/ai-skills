@@ -255,8 +255,8 @@ Orchestrator-facing (the only skill files the orchestrator loads):
 
 The helpers themselves live in `scripts/`. The ones an orchestrator drives
 directly are `fetch-cl.sh`, `snapshot-skill.py`, `profile-review.py`,
-`resolve-internal-review-capabilities.py`, `build-review-indexes.py`,
-`build-caller-index.py`, `build-initial-plan.py`,
+`interdiff_hunks.py`, `resolve-internal-review-capabilities.py`,
+`build-review-indexes.py`, `build-caller-index.py`, `build-initial-plan.py`,
 `extract-unresolved-comments.py`, `build-phase-brief.py`,
 `build-scope-packets.py`, `seal-work-unit.py`, `await-workers.py`,
 `set-work-state.py`, `refresh-manifest.py`, `log-progress.py`,
@@ -311,7 +311,16 @@ orchestrator never loads these):
 - **Follow-up review:** run the full pipeline including Phase 2 (prior-feedback
   reconciliation). Prior feedback is context, not the boundary of the review:
   after resolving prior findings, discovery still covers the whole changed
-  surface.
+  surface. When `profile.json:/prior_context/reviewer_history/same_reviewer_followup`
+  is `true` (Round 2+ by the same `Reviewer email`, matching
+  `<local>@chromium.org` and `<local>@google.com` interchangeably or honoring
+  `- Reviewer email:` in `directives.md` / `CHROMIUM_REVIEWER_EMAIL`),
+  `profile-review.py` emits `indexes/interdiff-hunks.tsv` for
+  `latest_prior_reviewed_sha..revision_sha`; discovery and verification audit
+  interdiff hunks and prior-fix interactions at full rigor while Phase 5
+  recalibrates unchanged-code severity, honors `deferred (accepted)` prior
+  threads, and Phase 6 reconciliation mechanically enforces interdiff-first
+  promotion gating and `not-posted` non-revival on unchanged code.
 - **Targeted review:** focus on the requested subsystem, file, or risk area —
   the planner triggers only the matching roster entries — but any serious
   blocker discovered nearby is still reported. Targeted scope does not relax
@@ -598,14 +607,19 @@ consult those instead of re-running identical searches.
 
 Write the prior review text (from the conversation or wherever the user supplied
 it) to `prior-feedback-input.md` — a deliberate, one-time context expenditure.
-Then spawn the **Prior-Feedback agent** (brief in `phase-briefs.md`). It
-executes Pass 2 of `references/inventory-and-planning.md`: latest-vs-prior
-diffs, resolution of every prior finding, reconciliation against unresolved
-Gerrit threads in `gerrit/unresolved-threads.json`, and origin labeling.
+When `profile.json:/prior_context/reviewer_history/same_reviewer_followup` is
+`true`, Phase 2 runs even if `prior-feedback-input.md` is absent, using
+`comments.json` and `detail.json` (`latest_prior_reviewed_patchset` /
+`latest_prior_reviewed_sha`) as the authoritative record of what `Reviewer email`
+actually posted on Gerrit. Then spawn the **Prior-Feedback agent** (brief in
+`phase-briefs.md`). It executes Pass 2 of `references/inventory-and-planning.md`:
+latest-vs-prior diffs, resolution of every prior finding, reconciliation against
+unresolved Gerrit threads in `gerrit/unresolved-threads.json`, and origin
+labeling.
 
 - Deliverable: `ledger/PR.md`.
 - Return: counts by resolution (fixed / partially fixed / still open / obsolete
-  / superseded) — one line.
+  / superseded / reviewer decision pending / not-posted) — one line.
 
 ## Phase 3 — Thread Planning
 

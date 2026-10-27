@@ -12,11 +12,21 @@ verdicts into a real review.
 ## ledger/PR.md — Prior-Feedback Reconciliation
 
 The exact `## Prior-feedback rows` and `## Candidate rows` headings are
-required. The first table accounts for every supplied finding and every
-normalized unresolved Gerrit thread. Only `partially fixed` and `still open`
-items are copied into Candidate rows for verification; fixed, obsolete, and
-superseded PR rows remain reconciliation obligations but do not require skeptic
-verdicts.
+required. The first table accounts for every supplied finding, every normalized
+unresolved Gerrit thread, and every resolved Gerrit thread in `comments.json`
+where `Reviewer email` agreed to defer work to a follow-up CL, using one of the
+canonical `resolution` values: `fixed`, `partially fixed`, `still open`,
+`obsolete`, `superseded`, `reviewer decision pending`, `deferred (accepted)`
+(for resolved threads where `Reviewer email` agreed the deferred work may land
+in a follow-up CL), or `not-posted` (for local draft items in
+`prior-feedback-input.md` that `Reviewer email` did not post to Gerrit according
+to `comments.json`). Only `partially fixed` and `still open` items are copied
+into `## Candidate rows` for verification; `fixed`, `obsolete`, `superseded`,
+`reviewer decision pending`, `deferred (accepted)`, and `not-posted` PR rows
+remain reconciliation obligations in `reconciliation.md` (for example `clean
+(fixed in PS...)`, `clean (deferred to follow-up CL per thread ...)`, or `clean
+(not-posted in prior Gerrit review)`) and must never be copied into `##
+Candidate rows` as active `candidate` rows.
 
 ```markdown
 # Prior feedback — CL 9999999 PS3
@@ -40,6 +50,8 @@ verdicts.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | PR-1 | supplied finding 1 | pending_ survives abort | net/streams/delay_buffer.cc:141 | PS2 93ab... | reset added at delay_buffer.cc:143 | fixed | introduced-in-PS2 |
 | PR-2 | Gerrit thread root abc123 | Flush can double-complete | net/streams/delay_buffer.cc:167 | PS2 93ab... | second path remains at :172 | still open | introduced-in-PS2 |
+| PR-3 | supplied finding 2 | optional helper rename | net/streams/delay_buffer.h:44 | PS2 93ab... | absent from comments.json by Reviewer email | not-posted | CL-introduced |
+| PR-4 | resolved Gerrit thread root def456 | follow-up unit tests for retry policy | net/streams/delay_buffer_unittest.cc:1 | PS1 51c0... | reviewer agreed in thread def456 to land unit tests in stacked CL | deferred (accepted) | CL-introduced |
 
 ## Candidate rows
 

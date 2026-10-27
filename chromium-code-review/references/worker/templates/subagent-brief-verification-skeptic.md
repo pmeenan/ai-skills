@@ -28,7 +28,10 @@ confirmation, not a dismissal.
    /checkout/chromium/codereview/worktrees/cl-9999999-ps3
    (verify rev-parse HEAD first).
 
-2. Candidates under test (full rows inline — this is skeptic batch V001):
+2. Candidates under test (full rows inline — this is skeptic batch V001; on
+   same-reviewer Round 2+ reviews, `build-batch-briefs.py` also includes
+   `profile.json`, `indexes/interdiff-hunks.tsv`, and `ledger/PR.md` when
+   present plus per-candidate interdiff overlap tags):
    EPW-2 | Success-shaped return after failure cleanup |
    net/streams/delay_buffer.cc:203 | trace: OnTimer → OnWriteFailure() at
    :199 clears buffer_ → returns write_len_ > 0.

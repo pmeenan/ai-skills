@@ -44,7 +44,9 @@ def comment_order(comment: dict[str, Any]) -> tuple[str, str]:
             str(comment.get("id") or ""))
 
 
-def normalize(source: dict[str, Any]) -> dict[str, Any]:
+def normalize(
+    source: dict[str, Any], *, include_resolved: bool = False
+) -> dict[str, Any]:
     by_id: dict[str, dict[str, Any]] = {}
     malformed: list[dict[str, Any]] = []
 
@@ -124,11 +126,15 @@ def normalize(source: dict[str, Any]) -> dict[str, Any]:
     for comment_id, comment in by_id.items():
         groups.setdefault(find_root(comment_id), []).append(comment)
 
-    unresolved_threads: list[dict[str, Any]] = []
+    output_threads: list[dict[str, Any]] = []
+    unresolved_count = 0
     for root_id, comments in groups.items():
         comments.sort(key=comment_order)
         latest = comments[-1]
-        if latest.get("unresolved") is not True:
+        is_unresolved = latest.get("unresolved") is True
+        if is_unresolved:
+            unresolved_count += 1
+        elif not include_resolved:
             continue
         normalized_comments = []
         for comment in comments:
@@ -136,7 +142,7 @@ def normalize(source: dict[str, Any]) -> dict[str, Any]:
                     if field in comment}
             item["path"] = comment["path"]
             normalized_comments.append(item)
-        unresolved_threads.append({
+        output_threads.append({
             "root_id": root_id,
             "latest_id": latest["id"],
             "path": latest["path"],
@@ -144,11 +150,11 @@ def normalize(source: dict[str, Any]) -> dict[str, Any]:
             "range": latest.get("range"),
             "side": latest.get("side"),
             "patch_set": latest.get("patch_set"),
-            "unresolved": True,
+            "unresolved": is_unresolved,
             "comments": normalized_comments,
         })
 
-    unresolved_threads.sort(key=lambda thread: (
+    output_threads.sort(key=lambda thread: (
         str(thread.get("path") or ""),
         thread.get("line") if isinstance(thread.get("line"), int) else -1,
         str(thread["root_id"]),
@@ -157,10 +163,10 @@ def normalize(source: dict[str, Any]) -> dict[str, Any]:
     return {
         "summary": {
             "total_threads": len(groups),
-            "unresolved_threads": len(unresolved_threads),
+            "unresolved_threads": unresolved_count,
             "malformed_entries": len(malformed),
         },
-        "threads": unresolved_threads,
+        "threads": output_threads,
         "malformed": malformed,
     }
 

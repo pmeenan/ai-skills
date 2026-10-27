@@ -18,7 +18,7 @@ preamble, so its rules travel with every section.
 | Restamping prestate rows | restamping-prestate-rows.md | 23 |
 | Sealing a work unit | sealing-a-work-unit.md | 18 |
 | Generating a phase brief | generating-a-phase-brief.md | 37 |
-| Effort profiling | effort-profiling.md | 23 |
+| Effort profiling | effort-profiling.md | 38 |
 | Gates | gates.md | 17 |
 | Leases and the shared worktree | leases-and-the-shared-worktree.md | 59 |
 | Pin and snapshot | pin-and-snapshot.md | 21 |

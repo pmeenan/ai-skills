@@ -78,7 +78,7 @@ explicitly. Anchors beat intuition, especially for test-gap severity:
 
 | Finding pattern | Severity |
 | --- | --- |
-| Dropped completion callback on an error path (caller waits forever) | P1 |
+| Dropped completion callback on an error path when an actual external caller, Mojo IPC response, or JS promise waits forever (vs P3 `nit:` when all production callers in the CL settle their external callback independently) | P1 (or P3 when caller-settled) |
 | Success-shaped return (positive length, `OK`) after failure cleanup in a `DoLoop`-style state machine | P1 |
 | Discarded accepted/written-count return (`Push`, short `Write`) — silent byte loss | P1 |
 | Callback or timer bound with `Unretained` plus a reachable destroy-before-fire path | P1 |

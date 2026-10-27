@@ -59,6 +59,8 @@ index staleness error (§4.1). Fix the inner message here.
 | `<f> compliance matrix row <r> has N/A without a reason` | Bare `N/A`. | Write `N/A — <reason>`. | validate-worker-artifact.py:228 |
 | `<f> <table> table has no id column` | Missing `id` column. | Add it. | validate-worker-artifact.py:234 |
 | `<f> has invalid row ID '<id>'` | ID does not match `ROW_ID`. | Use `<PREFIX>-<n>`. | validate-worker-artifact.py:238 |
+| `<f> prior-feedback row <id> has unrecognized resolution '<r>'` | `## Prior-feedback rows` used an unrecognized `resolution` value. | Use one of `fixed`, `partially fixed`, `still open`, `obsolete`, `superseded`, `reviewer decision pending`, or `not-posted`. | validate-worker-artifact.py |
+| `<f> prior-feedback row <id> has non-open resolution '<r>' and must not appear as an active candidate row` | A `PR-<n>` row resolved as `fixed`, `obsolete`, `superseded`, `reviewer decision pending`, or `not-posted` was copied into `## Candidate rows` as an active `candidate`. | Remove `<id>` from `## Candidate rows` and `## Candidate descriptors`; only `partially fixed` and `still open` rows enter verification. | validate-worker-artifact.py |
 | `<f> must have exactly one 'Specialist escalation assessments' table` | Zero or several. | Keep exactly one. | validate-worker-artifact.py:245 |
 | `<f> specialist assessment table has wrong columns` | Header mismatch. | Copy the header from the template. | validate-worker-artifact.py:255 |
 | `<f> duplicates specialist assessment for <lens>` | Duplicate row. | Keep one row per lens. | validate-worker-artifact.py:260 |

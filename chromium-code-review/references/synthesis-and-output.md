@@ -39,10 +39,48 @@ until every row has a disposition.
 Cross-checks while building the table:
 
 - Every verdict-bearing candidate has a verdict-consistent terminal
-  disposition: CONFIRMED is promoted or structurally merged, UNPROVEN becomes
-  a question or structural merge, and REFUTED is refuted/dismissed with its
-  verdict or code citation, or structurally merged. `dismissed: duplicate`
-  cannot bypass the merge contract.
+  disposition: CONFIRMED is promoted (`promoted → F<number>`), structurally
+  merged, or assigned one of the explicit audited follow-up/note dispositions
+  (`note → N<number>`, `suppressed — unchanged since prior review (...)` for
+  `P3`, `pre-existing`, or justified `below round-<N> bar:` `P2` items on
+  mechanically verified unchanged code — never `P1`, `subordinated → thread
+  <root_id> (...)`, or
+  `launch-gate note (...)`); UNPROVEN becomes an owner question
+  (`question → Q<number>`), reviewer note (`note → N<number>`),
+  `subordinated → thread <root_id> (...)`, or structural merge; and REFUTED is
+  refuted/dismissed with its verdict or code citation, or structurally merged.
+  `dismissed: duplicate` cannot bypass the merge contract.
+- **Same-Reviewer Round 2+ / Round 3+ Interdiff-First Promotion Gate:** When
+  `profile.json:/prior_context/reviewer_history/same_reviewer_followup` is
+  `true` and `indexes/interdiff-hunks.tsv` is present, apply full promotion
+  rigor to `latest_prior_reviewed_sha..revision_sha` interdiff hunks, incomplete
+  fixes to posted prior comments, and regressions or new interactions triggered
+  by those fixes. Meanwhile, the validator mechanically rejects promoting
+  (`promoted → F<number>`) any candidate overlapping a `not-posted` `PR-<n>`
+  location whose code path does not overlap `indexes/interdiff-hunks.tsv`. For
+  candidates targeting code **unchanged** since `latest_prior_reviewed_sha`
+  (mechanically verified not to overlap any hunk in
+  `indexes/interdiff-hunks.tsv`), prevent late-round scope creep without
+  dropping audit rows: (1) suppress newly discovered `P3` nits and `Origin:
+  pre-existing` observations via `suppressed — unchanged since prior review
+  (<V-id>)`, and suppress `CL-introduced` / earlier-round `P2` items that fall
+  below the late-round bar only with an explicit justification `suppressed —
+  unchanged since prior review (<V-id>, below round-<N> bar: <specific reason>)`
+  (**P1** defects are strictly non-suppressible even on unchanged code — the
+  validator rejects any `P1` suppression, any `P2` suppression without `below
+  round-<N> bar: <reason>`, and any suppression whose location overlaps
+  `indexes/interdiff-hunks.tsv`); (2) fold newly noticed pre-launch
+  completeness gaps on unchanged code behind a `FEATURE_DISABLED_BY_DEFAULT`
+  flag into `launch-gate note (<V-id>)`, surfaced as a non-blocking
+  **Launch-Gate Note** in `FRAME.md`; (3) subordinate candidates whose scope is
+  already covered by an open `reviewer decision pending` Gerrit thread via
+  `subordinated → thread <root_id> (<V-id>)`; (4) route subtle edge cases or
+  external-spec tensions in code implementing `Reviewer email`'s own prior
+  suggestion to `note → N<number> (<V-id>)` (Reviewer Note in `draft-review.md`
+  only); and (5) apply a **P1 ship-stopper bar** (reachable security/privacy
+  violation, memory corruption/UAF, crash, hang, or data loss) before promoting
+  any newly noticed blocker on unchanged code already reviewed by `Reviewer
+  email`.
 - Every serious candidate has a verdict row; a candidate with no verdict is
   an unaccounted row, not an implicit dismissal, except a candidate with an
   explicit merge proposal. A merged candidate does not need a redundant
@@ -59,16 +97,17 @@ Cross-checks while building the table:
   Equivalence cells require actual code citations or canonical artifact
   pointers whose review-relative files exist and are nonempty;
   `evidence-exception:` is not sufficient for a semantic merge.
-- Every UNPROVEN verdict maps to a Questions entry; every reopened
-  root-cause row maps to a verdict or a question.
+- Every UNPROVEN verdict maps to a Questions entry (or a Reviewer Note
+  `note → N<number>` / `subordinated → thread <root_id>` when applicable); every
+  reopened root-cause row maps to a verdict, question, or note.
 - Every row amendment is applied in order; the original row remains present
   and its disposition cites the effective amendment.
 - `root-cause/batches.md` accounts for every trigger, including not-applicable
   rows with reasons.
 
-For each promoted finding and owner question, write one immutable bounded
-evidence card under `synthesis/<ROW-ID>.md` in the templates.md shape and add a
-manifest row to `synthesis/index.md`. Write each card using harness-native file creation tools or write a standalone script file (`cat << 'EOF' > gen_cards.py` with a quoted `'EOF'` delimiter) to avoid shell command-substitution errors on verbatim code lines containing backticks. A card is at most
+For each promoted finding, owner question, and reviewer note, write one
+immutable bounded evidence card under `synthesis/<ROW-ID>.md` in the
+templates.md shape and add a manifest row to `synthesis/index.md`. Write each card using harness-native file creation tools or write a standalone script file (`cat << 'EOF' > gen_cards.py` with a quoted `'EOF'` delimiter) to avoid shell command-substitution errors on verbatim code lines containing backticks. A card is at most
 `profile.json:/context_budget/evidence_card_budget_bytes`. It
 contains the effective candidate row, verdict, root-cause result, merge
 support, severity/origin, Gerrit-thread target, verbatim line, and caveats
@@ -109,20 +148,25 @@ gate line is blank is the failure mode the gate exists to stop.
 
 ### Comprehensive Output Mandate (No-Truncation Guarantee)
 To avoid multiple review rounds and ensure exhaustive feedback delivery:
-- **Exhaustive coverage:** Every promoted finding and owner question in
-  `reconciliation.md` — equivalently, every card in `synthesis/index.md` —
-  MUST have one exact `draft-parts/<item>.md` fragment included byte-for-byte
-  once in `draft-review.md`; every finding also has one exact
-  `gerrit-parts/<item>.md` fragment included byte-for-byte once in
-  `gerrit-comments.md`. The measured hashes and paths live in
-  `output-coverage.tsv`. The synthesis cards, not raw `verdicts.tsv` rows, are
-  the coverage set: a
-  CONFIRMED verdict that reconciliation merged into a survivor is represented
-  by that survivor, and a severity-downgraded finding remains a promotion at
-  its calibrated severity. The validator first proves reconciliation
-  promotions/questions
-  equal the card index, then proves the card index equals the coverage
-  manifest. An item ID in framing prose is not coverage.
+- **Exhaustive coverage:** Every promoted finding, owner question, and reviewer
+  note in `reconciliation.md` — equivalently, every card in
+  `synthesis/index.md` — MUST have one exact `draft-parts/<item>.md` fragment
+  included byte-for-byte once in `draft-review.md`; every `CL-introduced` and
+  `introduced-in-PS<N>` finding also has one exact `gerrit-parts/<item>.md`
+  fragment included byte-for-byte once in `gerrit-comments.md` (while questions
+  `Q<number>` and reviewer notes `N<number>` use `-` for Gerrit coverage, and
+  `Origin: pre-existing` findings may optionally use `-` with `Suggested edit:
+  omitted — <reason>` when omitting Gerrit inline output). The measured hashes
+  and paths live in `output-coverage.tsv`. The synthesis cards, not raw
+  `verdicts.tsv` rows, are the coverage set: a CONFIRMED verdict that
+  reconciliation merged into a survivor is represented by that survivor, an
+  audited non-promoted disposition (`suppressed — unchanged since prior review`,
+  `subordinated → thread <root_id>`, `launch-gate note`) is accounted in
+  `reconciliation.md` (and `FRAME.md` for `launch-gate note`), and a
+  severity-downgraded finding remains a promotion at its calibrated severity.
+  The validator first proves reconciliation promotions/questions/notes equal the
+  card index, then proves the card index equals the coverage manifest. An item
+  ID in framing prose is not coverage.
 - **Zero truncation or sampling:** Never cherry-pick, sample, or compress
   promoted findings into a "top priority" or "representative" subset to reduce
   draft size. Presenting a partial subset causes multiple review iterations
@@ -201,7 +245,11 @@ Record and report every finding with:
 
 Record every owner question as its own exact draft fragment with non-empty
 `Synthesis item` (`Q<number>`), `Question`, `Why it matters`, and `Rows`
-fields. Questions do not get Gerrit fragment rows.
+fields. Record every reviewer note (for example, an edge case or verbatim
+external-spec tension on code implementing `Reviewer email`'s own prior
+suggestion) as its own exact draft fragment with non-empty `Synthesis item`
+(`N<number>`), `Note`, `Why it matters`, and `Rows` fields. Questions and
+reviewer notes do not get Gerrit fragment rows (`-` in `output-coverage.tsv`).
 
 ## Severity Calibration
 
@@ -271,7 +319,7 @@ explicitly. Anchors beat intuition, especially for test-gap severity:
 
 | Finding pattern | Severity |
 | --- | --- |
-| Dropped completion callback on an error path (caller waits forever) | P1 |
+| Dropped completion callback on an error path when an actual external caller, Mojo IPC response, or JS promise waits forever (vs P3 `nit:` when all production callers in the CL settle their external callback independently) | P1 (or P3 when caller-settled) |
 | Success-shaped return (positive length, `OK`) after failure cleanup in a `DoLoop`-style state machine | P1 |
 | Discarded accepted/written-count return (`Push`, short `Write`) — silent byte loss | P1 |
 | Callback or timer bound with `Unretained` plus a reachable destroy-before-fire path | P1 |
@@ -329,11 +377,17 @@ to its immutable challenge round and delivery gate; it is not Gerrit prose.
    property is a claim like any other — name its guard line. (A measured run
    praised "failures fail open safely" about the exact branch that treated a
    failure as success.)
-6. **Questions:** Only questions whose answers affect correctness, API contract,
-   or landing readiness. Every UNPROVEN verdict lands here. Each question
-   carries its originating row/verdict ID trail (e.g. `Rows: AL-7 / V003-2`) —
-   internal, like the finding trail; omit it from Gerrit-facing text — so the
-   pre-output gate can prove no promoted card was dropped.
+6. **Questions (and Reviewer Notes, if any):** Only owner questions (`Q<number>`)
+   whose answers affect correctness, API contract, or landing readiness. Every
+   author-facing UNPROVEN verdict lands here. When reconciliation emits any
+   reviewer-only note (`N<number>`, such as a subtle edge case or verbatim spec
+   tension in code implementing `Reviewer email`'s own prior suggestion, with
+   optional guidance on reopening the prior Gerrit thread), include a distinct
+   **Reviewer Notes (Internal — Not Posted to Gerrit)** subsection in
+   `draft-review.md` only. Each question and reviewer note carries its
+   originating row/verdict ID trail (e.g. `Rows: AL-7 / V003-2`) — internal,
+   like the finding trail; omit it from Gerrit-facing text — so the pre-output
+   gate can prove no promoted card was dropped.
 7. **Verification Notes:** State tests run or not run, production wiring traced
    or not traced, and any important areas not verified.
    - Name subagents by human-readable thread name (e.g. "the Error-Path Walk
@@ -366,25 +420,32 @@ Output Rules section of `references/verification-and-fixes.md`:
 
 - **Main body (`## Main comment` / `## Patchset-Level Comment`):** brief
   landing-readiness summary, blockers (`P1`/`P2`) vs optional polish (`P3`),
-  any non-blocking **Launch-Gate Note** for explicit `TODO`-deferred production
-  requirements (such as quota/eviction on a default-off feature), and prior
-  review status. Keep internal `Verification Notes` (such as `"No local test
-  execution was performed during this review"` or subagent audit summaries) in
-  `draft-review.md` only — omit internal verification-note bullets from
-  `gerrit-comments.md`.
-- **Replies to existing unresolved threads:** file and thread line, status, and
-  the exact response, using normalized root/latest IDs from
-  `gerrit/unresolved-threads.json`. Do not open duplicate new threads for an
-  existing topic, never reply to a thread that is already resolved on Gerrit
-  (absent from `gerrit/unresolved-threads.json`), never attach `- Reply-To: root
-  <root_id>, latest <latest_id>` to a `### path:line` inline comment whose
-  `path` or `line` differs from the thread root's location in
-  `gerrit/unresolved-threads.json`, never attach unrelated new findings to a
-  resolved thread, and when an open thread is awaiting a decision from the
-  reviewer running the review (`Reviewer email` in `pin.md`), present a
-  `[Reviewer decision on thread <id>: Option A ... / Option B ...]` placeholder
-  in `## Main comment` instead of emitting an open `Q<N>` question to the CL
-  author or writing third-person `"awaiting reviewer confirmation"`.
+  any non-blocking **Launch-Gate Note** for explicit `TODO`-deferred or
+  default-off pre-launch requirements (such as quota/eviction on a default-off
+  feature), and prior review status. On Round 2+ follow-up reviews
+  (`same_reviewer_followup: true`), keep `## Main comment` to 1–3 concise,
+  natural sentences plus any `[Reviewer decision on thread <id>: Option A ... /
+  Option B ...]` placeholder or brief **Launch-Gate Note** — keep exhaustive
+  `file:line` lists of fixed prior comments in `draft-review.md` only. Keep
+  internal `Verification Notes` (such as `"No local test execution was performed
+  during this review"` or subagent audit summaries) in `draft-review.md` only —
+  omit internal verification-note bullets from `gerrit-comments.md`.
+- **Replies to existing unresolved threads (and controlled thread reopening):**
+  file and thread line, status, and the exact response, using normalized
+  root/latest IDs from `gerrit/unresolved-threads.json`. Do not open duplicate
+  new threads for an existing topic. By default, never reply to a thread that is
+  already resolved on Gerrit (absent from `gerrit/unresolved-threads.json`);
+  the sole exception is an explicit `- Status: reopen — <reason>` (with exact
+  `- Latest comment id: <id>` verified against `comments.json`) for a direct
+  follow-up on a prior Gerrit thread originally authored by `Reviewer email`.
+  Never attach `- Reply-To: root <root_id>, latest <latest_id>` to a `###
+  path:line` inline comment whose `path` or `line` differs from the thread
+  root's location, never attach unrelated new findings to a resolved thread, and
+  when an open thread is awaiting a decision from the reviewer running the
+  review (`Reviewer email` in `pin.md`), present a `[Reviewer decision on thread
+  <id>: Option A ... / Option B ...]` placeholder in `## Main comment` instead
+  of emitting an open `Q<N>` question to the CL author or writing third-person
+  `"awaiting reviewer confirmation"`.
 - **New inline comments:** repo-relative file, exact line or range, verbatim line
   text from the reviewed patchset, and concise author-facing comment text (1–3
   sentences stating the bug/impact and the concrete ask, without internal trace
@@ -461,13 +522,18 @@ delivery is blocked while any line is pending or blank.
    limited-review disclosure from the templates; they are not refutations,
    owner questions, or validated merges. Every other candidate retains normal
    verification obligations, and every promoted finding
-   cites a CONFIRMED verdict with its trace, and every promoted finding and
-   owner question has exactly one measured draft fragment included in
-   draft-review.md and, for findings, exactly one measured Gerrit fragment
-   included in gerrit-comments.md, with reconciliation→card→coverage sets
-   equal and no truncation, sampling, or
+   cites a CONFIRMED verdict with its trace (or uses an audited follow-up/note
+   disposition: `note → N<number>`, `suppressed — unchanged since prior review`
+   for `P3`/`pre-existing` only, `subordinated → thread <root_id>`, or
+   `launch-gate note`), and every promoted finding, owner question, and reviewer
+   note has exactly one measured draft fragment included in draft-review.md and,
+   for `CL-introduced` / `introduced-in-PS<N>` findings (plus any
+   `pre-existing` finding not opting out with `-`), exactly one measured Gerrit
+   fragment included in gerrit-comments.md, with reconciliation→card→coverage
+   sets equal and no truncation, sampling, or
    "representative subset"; every independently refuted row cites its guard or
-   safe trace; every UNPROVEN row appears in Questions; every merged candidate
+   safe trace; every UNPROVEN row appears in Questions (or `note → N<number>` /
+   `subordinated → thread <root_id>`); every merged candidate
    either has its own verdict or has validated trigger/invariant/outcome
    equivalence to a survivor whose verdict is cited (a merged candidate is
    represented by its survivor, never dropped).
@@ -486,7 +552,9 @@ delivery is blocked while any line is pending or blank.
     blocks in the review and Gerrit fragment, and every omitted edit names a
     specific reason;
     replies target normalized root/latest IDs from
-    `gerrit/unresolved-threads.json` instead of duplicating them.
+    `gerrit/unresolved-threads.json` instead of duplicating them (or explicitly
+    declare `- Status: reopen` with the exact `Latest comment id` verified
+    against `comments.json`).
 13. **Honesty:** the test-execution statement matches what was actually run;
     Verification Notes reproduce the plan with outcomes and human-readable
     thread names; orchestration.tsv has a terminal state for every spawned

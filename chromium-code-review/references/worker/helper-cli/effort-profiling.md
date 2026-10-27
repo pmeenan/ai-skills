@@ -49,3 +49,18 @@ malformed normalized-comment entries. A failure is reported as
 `micro` and `trivial-code` set `context_fast_path_eligible` and a collapsed
 `topology` (`collapsed: true`, `initial_generalists: 1`,
 `max_challenge_rounds: 1`). Act on those fields; do not re-derive them.
+
+Reviewer-round detection (`prior_context.reviewer_history` in `profile.json`)
+resolves `Reviewer email` from `CHROMIUM_REVIEWER_EMAIL`, then `- Reviewer
+email: <email[, alias]>` in `directives.md`, then `pin.md`, matching
+`<local>@chromium.org` and `<local>@google.com` interchangeably. When
+`comments.json` has prior non-owner human comments on earlier patchsets and
+zero match `Reviewer email`, `profile.md` emits `- **Reviewer identity
+warning:** ...`. On same-reviewer Round 2+ reviews where
+`latest_prior_reviewed_sha` is reachable in the worktree, `profile-review.py`
+also writes `indexes/interdiff-hunks.tsv`. If Phase 2 `PF` fetches a missing
+prior SHA in a shallow checkout, materialize the TSV directly with:
+
+```
+interdiff_hunks.py [--prior-sha PRIOR_SHA] review_dir
+```

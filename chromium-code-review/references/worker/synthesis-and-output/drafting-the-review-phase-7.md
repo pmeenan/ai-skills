@@ -25,20 +25,25 @@ gate line is blank is the failure mode the gate exists to stop.
 
 ### Comprehensive Output Mandate (No-Truncation Guarantee)
 To avoid multiple review rounds and ensure exhaustive feedback delivery:
-- **Exhaustive coverage:** Every promoted finding and owner question in
-  `reconciliation.md` — equivalently, every card in `synthesis/index.md` —
-  MUST have one exact `draft-parts/<item>.md` fragment included byte-for-byte
-  once in `draft-review.md`; every finding also has one exact
-  `gerrit-parts/<item>.md` fragment included byte-for-byte once in
-  `gerrit-comments.md`. The measured hashes and paths live in
-  `output-coverage.tsv`. The synthesis cards, not raw `verdicts.tsv` rows, are
-  the coverage set: a
-  CONFIRMED verdict that reconciliation merged into a survivor is represented
-  by that survivor, and a severity-downgraded finding remains a promotion at
-  its calibrated severity. The validator first proves reconciliation
-  promotions/questions
-  equal the card index, then proves the card index equals the coverage
-  manifest. An item ID in framing prose is not coverage.
+- **Exhaustive coverage:** Every promoted finding, owner question, and reviewer
+  note in `reconciliation.md` — equivalently, every card in
+  `synthesis/index.md` — MUST have one exact `draft-parts/<item>.md` fragment
+  included byte-for-byte once in `draft-review.md`; every `CL-introduced` and
+  `introduced-in-PS<N>` finding also has one exact `gerrit-parts/<item>.md`
+  fragment included byte-for-byte once in `gerrit-comments.md` (while questions
+  `Q<number>` and reviewer notes `N<number>` use `-` for Gerrit coverage, and
+  `Origin: pre-existing` findings may optionally use `-` with `Suggested edit:
+  omitted — <reason>` when omitting Gerrit inline output). The measured hashes
+  and paths live in `output-coverage.tsv`. The synthesis cards, not raw
+  `verdicts.tsv` rows, are the coverage set: a CONFIRMED verdict that
+  reconciliation merged into a survivor is represented by that survivor, an
+  audited non-promoted disposition (`suppressed — unchanged since prior review`,
+  `subordinated → thread <root_id>`, `launch-gate note`) is accounted in
+  `reconciliation.md` (and `FRAME.md` for `launch-gate note`), and a
+  severity-downgraded finding remains a promotion at its calibrated severity.
+  The validator first proves reconciliation promotions/questions/notes equal the
+  card index, then proves the card index equals the coverage manifest. An item
+  ID in framing prose is not coverage.
 - **Zero truncation or sampling:** Never cherry-pick, sample, or compress
   promoted findings into a "top priority" or "representative" subset to reduce
   draft size. Presenting a partial subset causes multiple review iterations

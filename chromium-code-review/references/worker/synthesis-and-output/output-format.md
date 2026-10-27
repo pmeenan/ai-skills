@@ -34,11 +34,17 @@ to its immutable challenge round and delivery gate; it is not Gerrit prose.
    property is a claim like any other — name its guard line. (A measured run
    praised "failures fail open safely" about the exact branch that treated a
    failure as success.)
-6. **Questions:** Only questions whose answers affect correctness, API contract,
-   or landing readiness. Every UNPROVEN verdict lands here. Each question
-   carries its originating row/verdict ID trail (e.g. `Rows: AL-7 / V003-2`) —
-   internal, like the finding trail; omit it from Gerrit-facing text — so the
-   pre-output gate can prove no promoted card was dropped.
+6. **Questions (and Reviewer Notes, if any):** Only owner questions (`Q<number>`)
+   whose answers affect correctness, API contract, or landing readiness. Every
+   author-facing UNPROVEN verdict lands here. When reconciliation emits any
+   reviewer-only note (`N<number>`, such as a subtle edge case or verbatim spec
+   tension in code implementing `Reviewer email`'s own prior suggestion, with
+   optional guidance on reopening the prior Gerrit thread), include a distinct
+   **Reviewer Notes (Internal — Not Posted to Gerrit)** subsection in
+   `draft-review.md` only. Each question and reviewer note carries its
+   originating row/verdict ID trail (e.g. `Rows: AL-7 / V003-2`) — internal,
+   like the finding trail; omit it from Gerrit-facing text — so the pre-output
+   gate can prove no promoted card was dropped.
 7. **Verification Notes:** State tests run or not run, production wiring traced
    or not traced, and any important areas not verified.
    - Name subagents by human-readable thread name (e.g. "the Error-Path Walk
@@ -71,25 +77,32 @@ Output Rules section of `references/verification-and-fixes.md`:
 
 - **Main body (`## Main comment` / `## Patchset-Level Comment`):** brief
   landing-readiness summary, blockers (`P1`/`P2`) vs optional polish (`P3`),
-  any non-blocking **Launch-Gate Note** for explicit `TODO`-deferred production
-  requirements (such as quota/eviction on a default-off feature), and prior
-  review status. Keep internal `Verification Notes` (such as `"No local test
-  execution was performed during this review"` or subagent audit summaries) in
-  `draft-review.md` only — omit internal verification-note bullets from
-  `gerrit-comments.md`.
-- **Replies to existing unresolved threads:** file and thread line, status, and
-  the exact response, using normalized root/latest IDs from
-  `gerrit/unresolved-threads.json`. Do not open duplicate new threads for an
-  existing topic, never reply to a thread that is already resolved on Gerrit
-  (absent from `gerrit/unresolved-threads.json`), never attach `- Reply-To: root
-  <root_id>, latest <latest_id>` to a `### path:line` inline comment whose
-  `path` or `line` differs from the thread root's location in
-  `gerrit/unresolved-threads.json`, never attach unrelated new findings to a
-  resolved thread, and when an open thread is awaiting a decision from the
-  reviewer running the review (`Reviewer email` in `pin.md`), present a
-  `[Reviewer decision on thread <id>: Option A ... / Option B ...]` placeholder
-  in `## Main comment` instead of emitting an open `Q<N>` question to the CL
-  author or writing third-person `"awaiting reviewer confirmation"`.
+  any non-blocking **Launch-Gate Note** for explicit `TODO`-deferred or
+  default-off pre-launch requirements (such as quota/eviction on a default-off
+  feature), and prior review status. On Round 2+ follow-up reviews
+  (`same_reviewer_followup: true`), keep `## Main comment` to 1–3 concise,
+  natural sentences plus any `[Reviewer decision on thread <id>: Option A ... /
+  Option B ...]` placeholder or brief **Launch-Gate Note** — keep exhaustive
+  `file:line` lists of fixed prior comments in `draft-review.md` only. Keep
+  internal `Verification Notes` (such as `"No local test execution was performed
+  during this review"` or subagent audit summaries) in `draft-review.md` only —
+  omit internal verification-note bullets from `gerrit-comments.md`.
+- **Replies to existing unresolved threads (and controlled thread reopening):**
+  file and thread line, status, and the exact response, using normalized
+  root/latest IDs from `gerrit/unresolved-threads.json`. Do not open duplicate
+  new threads for an existing topic. By default, never reply to a thread that is
+  already resolved on Gerrit (absent from `gerrit/unresolved-threads.json`);
+  the sole exception is an explicit `- Status: reopen — <reason>` (with exact
+  `- Latest comment id: <id>` verified against `comments.json`) for a direct
+  follow-up on a prior Gerrit thread originally authored by `Reviewer email`.
+  Never attach `- Reply-To: root <root_id>, latest <latest_id>` to a `###
+  path:line` inline comment whose `path` or `line` differs from the thread
+  root's location, never attach unrelated new findings to a resolved thread, and
+  when an open thread is awaiting a decision from the reviewer running the
+  review (`Reviewer email` in `pin.md`), present a `[Reviewer decision on thread
+  <id>: Option A ... / Option B ...]` placeholder in `## Main comment` instead
+  of emitting an open `Q<N>` question to the CL author or writing third-person
+  `"awaiting reviewer confirmation"`.
 - **New inline comments:** repo-relative file, exact line or range, verbatim line
   text from the reviewed patchset, and concise author-facing comment text (1–3
   sentences stating the bug/impact and the concrete ask, without internal trace

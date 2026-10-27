@@ -1234,11 +1234,21 @@ Return: one line — verdict per class ID and the file path.
 ## ledger/PR.md — Prior-Feedback Reconciliation
 
 The exact `## Prior-feedback rows` and `## Candidate rows` headings are
-required. The first table accounts for every supplied finding and every
-normalized unresolved Gerrit thread. Only `partially fixed` and `still open`
-items are copied into Candidate rows for verification; fixed, obsolete, and
-superseded PR rows remain reconciliation obligations but do not require skeptic
-verdicts.
+required. The first table accounts for every supplied finding, every normalized
+unresolved Gerrit thread, and every resolved Gerrit thread in `comments.json`
+where `Reviewer email` agreed to defer work to a follow-up CL, using one of the
+canonical `resolution` values: `fixed`, `partially fixed`, `still open`,
+`obsolete`, `superseded`, `reviewer decision pending`, `deferred (accepted)`
+(for resolved threads where `Reviewer email` agreed the deferred work may land
+in a follow-up CL), or `not-posted` (for local draft items in
+`prior-feedback-input.md` that `Reviewer email` did not post to Gerrit according
+to `comments.json`). Only `partially fixed` and `still open` items are copied
+into `## Candidate rows` for verification; `fixed`, `obsolete`, `superseded`,
+`reviewer decision pending`, `deferred (accepted)`, and `not-posted` PR rows
+remain reconciliation obligations in `reconciliation.md` (for example `clean
+(fixed in PS...)`, `clean (deferred to follow-up CL per thread ...)`, or `clean
+(not-posted in prior Gerrit review)`) and must never be copied into `##
+Candidate rows` as active `candidate` rows.
 
 ```markdown
 # Prior feedback — CL 9999999 PS3
@@ -1262,6 +1272,8 @@ verdicts.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | PR-1 | supplied finding 1 | pending_ survives abort | net/streams/delay_buffer.cc:141 | PS2 93ab... | reset added at delay_buffer.cc:143 | fixed | introduced-in-PS2 |
 | PR-2 | Gerrit thread root abc123 | Flush can double-complete | net/streams/delay_buffer.cc:167 | PS2 93ab... | second path remains at :172 | still open | introduced-in-PS2 |
+| PR-3 | supplied finding 2 | optional helper rename | net/streams/delay_buffer.h:44 | PS2 93ab... | absent from comments.json by Reviewer email | not-posted | CL-introduced |
+| PR-4 | resolved Gerrit thread root def456 | follow-up unit tests for retry policy | net/streams/delay_buffer_unittest.cc:1 | PS1 51c0... | reviewer agreed in thread def456 to land unit tests in stacked CL | deferred (accepted) | CL-introduced |
 
 ## Candidate rows
 
@@ -1401,7 +1413,10 @@ confirmation, not a dismissal.
    /checkout/chromium/codereview/worktrees/cl-9999999-ps3
    (verify rev-parse HEAD first).
 
-2. Candidates under test (full rows inline — this is skeptic batch V001):
+2. Candidates under test (full rows inline — this is skeptic batch V001; on
+   same-reviewer Round 2+ reviews, `build-batch-briefs.py` also includes
+   `profile.json`, `indexes/interdiff-hunks.tsv`, and `ledger/PR.md` when
+   present plus per-candidate interdiff overlap tags):
    EPW-2 | Success-shaped return after failure cleanup |
    net/streams/delay_buffer.cc:203 | trace: OnTimer → OnWriteFailure() at
    :199 clears buffer_ → returns write_len_ > 0.
@@ -1915,6 +1930,11 @@ exists only after all shards and the gate pass exact collection.
 | AL-3 | Async And Lifecycle | question → Q002 (V002-3: UNPROVEN) |
 | ML-1 | Mechanical Leads | promoted → F003 (P3 non-ASCII em dash in comment) |
 | ML-2 | Mechanical Leads | dismissed: intentional sentinel, values agree (V003-2 citation) |
+| ML-3 | Mechanical Leads | suppressed — unchanged since prior review (V003-3, P3 nit on untouched code) |
+| EPW-4 | Error-Path Walk | suppressed — unchanged since prior review (V003-7, below round-3 bar: defensive internal precondition unchanged since PS1 with no untrusted caller) |
+| TAS-2 | Tests As Specifications | subordinated → thread abc123 (V003-4, covered by open reviewer-decision thread) |
+| SEC-1 | Security And Isolation | launch-gate note (V003-5, default-off pre-launch quota wiring) |
+| API-1 | API And Spec Contract | note → N001 (V003-6, edge case on reviewer's own PS2 suggestion) |
 | ORC-1 | Collection audit | clean (cited) |
 | RC001-1 | Root-cause challenger | supports F001; reopened R1-RC001-1 |
 | R1-RC001-1 | Reopened round 1 | refuted (V004-1; guard other_delay_stream.cc:88) |
@@ -1935,8 +1955,11 @@ The three equivalence cells each carry code or artifact evidence; an artifact
 pointer is review-relative and its file must exist and be nonempty. A shared
 location or fix alone is insufficient. The survivor is a direct,
 verdict-owning row rather than another merge, and its reconciliation
-disposition agrees with that verdict (`promoted` for CONFIRMED, `question` for
-UNPROVEN, `refuted` for REFUTED).
+disposition agrees with that verdict (`promoted`, `note`, `suppressed —
+unchanged since prior review` [restricted to `P3` or `pre-existing`],
+`subordinated → thread <root_id>`, or `launch-gate note` for CONFIRMED;
+`question`, `note`, or `subordinated → thread <root_id>` for UNPROVEN;
+`refuted` for REFUTED).
 
 The default is one promoted finding per root family. If a family truly has
 multiple independently actionable owners or bad outcomes, add:
@@ -1969,22 +1992,24 @@ lines look like:
 
 ## synthesis/ — Bounded Index And Evidence Cards
 
-The Reconciliation Builder writes one immutable card per promoted finding and
-question. Each card is at most `evidence_card_budget_bytes` from
-`profile.json` and contains only the
+The Reconciliation Builder writes one immutable card per promoted finding,
+owner question, and reviewer note. Each card is at most
+`evidence_card_budget_bytes` from `profile.json` and contains only the
 evidence needed to draft and challenge that item. If evidence exceeds the
 bound, split supporting material into numbered parts and keep the root card
 within the bound. The draft writer consumes these cards instead of
 all verdict and root-cause files.
 
 The disposition owns the synthesis-item identity: use exactly
-`promoted → F<number> (...)` or `question → Q<number> (...)`. Every such item
-appears exactly once in `synthesis/index.md`, and that index row's `source
-rows` includes the disposition's defining row. Non-promoted/non-question
-dispositions own no card. A severity downgrade stays inside a
-`promoted → F<number>` disposition; never use bare `downgraded`, which would
-omit the finding. The validator compares these sets exactly; a missing card is
-an error, not an empty-review warning.
+`promoted → F<number> (...)`, `question → Q<number> (...)`, or
+`note → N<number> (...)`. Every such item appears exactly once in
+`synthesis/index.md`, and that index row's `source rows` includes the
+disposition's defining row. Non-promoted/non-question/non-note dispositions
+(including `suppressed — unchanged since prior review`, `subordinated → thread
+<root_id>`, and `launch-gate note`) own no card. A severity downgrade stays
+inside a `promoted → F<number>` disposition; never use bare `downgraded`, which
+would omit the finding. The validator compares these sets exactly; a missing
+card is an error, not an empty-review warning.
 
 ````markdown
 # EPW-2 evidence card — CL 9999999 PS3
@@ -1997,7 +2022,7 @@ an error, not an empty-review warning.
 - Root family: RF001
 - Merge support: AL-1 (equivalence validated)
 - Severity / origin: P1, anchor ..., CL-introduced
-- Existing Gerrit thread: root abc123, or `none`
+- Existing Gerrit thread: root abc123, root abc123 (reopen), or `none`
 - Verbatim changed line: `return write_len_;`
 - Suggested edit decision: applicable — replaces net/streams/delay_buffer.cc:203
 - Suggested edit selected lines:
@@ -2018,6 +2043,7 @@ an error, not an empty-review warning.
 | --- | --- | --- | --- |
 | F001 | synthesis/EPW-2.md | 2840 | EPW-2, AL-1, V001-1, RC001-1 |
 | Q002 | synthesis/AL-3.md | 1902 | AL-3, V002-3 |
+| N001 | synthesis/API-1.md | 1750 | API-1, V003-6 |
 ```
 
 ## Exact Output Fragments, draft-parts/, And draft-assembly/
@@ -2028,8 +2054,13 @@ When the card index has at most 12 cards and the measured total required input
 consume them. Above either threshold, use one Finding Writer per card and a
 separate Frame Writer. Both topologies produce the same exact per-item
 fragments: `draft-parts/<item>.md` is the byte-for-byte review block for every
-finding/question, and `gerrit-parts/<item>.md` is the byte-for-byte Gerrit
-comment for every finding. Questions have no Gerrit fragment.
+finding/question/note, and `gerrit-parts/<item>.md` is the byte-for-byte Gerrit
+comment for every `CL-introduced` and `introduced-in-PS<N>` finding (and any
+`pre-existing` finding that emits a Gerrit inline comment). Questions (`Q<number>`)
+and reviewer notes (`N<number>`) have no Gerrit fragment (`-` in
+`output-coverage.tsv`), and `Origin: pre-existing` findings may optionally use
+`-` in `output-coverage.tsv` (with `Suggested edit: omitted — <reason>`) when
+omitting Gerrit inline output on untouched/adjacent pre-existing code.
 
 ````markdown
 #### Failed flush reported as success — silent byte loss (P1)
@@ -2069,14 +2100,19 @@ item marker. `output-coverage.tsv` binds both fragments to the card:
 item	kind	draft_path	draft_bytes	draft_sha256	gerrit_path	gerrit_bytes	gerrit_sha256
 F001	finding	draft-parts/F001.md	⟨bytes⟩	⟨sha256⟩	gerrit-parts/F001.md	⟨bytes⟩	⟨sha256⟩
 Q002	question	draft-parts/Q002.md	⟨bytes⟩	⟨sha256⟩	-	-	-
+N001	note	draft-parts/N001.md	⟨bytes⟩	⟨sha256⟩	-	-	-
 ```
 
 The item set equals `synthesis/index.md` exactly. A finding fragment has the
 complete Finding Format fields; a question fragment has non-empty
-`Synthesis item`, `Question`, `Why it matters`, and `Rows` fields. Final
-validation checks every measured fragment occurs byte-for-byte exactly once
-in its destination output. An ID in a frame/list does not count, and a
-finding without a Gerrit fragment cannot pass.
+`Synthesis item`, `Question`, `Why it matters`, and `Rows` fields; a reviewer
+note fragment (`kind = note`) has non-empty `Synthesis item`, `Note`,
+`Why it matters`, and `Rows` fields. Final validation checks every measured
+fragment occurs byte-for-byte exactly once in its destination output. An ID in
+a frame/list does not count, and a `CL-introduced` or `introduced-in-PS<N>`
+finding without a Gerrit fragment cannot pass (only `question`, `note`, or an
+`Origin: pre-existing` finding with an omitted Suggested edit may use `-` for
+all three Gerrit columns).
 
 `FRAME.md` (`draft-parts/FRAME.md`) contains only High-Level Summary, Prior Review
 Follow-Up, Positives, Verification Notes, Next Steps (including any non-blocking
@@ -2298,10 +2334,17 @@ Not LGTM until the failed-flush result bug is fixed. ...
 - `nit:` ...
 ````
 
-An absent section says `None`; never emit placeholder comments. Thread replies
-use the normalized thread root/latest IDs from
+An absent section says `None`; never emit placeholder comments. On Round 2+
+follow-up reviews (`same_reviewer_followup: true`), keep `## Main comment` to
+1–3 concise, natural sentences plus any `[Reviewer decision on thread <id>:
+Option A ... / Option B ...]` placeholder or brief **Launch-Gate Note** (keep
+itemized `file:line` lists of fixed prior comments in `draft-review.md` only).
+Thread replies use the normalized thread root/latest IDs from
 `gerrit/unresolved-threads.json`, not positional assumptions about
-`comments.json`.
+`comments.json`; to reopen a resolved thread originally authored by `Reviewer
+email` for a direct follow-up on that thread's fix, set `- Status: reopen —
+<reason>` and cite the thread's exact `- Latest comment id: <id>` verified
+against `comments.json`.
 
 ## Final-Review Finding
 

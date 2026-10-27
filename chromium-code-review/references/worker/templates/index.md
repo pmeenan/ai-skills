@@ -26,17 +26,17 @@ preamble, so its rules travel with every section.
 | ledger/⟨THREAD⟩.md — Compliance Matrix And Candidate Rows | ledger-thread-md-compliance-matrix-and-candidate-rows.md | 62 |
 | ledger/TER.md And verification/VTER.md — Transformation Classes And Gate | ledger-ter-md-and-verification-vter-md-transformation-classes-and-gate.md | 60 |
 | Subagent Brief — TER Gate Skeptic | subagent-brief-ter-gate-skeptic.md | 31 |
-| ledger/PR.md — Prior-Feedback Reconciliation | ledger-pr-md-prior-feedback-reconciliation.md | 52 |
+| ledger/PR.md — Prior-Feedback Reconciliation | ledger-pr-md-prior-feedback-reconciliation.md | 64 |
 | Per-File Floor Rows | per-file-floor-rows.md | 14 |
 | collection.md — Collection Audit | collection-md-collection-audit.md | 85 |
-| Subagent Brief — Verification Skeptic | subagent-brief-verification-skeptic.md | 50 |
+| Subagent Brief — Verification Skeptic | subagent-brief-verification-skeptic.md | 53 |
 | verification/ — Batches And Skeptic Verdict Rows | verification-batches-and-skeptic-verdict-rows.md | 192 |
 | verification/affinity.md — Invariant Affinity And Consistency Audit | verification-affinity-md-invariant-affinity-and-consistency-audit.md | 40 |
 | root-cause/ — Plan, Root-Cause Rows, And Reopened Rows | root-cause-plan-root-cause-rows-and-reopened-rows.md | 203 |
-| reconciliation.md — Reconciliation Table And Pre-Output Gate | reconciliation-md-reconciliation-table-and-pre-output-gate.md | 100 |
-| synthesis/ — Bounded Index And Evidence Cards | synthesis-bounded-index-and-evidence-cards.md | 53 |
-| Exact Output Fragments, draft-parts/, And draft-assembly/ | exact-output-fragments-draft-parts-and-draft-assembly.md | 127 |
+| reconciliation.md — Reconciliation Table And Pre-Output Gate | reconciliation-md-reconciliation-table-and-pre-output-gate.md | 108 |
+| synthesis/ — Bounded Index And Evidence Cards | synthesis-bounded-index-and-evidence-cards.md | 56 |
+| Exact Output Fragments, draft-parts/, And draft-assembly/ | exact-output-fragments-draft-parts-and-draft-assembly.md | 137 |
 | challenge/ And challenge.md | challenge-and-challenge-md.md | 79 |
 | patchset-delta.md And delivery-gate.md | patchset-delta-md-and-delivery-gate-md.md | 38 |
-| gerrit-comments.md | gerrit-comments-md.md | 39 |
+| gerrit-comments.md | gerrit-comments-md.md | 46 |
 | Final-Review Finding | final-review-finding.md | 31 |

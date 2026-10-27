@@ -43,7 +43,7 @@ generated synthesis cards, plan.md, root-cause/batches.md, and compact gate
 counts. Extract IDs and manifest fields only.
 
 Procedure: prove every defining ID has exactly one disposition, no shard emits
-a foreign/duplicate ID, and promoted/question dispositions have exactly one
+a foreign/duplicate ID, and promoted/question/note dispositions have exactly one
 card while all other dispositions have none. Require exactly one structured
 Merge equivalence row for every merged disposition and no foreign equivalence
 row. Concatenate dispositions in

@@ -44,17 +44,23 @@ root-cause/batches.md summary. Extract only compact outcome fields.
 
 Deliverable: draft-parts/FRAME.md with High-Level Summary, Prior Review
 Follow-Up, cited Positives, Verification Notes, Next Steps (including any
-non-blocking **Launch-Gate Note** for explicit `TODO`-deferred production
-prerequisites such as quota/eviction on a default-off feature), verdict sentence,
-and the complete ordered card-part list, plus `gerrit-parts/FRAME.md` containing
-the `## Main comment` (Patchset-Level Comment) for `gerrit-comments.md`. Keep
-internal `Verification Notes` (such as `"No local test execution was performed
-during this review"`) in `draft-parts/FRAME.md` only — omit internal
-verification-note bullets from `gerrit-parts/FRAME.md`, and when an unresolved
-Gerrit thread awaits a decision from the reviewer running the review (`Reviewer
-email` in `pin.md`), include a `[Reviewer decision on thread <id>: Option A ... /
-Option B ...]` placeholder in `## Main comment` instead of writing third-person
-`"awaiting reviewer confirmation"`. The
+non-blocking **Launch-Gate Note** for explicit `TODO`-deferred or default-off
+pre-launch prerequisites such as quota/eviction on a default-off feature),
+verdict sentence, and the complete ordered card-part list, plus
+`gerrit-parts/FRAME.md` containing the `## Main comment` (Patchset-Level
+Comment) for `gerrit-comments.md`. On Round 2+ follow-up reviews
+(`same_reviewer_followup: true` in `profile.json`), keep `## Main comment` to
+1–3 concise, natural sentences plus any `[Reviewer decision on thread <id>:
+Option A ... / Option B ...]` placeholder or brief **Launch-Gate Note**,
+keeping itemized `file:line` lists of fixed prior comments in
+`draft-parts/FRAME.md` only. Keep internal `Verification Notes` (such as `"No
+local test execution was performed during this review"`) in
+`draft-parts/FRAME.md` only — omit internal verification-note bullets from
+`gerrit-parts/FRAME.md`, and when an unresolved Gerrit thread awaits a decision
+from the reviewer running the review (`Reviewer email` in `pin.md`), include a
+`[Reviewer decision on thread <id>: Option A ... / Option B ...]` placeholder
+in `## Main comment` instead of writing third-person `"awaiting reviewer
+confirmation"`. The
 ordered card-part list must name every card in
 synthesis/index.md with no omission; a missing card part is a truncation
 defect, not an editorial choice. Apply verdict alignment. Freshness remains

@@ -68,12 +68,14 @@ trailing blank separator line in the replaced range); an omitted edit
 keeps the card's specific reason and has no suggestion block.
 
 Deliverables: exact final-output bytes in
-`draft-parts/⟨card-ID⟩.md`; for a finding, exact target/comment bytes in
-`gerrit-parts/⟨card-ID⟩.md`; and one measured
+`draft-parts/⟨card-ID⟩.md`; for a `CL-introduced` or `introduced-in-PS<N>`
+finding (and any `pre-existing` finding emitting an inline comment), exact
+target/comment bytes in `gerrit-parts/⟨card-ID⟩.md`; and one measured
 `output-coverage/⟨card-ID⟩.tsv` data row in the schema from
 ⟨skill-dir⟩/references/worker/templates/exact-output-fragments-draft-parts-and-draft-assembly.md. A question
-uses `-` for all Gerrit fields. Do not add wrappers or metadata that should not
-appear in the final output.
+(`Q<number>`), reviewer note (`N<number>`), or `Origin: pre-existing` finding
+omitting Gerrit inline output uses `-` for all Gerrit fields. Do not add
+wrappers or metadata that should not appear in the final output.
 
 Return: one line — card ID, destination/ordering key, output path, complete
 or explicit remaining.

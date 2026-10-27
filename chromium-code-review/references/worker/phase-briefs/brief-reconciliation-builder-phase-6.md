@@ -43,6 +43,8 @@ budget. Otherwise use the shard and exact-collector briefs below.
 Inputs: mechanically generated
 ⟨review-dir⟩/indexes/reconciliation.tsv and its fresh
 indexes/manifest.json fingerprint, plus
+⟨review-dir⟩/profile.json (`prior_context.reviewer_history` for Round 2+
+interdiff-first gating),
 ⟨review-dir⟩/verification/affinity.md,
 ⟨review-dir⟩/root-cause/batches.md, ⟨review-dir⟩/plan.md, and
 gerrit/unresolved-threads.json. Use artifact/anchor fields in the definition
@@ -66,8 +68,8 @@ Pre-Output Gate checklist (from
 ⟨skill-dir⟩/references/worker/synthesis-and-output/pre-output-gate.md)
 verbatim to the bottom of reconciliation.md and
 fill every line provable from the indexed files, marking draft-dependent lines
-"pending draft" and Freshness `pending-delivery`. For each promoted finding
-and owner question, write one bounded evidence card under
+"pending draft" and Freshness `pending-delivery`. For each promoted finding,
+owner question, and reviewer note, write one bounded evidence card under
 synthesis/⟨ROW-ID⟩.md using
 ⟨skill-dir⟩/references/worker/templates/synthesis-bounded-index-and-evidence-cards.md. Every finding card carries the
 root-cause Suggested edit decision, exact range/selected lines/replacement
@@ -77,8 +79,11 @@ drafting. A card is at most
 evidence exceeds that, split it into numbered parts referenced by
 the root card. Write the complete bounded manifest to synthesis/index.md. Do
 not copy all verdicts into one synthesis document. Assign each output item in
-the disposition itself using exact `promoted → F<number>` or
-`question → Q<number>` syntax. The index contains exactly those items, and
+the disposition itself using exact `promoted → F<number>`,
+`question → Q<number>`, or `note → N<number>` syntax (while audited non-card
+follow-up dispositions use `suppressed — unchanged since prior review (...)`
+for `P3`/`pre-existing` only, `subordinated → thread <root_id> (...)`, or
+`launch-gate note (...)`). The index contains exactly the card-owning items, and
 each row's `source rows` includes the disposition's defining row. A severity
 downgrade remains a promotion at the calibrated severity; never emit a bare
 `downgraded` disposition. Use only `merged → <survivor-row-id>` for a merge
@@ -90,8 +95,12 @@ survivor must be direct, verdict-owning, and verdict-consistently dispositioned;
 artifact pointers must resolve to existing, nonempty review-relative files.
 Reject the merge rather than inventing free-form equivalence prose.
 Audit every verdict-bearing candidate independently: CONFIRMED cannot use a
-free-form dismissed/duplicate disposition, UNPROVEN cannot disappear outside
-Questions, and REFUTED names its verdict/citation.
+free-form dismissed/duplicate disposition (only `promoted → F<number>`,
+`merged → <survivor>`, `note → N<number>`, `suppressed — unchanged since prior
+review (...)` for `P3`/`pre-existing`, `subordinated → thread <root_id> (...)`,
+or `launch-gate note (...)`), UNPROVEN cannot disappear outside Questions /
+`note → N<number>` / `subordinated → thread <root_id>`, and REFUTED names its
+verdict/citation.
 
 Deliverables: ⟨review-dir⟩/reconciliation.md,
 ⟨review-dir⟩/synthesis/index.md, and ⟨review-dir⟩/synthesis/*.md cards.

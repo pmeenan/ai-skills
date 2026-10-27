@@ -40,11 +40,18 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   inline comments (emitted via `gerrit-parts/FRAME.md` in sharded drafts) that
   gives the author a concise landing-readiness summary, blocking `P1`/`P2` vs
   optional `P3` counts, prior review status, and any non-blocking **Launch-Gate
-  Note** for explicit `TODO`-tracked production prerequisites (such as
-  quota/eviction wiring on a default-off feature). Keep internal `Verification
-  Notes` (such as `"No local test execution was performed during this review"` or
-  thread-audit summaries) inside `draft-review.md` only — do not include an
-  internal `Verification notes:` bullet in `gerrit-comments.md`.
+  Note** for explicit `TODO`-tracked or default-off pre-launch prerequisites
+  (such as quota/eviction wiring on a default-off feature). On Round 2+
+  follow-up reviews (`same_reviewer_followup: true`), keep `## Main comment` to
+  1–3 natural human-sounding sentences stating overall status (for example, that
+  prior comments were addressed and only the remaining inline items/nits remain),
+  followed only by any `[Reviewer decision on thread <id>: Option A ... / Option
+  B ...]` placeholder or brief **Launch-Gate Note**; keep exhaustive itemized
+  `file:line` audit lists of fixed prior comments inside `draft-review.md`
+  (`Prior Review Follow-Up`) only, never in `## Main comment`. Keep internal
+  `Verification Notes` (such as `"No local test execution was performed during
+  this review"` or thread-audit summaries) inside `draft-review.md` only — do not
+  include an internal `Verification notes:` bullet in `gerrit-comments.md`.
 - **Verbatim quoted code line required:** Every new inline comment in
   `gerrit-parts/<item>.md` and `gerrit-comments.md` must include `- Line: \`<verbatim line from the pinned patchset>\`` copied directly from the card's `Verbatim changed line` field (which itself must be extracted verbatim from the worktree at the pinned revision, never paraphrased from memory).
 - **No placeholder or fake inlines:** do not output generic placeholder
@@ -89,31 +96,45 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   coordinated multi-location changes, an unresolved owner/API choice,
   replacement too large for one inline, or a fix not yet validated. Never
   force a locally neat snippet that repairs only one symptom of a root family.
-- **Exhaustive coverage without truncation:** Every promoted finding (each a
-  card in `synthesis/index.md`) writes one exact
-  `gerrit-parts/<item>.md` target/comment fragment and measured
-  `output-coverage.tsv` row; the fragment bytes occur exactly once in
-  `gerrit-comments.md`. Merged duplicates are already folded into their
-  surviving finding, so they need no separate comment. Do not sample,
-  compress, or truncate promoted findings to shorten output length. Presenting
-  100% of actionable bugs upfront is mandatory to prevent multiple review
-  rounds.
-- **Normalize threads before replying:** `comments.json` is keyed by file and
-  contains CommentInfo arrays. Flatten with paths retained, group replies by
-  transitive `in_reply_to` root, order within each thread by `updated` (stable
-  ID tie-break), and take unresolved state from that thread's latest comment.
-  Target the normalized root/latest IDs in `gerrit/unresolved-threads.json`.
-  Never use the last file-array element or the change's latest message as
-  unresolved-thread state, never emit a `### Thread <root_id>` or `- Reply-To:
-  root <root_id>, latest <latest_id>` reply for a thread that is already
-  resolved on Gerrit (absent from `gerrit/unresolved-threads.json`), never
-  attach `- Reply-To:` to a `### path:line` inline comment whose `path` or
-  `line` differs from the thread root's location in
-  `gerrit/unresolved-threads.json` (place replies to existing threads under
-  `## Replies to existing unresolved threads` at the thread's own `path:line` and
-  omit `Reply-To:` on standalone inline comments at other locations), and when
-  an open thread is awaiting a decision from the reviewer running the review
-  (`Reviewer email` in `pin.md`), present a `[Reviewer decision on thread <id>:
-  Option A ... / Option B ...]` placeholder in `## Main comment` instead of
-  writing third-person `"awaiting reviewer confirmation"` or posting a
-  prescriptive agent reply.
+- **Exhaustive coverage without truncation:** Every promoted finding, owner
+  question, and reviewer note (each a card in `synthesis/index.md`) writes one
+  exact `draft-parts/<item>.md` fragment and measured `output-coverage.tsv` row
+  whose bytes occur exactly once in `draft-review.md`. Every `CL-introduced` and
+  `introduced-in-PS<N>` finding also writes one exact `gerrit-parts/<item>.md`
+  target/comment fragment whose bytes occur exactly once in `gerrit-comments.md`.
+  Owner questions (`Q<number>`) and Reviewer Notes (`N<number>`) live in
+  `draft-review.md` only and use `-` for all three Gerrit columns in
+  `output-coverage.tsv`. Findings with `Origin: pre-existing` may either emit an
+  informational `gerrit-parts/<item>.md` fragment or omit Gerrit inline output
+  (`-` for all three Gerrit columns in `output-coverage.tsv`, with `Suggested
+  edit: omitted — <reason>`) when posting an inline comment on untouched or
+  adjacent pre-existing code would add noise to the Gerrit review. Merged
+  duplicates are already folded into their surviving finding, so they need no
+  separate comment. Do not sample, compress, or truncate promoted findings to
+  shorten output length. Presenting 100% of actionable bugs upfront is mandatory
+  to prevent multiple review rounds.
+- **Normalize threads before replying (and controlled thread reopening):**
+  `comments.json` is keyed by file and contains CommentInfo arrays. Flatten with
+  paths retained, group replies by transitive `in_reply_to` root, order within
+  each thread by `updated` (stable ID tie-break), and take unresolved state from
+  that thread's latest comment. Target the normalized root/latest IDs in
+  `gerrit/unresolved-threads.json`. Never use the last file-array element or the
+  change's latest message as unresolved-thread state. By default, never emit a
+  `### Thread <root_id>` or `- Reply-To: root <root_id>, latest <latest_id>`
+  reply for a thread that is already resolved on Gerrit (absent from
+  `gerrit/unresolved-threads.json`). **Controlled exception (`reopen`):** when a
+  direct follow-up or clarification belongs on a resolved Gerrit thread that
+  `Reviewer email` originally authored (for example, following up on a subtle
+  spec interaction in the author's fix to that exact thread), you may reopen
+  that thread only by marking it explicitly — `- Existing Gerrit thread: root
+  <root_id> (reopen)` on the synthesis card, `- Status: reopen — <concise
+  reason>` with the exact `- Latest comment id: <latest_id>` verified against
+  `comments.json` under `### Thread <root_id>`, or `- Reply-To: root <root_id>,
+  latest <latest_id>, reopen` at the thread root's exact `path:line`. Never
+  reopen a resolved thread for an unrelated new finding, never attach `-
+  Reply-To:` to a `### path:line` inline comment whose `path` or `line` differs
+  from the thread root's location, and when an open thread is awaiting a
+  decision from the reviewer running the review (`Reviewer email` in `pin.md`),
+  present a `[Reviewer decision on thread <id>: Option A ... / Option B ...]`
+  placeholder in `## Main comment` instead of writing third-person `"awaiting
+  reviewer confirmation"` or posting a prescriptive agent reply.

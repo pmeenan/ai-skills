@@ -37,9 +37,11 @@ Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
 ```text
 Scope: reconcile prior review feedback against the pinned patchset.
 
-Inputs: ⟨review-dir⟩/prior-feedback-input.md (the prior review text),
-⟨review-dir⟩/gerrit/unresolved-threads.json (already normalized; extract
-fields with jq rather than reading it whole),
+Inputs: ⟨review-dir⟩/pin.md, ⟨review-dir⟩/profile.json (read
+`prior_context.reviewer_history`), ⟨review-dir⟩/prior-feedback-input.md (if
+present), ⟨review-dir⟩/comments.json (authoritative for what `Reviewer email`
+actually posted on Gerrit), ⟨review-dir⟩/gerrit/unresolved-threads.json
+(already normalized; extract fields with jq rather than reading it whole),
 ⟨review-dir⟩/detail.json (extract prior patchset SHAs via jq from
 ALL_REVISIONS; do not read it whole).
 
@@ -48,21 +50,34 @@ Procedure: read
 and execute it. Derive the prior reviewed revision under the Baseline
 Derivation contract in
 ⟨skill-dir⟩/references/worker/templates/ledger-pr-md-prior-feedback-reconciliation.md:
-prefer an explicit PS/SHA in the supplied
-feedback; otherwise map `revisions[*]._number` and `created` plus review/message
-timestamps and choose the newest revision no later than the prior-review
-timestamp. Never assume the baseline is the pinned patchset minus one. If derivation is ambiguous, record baseline
-unknown and do not invent `introduced-in-PS...` origin. Diff explicit SHAs;
-do not create a second worktree: fetch only an explicit ref if an object is
-missing and compare explicit SHAs through the repository object database.
-Never use FETCH_HEAD or change the pinned worktree.
+prefer `profile.json:/prior_context/reviewer_history/latest_prior_reviewed_patchset`
+and `latest_prior_reviewed_sha` when `same_reviewer_followup` is true, or an
+explicit PS/SHA in the supplied feedback; otherwise map `revisions[*]._number`
+and `created` plus review/message timestamps and choose the newest revision no
+later than the prior-review timestamp. Never assume the baseline is the pinned
+patchset minus one. If derivation is ambiguous, record baseline unknown and do
+not invent `introduced-in-PS...` origin. Cross-check `prior-feedback-input.md`
+against `comments.json`: any draft finding that `Reviewer email` did not post
+to Gerrit gets resolution `not-posted` and is never copied into `## Candidate
+rows`. Also inspect resolved threads in `comments.json` where `Reviewer email`
+agreed to defer work (such as tests, cleanup, or stacked plumbing) to a
+follow-up CL and record them with resolution `deferred (accepted)` so later
+rounds do not re-raise accepted deferrals. Diff explicit SHAs; do not create a
+second worktree: fetch only an explicit ref if an object is missing and compare
+explicit SHAs through the repository object database (and if
+`⟨review-dir⟩/indexes/interdiff-hunks.tsv` is absent after fetching a missing
+prior SHA, run `python3 ⟨skill-dir⟩/scripts/interdiff_hunks.py ⟨review-dir⟩
+--prior-sha ⟨prior-sha⟩`). Never use FETCH_HEAD or change the pinned worktree.
 
 Deliverable: ⟨review-dir⟩/ledger/PR.md — Baseline Derivation, Gerrit Thread
-Normalization, one PR-⟨n⟩ Prior-Feedback row per prior finding and unresolved
-thread, plus Candidate rows only for partial/open items and one Candidate
-descriptors row per such item, in the shape from
+Normalization, one PR-⟨n⟩ Prior-Feedback row per prior finding, unresolved
+thread, and accepted-deferral thread, plus Candidate rows only for `partially
+fixed` / `still open` items and one Candidate descriptors row per such item, in
+the shape from
 ⟨skill-dir⟩/references/worker/templates/ledger-pr-md-prior-feedback-reconciliation.md.
 
-Return: one line — counts by resolution (fixed / partial / open / obsolete
-/ superseded) and the file path.
+Return: one line — counts by resolution (fixed / partially fixed / still open /
+obsolete / superseded / reviewer decision pending / deferred (accepted) /
+not-posted) and the file
+path.
 ```

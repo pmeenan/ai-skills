@@ -358,9 +358,11 @@ Tier: `frontier` (Model Tiers in `references/scaling-and-indexes.md`).
 ```text
 Scope: reconcile prior review feedback against the pinned patchset.
 
-Inputs: ⟨review-dir⟩/prior-feedback-input.md (the prior review text),
-⟨review-dir⟩/gerrit/unresolved-threads.json (already normalized; extract
-fields with jq rather than reading it whole),
+Inputs: ⟨review-dir⟩/pin.md, ⟨review-dir⟩/profile.json (read
+`prior_context.reviewer_history`), ⟨review-dir⟩/prior-feedback-input.md (if
+present), ⟨review-dir⟩/comments.json (authoritative for what `Reviewer email`
+actually posted on Gerrit), ⟨review-dir⟩/gerrit/unresolved-threads.json
+(already normalized; extract fields with jq rather than reading it whole),
 ⟨review-dir⟩/detail.json (extract prior patchset SHAs via jq from
 ALL_REVISIONS; do not read it whole).
 
@@ -369,23 +371,36 @@ Procedure: read
 and execute it. Derive the prior reviewed revision under the Baseline
 Derivation contract in
 ⟨skill-dir⟩/references/worker/templates/ledger-pr-md-prior-feedback-reconciliation.md:
-prefer an explicit PS/SHA in the supplied
-feedback; otherwise map `revisions[*]._number` and `created` plus review/message
-timestamps and choose the newest revision no later than the prior-review
-timestamp. Never assume the baseline is the pinned patchset minus one. If derivation is ambiguous, record baseline
-unknown and do not invent `introduced-in-PS...` origin. Diff explicit SHAs;
-do not create a second worktree: fetch only an explicit ref if an object is
-missing and compare explicit SHAs through the repository object database.
-Never use FETCH_HEAD or change the pinned worktree.
+prefer `profile.json:/prior_context/reviewer_history/latest_prior_reviewed_patchset`
+and `latest_prior_reviewed_sha` when `same_reviewer_followup` is true, or an
+explicit PS/SHA in the supplied feedback; otherwise map `revisions[*]._number`
+and `created` plus review/message timestamps and choose the newest revision no
+later than the prior-review timestamp. Never assume the baseline is the pinned
+patchset minus one. If derivation is ambiguous, record baseline unknown and do
+not invent `introduced-in-PS...` origin. Cross-check `prior-feedback-input.md`
+against `comments.json`: any draft finding that `Reviewer email` did not post
+to Gerrit gets resolution `not-posted` and is never copied into `## Candidate
+rows`. Also inspect resolved threads in `comments.json` where `Reviewer email`
+agreed to defer work (such as tests, cleanup, or stacked plumbing) to a
+follow-up CL and record them with resolution `deferred (accepted)` so later
+rounds do not re-raise accepted deferrals. Diff explicit SHAs; do not create a
+second worktree: fetch only an explicit ref if an object is missing and compare
+explicit SHAs through the repository object database (and if
+`⟨review-dir⟩/indexes/interdiff-hunks.tsv` is absent after fetching a missing
+prior SHA, run `python3 ⟨skill-dir⟩/scripts/interdiff_hunks.py ⟨review-dir⟩
+--prior-sha ⟨prior-sha⟩`). Never use FETCH_HEAD or change the pinned worktree.
 
 Deliverable: ⟨review-dir⟩/ledger/PR.md — Baseline Derivation, Gerrit Thread
-Normalization, one PR-⟨n⟩ Prior-Feedback row per prior finding and unresolved
-thread, plus Candidate rows only for partial/open items and one Candidate
-descriptors row per such item, in the shape from
+Normalization, one PR-⟨n⟩ Prior-Feedback row per prior finding, unresolved
+thread, and accepted-deferral thread, plus Candidate rows only for `partially
+fixed` / `still open` items and one Candidate descriptors row per such item, in
+the shape from
 ⟨skill-dir⟩/references/worker/templates/ledger-pr-md-prior-feedback-reconciliation.md.
 
-Return: one line — counts by resolution (fixed / partial / open / obsolete
-/ superseded) and the file path.
+Return: one line — counts by resolution (fixed / partially fixed / still open /
+obsolete / superseded / reviewer decision pending / deferred (accepted) /
+not-posted) and the file
+path.
 ```
 
 ## Brief — Planner (Phase 3)
@@ -760,7 +775,10 @@ rows are context and must not be scheduled again. Then:
    the orchestrator materializes it before sealing (or run
    `⟨skill-dir⟩/scripts/build-batch-briefs.py ⟨review-dir⟩ --phase verification`
    after writing `verification/batches.md` to deterministically render
-   `packets/V*.spec.tsv`, `packets/V*-code.md`, and `briefs/V*.md`).
+   `packets/V*.spec.tsv`, `packets/V*-code.md`, and `briefs/V*.md`, which on
+   same-reviewer Round 2+ reviews automatically attaches `profile.json`,
+   `indexes/interdiff-hunks.tsv`, and `ledger/PR.md` plus per-candidate
+   interdiff overlap annotations).
 
 Deliverables: ⟨review-dir⟩/verification/batches.md and the briefs.
 
@@ -1064,6 +1082,8 @@ budget. Otherwise use the shard and exact-collector briefs below.
 Inputs: mechanically generated
 ⟨review-dir⟩/indexes/reconciliation.tsv and its fresh
 indexes/manifest.json fingerprint, plus
+⟨review-dir⟩/profile.json (`prior_context.reviewer_history` for Round 2+
+interdiff-first gating),
 ⟨review-dir⟩/verification/affinity.md,
 ⟨review-dir⟩/root-cause/batches.md, ⟨review-dir⟩/plan.md, and
 gerrit/unresolved-threads.json. Use artifact/anchor fields in the definition
@@ -1087,8 +1107,8 @@ Pre-Output Gate checklist (from
 ⟨skill-dir⟩/references/worker/synthesis-and-output/pre-output-gate.md)
 verbatim to the bottom of reconciliation.md and
 fill every line provable from the indexed files, marking draft-dependent lines
-"pending draft" and Freshness `pending-delivery`. For each promoted finding
-and owner question, write one bounded evidence card under
+"pending draft" and Freshness `pending-delivery`. For each promoted finding,
+owner question, and reviewer note, write one bounded evidence card under
 synthesis/⟨ROW-ID⟩.md using
 ⟨skill-dir⟩/references/worker/templates/synthesis-bounded-index-and-evidence-cards.md. Every finding card carries the
 root-cause Suggested edit decision, exact range/selected lines/replacement
@@ -1098,8 +1118,11 @@ drafting. A card is at most
 evidence exceeds that, split it into numbered parts referenced by
 the root card. Write the complete bounded manifest to synthesis/index.md. Do
 not copy all verdicts into one synthesis document. Assign each output item in
-the disposition itself using exact `promoted → F<number>` or
-`question → Q<number>` syntax. The index contains exactly those items, and
+the disposition itself using exact `promoted → F<number>`,
+`question → Q<number>`, or `note → N<number>` syntax (while audited non-card
+follow-up dispositions use `suppressed — unchanged since prior review (...)`
+for `P3`/`pre-existing` only, `subordinated → thread <root_id> (...)`, or
+`launch-gate note (...)`). The index contains exactly the card-owning items, and
 each row's `source rows` includes the disposition's defining row. A severity
 downgrade remains a promotion at the calibrated severity; never emit a bare
 `downgraded` disposition. Use only `merged → <survivor-row-id>` for a merge
@@ -1111,8 +1134,12 @@ survivor must be direct, verdict-owning, and verdict-consistently dispositioned;
 artifact pointers must resolve to existing, nonempty review-relative files.
 Reject the merge rather than inventing free-form equivalence prose.
 Audit every verdict-bearing candidate independently: CONFIRMED cannot use a
-free-form dismissed/duplicate disposition, UNPROVEN cannot disappear outside
-Questions, and REFUTED names its verdict/citation.
+free-form dismissed/duplicate disposition (only `promoted → F<number>`,
+`merged → <survivor>`, `note → N<number>`, `suppressed — unchanged since prior
+review (...)` for `P3`/`pre-existing`, `subordinated → thread <root_id> (...)`,
+or `launch-gate note (...)`), UNPROVEN cannot disappear outside Questions /
+`note → N<number>` / `subordinated → thread <root_id>`, and REFUTED names its
+verdict/citation.
 
 Deliverables: ⟨review-dir⟩/reconciliation.md,
 ⟨review-dir⟩/synthesis/index.md, and ⟨review-dir⟩/synthesis/*.md cards.
@@ -1167,7 +1194,7 @@ generated synthesis cards, plan.md, root-cause/batches.md, and compact gate
 counts. Extract IDs and manifest fields only.
 
 Procedure: prove every defining ID has exactly one disposition, no shard emits
-a foreign/duplicate ID, and promoted/question dispositions have exactly one
+a foreign/duplicate ID, and promoted/question/note dispositions have exactly one
 card while all other dispositions have none. Require exactly one structured
 Merge equivalence row for every merged disposition and no foreign equivalence
 row. Concatenate dispositions in
@@ -1280,12 +1307,14 @@ trailing blank separator line in the replaced range); an omitted edit
 keeps the card's specific reason and has no suggestion block.
 
 Deliverables: exact final-output bytes in
-`draft-parts/⟨card-ID⟩.md`; for a finding, exact target/comment bytes in
-`gerrit-parts/⟨card-ID⟩.md`; and one measured
+`draft-parts/⟨card-ID⟩.md`; for a `CL-introduced` or `introduced-in-PS<N>`
+finding (and any `pre-existing` finding emitting an inline comment), exact
+target/comment bytes in `gerrit-parts/⟨card-ID⟩.md`; and one measured
 `output-coverage/⟨card-ID⟩.tsv` data row in the schema from
 ⟨skill-dir⟩/references/worker/templates/exact-output-fragments-draft-parts-and-draft-assembly.md. A question
-uses `-` for all Gerrit fields. Do not add wrappers or metadata that should not
-appear in the final output.
+(`Q<number>`), reviewer note (`N<number>`), or `Origin: pre-existing` finding
+omitting Gerrit inline output uses `-` for all Gerrit fields. Do not add
+wrappers or metadata that should not appear in the final output.
 
 Return: one line — card ID, destination/ordering key, output path, complete
 or explicit remaining.
@@ -1305,17 +1334,23 @@ root-cause/batches.md summary. Extract only compact outcome fields.
 
 Deliverable: draft-parts/FRAME.md with High-Level Summary, Prior Review
 Follow-Up, cited Positives, Verification Notes, Next Steps (including any
-non-blocking **Launch-Gate Note** for explicit `TODO`-deferred production
-prerequisites such as quota/eviction on a default-off feature), verdict sentence,
-and the complete ordered card-part list, plus `gerrit-parts/FRAME.md` containing
-the `## Main comment` (Patchset-Level Comment) for `gerrit-comments.md`. Keep
-internal `Verification Notes` (such as `"No local test execution was performed
-during this review"`) in `draft-parts/FRAME.md` only — omit internal
-verification-note bullets from `gerrit-parts/FRAME.md`, and when an unresolved
-Gerrit thread awaits a decision from the reviewer running the review (`Reviewer
-email` in `pin.md`), include a `[Reviewer decision on thread <id>: Option A ... /
-Option B ...]` placeholder in `## Main comment` instead of writing third-person
-`"awaiting reviewer confirmation"`. The
+non-blocking **Launch-Gate Note** for explicit `TODO`-deferred or default-off
+pre-launch prerequisites such as quota/eviction on a default-off feature),
+verdict sentence, and the complete ordered card-part list, plus
+`gerrit-parts/FRAME.md` containing the `## Main comment` (Patchset-Level
+Comment) for `gerrit-comments.md`. On Round 2+ follow-up reviews
+(`same_reviewer_followup: true` in `profile.json`), keep `## Main comment` to
+1–3 concise, natural sentences plus any `[Reviewer decision on thread <id>:
+Option A ... / Option B ...]` placeholder or brief **Launch-Gate Note**,
+keeping itemized `file:line` lists of fixed prior comments in
+`draft-parts/FRAME.md` only. Keep internal `Verification Notes` (such as `"No
+local test execution was performed during this review"`) in
+`draft-parts/FRAME.md` only — omit internal verification-note bullets from
+`gerrit-parts/FRAME.md`, and when an unresolved Gerrit thread awaits a decision
+from the reviewer running the review (`Reviewer email` in `pin.md`), include a
+`[Reviewer decision on thread <id>: Option A ... / Option B ...]` placeholder
+in `## Main comment` instead of writing third-person `"awaiting reviewer
+confirmation"`. The
 ordered card-part list must name every card in
 synthesis/index.md with no omission; a missing card part is a truncation
 defect, not an editorial choice. Apply verdict alignment. Freshness remains

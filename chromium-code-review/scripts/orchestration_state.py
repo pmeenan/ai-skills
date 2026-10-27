@@ -67,6 +67,7 @@ DETERMINISTIC_INDEX_NAMES = {
     "candidates.tsv",
     "verdicts.tsv",
     "reconciliation.tsv",
+    "interdiff-hunks.tsv",
     "manifest.json",
 }
 JOURNAL = ".work-unit-seal-transaction.json"

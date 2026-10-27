@@ -43,7 +43,14 @@ Not LGTM until the failed-flush result bug is fixed. ...
 - `nit:` ...
 ````
 
-An absent section says `None`; never emit placeholder comments. Thread replies
-use the normalized thread root/latest IDs from
+An absent section says `None`; never emit placeholder comments. On Round 2+
+follow-up reviews (`same_reviewer_followup: true`), keep `## Main comment` to
+1–3 concise, natural sentences plus any `[Reviewer decision on thread <id>:
+Option A ... / Option B ...]` placeholder or brief **Launch-Gate Note** (keep
+itemized `file:line` lists of fixed prior comments in `draft-review.md` only).
+Thread replies use the normalized thread root/latest IDs from
 `gerrit/unresolved-threads.json`, not positional assumptions about
-`comments.json`.
+`comments.json`; to reopen a resolved thread originally authored by `Reviewer
+email` for a direct follow-up on that thread's fix, set `- Status: reopen —
+<reason>` and cite the thread's exact `- Latest comment id: <id>` verified
+against `comments.json`.

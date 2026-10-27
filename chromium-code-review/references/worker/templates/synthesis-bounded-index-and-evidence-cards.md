@@ -11,22 +11,24 @@ verdicts into a real review.
 
 ## synthesis/ — Bounded Index And Evidence Cards
 
-The Reconciliation Builder writes one immutable card per promoted finding and
-question. Each card is at most `evidence_card_budget_bytes` from
-`profile.json` and contains only the
+The Reconciliation Builder writes one immutable card per promoted finding,
+owner question, and reviewer note. Each card is at most
+`evidence_card_budget_bytes` from `profile.json` and contains only the
 evidence needed to draft and challenge that item. If evidence exceeds the
 bound, split supporting material into numbered parts and keep the root card
 within the bound. The draft writer consumes these cards instead of
 all verdict and root-cause files.
 
 The disposition owns the synthesis-item identity: use exactly
-`promoted → F<number> (...)` or `question → Q<number> (...)`. Every such item
-appears exactly once in `synthesis/index.md`, and that index row's `source
-rows` includes the disposition's defining row. Non-promoted/non-question
-dispositions own no card. A severity downgrade stays inside a
-`promoted → F<number>` disposition; never use bare `downgraded`, which would
-omit the finding. The validator compares these sets exactly; a missing card is
-an error, not an empty-review warning.
+`promoted → F<number> (...)`, `question → Q<number> (...)`, or
+`note → N<number> (...)`. Every such item appears exactly once in
+`synthesis/index.md`, and that index row's `source rows` includes the
+disposition's defining row. Non-promoted/non-question/non-note dispositions
+(including `suppressed — unchanged since prior review`, `subordinated → thread
+<root_id>`, and `launch-gate note`) own no card. A severity downgrade stays
+inside a `promoted → F<number>` disposition; never use bare `downgraded`, which
+would omit the finding. The validator compares these sets exactly; a missing
+card is an error, not an empty-review warning.
 
 ````markdown
 # EPW-2 evidence card — CL 9999999 PS3
@@ -39,7 +41,7 @@ an error, not an empty-review warning.
 - Root family: RF001
 - Merge support: AL-1 (equivalence validated)
 - Severity / origin: P1, anchor ..., CL-introduced
-- Existing Gerrit thread: root abc123, or `none`
+- Existing Gerrit thread: root abc123, root abc123 (reopen), or `none`
 - Verbatim changed line: `return write_len_;`
 - Suggested edit decision: applicable — replaces net/streams/delay_buffer.cc:203
 - Suggested edit selected lines:
@@ -60,4 +62,5 @@ an error, not an empty-review warning.
 | --- | --- | --- | --- |
 | F001 | synthesis/EPW-2.md | 2840 | EPW-2, AL-1, V001-1, RC001-1 |
 | Q002 | synthesis/AL-3.md | 1902 | AL-3, V002-3 |
+| N001 | synthesis/API-1.md | 1750 | API-1, V003-6 |
 ```

@@ -255,6 +255,7 @@ PROFILE_SCRIPT = SCRIPT_DIR / "profile-review.py"
 INDEX_SCRIPT = SCRIPT_DIR / "build-review-indexes.py"
 SNAPSHOT_SCRIPT = SCRIPT_DIR / "snapshot-skill.py"
 from orchestration_state import DETERMINISTIC_INDEX_NAMES
+import interdiff_hunks
 
 
 class Report:
@@ -281,41 +282,39 @@ class Report:
 
 
 def finalizer_freshness_prestate_matches(
-    root: Path, row: dict[str, str], current: bytes
+    root: Path,
+    row: dict[str, str],
+    current: bytes,
+    *,
+    allow_prefix: bool = False,
 ) -> bool:
-    """Authenticate refresh-delivery-gate.py's sole reconciliation rewrite."""
+    """Authenticate refresh-delivery-gate.py's sole reconciliation rewrite.
+
+    Supports two tightly scoped snapshot modes:
+    1. Exact row-bound snapshot (`reconciliation.before-clerical.md` or
+       `output-history/<expected_sha>.bin`, with `len == expected_len` and
+       `sha256 == expected_sha`): allows append-only post-clerical growth after
+       the projected snapshot (`current.startswith(projected)`).
+    2. Multi-attempt `REC` append-only prefix (`allow_prefix` or `REC`
+       `role=prestate`, where `len(snapshot) > expected_len`): requires the
+       archived pre-refresh snapshot to transform byte-for-byte (`== current`)
+       into the entire current `reconciliation.md` when only its single
+       `2. Freshness:` line is rewritten, AND `sha256(snapshot[:expected_len])
+       == expected_sha`.
+    """
     path = Path(row.get("input_path", ""))
     try:
         if path.resolve() != (root / "reconciliation.md").resolve():
             return False
         before = root / "reconciliation.before-clerical.md"
         expected_sha = row.get("sha256", "")
-        archive = (
-            root / "output-history" / f"{expected_sha}.bin"
-            if re.fullmatch(r"[0-9a-f]{64}", expected_sha) else None
-        )
-        original: bytes | None = None
-        if before.is_file():
-            candidate_bytes = before.read_bytes()
-            if (
-                str(len(candidate_bytes)) == row.get("bytes")
-                and hashlib.sha256(candidate_bytes).hexdigest() == expected_sha
-            ):
-                original = candidate_bytes
-        if (
-            original is None
-            and archive is not None
-            and archive.is_file()
-            and not archive.is_symlink()
-            and archive.stat().st_mode & 0o222 == 0
-        ):
-            candidate_bytes = archive.read_bytes()
-            if (
-                str(len(candidate_bytes)) == row.get("bytes")
-                and hashlib.sha256(candidate_bytes).hexdigest() == expected_sha
-            ):
-                original = candidate_bytes
-        if original is None:
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
+            return False
+        try:
+            expected_len = int(row.get("bytes", ""))
+            if expected_len < 0:
+                return False
+        except ValueError:
             return False
         gate = (root / "delivery-gate.md").read_text(encoding="utf-8")
         result = field(gate, "Result") or ""
@@ -326,15 +325,68 @@ def finalizer_freshness_prestate_matches(
         pattern = re.compile(
             rb"^2\.\s+(?:\*\*)?Freshness:(?:\*\*)?\s*.*$", re.MULTILINE
         )
-        if len(pattern.findall(original)) != 1:
+        if len(pattern.findall(current)) != 1:
             return False
         replacement = (
             f"2. **Freshness:** yes — {result}; delivery-gate.md".encode()
         )
-        if len(pattern.findall(current)) != 1:
-            return False
-        projected_prefix = pattern.sub(replacement, original, count=1)
-        return current.startswith(projected_prefix)
+        use_rec_prefix = allow_prefix or (
+            row.get("role") == "prestate"
+            and row.get("work_id", "").startswith("REC")
+        )
+
+        def matches_exact_row_snapshot(snapshot: bytes) -> bool:
+            if (
+                len(snapshot) != expected_len
+                or hashlib.sha256(snapshot).hexdigest() != expected_sha
+                or len(pattern.findall(snapshot)) != 1
+            ):
+                return False
+            projected = pattern.sub(replacement, snapshot, count=1)
+            return current.startswith(projected)
+
+        def matches_full_pre_refresh_snapshot(full_bytes: bytes) -> bool:
+            if len(full_bytes) <= expected_len or len(pattern.findall(full_bytes)) != 1:
+                return False
+            if pattern.sub(replacement, full_bytes, count=1) != current:
+                return False
+            return (
+                hashlib.sha256(full_bytes[:expected_len]).hexdigest()
+                == expected_sha
+            )
+
+        if before.is_file() and not before.is_symlink():
+            before_bytes = before.read_bytes()
+            if matches_exact_row_snapshot(before_bytes):
+                return True
+            if use_rec_prefix and matches_full_pre_refresh_snapshot(before_bytes):
+                return True
+
+        archive = root / "output-history" / f"{expected_sha}.bin"
+        if (
+            archive.is_file()
+            and not archive.is_symlink()
+            and archive.stat().st_mode & 0o222 == 0
+        ):
+            if matches_exact_row_snapshot(archive.read_bytes()):
+                return True
+
+        if use_rec_prefix and (root / "output-history").is_dir():
+            for candidate_archive in sorted((root / "output-history").glob("*.bin")):
+                if (
+                    re.fullmatch(r"[0-9a-f]{64}", candidate_archive.stem)
+                    and candidate_archive.is_file()
+                    and not candidate_archive.is_symlink()
+                    and candidate_archive.stat().st_mode & 0o222 == 0
+                ):
+                    archive_bytes = candidate_archive.read_bytes()
+                    if (
+                        hashlib.sha256(archive_bytes).hexdigest()
+                        == candidate_archive.stem
+                        and matches_full_pre_refresh_snapshot(archive_bytes)
+                    ):
+                        return True
+        return False
     except (OSError, UnicodeError):
         return False
 
@@ -2392,6 +2444,7 @@ def authenticated_manifest_keys(
 def append_only_manifest_versions(
     input_rows: list[dict[str, str]],
     orchestration_rows: list[dict[str, str]],
+    root: Path | None = None,
 ) -> set[tuple[str, str, str]]:
     """Return authenticated historical prefixes of canonical artifacts.
 
@@ -2418,7 +2471,13 @@ def append_only_manifest_versions(
             or orchestration_row.get("artifact") != input_path
         ):
             continue
-        if manifest_row_matches(row, prefix=True):
+        if manifest_row_matches(row, prefix=True) or (
+            root is not None
+            and Path(input_path).is_file()
+            and finalizer_freshness_prestate_matches(
+                root, row, Path(input_path).read_bytes(), allow_prefix=True
+            )
+        ):
             versions.add((input_path, row.get("bytes", ""), row.get("sha256", "")))
     return versions
 
@@ -2505,7 +2564,9 @@ def procedural_repair_supersessions(
         except ValueError:
             continue
         grouped_inputs[key].append(row)
-    append_only_versions = append_only_manifest_versions(input_rows, orch_rows)
+    append_only_versions = append_only_manifest_versions(
+        input_rows, orch_rows, root
+    )
     deterministic_history = deterministic_historical_rows(
         root, input_rows, orch_rows, indexes_current
     )
@@ -2687,7 +2748,15 @@ def procedural_repair_supersessions(
                         item.get("bytes", ""),
                         item.get("sha256", ""),
                     ) in append_only_versions
-                    and manifest_row_matches(item, prefix=True)
+                    and (
+                        manifest_row_matches(item, prefix=True)
+                        or finalizer_freshness_prestate_matches(
+                            root,
+                            item,
+                            required_input.read_bytes(),
+                            allow_prefix=True,
+                        )
+                    )
                 )
                 or row_index in deterministic_history
                 for row_index, item in matching
@@ -2840,7 +2909,7 @@ def validate_input_manifest(
     except (OSError, csv.Error):
         pass
     append_only_versions = append_only_manifest_versions(
-        rows, orchestration_rows
+        rows, orchestration_rows, root
     )
     deterministic_history = deterministic_historical_rows(
         root, rows, orchestration_rows, indexes_current
@@ -2910,7 +2979,12 @@ def validate_input_manifest(
                     row.get("bytes", ""),
                     row.get("sha256", ""),
                 ) in append_only_versions
-                and manifest_row_matches(row, prefix=True)
+                and (
+                    manifest_row_matches(row, prefix=True)
+                    or finalizer_freshness_prestate_matches(
+                        root, row, payload, allow_prefix=True
+                    )
+                )
             )
             historical_deterministic = (
                 row_index in deterministic_history
@@ -3886,6 +3960,7 @@ def ledger_data(root: Path, report: Report) -> tuple[dict[str, Path], set[str], 
                 report.error(f"{path} lacks exact Candidate rows heading")
         elif "## Compliance matrix" not in text or "## Candidate rows" not in text:
             report.error(f"{path} lacks exact Compliance matrix/Candidate rows headings")
+        non_open_prior_rows: dict[str, str] = {}
         for heading, header, rows in table_dicts(text):
             if heading == "Compliance matrix":
                 for index, row in enumerate(rows, 1):
@@ -3904,6 +3979,25 @@ def ledger_data(root: Path, report: Report) -> tuple[dict[str, Path], set[str], 
                         report.error(f"{path}: invalid prior-feedback row ID '{identifier}'")
                     else:
                         add(identifier, path)
+                        resolution = row.get("resolution", "").strip()
+                        if "resolution" in header and not re.search(
+                            r"(?i)^(?:"
+                            r"(?:fixed|partially[- ]fixed|still[- ]open|"
+                            r"obsolete|superseded|reviewer[- ]decision[- ]pending|"
+                            r"not[- ]posted|deferred[- ]accepted)\b"
+                            r"|deferred\s*\(\s*accepted(?:\b[^)]*)?\)"
+                            r")",
+                            resolution,
+                        ):
+                            report.error(
+                                f"{path}: prior-feedback row {identifier} has "
+                                f"unrecognized resolution '{resolution}'"
+                            )
+                        if resolution and not re.search(
+                            r"(?i)^(?:still[- ]open|partially[- ]fixed)\b",
+                            resolution,
+                        ):
+                            non_open_prior_rows[identifier] = resolution
             if heading == "Candidate rows" and "id" in header:
                 for row in rows:
                     identifier = row.get("id", "")
@@ -3918,6 +4012,13 @@ def ledger_data(root: Path, report: Report) -> tuple[dict[str, Path], set[str], 
                         report.error(f"duplicate row ID {identifier}: {source_ids[identifier]} and {path}")
                     status = row.get("status", "").lower()
                     if "candidate" in status or "reopened" in status:
+                        if identifier in non_open_prior_rows:
+                            report.error(
+                                f"{path}: prior-feedback row {identifier} has "
+                                f"non-open resolution "
+                                f"'{non_open_prior_rows[identifier]}' and must "
+                                "not appear as an active candidate row"
+                            )
                         candidate_ids.add(identifier)
                     location = row.get("location", "")
                     match = CITATION.search(location)
@@ -4415,6 +4516,116 @@ def validate_reconciliation(
     promotion_exceptions: set[str] = set()
     merge_equivalence: dict[tuple[str, str], dict[str, str]] = {}
     verdicts_by_candidate: dict[str, tuple[str, str]] = {}
+    verdict_meta_by_candidate: dict[str, tuple[str, str]] = {}
+    candidate_origin_by_id: dict[str, str] = {}
+    candidate_location_by_id: dict[str, str] = {}
+    not_posted_prior_locations: dict[str, str] = {}
+    ledger_dir = root / "ledger"
+    if ledger_dir.is_dir():
+        for ledger_path in sorted(ledger_dir.glob("**/*.md")):
+            is_pr_ledger = ledger_path.relative_to(ledger_dir).as_posix() == "PR.md"
+            for heading, header, rows in table_dicts(read_text(ledger_path, report)):
+                if is_pr_ledger and heading == "Prior-feedback rows" and "id" in header:
+                    for pr_row in rows:
+                        pr_id = pr_row.get("id", "").strip()
+                        pr_res = pr_row.get("resolution", "").strip()
+                        pr_loc = pr_row.get("prior location", "").strip()
+                        if (
+                            pr_id
+                            and pr_loc
+                            and re.search(r"(?i)^not[- ]posted\b", pr_res)
+                        ):
+                            not_posted_prior_locations[pr_id] = pr_loc
+                if heading == "Candidate rows" and "id" in header:
+                    for cand_row in rows:
+                        cid = cand_row.get("id", "").strip()
+                        orig = cand_row.get("origin", "").strip()
+                        loc = cand_row.get("location", "").strip()
+                        if cid and orig:
+                            candidate_origin_by_id[cid] = orig
+                        if cid and loc:
+                            candidate_location_by_id[cid] = loc
+    collection_path = root / "collection.md"
+    if collection_path.is_file():
+        for heading, header, rows in table_dicts(
+            read_text(collection_path, report, required=False)
+        ):
+            if "id" in header and "location" in header:
+                for cand_row in rows:
+                    cid = cand_row.get("id", "").strip()
+                    orig = cand_row.get("origin", "").strip()
+                    loc = cand_row.get("location", "").strip()
+                    if cid and orig and cid not in candidate_origin_by_id:
+                        candidate_origin_by_id[cid] = orig
+                    if cid and loc and cid not in candidate_location_by_id:
+                        candidate_location_by_id[cid] = loc
+    same_reviewer_followup = False
+    latest_prior_ps: int | None = None
+    latest_prior_sha: str | None = None
+    profile_path = root / "profile.json"
+    if profile_path.is_file():
+        try:
+            profile_data = json.loads(profile_path.read_text(encoding="utf-8"))
+            if isinstance(profile_data, dict):
+                prior_ctx = profile_data.get("prior_context")
+                if isinstance(prior_ctx, dict):
+                    rev_hist = prior_ctx.get("reviewer_history")
+                    if isinstance(rev_hist, dict):
+                        same_reviewer_followup = bool(
+                            rev_hist.get("same_reviewer_followup")
+                        )
+                        raw_prior_ps = rev_hist.get(
+                            "latest_prior_reviewed_patchset"
+                        )
+                        if isinstance(raw_prior_ps, int):
+                            latest_prior_ps = raw_prior_ps
+                        raw_prior_sha = rev_hist.get("latest_prior_reviewed_sha")
+                        if isinstance(raw_prior_sha, str) and raw_prior_sha.strip():
+                            latest_prior_sha = raw_prior_sha.strip()
+        except (OSError, json.JSONDecodeError):
+            pass
+    pinned_rev_sha = ""
+    if (root / "pin.md").is_file():
+        pinned_rev_sha = (
+            field(read_text(root / "pin.md", report, required=False), "Revision SHA")
+            or ""
+        ).strip()
+    loaded_interdiff_hunks: list[dict[str, Any]] | None = None
+    try:
+        loaded_interdiff_hunks = interdiff_hunks.load_interdiff_hunks(root)
+    except ValueError as exc:
+        report.error(str(exc))
+        loaded_interdiff_hunks = None
+    if loaded_interdiff_hunks:
+        bad_interdiff_sha = any(
+            (pinned_rev_sha and h.get("revision_sha") != pinned_rev_sha)
+            or (latest_prior_sha and h.get("prior_sha") != latest_prior_sha)
+            for h in loaded_interdiff_hunks
+        )
+        if bad_interdiff_sha:
+            report.error(
+                "indexes/interdiff-hunks.tsv prior_sha/revision_sha columns do "
+                "not match pin.md Revision SHA and profile.json "
+                "latest_prior_reviewed_sha"
+            )
+            loaded_interdiff_hunks = None
+    unresolved_thread_roots: set[str] = set()
+    threads_path = root / "gerrit" / "unresolved-threads.json"
+    if threads_path.is_file():
+        try:
+            threads_data = json.loads(threads_path.read_text(encoding="utf-8"))
+            if isinstance(threads_data, dict) and isinstance(
+                threads_data.get("threads"), list
+            ):
+                unresolved_thread_roots = {
+                    str(thread.get("root_id") or "").strip()
+                    for thread in threads_data["threads"]
+                    if isinstance(thread, dict)
+                    and thread.get("unresolved") is True
+                    and thread.get("root_id")
+                }
+        except (OSError, json.JSONDecodeError):
+            pass
     for verdict_path in sorted((root / "verification").glob("V*.md")):
         if verdict_path.name == "VTER.md":
             continue
@@ -4425,8 +4636,23 @@ def validate_reconciliation(
                 candidate = verdict_row.get("candidate", "").strip()
                 verdict_id = verdict_row.get("id", "").strip()
                 verdict = verdict_row.get("verdict", "").strip()
+                severity = (
+                    verdict_row.get(
+                        "severity (anchor)",
+                        verdict_row.get(
+                            "calibrated severity",
+                            verdict_row.get("severity", ""),
+                        ),
+                    )
+                    or ""
+                ).strip()
+                origin = (
+                    verdict_row.get("origin", "").strip()
+                    or candidate_origin_by_id.get(candidate, "")
+                )
                 if candidate and verdict_id and verdict:
                     verdicts_by_candidate[candidate] = (verdict_id, verdict)
+                    verdict_meta_by_candidate[candidate] = (severity, origin)
     for _, header, rows in table_dicts(text):
         if {"root family", "justification", "evidence"}.issubset(header):
             for row in rows:
@@ -4519,6 +4745,8 @@ def validate_reconciliation(
                         kind, keyword, prefix = "finding", "promoted", "F"
                     elif normalized.startswith("question"):
                         kind, keyword, prefix = "question", "question", "Q"
+                    elif re.match(r"^note\s*(?:→|->)", disposition, re.IGNORECASE):
+                        kind, keyword, prefix = "note", "note", "N"
                     elif normalized.startswith("merged"):
                         merge_match = re.fullmatch(
                             rf"(?i)merged\s*(?:→|->)\s*({ROW_ID_TEXT})",
@@ -4622,14 +4850,20 @@ def validate_reconciliation(
                     f"{merged_verdict[1]} behind survivor verdict {verdict}"
                 )
             survivor_disposition = disposition_values.get(survivor, "")
-            required_prefix = {
-                "CONFIRMED": "promoted",
-                "UNPROVEN": "question",
-                "REFUTED": "refuted",
+            survivor_norm = survivor_disposition.lower()
+            allowed_prefixes = {
+                "CONFIRMED": (
+                    "promoted",
+                    "note",
+                    "suppressed",
+                    "subordinated",
+                    "launch-gate note",
+                ),
+                "UNPROVEN": ("question", "note", "subordinated"),
+                "REFUTED": ("refuted", "dismissed"),
             }.get(verdict)
-            if (
-                required_prefix is not None
-                and not survivor_disposition.lower().startswith(required_prefix)
+            if allowed_prefixes is not None and not survivor_norm.startswith(
+                allowed_prefixes
             ):
                 report.error(
                     f"reconciliation merge survivor {survivor} has "
@@ -4654,6 +4888,11 @@ def validate_reconciliation(
             f"reconciliation has foreign Merge equivalence row "
             f"{key[0]} → {key[1]} without a matching disposition"
         )
+    draft_text_for_gate = (
+        read_text(root / "draft-review.md", report)
+        if final and (root / "draft-review.md").is_file()
+        else ""
+    )
     for candidate, (verdict_id, verdict) in sorted(
         verdicts_by_candidate.items()
     ):
@@ -4661,25 +4900,248 @@ def validate_reconciliation(
         if candidate in merge_edges:
             continue
         normalized = disposition.lower()
-        valid = (
-            (verdict == "CONFIRMED" and normalized.startswith("promoted"))
-            or (verdict == "UNPROVEN" and normalized.startswith("question"))
-            or (
-                verdict == "REFUTED"
-                and (
-                    normalized.startswith("refuted")
-                    or normalized.startswith("dismissed")
-                )
-                and (
-                    verdict_id in disposition
-                    or CITATION.search(disposition) is not None
-                )
+        severity, origin = verdict_meta_by_candidate.get(candidate, ("", ""))
+        has_evidence = (
+            verdict_id in disposition or CITATION.search(disposition) is not None
+        )
+        is_note = bool(
+            re.fullmatch(
+                r"(?i)note\s*(?:→|->)\s*N\d+(?:\s+\([^()\r\n]+\))?",
+                disposition,
             )
         )
+        valid = False
+        if verdict == "CONFIRMED":
+            if normalized.startswith("promoted") or is_note:
+                valid = True
+                if (
+                    normalized.startswith("promoted")
+                    and not_posted_prior_locations
+                    and loaded_interdiff_hunks is not None
+                ):
+                    checked_ids = [candidate] + [
+                        merged_id
+                        for merged_id, surv_id in sorted(merge_edges.items())
+                        if surv_id == candidate
+                    ]
+                    for checked_id in checked_ids:
+                        cand_loc = candidate_location_by_id.get(checked_id, "")
+                        cand_spans = interdiff_hunks.parse_location_ranges(cand_loc)
+                        if not cand_spans:
+                            continue
+                        if any(
+                            interdiff_hunks.overlaps_interdiff(
+                                loaded_interdiff_hunks, c_path, c_start, c_end
+                            )
+                            is not None
+                            for c_path, c_start, c_end in cand_spans
+                        ):
+                            continue
+                        for pr_id, prior_loc in sorted(
+                            not_posted_prior_locations.items()
+                        ):
+                            conflict_found = False
+                            for (
+                                pr_path,
+                                pr_start,
+                                pr_end,
+                            ) in interdiff_hunks.parse_location_ranges(prior_loc):
+                                mapped = interdiff_hunks.map_prior_range_to_revision(
+                                    loaded_interdiff_hunks,
+                                    pr_path,
+                                    pr_start,
+                                    pr_end,
+                                )
+                                if mapped is None:
+                                    continue
+                                mapped_path, mapped_start, mapped_end = mapped
+                                for c_path, c_start, c_end in cand_spans:
+                                    if (
+                                        c_path == mapped_path
+                                        and c_start <= mapped_end + 2
+                                        and c_end >= max(1, mapped_start - 2)
+                                    ):
+                                        report.error(
+                                            f"reconciliation candidate {checked_id} "
+                                            f"({cand_loc}) promotes a finding "
+                                            f"overlapping prior not-posted item "
+                                            f"{pr_id} ({prior_loc}) on code "
+                                            "unchanged since the prior review"
+                                        )
+                                        conflict_found = True
+                                        break
+                                if conflict_found:
+                                    break
+            elif re.match(
+                r"(?i)^suppressed\s*(?:—|--|-)\s*unchanged\s+since\s+prior\s+review\b",
+                disposition,
+            ):
+                if not same_reviewer_followup:
+                    report.error(
+                        f"reconciliation candidate {candidate} cannot use "
+                        "'suppressed — unchanged since prior review' when "
+                        "profile.json does not establish same_reviewer_followup=true"
+                    )
+                    continue
+                if loaded_interdiff_hunks is None:
+                    report.error(
+                        f"reconciliation candidate {candidate} cannot use "
+                        "'suppressed — unchanged since prior review' without a "
+                        "valid indexes/interdiff-hunks.tsv baseline diff"
+                    )
+                    continue
+                intro_match = re.match(r"(?i)^introduced-in-PS(\d+)\b", origin)
+                if (
+                    intro_match is not None
+                    and latest_prior_ps is not None
+                    and int(intro_match.group(1)) > latest_prior_ps
+                ):
+                    report.error(
+                        f"reconciliation candidate {candidate} cannot use "
+                        f"'suppressed — unchanged since prior review' with origin "
+                        f"'{origin}' newer than latest prior reviewed patchset "
+                        f"PS{latest_prior_ps}"
+                    )
+                    continue
+                cand_loc = candidate_location_by_id.get(candidate, "")
+                cand_spans = interdiff_hunks.parse_location_ranges(cand_loc)
+                if not cand_spans:
+                    report.error(
+                        f"reconciliation candidate {candidate} cannot use "
+                        "'suppressed — unchanged since prior review' without a "
+                        f"parseable file:line location (got '{cand_loc or 'blank'}')"
+                    )
+                    continue
+                overlapping_hunk = None
+                for span_path, span_start, span_end in cand_spans:
+                    overlapping_hunk = interdiff_hunks.overlaps_interdiff(
+                        loaded_interdiff_hunks, span_path, span_start, span_end
+                    )
+                    if overlapping_hunk is not None:
+                        break
+                if overlapping_hunk is not None:
+                    report.error(
+                        f"reconciliation candidate {candidate} ({cand_loc}) "
+                        f"cannot use 'suppressed — unchanged since prior review': "
+                        f"location overlaps interdiff hunk {overlapping_hunk['id']} "
+                        f"({overlapping_hunk['path']}:{overlapping_hunk['new_start']})"
+                    )
+                    continue
+                sev_upper = severity.upper()
+                if sev_upper.startswith("P1"):
+                    report.error(
+                        f"reconciliation candidate {candidate} cannot use "
+                        f"'suppressed — unchanged since prior review' for P1 "
+                        f"severity '{severity}'; P1 ship-stopper defects are "
+                        "strictly non-suppressible even on unchanged code"
+                    )
+                    continue
+                if sev_upper.startswith("P3") or origin.lower() == "pre-existing":
+                    valid = has_evidence
+                elif sev_upper.startswith("P2"):
+                    bar_match = re.search(
+                        r"(?i)\bbelow\s+round[- ](?:[2-9]\d*|n)\s+bar\s*:\s*([^)\r\n]+)",
+                        disposition,
+                    )
+                    bar_reason = (
+                        bar_match.group(1).strip().rstrip(".,;")
+                        if bar_match is not None
+                        else ""
+                    )
+                    if (
+                        not bar_reason
+                        or len(bar_reason) < 8
+                        or bar_reason.lower()
+                        in {
+                            "n/a",
+                            "none",
+                            "minor",
+                            "unchanged",
+                            "p2",
+                            "low",
+                            "not p1",
+                        }
+                    ):
+                        report.error(
+                            f"reconciliation candidate {candidate} cannot use "
+                            f"'suppressed — unchanged since prior review' for "
+                            f"severity '{severity or 'unspecified'}' / origin "
+                            f"'{origin or 'unspecified'}' without an explicit "
+                            "'below round-<N> bar: <specific reason>' justification"
+                        )
+                        continue
+                    valid = has_evidence
+                else:
+                    report.error(
+                        f"reconciliation candidate {candidate} cannot use "
+                        f"'suppressed — unchanged since prior review' for "
+                        f"severity '{severity or 'unspecified'}' / origin "
+                        f"'{origin or 'unspecified'}'; only P3, pre-existing, or "
+                        "justified P2 ('below round-<N> bar: <reason>') items on "
+                        "unchanged code may be suppressed"
+                    )
+                    continue
+            elif (
+                sub_match := re.match(
+                    r"(?i)^subordinated\s*(?:→|->)\s*thread\s+`?([^\s`()]+)`?",
+                    disposition,
+                )
+            ) is not None:
+                sub_root = sub_match.group(1).strip()
+                if sub_root not in unresolved_thread_roots:
+                    report.error(
+                        f"reconciliation candidate {candidate} subordinates to "
+                        f"resolved or unknown Gerrit thread '{sub_root}' "
+                        "(absent from gerrit/unresolved-threads.json)"
+                    )
+                    continue
+                valid = has_evidence
+            elif re.match(r"(?i)^launch-gate\s+note\b", disposition):
+                if final and not re.search(
+                    r"(?i)launch[- ]gate\s+note", draft_text_for_gate
+                ):
+                    report.error(
+                        f"reconciliation candidate {candidate} uses "
+                        "'launch-gate note' disposition, but draft-review.md "
+                        "has no Launch-Gate Note section/callout"
+                    )
+                    continue
+                valid = has_evidence
+        elif verdict == "UNPROVEN":
+            if normalized.startswith("question") or is_note:
+                valid = True
+            elif (
+                sub_match := re.match(
+                    r"(?i)^subordinated\s*(?:→|->)\s*thread\s+`?([^\s`()]+)`?",
+                    disposition,
+                )
+            ) is not None:
+                sub_root = sub_match.group(1).strip()
+                if sub_root not in unresolved_thread_roots:
+                    report.error(
+                        f"reconciliation candidate {candidate} subordinates to "
+                        f"resolved or unknown Gerrit thread '{sub_root}' "
+                        "(absent from gerrit/unresolved-threads.json)"
+                    )
+                    continue
+                valid = has_evidence
+        elif verdict == "REFUTED":
+            valid = (
+                normalized.startswith("refuted")
+                or normalized.startswith("dismissed")
+            ) and has_evidence
         if not valid:
             expected = {
-                "CONFIRMED": "promoted → F<number> or structured merged",
-                "UNPROVEN": "question → Q<number> or structured merged",
+                "CONFIRMED": (
+                    "promoted → F<number>, note → N<number>, structured merged, "
+                    "or audited follow-up disposition (suppressed — unchanged "
+                    "since prior review [P3/pre-existing/justified P2], "
+                    "subordinated → thread <id>, or launch-gate note)"
+                ),
+                "UNPROVEN": (
+                    "question → Q<number>, note → N<number>, subordinated → "
+                    "thread <id>, or structured merged"
+                ),
                 "REFUTED": "refuted/dismissed with evidence or structured merged",
             }.get(verdict, "a verdict-consistent disposition")
             report.error(
@@ -4720,6 +5182,49 @@ def validate_reconciliation(
     return expected_cards
 
 
+def all_comment_threads(root: Path) -> dict[str, dict[str, Any]]:
+    """Return normalized Gerrit threads (unresolved and resolved) from comments.json."""
+    comments_path = root / "comments.json"
+    if not comments_path.is_file():
+        return {}
+    try:
+        raw = comments_path.read_text(encoding="utf-8-sig")
+        if raw.startswith(")]}'"):
+            newline = raw.find("\n")
+            if newline < 0:
+                return {}
+            raw = raw[newline + 1 :]
+        source = json.loads(raw)
+        if not isinstance(source, dict):
+            return {}
+        import importlib.util
+
+        extractor_path = Path(__file__).resolve().with_name(
+            "extract-unresolved-comments.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "extract_unresolved_comments", extractor_path
+        )
+        if spec is None or spec.loader is None:
+            return {}
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        normalized = module.normalize(source, include_resolved=True)
+        result: dict[str, dict[str, Any]] = {}
+        for thread in normalized.get("threads", []):
+            if isinstance(thread, dict) and thread.get("root_id"):
+                rid = str(thread["root_id"]).strip()
+                result[rid] = {
+                    "latest_id": str(thread.get("latest_id") or "").strip(),
+                    "path": str(thread.get("path") or "").strip(),
+                    "line": thread.get("line"),
+                    "unresolved": bool(thread.get("unresolved") is True),
+                }
+        return result
+    except Exception:
+        return {}
+
+
 def validate_synthesis(
     root: Path,
     source_ids: dict[str, Path],
@@ -4732,6 +5237,7 @@ def validate_synthesis(
     text = read_text(index, report)
     rc_suggestions = root_suggestion_decisions(root, report)
     unresolved_thread_roots: set[str] | None = None
+    all_threads_by_root = all_comment_threads(root)
     threads_path = root / "gerrit" / "unresolved-threads.json"
     if threads_path.is_file():
         try:
@@ -4764,9 +5270,13 @@ def validate_synthesis(
             if expected is None:
                 report.error(
                     f"synthesis/index.md contains foreign item {item}; no "
-                    "promoted/question reconciliation disposition owns it"
+                    "promoted/question/note reconciliation disposition owns it"
                 )
-                kind = "finding" if item.startswith("F") else "question"
+                kind = (
+                    "finding"
+                    if item.startswith("F")
+                    else ("note" if item.startswith("N") else "question")
+                )
             else:
                 kind = expected[0]
             cards[item] = kind
@@ -4789,7 +5299,17 @@ def validate_synthesis(
                             .strip()
                             .strip("`")
                         )
-                        if thread_root and thread_root not in unresolved_thread_roots:
+                        explicit_reopen = bool(
+                            re.search(r"(?i)\breopen\b", raw_thread)
+                        )
+                        if (
+                            thread_root
+                            and thread_root not in unresolved_thread_roots
+                            and not (
+                                explicit_reopen
+                                and thread_root in all_threads_by_root
+                            )
+                        ):
                             report.error(
                                 f"synthesis card {item} cites resolved or unknown "
                                 f"Existing Gerrit thread '{thread_root}' "
@@ -5353,12 +5873,22 @@ def validate_output_coverage(
                     f"output coverage {item} draft fragment lacks exact "
                     f"'- **Synthesis item:** {item}' marker"
                 )
-            required_fields = (
-                ("Claim", "Location", "Evidence", "Severity", "Origin",
-                 "Fix status", "Suggested edit", "Regression test", "Rows")
-                if expected_kind == "finding"
-                else ("Question", "Why it matters", "Rows")
-            )
+            if expected_kind == "finding":
+                required_fields = (
+                    "Claim",
+                    "Location",
+                    "Evidence",
+                    "Severity",
+                    "Origin",
+                    "Fix status",
+                    "Suggested edit",
+                    "Regression test",
+                    "Rows",
+                )
+            elif expected_kind == "note":
+                required_fields = ("Note", "Why it matters", "Rows")
+            else:
+                required_fields = ("Question", "Why it matters", "Rows")
             for field_name in required_fields:
                 if not re.search(
                     rf"(?m)^- \*\*{re.escape(field_name)}:\*\*\s*\S",
@@ -5377,7 +5907,49 @@ def validate_output_coverage(
                 ):
                     report.error(err)
 
-        if expected_kind == "finding":
+        is_preexisting_finding = expected_kind == "finding" and bool(
+            re.search(r"(?im)^-\s*\*\*Origin:\*\*\s*pre-existing\b", draft_text)
+        )
+        gerrit_omitted = (
+            row["gerrit_path"] == "-"
+            and row["gerrit_bytes"] == "-"
+            and row["gerrit_sha256"] == "-"
+        )
+        if expected_kind == "finding" and is_preexisting_finding and gerrit_omitted:
+            if draft_fragment is not None:
+                decision = SUGGESTED_EDIT_FIELD.search(draft_text)
+                if decision is None:
+                    report.error(
+                        f"output coverage {item} draft fragment lacks a non-empty "
+                        "'Suggested edit' field"
+                    )
+                else:
+                    status = decision.group(1).lower()
+                    detail = decision.group(2).strip()
+                    card_decision = card_suggestions.get(item)
+                    if card_decision is not None and (
+                        status != card_decision[0] or detail != card_decision[1]
+                    ):
+                        report.error(
+                            f"output coverage {item} Suggested edit decision "
+                            "differs from its synthesis card"
+                        )
+                    if status != "omitted":
+                        report.error(
+                            f"pre-existing finding {item} omits Gerrit inline "
+                            "output ('-') and must mark Suggested edit omitted"
+                        )
+                    elif detail.lower() in NON_SPECIFIC_OMISSION:
+                        report.error(
+                            f"output coverage {item} has a non-specific Suggested "
+                            "edit omission reason"
+                        )
+                    elif fenced_blocks(draft_text, "suggestion"):
+                        report.error(
+                            f"output coverage {item} marks Suggested edit omitted "
+                            "but contains a suggestion block"
+                        )
+        elif expected_kind == "finding":
             gerrit_fragment = exact_fragment(
                 item,
                 row["gerrit_path"],
@@ -5411,13 +5983,9 @@ def validate_output_coverage(
                         report.error(err)
             if draft_fragment is not None and gerrit_fragment is not None:
                 suggestion_decision(item, draft_text, gerrit_text)
-        elif (
-            row["gerrit_path"] != "-"
-            or row["gerrit_bytes"] != "-"
-            or row["gerrit_sha256"] != "-"
-        ):
+        elif not gerrit_omitted:
             report.error(
-                f"question {item} must use '-' for all Gerrit coverage fields"
+                f"{expected_kind} {item} must use '-' for all Gerrit coverage fields"
             )
 
     for item in sorted(set(synthesis_items) - seen):
@@ -5641,6 +6209,7 @@ def validate_gerrit_thread_replies(
     if not isinstance(data, dict) or not isinstance(data.get("threads"), list):
         return
     unresolved_by_root: dict[str, dict[str, Any]] = {}
+    all_threads_by_root = all_comment_threads(root)
     for thread in data["threads"]:
         if isinstance(thread, dict) and thread.get("unresolved") is True:
             root_id = str(thread.get("root_id") or "").strip()
@@ -5660,23 +6229,38 @@ def validate_gerrit_thread_replies(
             if next_heading is not None else len(gerrit)
         )
         section = gerrit[match.end():end]
-        if root_id not in unresolved_by_root:
+        is_reopen = bool(re.search(r"(?im)^-\s*Status:\s*reopen\b", section))
+        latest_match = re.search(
+            r"(?im)^-\s*Latest comment id:\s*(\S+)", section
+        )
+        if root_id in unresolved_by_root:
+            if latest_match:
+                cited_latest = latest_match.group(1).strip().strip("`")
+                expected_latest = unresolved_by_root[root_id]["latest_id"]
+                if expected_latest and cited_latest != expected_latest:
+                    report.error(
+                        f"gerrit-comments.md thread {root_id} cites stale latest "
+                        f"comment id {cited_latest}, expected {expected_latest}"
+                    )
+        elif is_reopen and root_id in all_threads_by_root:
+            if not latest_match:
+                report.error(
+                    f"gerrit-comments.md reopened thread {root_id} lacks "
+                    "'- Latest comment id: <id>'"
+                )
+            else:
+                cited_latest = latest_match.group(1).strip().strip("`")
+                expected_latest = all_threads_by_root[root_id]["latest_id"]
+                if expected_latest and cited_latest != expected_latest:
+                    report.error(
+                        f"gerrit-comments.md thread {root_id} cites stale latest "
+                        f"comment id {cited_latest}, expected {expected_latest}"
+                    )
+        else:
             report.error(
                 f"gerrit-comments.md replies to resolved or unknown Gerrit "
                 f"thread {root_id}"
             )
-            continue
-        latest_match = re.search(
-            r"(?im)^-\s*Latest comment id:\s*(\S+)", section
-        )
-        if latest_match:
-            cited_latest = latest_match.group(1).strip().strip("`")
-            expected_latest = unresolved_by_root[root_id]["latest_id"]
-            if expected_latest and cited_latest != expected_latest:
-                report.error(
-                    f"gerrit-comments.md thread {root_id} cites stale latest "
-                    f"comment id {cited_latest}, expected {expected_latest}"
-                )
     for block_match in re.finditer(r"(?m)^###\s+(.+?)\s*$", gerrit):
         heading = block_match.group(1).strip()
         next_heading = re.search(r"(?m)^##", gerrit[block_match.end():])
@@ -5685,19 +6269,26 @@ def validate_gerrit_thread_replies(
             if next_heading is not None else len(gerrit)
         )
         section = gerrit[block_match.end():end]
+        section_reopen = bool(
+            re.search(r"(?im)^-\s*Status:\s*reopen\b", section)
+        )
         for reply_match in re.finditer(
-            r"(?im)^-\s*Reply-To:\s*root\s+([^\s,]+)\s*,\s*latest\s+([^\s,]+)",
+            r"(?im)^-\s*Reply-To:\s*root\s+([^\s,]+)\s*,\s*latest\s+([^\s,]+)(?:\s*,\s*(reopen)\b)?",
             section,
         ):
             root_id = reply_match.group(1).strip().strip("`")
             cited_latest = reply_match.group(2).strip().strip("`")
-            if root_id not in unresolved_by_root:
+            reply_reopen = section_reopen or bool(reply_match.group(3))
+            if root_id in unresolved_by_root:
+                thread_info = unresolved_by_root[root_id]
+            elif reply_reopen and root_id in all_threads_by_root:
+                thread_info = all_threads_by_root[root_id]
+            else:
                 report.error(
                     f"gerrit-comments.md replies to resolved or unknown Gerrit "
                     f"thread {root_id}"
                 )
                 continue
-            thread_info = unresolved_by_root[root_id]
             expected_latest = thread_info["latest_id"]
             if expected_latest and cited_latest != expected_latest:
                 report.error(

@@ -57,6 +57,11 @@ exists only after all shards and the gate pass exact collection.
 | AL-3 | Async And Lifecycle | question → Q002 (V002-3: UNPROVEN) |
 | ML-1 | Mechanical Leads | promoted → F003 (P3 non-ASCII em dash in comment) |
 | ML-2 | Mechanical Leads | dismissed: intentional sentinel, values agree (V003-2 citation) |
+| ML-3 | Mechanical Leads | suppressed — unchanged since prior review (V003-3, P3 nit on untouched code) |
+| EPW-4 | Error-Path Walk | suppressed — unchanged since prior review (V003-7, below round-3 bar: defensive internal precondition unchanged since PS1 with no untrusted caller) |
+| TAS-2 | Tests As Specifications | subordinated → thread abc123 (V003-4, covered by open reviewer-decision thread) |
+| SEC-1 | Security And Isolation | launch-gate note (V003-5, default-off pre-launch quota wiring) |
+| API-1 | API And Spec Contract | note → N001 (V003-6, edge case on reviewer's own PS2 suggestion) |
 | ORC-1 | Collection audit | clean (cited) |
 | RC001-1 | Root-cause challenger | supports F001; reopened R1-RC001-1 |
 | R1-RC001-1 | Reopened round 1 | refuted (V004-1; guard other_delay_stream.cc:88) |
@@ -77,8 +82,11 @@ The three equivalence cells each carry code or artifact evidence; an artifact
 pointer is review-relative and its file must exist and be nonempty. A shared
 location or fix alone is insufficient. The survivor is a direct,
 verdict-owning row rather than another merge, and its reconciliation
-disposition agrees with that verdict (`promoted` for CONFIRMED, `question` for
-UNPROVEN, `refuted` for REFUTED).
+disposition agrees with that verdict (`promoted`, `note`, `suppressed —
+unchanged since prior review` [restricted to `P3` or `pre-existing`],
+`subordinated → thread <root_id>`, or `launch-gate note` for CONFIRMED;
+`question`, `note`, or `subordinated → thread <root_id>` for UNPROVEN;
+`refuted` for REFUTED).
 
 The default is one promoted finding per root family. If a family truly has
 multiple independently actionable owners or bad outcomes, add:

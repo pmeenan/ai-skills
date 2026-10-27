@@ -99,12 +99,18 @@ def refresh_comment_threads(root: Path, live_comments: dict[str, Any]) -> str | 
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     live_normalized = module.normalize(live_comments)
+    live_all_normalized = module.normalize(live_comments, include_resolved=True)
     live_by_root = {
         str(thread["root_id"]).strip(): str(thread.get("latest_id") or "").strip()
         for thread in live_normalized.get("threads", [])
         if isinstance(thread, dict)
         and thread.get("unresolved") is True
         and thread.get("root_id")
+    }
+    live_all_by_root = {
+        str(thread["root_id"]).strip(): str(thread.get("latest_id") or "").strip()
+        for thread in live_all_normalized.get("threads", [])
+        if isinstance(thread, dict) and thread.get("root_id")
     }
     threads_path = root / "gerrit" / "unresolved-threads.json"
     existing_by_root: dict[str, str] | None = None
@@ -130,30 +136,51 @@ def refresh_comment_threads(root: Path, live_comments: dict[str, Any]) -> str | 
                 if next_heading is not None else len(gerrit_text)
             )
             section = gerrit_text[match.end():end]
-            if root_id not in live_by_root:
-                stale_replies.append(f"resolved/unknown thread {root_id}")
-                continue
+            is_reopen = bool(re.search(r"(?im)^-\s*Status:\s*reopen\b", section))
             latest_match = re.search(
                 r"(?im)^-\s*Latest comment id:\s*(\S+)", section
             )
-            if latest_match:
-                cited_latest = latest_match.group(1).strip().strip("`")
-                if live_by_root[root_id] and cited_latest != live_by_root[root_id]:
+            if root_id in live_by_root:
+                expected_latest = live_by_root[root_id]
+                if latest_match:
+                    cited_latest = latest_match.group(1).strip().strip("`")
+                    if expected_latest and cited_latest != expected_latest:
+                        stale_replies.append(
+                            f"thread {root_id} latest_id {cited_latest} != {expected_latest}"
+                        )
+            elif is_reopen and root_id in live_all_by_root:
+                expected_latest = live_all_by_root[root_id]
+                if not latest_match:
                     stale_replies.append(
-                        f"thread {root_id} latest_id {cited_latest} != {live_by_root[root_id]}"
+                        f"reopened thread {root_id} lacks Latest comment id"
                     )
+                else:
+                    cited_latest = latest_match.group(1).strip().strip("`")
+                    if expected_latest and cited_latest != expected_latest:
+                        stale_replies.append(
+                            f"thread {root_id} latest_id {cited_latest} != {expected_latest}"
+                        )
+            else:
+                stale_replies.append(f"resolved/unknown thread {root_id}")
         for reply_match in re.finditer(
-            r"(?im)^-\s*Reply-To:\s*root\s+([^\s,]+)\s*,\s*latest\s+([^\s,]+)",
+            r"(?im)^-\s*Reply-To:\s*root\s+([^\s,]+)\s*,\s*latest\s+([^\s,]+)(?:\s*,\s*(reopen)\b)?",
             gerrit_text,
         ):
             root_id = reply_match.group(1).strip().strip("`")
             cited_latest = reply_match.group(2).strip().strip("`")
-            if root_id not in live_by_root:
+            reply_reopen = bool(reply_match.group(3))
+            if root_id in live_by_root:
+                if live_by_root[root_id] and cited_latest != live_by_root[root_id]:
+                    stale_replies.append(
+                        f"thread {root_id} latest_id {cited_latest} != {live_by_root[root_id]}"
+                    )
+            elif reply_reopen and root_id in live_all_by_root:
+                if live_all_by_root[root_id] and cited_latest != live_all_by_root[root_id]:
+                    stale_replies.append(
+                        f"thread {root_id} latest_id {cited_latest} != {live_all_by_root[root_id]}"
+                    )
+            else:
                 stale_replies.append(f"resolved/unknown thread {root_id}")
-            elif live_by_root[root_id] and cited_latest != live_by_root[root_id]:
-                stale_replies.append(
-                    f"thread {root_id} latest_id {cited_latest} != {live_by_root[root_id]}"
-                )
         for line in gerrit_text.splitlines():
             for thread_match in re.finditer(
                 r"(?i)\bthread\s+`?([0-9a-f]{8}_[0-9a-f]{8})`?", line

@@ -29,6 +29,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 from brief_inputs import named_brief_inputs  # noqa: E402
 from artifact_tables import effective_tables  # noqa: E402
+import interdiff_hunks  # noqa: E402
 
 
 def fail(message: str) -> None:
@@ -130,6 +131,28 @@ def load_candidate_rows(review_dir: Path) -> dict[str, tuple[Path, str, str]]:
                     fail(f"duplicate canonical candidate {identifier}")
                 result[identifier] = (path.resolve(), table_header, markdown_row([row.get(key, "") for key in header]))
     return result
+
+
+def load_candidate_locations(review_dir: Path) -> dict[str, str]:
+    """Return effective canonical candidate `id -> location`."""
+    locations: dict[str, str] = {}
+    sources = sorted((review_dir / "ledger").glob("**/*.md"))
+    if (review_dir / "collection.md").is_file():
+        sources.append(review_dir / "collection.md")
+    for path in sources:
+        parsed, errors = effective_tables(path.read_text(encoding="utf-8"), str(path))
+        if errors:
+            continue
+        for heading, header, rows in parsed:
+            if heading != "Candidate rows" and path.name != "collection.md":
+                continue
+            if not {"id", "claim", "location", "evidence / hypothesis", "status"}.issubset(header):
+                continue
+            for row in rows:
+                identifier = row.get("id", "")
+                if identifier and identifier not in locations:
+                    locations[identifier] = row.get("location", "")
+    return locations
 
 
 def load_verdict_rows(review_dir: Path) -> dict[str, tuple[Path, str, str]]:
@@ -329,8 +352,24 @@ def build_verification(review_dir: Path, skill_dir: Path, pin_info: dict[str, st
     rows = batch_rows(batches_md.read_text(encoding="utf-8"), "verification")
 
     cand_map = load_candidate_rows(review_dir)
-    profile = json.loads((review_dir / "profile.json").read_text(encoding="utf-8"))
+    cand_locations = load_candidate_locations(review_dir)
+    profile_path = review_dir / "profile.json"
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
     all_files = {str(item.get("path", "")): str(item.get("status", "M")) for item in profile.get("files", [])}
+    prior_ctx = profile.get("prior_context")
+    reviewer_hist = (
+        prior_ctx.get("reviewer_history", {})
+        if isinstance(prior_ctx, dict) and isinstance(prior_ctx.get("reviewer_history"), dict)
+        else {}
+    )
+    interdiff_path = review_dir / "indexes" / "interdiff-hunks.tsv"
+    pr_ledger_path = review_dir / "ledger" / "PR.md"
+    is_followup = bool(reviewer_hist.get("same_reviewer_followup")) or interdiff_path.is_file()
+    loaded_hunks = (
+        interdiff_hunks.load_interdiff_hunks(review_dir)
+        if interdiff_path.is_file()
+        else None
+    )
 
     header_tmpl = skill_dir / "references/worker/templates/generated-common-header.md"
     header_text = extract_fenced_block(header_tmpl.read_text(encoding="utf-8"))
@@ -412,12 +451,69 @@ def build_verification(review_dir: Path, skill_dir: Path, pin_info: dict[str, st
             hdr_filled = hdr_filled.replace(k, v)
 
         ledger_inputs = ", ".join(p.relative_to(review_dir).as_posix() for p in sorted(source_ledgers))
+        base_inputs = [
+            str(code_packet_path),
+            str(review_dir / "callers/index.tsv"),
+            str(review_dir / "callers/directory-docs.md"),
+        ]
+        followup_block = ""
+        if is_followup:
+            for extra_input in (profile_path, interdiff_path, pr_ledger_path):
+                if extra_input.is_file():
+                    base_inputs.append(str(extra_input))
+            round_num = reviewer_hist.get("review_round", 2)
+            prior_ps = reviewer_hist.get("latest_prior_reviewed_patchset")
+            prior_sha = reviewer_hist.get("latest_prior_reviewed_sha")
+            baseline_desc = (
+                f"PS{prior_ps}" + (f" ({str(prior_sha)[:12]})" if prior_sha else "")
+                if prior_ps is not None
+                else "prior reviewed patchset"
+            )
+            overlap_lines: list[str] = []
+            if loaded_hunks is not None:
+                for cid in cand_ids:
+                    loc_text = cand_locations.get(cid, "")
+                    spans = interdiff_hunks.parse_location_ranges(loc_text)
+                    matched_hunk = None
+                    for span_path, span_start, span_end in spans:
+                        matched_hunk = interdiff_hunks.overlaps_interdiff(
+                            loaded_hunks, span_path, span_start, span_end
+                        )
+                        if matched_hunk is not None:
+                            break
+                    if matched_hunk is not None:
+                        overlap_lines.append(
+                            f"- `{cid}` ({loc_text}): interdiff-touched "
+                            f"(`{matched_hunk['id']}` at "
+                            f"`{matched_hunk['path']}:{matched_hunk['new_start']}`)"
+                        )
+                    elif spans:
+                        overlap_lines.append(
+                            f"- `{cid}` ({loc_text}): unchanged-since-prior-review"
+                        )
+                    else:
+                        overlap_lines.append(
+                            f"- `{cid}` ({loc_text or 'no path:line'}): interdiff-overlap-unclassified"
+                        )
+            followup_lines = [
+                "\n\n## Same-Reviewer Follow-Up Context\n",
+                f"- Same-reviewer follow-up round: {round_num} (latest baseline: {baseline_desc}).",
+                *overlap_lines,
+                "- Apply the Round-N unchanged-code severity recalibration and accepted-deferral (`deferred (accepted)`) rules from `verifying-candidate-findings.md`.",
+            ]
+            followup_block = "\n".join(followup_lines)
+
+        inputs_prose = (
+            ", ".join(base_inputs[:-1]) + f", and {base_inputs[-1]}"
+            if len(base_inputs) > 1
+            else base_inputs[0]
+        )
         body = (
             f"Scope: verify batch {work_id} ONLY — candidate rows {', '.join(cand_ids)}.\n\n"
-            f"Inputs: {code_packet_path}, {review_dir / 'callers/index.tsv'}, and "
-            f"{review_dir / 'callers/directory-docs.md'} (inline candidate rows extracted from {ledger_inputs}).\n\n"
+            f"Inputs: {inputs_prose} (inline candidate rows extracted from {ledger_inputs}).\n\n"
             f"## Assigned Candidate Rows\n\n"
             + "\n".join(embedded_rows)
+            + followup_block
             + "\n\nProcedure:\n"
             f"1. Read {skill_dir / 'references/worker/verification-and-fixes/verifying-candidate-findings.md'}, "
             f"{skill_dir / 'references/worker/verification-and-fixes/skeptic-verdicts.md'}, "

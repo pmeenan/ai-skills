@@ -17,8 +17,13 @@ When the card index has at most 12 cards and the measured total required input
 consume them. Above either threshold, use one Finding Writer per card and a
 separate Frame Writer. Both topologies produce the same exact per-item
 fragments: `draft-parts/<item>.md` is the byte-for-byte review block for every
-finding/question, and `gerrit-parts/<item>.md` is the byte-for-byte Gerrit
-comment for every finding. Questions have no Gerrit fragment.
+finding/question/note, and `gerrit-parts/<item>.md` is the byte-for-byte Gerrit
+comment for every `CL-introduced` and `introduced-in-PS<N>` finding (and any
+`pre-existing` finding that emits a Gerrit inline comment). Questions (`Q<number>`)
+and reviewer notes (`N<number>`) have no Gerrit fragment (`-` in
+`output-coverage.tsv`), and `Origin: pre-existing` findings may optionally use
+`-` in `output-coverage.tsv` (with `Suggested edit: omitted — <reason>`) when
+omitting Gerrit inline output on untouched/adjacent pre-existing code.
 
 ````markdown
 #### Failed flush reported as success — silent byte loss (P1)
@@ -58,14 +63,19 @@ item marker. `output-coverage.tsv` binds both fragments to the card:
 item	kind	draft_path	draft_bytes	draft_sha256	gerrit_path	gerrit_bytes	gerrit_sha256
 F001	finding	draft-parts/F001.md	⟨bytes⟩	⟨sha256⟩	gerrit-parts/F001.md	⟨bytes⟩	⟨sha256⟩
 Q002	question	draft-parts/Q002.md	⟨bytes⟩	⟨sha256⟩	-	-	-
+N001	note	draft-parts/N001.md	⟨bytes⟩	⟨sha256⟩	-	-	-
 ```
 
 The item set equals `synthesis/index.md` exactly. A finding fragment has the
 complete Finding Format fields; a question fragment has non-empty
-`Synthesis item`, `Question`, `Why it matters`, and `Rows` fields. Final
-validation checks every measured fragment occurs byte-for-byte exactly once
-in its destination output. An ID in a frame/list does not count, and a
-finding without a Gerrit fragment cannot pass.
+`Synthesis item`, `Question`, `Why it matters`, and `Rows` fields; a reviewer
+note fragment (`kind = note`) has non-empty `Synthesis item`, `Note`,
+`Why it matters`, and `Rows` fields. Final validation checks every measured
+fragment occurs byte-for-byte exactly once in its destination output. An ID in
+a frame/list does not count, and a `CL-introduced` or `introduced-in-PS<N>`
+finding without a Gerrit fragment cannot pass (only `question`, `note`, or an
+`Origin: pre-existing` finding with an omitted Suggested edit may use `-` for
+all three Gerrit columns).
 
 `FRAME.md` (`draft-parts/FRAME.md`) contains only High-Level Summary, Prior Review
 Follow-Up, Positives, Verification Notes, Next Steps (including any non-blocking

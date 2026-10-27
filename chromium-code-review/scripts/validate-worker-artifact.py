@@ -201,6 +201,16 @@ def inventory_check(root: Path, artifact: Path) -> None:
             fail(result.stderr.strip() or result.stdout.strip())
 
 
+PRIOR_FEEDBACK_RESOLUTION_RE = re.compile(
+    r"(?i)^(?:"
+    r"(?:fixed|partially[- ]fixed|still[- ]open|obsolete|superseded|"
+    r"reviewer[- ]decision[- ]pending|not[- ]posted|deferred[- ]accepted)\b"
+    r"|deferred\s*\(\s*accepted(?:\b[^)]*)?\)"
+    r")"
+)
+OPEN_PRIOR_FEEDBACK_RE = re.compile(r"(?i)^(?:still[- ]open|partially[- ]fixed)\b")
+
+
 def ledger_check(parsed: list[tuple[str, list[str], list[dict[str, str]]]],
                  artifact: Path) -> None:
     headings = {heading for heading, _, _ in parsed}
@@ -208,6 +218,8 @@ def ledger_check(parsed: list[tuple[str, list[str], list[dict[str, str]]]],
         for required in ("Compliance matrix", "Candidate rows"):
             if required not in headings:
                 fail(f"{artifact} lacks exact '{required}' heading")
+    non_open_prior_rows: dict[str, str] = {}
+    candidate_ids: set[str] = set()
     for heading, header, rows in parsed:
         if heading == "Compliance matrix":
             if not {"question", "answer", "evidence"}.issubset(header):
@@ -241,6 +253,29 @@ def ledger_check(parsed: list[tuple[str, list[str], list[dict[str, str]]]],
                 identifier = row.get("id", "").strip()
                 if identifier and ROW_ID.fullmatch(identifier) is None:
                     fail(f"{artifact} has invalid row ID '{identifier}'")
+                if heading == "Prior-feedback rows" and identifier:
+                    resolution = row.get("resolution", "").strip()
+                    if "resolution" in header and not PRIOR_FEEDBACK_RESOLUTION_RE.search(
+                        resolution
+                    ):
+                        fail(
+                            f"{artifact} prior-feedback row {identifier} has "
+                            f"unrecognized resolution '{resolution}'"
+                        )
+                    if resolution and not OPEN_PRIOR_FEEDBACK_RE.search(resolution):
+                        non_open_prior_rows[identifier] = resolution
+                elif (
+                    heading == "Candidate rows"
+                    and identifier
+                    and "candidate" in row.get("status", "").lower()
+                ):
+                    candidate_ids.add(identifier)
+    for identifier in sorted(candidate_ids & set(non_open_prior_rows)):
+        fail(
+            f"{artifact} prior-feedback row {identifier} has non-open "
+            f"resolution '{non_open_prior_rows[identifier]}' and must not "
+            "appear as an active candidate row"
+        )
     if re.fullmatch(r"(?:GSS|GAI)\d*", artifact.stem.upper()):
         assessment_tables = [
             (header, rows) for heading, header, rows in parsed

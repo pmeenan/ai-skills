@@ -36,4 +36,8 @@ Record and report every finding with:
 
 Record every owner question as its own exact draft fragment with non-empty
 `Synthesis item` (`Q<number>`), `Question`, `Why it matters`, and `Rows`
-fields. Questions do not get Gerrit fragment rows.
+fields. Record every reviewer note (for example, an edge case or verbatim
+external-spec tension on code implementing `Reviewer email`'s own prior
+suggestion) as its own exact draft fragment with non-empty `Synthesis item`
+(`N<number>`), `Note`, `Why it matters`, and `Rows` fields. Questions and
+reviewer notes do not get Gerrit fragment rows (`-` in `output-coverage.tsv`).

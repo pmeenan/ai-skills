@@ -51,13 +51,18 @@ delivery is blocked while any line is pending or blank.
    limited-review disclosure from the templates; they are not refutations,
    owner questions, or validated merges. Every other candidate retains normal
    verification obligations, and every promoted finding
-   cites a CONFIRMED verdict with its trace, and every promoted finding and
-   owner question has exactly one measured draft fragment included in
-   draft-review.md and, for findings, exactly one measured Gerrit fragment
-   included in gerrit-comments.md, with reconciliation→card→coverage sets
-   equal and no truncation, sampling, or
+   cites a CONFIRMED verdict with its trace (or uses an audited follow-up/note
+   disposition: `note → N<number>`, `suppressed — unchanged since prior review`
+   for `P3`/`pre-existing` only, `subordinated → thread <root_id>`, or
+   `launch-gate note`), and every promoted finding, owner question, and reviewer
+   note has exactly one measured draft fragment included in draft-review.md and,
+   for `CL-introduced` / `introduced-in-PS<N>` findings (plus any
+   `pre-existing` finding not opting out with `-`), exactly one measured Gerrit
+   fragment included in gerrit-comments.md, with reconciliation→card→coverage
+   sets equal and no truncation, sampling, or
    "representative subset"; every independently refuted row cites its guard or
-   safe trace; every UNPROVEN row appears in Questions; every merged candidate
+   safe trace; every UNPROVEN row appears in Questions (or `note → N<number>` /
+   `subordinated → thread <root_id>`); every merged candidate
    either has its own verdict or has validated trigger/invariant/outcome
    equivalence to a survivor whose verdict is cited (a merged candidate is
    represented by its survivor, never dropped).
@@ -76,7 +81,9 @@ delivery is blocked while any line is pending or blank.
     blocks in the review and Gerrit fragment, and every omitted edit names a
     specific reason;
     replies target normalized root/latest IDs from
-    `gerrit/unresolved-threads.json` instead of duplicating them.
+    `gerrit/unresolved-threads.json` instead of duplicating them (or explicitly
+    declare `- Status: reopen` with the exact `Latest comment id` verified
+    against `comments.json`).
 13. **Honesty:** the test-execution statement matches what was actually run;
     Verification Notes reproduce the plan with outcomes and human-readable
     thread names; orchestration.tsv has a terminal state for every spawned

@@ -98,7 +98,10 @@ rows are context and must not be scheduled again. Then:
    the orchestrator materializes it before sealing (or run
    `⟨skill-dir⟩/scripts/build-batch-briefs.py ⟨review-dir⟩ --phase verification`
    after writing `verification/batches.md` to deterministically render
-   `packets/V*.spec.tsv`, `packets/V*-code.md`, and `briefs/V*.md`).
+   `packets/V*.spec.tsv`, `packets/V*-code.md`, and `briefs/V*.md`, which on
+   same-reviewer Round 2+ reviews automatically attaches `profile.json`,
+   `indexes/interdiff-hunks.tsv`, and `ledger/PR.md` plus per-candidate
+   interdiff overlap annotations).
 
 Deliverables: ⟨review-dir⟩/verification/batches.md and the briefs.
 
