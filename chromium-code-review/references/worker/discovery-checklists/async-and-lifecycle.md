@@ -78,6 +78,18 @@ Answer per changed callback, timer, posted task, or async operation:
   callback or consume a shared resource twice?
 - What is the object's lifetime obligation after invoking a user-provided
   callback?
+- **Optimistic `PendingRemote` Return Before Asynchronous `PendingReceiver` Binding:**
+  When a method creates a Mojo pipe (`InitWithNewPipeAndPassReceiver`),
+  immediately invokes the caller's completion callback with `Ok` and the new
+  `mojo::PendingRemote<T>` on the calling sequence, and `PostTask`s the
+  `mojo::PendingReceiver<T>` to a background sequence/thread to construct and
+  bind the implementation asynchronously, trace what the caller observes if the
+  background task hits an early-return validation or state check and drops the
+  `PendingReceiver` without binding it. Because the initiating call already
+  reported success, the caller only discovers the failure later as an unexpected
+  pipe disconnect or failed operation on the returned handle; compare this
+  against constructing/validating on the background sequence first and replying
+  with either `PendingRemote` or an error code via `PostTaskAndReplyWithResult`.
 - **Asynchronous Resource Escape & Unanchored Callbacks:** When a raw pointer,
   child member (`parent->child.get()`), or unowned interface is passed into an
   asynchronous helper (`CreateAndStart`, `StartAsync`, async factories, `PostTask`):

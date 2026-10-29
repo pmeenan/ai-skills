@@ -75,6 +75,14 @@ same P0 throughput collapse by adjudicating the design intended in-thread.
   Trace every existing caller at the moment the helper is entered, and the
   helper's side effects (forced success, cleanup, callback state) on the new
   path.
+- **Sibling Interface Implementation Comparison:** When a CL implements a
+  standard Mojo interface, `content/` delegate, or storage/network backend
+  method that already has a canonical sibling implementation in the same layer
+  or subsystem, locate the sibling implementation and compare them side by side:
+  check how the sibling constructs shared context objects, which security/policy
+  or permission hooks it consults, whether it validates/binds asynchronously
+  before replying vs optimistically returning a handle, and how it maps backend
+  errors to wire status codes.
 - For every override of a documented interface method — any base class
   whose header spells out per-method contracts, whether net/'s `Socket`
   and `HostResolver` families, content/'s observer and delegate

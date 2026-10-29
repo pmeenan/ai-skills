@@ -35,9 +35,14 @@ from artifact_tables import (
     plan_row_identity,
 )
 try:
-    from report_verifier import WorktreeCorpus, verify_fragment_text
+    from report_verifier import (
+        WorktreeCorpus,
+        load_gerrit_commit_msg,
+        verify_fragment_text,
+    )
 except ImportError:
     WorktreeCorpus = None  # type: ignore[assignment]
+    load_gerrit_commit_msg = None  # type: ignore[assignment]
     verify_fragment_text = None  # type: ignore[assignment]
 
 
@@ -886,8 +891,9 @@ def validate_gerrit_comment_anchor(
 
     match = all_targets[0]
     repo_path = match.group(1)
+    is_commit_msg = repo_path in {"/COMMIT_MSG", "COMMIT_MSG"}
     pure_path = PurePosixPath(repo_path)
-    if (
+    if not is_commit_msg and (
         pure_path.is_absolute()
         or ".." in pure_path.parts
         or not pure_path.parts
@@ -928,7 +934,7 @@ def validate_gerrit_comment_anchor(
                 changed.add(file_match.group(1))
             elif line.strip():
                 in_files = False
-    if changed and repo_path not in changed:
+    if changed and not is_commit_msg and repo_path not in changed:
         report.error(
             f"output coverage {item} Gerrit comment target {target_text} "
             f"references unchanged or unknown file {repo_path}"
@@ -937,6 +943,29 @@ def validate_gerrit_comment_anchor(
 
     worktree_value = field(pin, "Worktree")
     revision = field(pin, "Revision SHA")
+    if is_commit_msg:
+        wt_path = (
+            Path(worktree_value.split(" (", 1)[0])
+            if worktree_value
+            else None
+        )
+        if wt_path is not None and not wt_path.is_dir():
+            wt_path = None
+        commit_source = (
+            load_gerrit_commit_msg(root, wt_path, revision)
+            if load_gerrit_commit_msg is not None
+            else None
+        )
+        if commit_source is None:
+            return
+        source_lines = commit_source.splitlines()
+        if end > len(source_lines):
+            report.error(
+                f"output coverage {item} Gerrit comment target range "
+                f"{target_text} is outside the pinned commit message's "
+                f"{len(source_lines)} lines"
+            )
+        return
     if not worktree_value or not revision:
         return
     worktree = Path(worktree_value.split(" (", 1)[0])

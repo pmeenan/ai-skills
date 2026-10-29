@@ -103,7 +103,9 @@ Output Rules section of `references/verification-and-fixes.md`:
   <id>: Option A ... / Option B ...]` placeholder in `## Main comment` instead
   of emitting an open `Q<N>` question to the CL author or writing third-person
   `"awaiting reviewer confirmation"`.
-- **New inline comments:** repo-relative file, exact line or range, verbatim line
+- **New inline comments:** repo-relative file (or `/COMMIT_MSG:<line>` for
+  commit-message findings, where line 7 is the subject line after Gerrit's 6
+  synthetic header lines), exact line or range, verbatim line
   text from the reviewed patchset, and concise author-facing comment text (1–3
   sentences stating the bug/impact and the concrete ask, without internal trace
   dumps or unmodified external subsystem `path:line` coordinates).

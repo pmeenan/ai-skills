@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
@@ -18,7 +19,7 @@ PATH_RE = re.compile(
     rf"(?<![A-Za-z0-9_.+@{{}}\-/])([A-Za-z0-9_.+@{{}}\-]+(?:/[A-Za-z0-9_.+@{{}}\-]+)+\.(?:{SOURCE_EXTS}))(?![A-Za-z0-9_])"
 )
 FULL_CITE_RE = re.compile(
-    rf"(?<![A-Za-z0-9_.+@{{}}\-/])([A-Za-z0-9_.+@{{}}\-]+(?:/[A-Za-z0-9_.+@{{}}\-]+)+\.(?:{SOURCE_EXTS})):([1-9]\d*)(?:-([1-9]\d*))?"
+    rf"(?<![A-Za-z0-9_.+@{{}}\-/])((?:[A-Za-z0-9_.+@{{}}\-]+(?:/[A-Za-z0-9_.+@{{}}\-]+)+\.(?:{SOURCE_EXTS}))|/?COMMIT_MSG):([1-9]\d*)(?:-([1-9]\d*))?"
 )
 BASENAME_CITE_RE = re.compile(
     rf"(?<![A-Za-z0-9_.+@{{}}\-/])([A-Za-z0-9_.+@{{}}\-]+\.(?:{SOURCE_EXTS})):([1-9]\d*)(?:-([1-9]\d*))?"
@@ -127,6 +128,59 @@ def _is_review_artifact(rel: str) -> bool:
     return rel.startswith(REVIEW_ARTIFACT_PREFIXES)
 
 
+def load_gerrit_commit_msg(
+    root: Path, worktree: Path | None, revision: str | None
+) -> str | None:
+    """Reconstruct Gerrit's synthetic `/COMMIT_MSG` (6 header lines + message)."""
+    detail_path = root / "detail.json"
+    if detail_path.is_file():
+        try:
+            raw = detail_path.read_text(encoding="utf-8", errors="replace")
+            if raw.startswith(")]}'"):
+                raw = raw.split("\n", 1)[1] if "\n" in raw else ""
+            data = json.loads(raw)
+            revs = data.get("revisions") or {}
+            rev_key = revision if revision in revs else data.get("current_revision")
+            commit = (revs.get(rev_key) or {}).get("commit") or {}
+            msg = commit.get("message")
+            if isinstance(msg, str) and msg:
+                parents = commit.get("parents") or []
+                parent_sha = (parents[0].get("commit", "")[:8] if parents else "")
+                author = commit.get("author") or {}
+                committer = commit.get("committer") or {}
+                headers = [
+                    f"Parent:     {parent_sha}",
+                    f"Author:     {author.get('name', '')} <{author.get('email', '')}>",
+                    f"AuthorDate: {author.get('date', '')}",
+                    f"Commit:     {committer.get('name', '')} <{committer.get('email', '')}>",
+                    f"CommitDate: {committer.get('date', '')}",
+                    "",
+                ]
+                return "\n".join(headers + msg.splitlines())
+        except (OSError, json.JSONDecodeError, AttributeError):
+            pass
+    if worktree is not None and revision:
+        try:
+            msg = subprocess.run(
+                ["git", "-C", str(worktree), "show", "-s", "--format=%B", revision],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            ).stdout.decode("utf-8", errors="replace")
+            headers = [
+                "Parent:     ",
+                "Author:     ",
+                "AuthorDate: ",
+                "Commit:     ",
+                "CommitDate: ",
+                "",
+            ]
+            return "\n".join(headers + msg.splitlines())
+        except (subprocess.CalledProcessError, OSError):
+            pass
+    return None
+
+
 @dataclass
 class WorktreeCorpus:
     root: Path
@@ -181,6 +235,13 @@ class WorktreeCorpus:
     def get_file(self, rel: str, allow_git_fallback: bool = True) -> str | None:
         if rel in self.file_cache:
             return self.file_cache[rel]
+        if rel in {"/COMMIT_MSG", "COMMIT_MSG"}:
+            content = load_gerrit_commit_msg(
+                self.root, self.worktree, self.revision
+            )
+            self.file_cache["/COMMIT_MSG"] = content
+            self.file_cache["COMMIT_MSG"] = content
+            return content
         if self.worktree is None:
             self.file_cache[rel] = None
             return None
@@ -245,6 +306,11 @@ class WorktreeCorpus:
             self.corpus_tokens.update(
                 re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", content)
             )
+        commit_msg = self.get_file("/COMMIT_MSG")
+        if commit_msg is not None:
+            self.corpus_tokens.update(
+                re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", commit_msg)
+            )
 
     def symbol_in_corpus(self, ident: str) -> bool:
         if ident in KNOWN_IDENTIFIERS or ident in self.corpus_tokens:
@@ -300,7 +366,9 @@ def verify_fragment_text(
         if _is_review_artifact(rel):
             continue
         pure = PurePosixPath(rel)
-        if pure.is_absolute() or ".." in pure.parts:
+        if rel not in {"/COMMIT_MSG", "COMMIT_MSG"} and (
+            pure.is_absolute() or ".." in pure.parts
+        ):
             errors.append(
                 f"{label} cites non-normalized path {rel}"
             )
@@ -349,7 +417,7 @@ def verify_fragment_text(
     if is_gerrit:
         target_blocks = list(
             re.finditer(
-                rf"(?m)^(?:###\s+)?([A-Za-z0-9_.+@{{}}\-]+(?:/[A-Za-z0-9_.+@{{}}\-]+)+\.(?:{SOURCE_EXTS})):([1-9]\d*)(?:-([1-9]\d*))?\s*$",
+                rf"(?m)^(?:###\s+)?((?:[A-Za-z0-9_.+@{{}}\-]+(?:/[A-Za-z0-9_.+@{{}}\-]+)+\.(?:{SOURCE_EXTS}))|/?COMMIT_MSG):([1-9]\d*)(?:-([1-9]\d*))?\s*$",
                 text,
             )
         )
@@ -457,6 +525,8 @@ def verify_fragment_text(
                     continue
                 if s == e:
                     primary_rel = rels[0]
+                    if primary_rel in {"/COMMIT_MSG", "COMMIT_MSG"}:
+                        continue
                     content = corpus.get_file(primary_rel)
                     if content is not None:
                         lines = content.splitlines()

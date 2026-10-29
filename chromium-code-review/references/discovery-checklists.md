@@ -220,6 +220,18 @@ Answer per changed callback, timer, posted task, or async operation:
   callback or consume a shared resource twice?
 - What is the object's lifetime obligation after invoking a user-provided
   callback?
+- **Optimistic `PendingRemote` Return Before Asynchronous `PendingReceiver` Binding:**
+  When a method creates a Mojo pipe (`InitWithNewPipeAndPassReceiver`),
+  immediately invokes the caller's completion callback with `Ok` and the new
+  `mojo::PendingRemote<T>` on the calling sequence, and `PostTask`s the
+  `mojo::PendingReceiver<T>` to a background sequence/thread to construct and
+  bind the implementation asynchronously, trace what the caller observes if the
+  background task hits an early-return validation or state check and drops the
+  `PendingReceiver` without binding it. Because the initiating call already
+  reported success, the caller only discovers the failure later as an unexpected
+  pipe disconnect or failed operation on the returned handle; compare this
+  against constructing/validating on the background sequence first and replying
+  with either `PendingRemote` or an error code via `PostTaskAndReplyWithResult`.
 - **Asynchronous Resource Escape & Unanchored Callbacks:** When a raw pointer,
   child member (`parent->child.get()`), or unowned interface is passed into an
   asynchronous helper (`CreateAndStart`, `StartAsync`, async factories, `PostTask`):
@@ -527,6 +539,14 @@ trusted; the candidate stands unless the browser-side range check exists.
   Trace every existing caller at the moment the helper is entered, and the
   helper's side effects (forced success, cleanup, callback state) on the new
   path.
+- **Sibling Interface Implementation Comparison:** When a CL implements a
+  standard Mojo interface, `content/` delegate, or storage/network backend
+  method that already has a canonical sibling implementation in the same layer
+  or subsystem, locate the sibling implementation and compare them side by side:
+  check how the sibling constructs shared context objects, which security/policy
+  or permission hooks it consults, whether it validates/binds asynchronously
+  before replying vs optimistically returning a handle, and how it maps backend
+  errors to wire status codes.
 - For every override of a documented interface method — any base class
   whose header spells out per-method contracts, whether net/'s `Socket`
   and `HostResolver` families, content/'s observer and delegate

@@ -54,10 +54,18 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   include an internal `Verification notes:` bullet in `gerrit-comments.md`.
 - **Verbatim quoted code line required:** Every new inline comment in
   `gerrit-parts/<item>.md` and `gerrit-comments.md` must include `- Line: \`<verbatim line from the pinned patchset>\`` copied directly from the card's `Verbatim changed line` field (which itself must be extracted verbatim from the worktree at the pinned revision, never paraphrased from memory).
-- **No placeholder or fake inlines:** do not output generic placeholder
+- **No placeholder or fake inlines (and `/COMMIT_MSG` targeting for commit-message findings):** do not output generic placeholder
   inline comments (e.g., `L16500 (General Nit) // General Nit`). General
   feedback belongs in the main comment body; inline comments must target
-  real, modified lines of code.
+  real, modified lines of code. When a finding specifically concerns the CL
+  description / commit message (such as an inaccurate summary of the change or
+  a body line exceeding 72 columns), anchor its `Location` and Gerrit inline
+  target directly on `/COMMIT_MSG:<line>` (with `Suggested edit: omitted —
+  commit message edit`) rather than attaching a commit-message comment to line 1
+  of an arbitrary C++ source file. In Gerrit, `/COMMIT_MSG` begins with 6
+  synthetic header lines (`Parent`, `Author`, `AuthorDate`, `Commit`,
+  `CommitDate`, and a blank line), so line 7 is the commit subject line and
+  `- Line: \`...\`` quotes the exact line from the commit message at that offset.
 - **Concise, query-based inlines (1–3 sentences):** frame inline feedback as
   concise questions or direct observations (1–3 sentences stating the concrete
   bug/impact and the ask, e.g., "Can we gate these success-only metrics...?").

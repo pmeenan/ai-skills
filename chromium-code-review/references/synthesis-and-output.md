@@ -278,9 +278,20 @@ Calibration notes:
   guarding a browser-constructed file path where a side effect inside
   `DLOG(ERROR)` is unreachable in production, or guarding against `>2 GiB`
   single-message buffers), base-interface contract discrepancies where no
-  external caller can hold or mint the required token/handle, and hazards that
-  require a caller to violate a documented "call at most once" contract are
-  **P3**, never P1/P2.
+  external caller can hold or mint the required token/handle, hazards that
+  require a caller to violate a documented "call at most once" contract, and
+  browser-side Mojo behaviors that are unreachable through normal client/Blink
+  code because the primary Mojo reply already populates the client state (so
+  only a compromised renderer calling a secondary Mojo method directly on a
+  capability it already holds can reach the path, affecting only a resource it
+  is already authorized to access) are **P3**, never P1/P2.
+- Micro-optimizations and style bikeshedding below the review-noise bar—such as
+  a single small string, path, or struct copy on an asynchronous IPC or disk I/O
+  path, recommending `std::string_view` over `const std::string&` on a test-only
+  helper called a few times, recommending `const T&` on a `base::BindOnce` /
+  `PostTask` value-sink parameter, or asking to reorder methods when `.h` and
+  `.cc` already match each other and follow a coherent logical grouping—must be
+  marked **REFUTED** in verification rather than promoted as P3 noise.
 - State propagation or bookkeeping bugs (e.g. copying a permission flag by
   value instead of sharing state) whose sole consumer method is explicitly
   unimplemented/stubbed (`TODO`, `NOTIMPLEMENTED`, `kOperationFailed`) in the
@@ -298,7 +309,10 @@ Calibration notes:
   High-Level Summary / Next Steps and the Patchset-Level Gerrit comment rather
   than burying it or promoting it as a P1/P2 blocker.
 - Never fault a CL for lacking unit tests in a file it did not modify (`pin.md`
-  / `gerrit/changed-files.txt`). When a CL already includes a unit test for the
+  / `gerrit/changed-files.txt`), and never allow anchoring a finding on a
+  modified `*browsertest.cc` or `*unittest.cc` file to request test coverage for
+  branches in an untouched implementation file or for pre-existing validation
+  guards upstream of the diff hunks (`REFUTED`). When a CL already includes a unit test for the
   changed function and/or an end-to-end test proving the primary new behavior
   works, requests for extra test permutations (such as latency/throughput cases
   in addition to offline emulation) or assertions on downstream stages
@@ -345,7 +359,8 @@ explicitly. Anchors beat intuition, especially for test-gap severity:
 | Histogram emission disagreeing with its metadata (unit, bucket range, enum coverage, expiry) — silent misrecording | P2 |
 | Bulk-migration call site that can observe a proven old-vs-new behavioral difference (null/error/encoding/lifetime), unaccounted by the CL | P1 |
 | Residue hunk in a claimed-mechanical change that alters behavior beyond the proven transformation spec | P1; P3 when provably cosmetic |
-| Defense-in-depth validation on trusted browser-internal caller inputs or caller misuse of a documented one-shot API contract | P3 |
+| Defense-in-depth validation on trusted browser-internal caller inputs, caller misuse of a documented one-shot API contract, or browser-side Mojo fallback reachable only by a compromised renderer calling a secondary method directly on an already-authorized capability | P3 |
+| Single non-hot-path string/path/struct copy on an async IPC/disk hop, test-only helper `std::string_view` micro-nit, `const T&` on a `BindOnce` value sink, `.h`/`.cc`-consistent callback grouping, or test-gap request targeting an untouched implementation file / pre-existing guard | REFUTED (below review-noise / scope bar) |
 | State propagation / bookkeeping bug whose sole consumer method is unimplemented/stubbed (`TODO` / `kOperationFailed`) in the current CL, or base-interface / `DLOG` guard discrepancy with no reachable untrusted caller path | P3 |
 | Doc/behavior mismatch on out-of-order post-`Finish()`/post-`Discard()` cleanup or redundant no-op I/O / rehash | P3 |
 | Include hygiene, missing `OWNERS` file, dead enum enumerator, or internal numeric sentinel preferring `std::optional` | P3 |
@@ -446,7 +461,9 @@ Output Rules section of `references/verification-and-fixes.md`:
   <id>: Option A ... / Option B ...]` placeholder in `## Main comment` instead
   of emitting an open `Q<N>` question to the CL author or writing third-person
   `"awaiting reviewer confirmation"`.
-- **New inline comments:** repo-relative file, exact line or range, verbatim line
+- **New inline comments:** repo-relative file (or `/COMMIT_MSG:<line>` for
+  commit-message findings, where line 7 is the subject line after Gerrit's 6
+  synthetic header lines), exact line or range, verbatim line
   text from the reviewed patchset, and concise author-facing comment text (1–3
   sentences stating the bug/impact and the concrete ask, without internal trace
   dumps or unmodified external subsystem `path:line` coordinates).

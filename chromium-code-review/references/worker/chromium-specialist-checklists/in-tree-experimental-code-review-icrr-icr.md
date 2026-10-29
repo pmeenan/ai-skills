@@ -65,11 +65,17 @@ threads:
      `style-convention` / `style-authority` in `Candidate descriptors` when
      backed by an authoritative in-tree rule. When an `ICR-*` candidate proposes
      changing a parameter/callback passing convention (e.g. changing a
-     conditionally consumed `OnceCallback&` to `&&`), altering an interface
-     contract, or touching lines/classes outside the CL's diff hunks, also
-     include `base-contract` / `caller-reachability` obligations and note in
-     `evidence` whether it conflicts with a prior-patchset fix in
-     `ledger/PR.md`, an adjacent header comment, or prevalent local convention in
-     the changed/sibling directories (such as standard Chromium `// static`
-     comments above out-of-line static member definitions). Leave the candidate
-     `severity` column blank for Phase 6 synthesis.
+     conditionally consumed `OnceCallback&` to `&&`, changing a `BindOnce` /
+     `PostTask` value-sink parameter to `const T&`, adding `std::move` on a
+     local variable, or changing a test-only helper from `const std::string&` to
+     `std::string_view`), reordering method declarations/definitions, altering
+     an interface contract, or touching lines/classes outside the CL's diff
+     hunks, also include `local-proof` / `base-contract` / `caller-reachability`
+     obligations and note in `evidence` whether the target is a `BindOnce`
+     value sink, whether the variable is read again later in the caller, whether
+     the copy is on a non-hot / test-only path, whether `.h` and `.cc` already
+     match each other's grouping, or whether it conflicts with a prior-patchset
+     fix in `ledger/PR.md`, an adjacent header comment, or prevalent local
+     convention in the changed/sibling directories (such as standard Chromium
+     `// static` comments above out-of-line static member definitions). Leave
+     the candidate `severity` column blank for Phase 6 synthesis.

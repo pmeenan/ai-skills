@@ -21,4 +21,4 @@ preamble, so its rules travel with every section.
 | Accessibility And Internationalization (AXI) | accessibility-and-internationalization-axi.md | 31 |
 | Network Semantics (NET) | network-semantics-net.md | 37 |
 | Fuzzing And Test Strategy (FTS) | fuzzing-and-test-strategy-fts.md | 70 |
-| In-Tree Experimental Code Review (ICRR / ICR) | in-tree-experimental-code-review-icrr-icr.md | 65 |
+| In-Tree Experimental Code Review (ICRR / ICR) | in-tree-experimental-code-review-icrr-icr.md | 71 |

@@ -4351,6 +4351,55 @@ class PinLocalTest(unittest.TestCase):
         self.assertIn("- Gate line: yes", gate_text)
         subprocess.run([str(LEASE), "release", str(review), "done"], check=True)
 
+    def test_commit_msg_gerrit_anchor_and_quote_verification(self) -> None:
+        sys.path.insert(0, str(VALIDATE.parent))
+        import importlib.util
+        from report_verifier import WorktreeCorpus, verify_fragment_text
+
+        spec = importlib.util.spec_from_file_location("validate_review_dir", VALIDATE)
+        assert spec and spec.loader
+        validator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(validator)
+
+        review = self.base / "review-commit-msg"
+        run = subprocess.run(
+            [str(PIN_LOCAL), "HEAD", "HEAD~1", str(review)],
+            env=self.environment(), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
+        corpus = WorktreeCorpus.load(review)
+        # Line 7 in Gerrit /COMMIT_MSG is the subject line ("feature commit").
+        good_gerrit = (
+            "### /COMMIT_MSG:7\n"
+            "- Line: `feature commit`\n"
+            "- Comment: nit: Can we expand the commit summary?\n"
+        )
+        self.assertEqual(
+            verify_fragment_text(corpus, "F001", good_gerrit, is_gerrit=True),
+            [],
+        )
+        report = validator.Report()
+        validator.validate_gerrit_comment_anchor(review, "F001", good_gerrit, report)
+        self.assertEqual(report.errors, [])
+
+        bad_quote = (
+            "### /COMMIT_MSG:7\n"
+            "- Line: `wrong subject line`\n"
+            "- Comment: nit: Can we expand the commit summary?\n"
+        )
+        errs = verify_fragment_text(corpus, "F001", bad_quote, is_gerrit=True)
+        self.assertTrue(any("does not match pinned file /COMMIT_MSG:7" in e for e in errs))
+
+        out_of_bounds = (
+            "### /COMMIT_MSG:99\n"
+            "- Line: `feature commit`\n"
+            "- Comment: nit: Out of bounds line.\n"
+        )
+        report_oob = validator.Report()
+        validator.validate_gerrit_comment_anchor(review, "F001", out_of_bounds, report_oob)
+        self.assertTrue(any("outside the pinned commit message" in e for e in report_oob.errors))
+        subprocess.run([str(LEASE), "release", str(review), "done"], check=True)
+
 
 if __name__ == "__main__":
     unittest.main()
