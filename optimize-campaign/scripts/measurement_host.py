@@ -25,48 +25,63 @@ CHROME_PROCESS_NAMES = ('chrome', 'chromium', 'content_shell', 'headless_shell')
 
 
 HOSTLOCK_REPORT_EVERY = 60
-DEFAULT_QUIET_LOAD15 = 1.0
+DEFAULT_QUIET_LOAD1 = 0.5
+DEFAULT_QUIET_LOAD5 = 1.0
 QUIET_POLL_SECONDS = 5
 _host_exclusive_depth = 0
 
 
-def quiet_load15_threshold():
-    """The 15-minute load average a measurement waits below, holding the
-    exclusive lock, before it starts (HOSTLOCK_QUIET_LOAD15; 0 disables).
-    The `hostlock exclusive` CLI applies the same wait."""
-    raw = os.environ.get('HOSTLOCK_QUIET_LOAD15', '')
+def _env_threshold(name, default):
+    raw = os.environ.get(name, '')
     try:
-        return float(raw) if raw.strip() else DEFAULT_QUIET_LOAD15
+        return float(raw) if raw.strip() else default
     except ValueError:
-        return DEFAULT_QUIET_LOAD15
+        return default
 
 
-def load15():
+def quiet_thresholds():
+    """The (1-minute, 5-minute) load averages a measurement waits below,
+    holding the exclusive lock, before it starts: whichever is met first
+    (HOSTLOCK_QUIET_LOAD1, default 0.5; HOSTLOCK_QUIET_LOAD5, default 1.0;
+    0 turns a condition off, and the legacy HOSTLOCK_QUIET_LOAD15=0 turns
+    both off). The `hostlock exclusive` CLI applies the same wait."""
+    if os.environ.get('HOSTLOCK_QUIET_LOAD15', '').strip() in ('0', '0.0'):
+        return 0.0, 0.0
+    return (_env_threshold('HOSTLOCK_QUIET_LOAD1', DEFAULT_QUIET_LOAD1),
+            _env_threshold('HOSTLOCK_QUIET_LOAD5', DEFAULT_QUIET_LOAD5))
+
+
+def loads():
+    """(1-minute, 5-minute) load averages, or None if unreadable."""
     try:
-        return float(pathlib.Path('/proc/loadavg').read_text().split()[2])
+        parts = pathlib.Path('/proc/loadavg').read_text().split()
+        return float(parts[0]), float(parts[1])
     except (OSError, ValueError, IndexError):
         return None
 
 
 def wait_for_quiet():
-    """Wait until recent heavy work (a build that just finished) has drained
-    from the 15-minute load average. Called with the exclusive lock held, so
+    """Wait until recent heavy work (a build that just finished) has drained:
+    the 1-minute load average below its threshold or the 5-minute one below
+    its own, whichever comes first. Called with the exclusive lock held, so
     no new shared job starts meanwhile."""
-    threshold = quiet_load15_threshold()
-    if threshold <= 0:
+    t1, t5 = quiet_thresholds()
+    if t1 <= 0 and t5 <= 0:
         return
+    cond = ' or '.join(([f'1-minute load < {t1}'] if t1 > 0 else [])
+                       + ([f'5-minute load < {t5}'] if t5 > 0 else []))
     start = time.monotonic()
     last = None
     while True:
-        value = load15()
-        if value is None or value < threshold:
+        value = loads()
+        if value is None or (t1 > 0 and value[0] < t1) or (t5 > 0 and value[1] < t5):
             if last is not None:
-                print(f'hostlock: 15-minute load {value} < {threshold}; starting', flush=True)
+                print(f'hostlock: quiet ({cond}; now {value}); starting', flush=True)
             return
         waited = time.monotonic() - start
         if last is None or waited - last >= HOSTLOCK_REPORT_EVERY:
-            print(f'hostlock: holding the exclusive lock until the 15-minute load drops below '
-                  f'{threshold} (now {value}, waited {int(waited)}s)', flush=True)
+            print(f'hostlock: holding the exclusive lock until {cond} '
+                  f'(now 1-min {value[0]}, 5-min {value[1]}, waited {int(waited)}s)', flush=True)
             last = waited
         time.sleep(QUIET_POLL_SECONDS)
 
@@ -109,7 +124,8 @@ def host_exclusive(label='measurement'):
     """Machine-wide exclusive hold for a measurement (the ~/.hostlock protocol
     of the `hostlock` tool): close the gate so no new shared job starts, wait
     for running shared jobs (docker builds, compiles) to finish, then measure
-    alone once the 15-minute load average is below the quiet threshold.
+    alone once the 1-minute or 5-minute load average is below its quiet
+    threshold.
     Active only when the lock directory exists; nested holds in this process
     or its children (HOSTLOCK_HELD) do not re-lock or re-wait (the
     `hostlock exclusive` CLI applies the same quiet wait)."""

@@ -153,30 +153,45 @@ class HostExclusiveTest(unittest.TestCase):
 
     def test_waits_for_quiet_load_while_holding_the_gate(self):
         import os, subprocess
-        loads = iter([3.0, 1.5, 0.9])
+        # (1-min, 5-min): neither met, neither met, then the 1-minute one.
+        samples = iter([(3.0, 3.0), (1.5, 1.2), (0.4, 1.1)])
         probes = []
-        def fake_load():
+        def fake_loads():
             probes.append(subprocess.run(["flock", "-x", "-n", str(self.dir / "gate.lock"), "true"]).returncode)
-            return next(loads)
-        with mock.patch.dict(os.environ, {"HOSTLOCK_QUIET_LOAD15": "1.0"}), \
-                mock.patch.object(host, "load15", fake_load), \
+            return next(samples)
+        with mock.patch.dict(os.environ, {"HOSTLOCK_QUIET_LOAD15": "", "HOSTLOCK_QUIET_LOAD1": "0.5",
+                                          "HOSTLOCK_QUIET_LOAD5": "1.0"}), \
+                mock.patch.object(host, "loads", fake_loads), \
                 mock.patch.object(host, "QUIET_POLL_SECONDS", 0):
             with host.host_exclusive("quiet"):
                 pass
         self.assertEqual(3, len(probes))
         self.assertTrue(all(code != 0 for code in probes))  # gate stayed closed while waiting
 
+    def test_quiet_starts_on_five_minute_load(self):
+        import os
+        samples = iter([(2.0, 1.4), (1.8, 0.9)])
+        with mock.patch.dict(os.environ, {"HOSTLOCK_QUIET_LOAD15": "", "HOSTLOCK_QUIET_LOAD1": "0.5",
+                                          "HOSTLOCK_QUIET_LOAD5": "1.0"}), \
+                mock.patch.object(host, "loads", lambda: next(samples)), \
+                mock.patch.object(host, "QUIET_POLL_SECONDS", 0):
+            with host.host_exclusive("quiet5"):
+                pass
+        self.assertIsNone(next(samples, None))
+
     def test_quiet_wait_disabled_by_zero_threshold(self):
         import os
-        with mock.patch.dict(os.environ, {"HOSTLOCK_QUIET_LOAD15": "0"}), \
-                mock.patch.object(host, "load15", side_effect=AssertionError("must not poll")):
-            with host.host_exclusive("off"):
-                pass
+        for env in ({"HOSTLOCK_QUIET_LOAD15": "0"},
+                    {"HOSTLOCK_QUIET_LOAD15": "", "HOSTLOCK_QUIET_LOAD1": "0", "HOSTLOCK_QUIET_LOAD5": "0"}):
+            with mock.patch.dict(os.environ, env), \
+                    mock.patch.object(host, "loads", side_effect=AssertionError("must not poll")):
+                with host.host_exclusive("off"):
+                    pass
 
     def test_nested_hold_does_not_rewait(self):
         import os
-        with mock.patch.dict(os.environ, {"HOSTLOCK_HELD": "exclusive:1", "HOSTLOCK_QUIET_LOAD15": "1.0"}), \
-                mock.patch.object(host, "load15", side_effect=AssertionError("must not poll")):
+        with mock.patch.dict(os.environ, {"HOSTLOCK_HELD": "exclusive:1", "HOSTLOCK_QUIET_LOAD15": ""}), \
+                mock.patch.object(host, "loads", side_effect=AssertionError("must not poll")):
             with host.host_exclusive("child"):
                 pass
 
