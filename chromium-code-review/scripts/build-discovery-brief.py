@@ -252,11 +252,30 @@ def main() -> int:
         explicit_edge_scope = (
             f"graph:{','.join(topology_edges)}" if topology_edges else "graph:none"
         )
+        is_gai = bool(
+            re.match(r"^GAI\d*$", args.work_id)
+            or args.entry.startswith(
+                "Generalist Adversarial And Integration Discovery"
+            )
+        )
+        scope_audit_bullet = (
+            "   - **Scope Discipline & Unrelated Drive-By Change Audit:** Cross-check "
+            "every `Description-to-code alignment: mismatch` row in `context.md` and "
+            "every `defensive hardening` or `opportunistic cleanup` surface in "
+            "`indexes/inventory.tsv` against the changed hunks. If any changed hunk "
+            "alters runtime behavior or bundles a drive-by bug fix for an issue "
+            "unrelated to the CL's stated goal/bug, emit a candidate recommending "
+            "that it be split into a separate standalone CL with its own dedicated "
+            "unit test.\n"
+            if is_gai
+            else ""
+        )
         combined += (
             "\n6. Schema-3 Generalist Deliverable Requirements (mandatory for "
             f"{args.work_id}):\n"
             "   In your ledger file, in addition to the compliance matrix, "
             "candidate rows, and candidate descriptors, you MUST include:\n"
+            f"{scope_audit_bullet}"
             "   - `## Complexity graph delta` table: `| edge | status | evidence "
             "| candidate | next obligation |` covering every edge assigned to "
             f"your shard ({', '.join(topology_edges) if topology_edges else 'none'}; "

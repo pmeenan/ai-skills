@@ -544,6 +544,14 @@ def main() -> int:
             sug_detail = rc_dec["detail"]
             sug_selected = rc_dec["selected"]
             sug_replacement = rc_dec["replacement"]
+        elif orig == "pre-existing":
+            sug_status = "omitted"
+            sug_detail = (
+                "pre-existing issue outside changed hunks; address in a "
+                "separate follow-up CL"
+            )
+            sug_selected = ""
+            sug_replacement = ""
         else:
             sug_status = "omitted"
             sug_detail = (

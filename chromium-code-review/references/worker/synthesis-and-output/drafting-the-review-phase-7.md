@@ -32,8 +32,11 @@ To avoid multiple review rounds and ensure exhaustive feedback delivery:
   `introduced-in-PS<N>` finding also has one exact `gerrit-parts/<item>.md`
   fragment included byte-for-byte once in `gerrit-comments.md` (while questions
   `Q<number>` and reviewer notes `N<number>` use `-` for Gerrit coverage, and
-  `Origin: pre-existing` findings may optionally use `-` with `Suggested edit:
-  omitted — <reason>` when omitting Gerrit inline output). The measured hashes
+  `Origin: pre-existing` findings on untouched code default to `-` with
+  `Suggested edit: omitted — pre-existing issue outside changed hunks; address
+  in a separate follow-up CL` so unrelated pre-existing bugs are reported in
+  `draft-review.md` as follow-up CL candidates rather than Gerrit inline fix
+  requests). The measured hashes
   and paths live in `output-coverage.tsv`. The synthesis cards, not raw
   `verdicts.tsv` rows, are the coverage set: a CONFIRMED verdict that
   reconciliation merged into a survivor is represented by that survivor, an

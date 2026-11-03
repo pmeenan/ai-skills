@@ -387,6 +387,20 @@ unobservable.
 
 ## Integration And Feature Control
 
+- **Scope Discipline & Unrelated Drive-By Changes (`context.md` & `inventory.md`
+  audit):** Audit every `Description-to-code alignment: mismatch` row in
+  `context.md` and every surface labeled `defensive hardening` or `opportunistic
+  cleanup` in `inventory.md` / `indexes/inventory.tsv`, plus any changed hunk
+  that alters runtime behavior or fixes a distinct bug unrelated to the CL's
+  stated goal or linked issue. Distinguish benign local cleanup on
+  already-touched lines from an **unrelated behavioral change or drive-by bug
+  fix** — a hunk that changes runtime control flow, arithmetic/bounds checks,
+  error handling, or state transitions for an independent defect or edge case
+  not caused by or required for this CL. When a changed hunk bundles an
+  unrelated behavioral change or drive-by bug fix (especially without a
+  dedicated regression test), emit a candidate recommending that it be reverted
+  from this CL and landed in a separate standalone CL with its own unit test so
+  each behavioral change is independently reviewed, tested, and revertible.
 - Is the new behavior actually wired into the intended production path?
   Trace it from the public/config entrypoint through factories, decorators,
   feature flags, Mojo/CDP/service plumbing, and runtime call sites to the
@@ -514,7 +528,13 @@ trusted; the candidate stands unless the browser-side range check exists.
   verify collaborating classes interpret it consistently.
 - Is each `DCHECK` guarding a load-bearing internal invariant, or validating
   input that crosses an API boundary where release builds need explicit
-  validation or a `CHECK`?
+  validation or a `CHECK`? Under Chromium's `//styleguide/c++/checks.md`,
+  `CHECK` (`CHECK_EQ`, `CHECK_NE`, etc.) is preferred over `DCHECK` for
+  invariant assertions unless the check is prohibitively expensive in release
+  builds. When a changed line adds a new invariant assertion or when you
+  recommend replacing an unreachable defensive branch with an assertion, prefer
+  `CHECK` over `DCHECK` even if older surrounding code in the file still uses
+  legacy `DCHECK`s.
 - Where the CL accepts a nullable callback, optional dependency, sentinel, or
   optional handle: is optionality part of the public contract, and do tests
   or callers rely on the absent-value path? Log a candidate either way; the
@@ -669,12 +689,29 @@ dropping them from an otherwise-LGTM review.
 - Limit style, formatting, and consistency nits to lines modified by the CL.
   If a correctness issue depends on unchanged code, explain how the CL made
   that code relevant to the review.
-- Re-run the scope-relevance check on each hunk: is this changed line part of
-  the stated fix, a necessary consequence, or test/support plumbing? If it is
-  defensive hardening, null-checking, refactoring, renaming, or cleanup that is
-  merely adjacent to the fix, ask whether it should be reverted, split out, or
-  called out in the CL description. Do not silently endorse unrelated cleanup
-  just because it is harmless.
+- Re-run the scope-relevance check on each hunk (cross-checking `context.md`
+  `Description-to-code alignment` and `Scope relevance` plus `inventory.md`
+  `defensive hardening` / `opportunistic cleanup` labels): is this changed line
+  part of the stated fix, a necessary consequence, or test/support plumbing? If
+  a hunk bundles an unrelated behavioral change or drive-by bug fix for an
+  independent issue, emit a candidate asking to move it to a separate
+  standalone CL with its own unit test. If it is purely local defensive
+  hardening, null-checking, refactoring, renaming, or cleanup that is merely
+  adjacent to the fix, ask whether it should be reverted, split out, or called
+  out in the CL description. Do not silently endorse unrelated drive-by fixes or
+  cleanup just because they appear harmless.
+- Check whether newly changed guards or lifecycle sequences leave a non-obvious
+  state or lifetime assumption unexplained:
+  - When a changed condition checks a subset of state-machine states and
+    intentionally excludes an adjacent state (such as an intermediate
+    handshake, auth, or draining state) for a subtle protocol or lifecycle
+    reason, check whether a brief comment is needed explaining why the excluded
+    state is omitted.
+  - When changed code accesses `this` or member state immediately after calling
+    a teardown-, drain-, close-, or finish-sounding helper that could appear to
+    destroy `this` synchronously (but actually defers destruction asynchronously
+    via a posted task), check whether a brief comment is needed explaining why
+    `this` remains alive after the call.
 - Check declaration placement in headers and class bodies. New methods should
   preserve existing local grouping and should not split obvious pairs such as
   getter/setter, start/stop, create/destroy, or URL/getter mutation methods

@@ -125,4 +125,4 @@ explicitly. Anchors beat intuition, especially for test-gap severity:
 | Include hygiene, missing `OWNERS` file, dead enum enumerator, or internal numeric sentinel preferring `std::optional` | P3 |
 | Ambiguous boolean name (policy vs state, `should_` vs `is_`) | P3 |
 | Non-ASCII punctuation in comments or developer-facing prose (excluding standard `§` section symbols in spec citations) | P3 |
-| Defensive hardening or opportunistic cleanup absent from the CL description | P3 (suggest split or description mention) |
+| Unrelated drive-by behavioral change or bug fix bundled into the CL without dedicated test coverage, or defensive hardening / opportunistic cleanup absent from the CL description | P2 when an unrelated behavioral change / drive-by bug fix alters runtime control flow without a dedicated regression test (recommend splitting into a standalone CL with a test); P3 for benign defensive hardening or opportunistic cleanup (recommend splitting into a separate CL or documenting in the CL description) |

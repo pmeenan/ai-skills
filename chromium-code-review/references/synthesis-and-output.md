@@ -155,8 +155,11 @@ To avoid multiple review rounds and ensure exhaustive feedback delivery:
   `introduced-in-PS<N>` finding also has one exact `gerrit-parts/<item>.md`
   fragment included byte-for-byte once in `gerrit-comments.md` (while questions
   `Q<number>` and reviewer notes `N<number>` use `-` for Gerrit coverage, and
-  `Origin: pre-existing` findings may optionally use `-` with `Suggested edit:
-  omitted — <reason>` when omitting Gerrit inline output). The measured hashes
+  `Origin: pre-existing` findings on untouched code default to `-` with
+  `Suggested edit: omitted — pre-existing issue outside changed hunks; address
+  in a separate follow-up CL` so unrelated pre-existing bugs are reported in
+  `draft-review.md` as follow-up CL candidates rather than Gerrit inline fix
+  requests). The measured hashes
   and paths live in `output-coverage.tsv`. The synthesis cards, not raw
   `verdicts.tsv` rows, are the coverage set: a CONFIRMED verdict that
   reconciliation merged into a survivor is represented by that survivor, an
@@ -366,7 +369,7 @@ explicitly. Anchors beat intuition, especially for test-gap severity:
 | Include hygiene, missing `OWNERS` file, dead enum enumerator, or internal numeric sentinel preferring `std::optional` | P3 |
 | Ambiguous boolean name (policy vs state, `should_` vs `is_`) | P3 |
 | Non-ASCII punctuation in comments or developer-facing prose (excluding standard `§` section symbols in spec citations) | P3 |
-| Defensive hardening or opportunistic cleanup absent from the CL description | P3 (suggest split or description mention) |
+| Unrelated drive-by behavioral change or bug fix bundled into the CL without dedicated test coverage, or defensive hardening / opportunistic cleanup absent from the CL description | P2 when an unrelated behavioral change / drive-by bug fix alters runtime control flow without a dedicated regression test (recommend splitting into a standalone CL with a test); P3 for benign defensive hardening or opportunistic cleanup (recommend splitting into a separate CL or documenting in the CL description) |
 
 ## Output Format
 
@@ -381,7 +384,10 @@ to its immutable challenge round and delivery gate; it is not Gerrit prose.
    `introduced-in-PS<N>` findings as such within this section.
 2. **Pre-Existing Codebase Issues (For Reference/Follow-up):** Issues observed
    in the surrounding codebase but not introduced by the CL. These must be clearly
-   labeled as pre-existing and do not block landing of this CL.
+   labeled as pre-existing, do not block landing of this CL, default to omitting
+   Gerrit inline comments (`-` in `output-coverage.tsv`), and should recommend
+   addressing the defect in a separate standalone follow-up CL with its own unit
+   test rather than bundling a drive-by fix into the current CL.
 3. **High-Level Summary:** State whether the CL accomplishes its goal, name the
    patchset and revision SHA, and summarize bug alignment (citing the exact
    `Bug:` ID(s) from `pin.md` / `context.md` verbatim; never guess or substitute

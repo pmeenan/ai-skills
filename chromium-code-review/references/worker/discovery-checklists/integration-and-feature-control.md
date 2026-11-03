@@ -29,6 +29,20 @@ same P0 throughput collapse by adjudicating the design intended in-thread.
 
 ## Integration And Feature Control
 
+- **Scope Discipline & Unrelated Drive-By Changes (`context.md` & `inventory.md`
+  audit):** Audit every `Description-to-code alignment: mismatch` row in
+  `context.md` and every surface labeled `defensive hardening` or `opportunistic
+  cleanup` in `inventory.md` / `indexes/inventory.tsv`, plus any changed hunk
+  that alters runtime behavior or fixes a distinct bug unrelated to the CL's
+  stated goal or linked issue. Distinguish benign local cleanup on
+  already-touched lines from an **unrelated behavioral change or drive-by bug
+  fix** — a hunk that changes runtime control flow, arithmetic/bounds checks,
+  error handling, or state transitions for an independent defect or edge case
+  not caused by or required for this CL. When a changed hunk bundles an
+  unrelated behavioral change or drive-by bug fix (especially without a
+  dedicated regression test), emit a candidate recommending that it be reverted
+  from this CL and landed in a separate standalone CL with its own unit test so
+  each behavioral change is independently reviewed, tested, and revertible.
 - Is the new behavior actually wired into the intended production path?
   Trace it from the public/config entrypoint through factories, decorators,
   feature flags, Mojo/CDP/service plumbing, and runtime call sites to the

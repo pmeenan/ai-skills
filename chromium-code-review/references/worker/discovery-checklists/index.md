@@ -15,8 +15,8 @@ preamble, so its rules travel with every section.
 | Per-Surface Invariant Questions | per-surface-invariant-questions.md | 24 |
 | Async And Lifecycle | async-and-lifecycle.md | 130 |
 | State, Persistence, And Cache | state-persistence-and-cache.md | 86 |
-| Integration And Feature Control | integration-and-feature-control.md | 64 |
+| Integration And Feature Control | integration-and-feature-control.md | 78 |
 | Security And Trust Boundaries | security-and-trust-boundaries.md | 42 |
-| Contracts And API Shape | contracts-and-api-shape.md | 85 |
+| Contracts And API Shape | contracts-and-api-shape.md | 91 |
 | Tests As Specifications | tests-as-specifications.md | 84 |
-| Changed-Lines Polish | changed-lines-polish.md | 93 |
+| Changed-Lines Polish | changed-lines-polish.md | 110 |

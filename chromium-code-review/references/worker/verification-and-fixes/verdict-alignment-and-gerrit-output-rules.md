@@ -112,11 +112,17 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   target/comment fragment whose bytes occur exactly once in `gerrit-comments.md`.
   Owner questions (`Q<number>`) and Reviewer Notes (`N<number>`) live in
   `draft-review.md` only and use `-` for all three Gerrit columns in
-  `output-coverage.tsv`. Findings with `Origin: pre-existing` may either emit an
-  informational `gerrit-parts/<item>.md` fragment or omit Gerrit inline output
-  (`-` for all three Gerrit columns in `output-coverage.tsv`, with `Suggested
-  edit: omitted — <reason>`) when posting an inline comment on untouched or
-  adjacent pre-existing code would add noise to the Gerrit review. Merged
+  `output-coverage.tsv`. Findings with `Origin: pre-existing` on untouched code
+  (or unrelated to the CL's changed behavior) **default to omitting Gerrit
+  inline output** (`-` for all three Gerrit columns in `output-coverage.tsv`,
+  with `Suggested edit: omitted — pre-existing issue outside changed hunks;
+  address in a separate follow-up CL`) and must be framed in `draft-review.md`
+  (`## 2. Pre-Existing Codebase Issues (For Reference/Follow-up)`) as separate
+  follow-up CL candidates with their own dedicated unit tests — never ask the
+  author in Gerrit inline comments to bundle an unrelated drive-by fix into the
+  current CL. An `Origin: pre-existing` finding may emit an informational
+  `gerrit-parts/<item>.md` fragment only when the CL's own changed lines
+  directly interact with or rely on that pre-existing defect. Merged
   duplicates are already folded into their surviving finding, so they need no
   separate comment. Do not sample, compress, or truncate promoted findings to
   shorten output length. Presenting 100% of actionable bugs upfront is mandatory

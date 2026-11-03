@@ -50,7 +50,13 @@ same P0 throughput collapse by adjudicating the design intended in-thread.
   verify collaborating classes interpret it consistently.
 - Is each `DCHECK` guarding a load-bearing internal invariant, or validating
   input that crosses an API boundary where release builds need explicit
-  validation or a `CHECK`?
+  validation or a `CHECK`? Under Chromium's `//styleguide/c++/checks.md`,
+  `CHECK` (`CHECK_EQ`, `CHECK_NE`, etc.) is preferred over `DCHECK` for
+  invariant assertions unless the check is prohibitively expensive in release
+  builds. When a changed line adds a new invariant assertion or when you
+  recommend replacing an unreachable defensive branch with an assertion, prefer
+  `CHECK` over `DCHECK` even if older surrounding code in the file still uses
+  legacy `DCHECK`s.
 - Where the CL accepts a nullable callback, optional dependency, sentinel, or
   optional handle: is optionality part of the public contract, and do tests
   or callers rely on the absent-value path? Log a candidate either way; the

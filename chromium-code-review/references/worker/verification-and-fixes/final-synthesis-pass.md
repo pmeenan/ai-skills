@@ -42,6 +42,12 @@ review:
   partitioning rules?
 - Do proposed fixes preserve the documented contract and nearby Chromium
   idioms? Have API-shaping fixes been weighed against reasonable alternatives?
+  Do fix recommendations and `suggestion` blocks follow `//styleguide/c++/checks.md`
+  (`CHECK` / `CHECK_EQ` rather than `DCHECK` for non-expensive invariant
+  assertions), consolidate shared caller logic into the common callee rather
+  than duplicating multi-line blocks across callers, and include a brief
+  clarifying comment when accessing member state after a non-deleting
+  teardown/drain call or excluding a subtle adjacent state-machine state?
 - **Cross-finding fix compatibility & no grab-bag bundling:** Do any two
   promoted findings recommend mutually incompatible fixes (for example, one
   finding recommending asynchronous `ImportantFileWriter::ScheduleWrite()` while

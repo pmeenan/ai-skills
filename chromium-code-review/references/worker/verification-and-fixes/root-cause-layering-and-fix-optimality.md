@@ -41,14 +41,24 @@ or new state holder, record a root-cause row with these fields:
   chosen fix; a plausible code sketch is not an applicable edit. When the
   selected range `path:start-end` ends with a blank separator line in the pinned
   file, the replacement block must preserve that trailing blank line so applying
-  the suggestion does not concatenate adjacent blocks or functions. In any P3 /
-  style / assertion / test-cleanup finding on a modified file, scope the
-  requested changes strictly to lines, call sites, and classes touched or
-  extended by the CL's diff hunks — never bundle untouched pre-existing lines or
-  unmodified sibling classes in the same file into the ask. Use the
-  canonical multiline RC-row fields from `templates.md`; never compress
-  multiline selected/replacement text into a root-family table cell. The
-  table cell references the owning RC row, and reconciliation copies that
+  the suggestion does not concatenate adjacent blocks or functions. When a
+  recommended fix or `Suggested edit` introduces an assertion to enforce an
+  invariant or replace an unreachable defensive branch, use `CHECK` (`CHECK_EQ`,
+  `CHECK_NE`, etc.) rather than `DCHECK` per `//styleguide/c++/checks.md` unless
+  the check is prohibitively expensive in release builds (even if older nearby
+  lines still use `DCHECK`). When a recommended fix or `Suggested edit` accesses
+  `this` or member state immediately after a teardown-, drain-, or close-named
+  helper that could appear to destroy `this` synchronously (or intentionally
+  excludes an adjacent state-machine state from a guard), include a concise
+  inline comment in the replacement explaining why `this` remains valid (for
+  example, that deletion is posted asynchronously) or why the excluded state is
+  omitted. In any P3 / style / assertion / test-cleanup finding on a modified
+  file, scope the requested changes strictly to lines, call sites, and classes
+  touched or extended by the CL's diff hunks — never bundle untouched
+  pre-existing lines or unmodified sibling classes in the same file into the
+  ask. Use the canonical multiline RC-row fields from `templates.md`; never
+  compress multiline selected/replacement text into a root-family table cell.
+  The table cell references the owning RC row, and reconciliation copies that
   row's decision byte-for-byte into the evidence card.
 - **Family coverage:** every candidate/verdict member, a State × Method matrix
   when a protocol state is involved, excluded nearby methods with reasons,
@@ -74,6 +84,17 @@ Use these drills to fill the row:
 - Search for an existing canonical state owner, shared helper, base-class
   contract, or sibling implementation before endorsing a new field, cache,
   wrapper, or special-case branch.
+- **Prefer shared-callee consolidation over caller duplication:** Before
+  recommending that a multi-line check, state transition, or post-action be
+  added to a caller (or moved out of a shared callee into its callers), inspect
+  all callers of that shared callee in `callers/index.tsv` (and all sibling
+  methods in the class). If multiple callers invoke the same shared helper (or
+  if a proposed fix would copy-paste an identical multi-line block across
+  callers), verify whether the guard or post-action can live once inside the
+  shared callee they already invoke (or in a single private helper). Never
+  recommend duplicating an identical multi-line block across callers when
+  consolidating it into the shared callee preserves the contract for all
+  callers.
 - For duplicated or cached state, prove why the cache belongs at the proposed
   layer instead of on the canonical object that owns the source value. A cache
   beside a derived consumer is fragile unless invalidation and all relevant

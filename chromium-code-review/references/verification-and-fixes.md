@@ -352,14 +352,24 @@ or new state holder, record a root-cause row with these fields:
   chosen fix; a plausible code sketch is not an applicable edit. When the
   selected range `path:start-end` ends with a blank separator line in the pinned
   file, the replacement block must preserve that trailing blank line so applying
-  the suggestion does not concatenate adjacent blocks or functions. In any P3 /
-  style / assertion / test-cleanup finding on a modified file, scope the
-  requested changes strictly to lines, call sites, and classes touched or
-  extended by the CL's diff hunks — never bundle untouched pre-existing lines or
-  unmodified sibling classes in the same file into the ask. Use the
-  canonical multiline RC-row fields from `templates.md`; never compress
-  multiline selected/replacement text into a root-family table cell. The
-  table cell references the owning RC row, and reconciliation copies that
+  the suggestion does not concatenate adjacent blocks or functions. When a
+  recommended fix or `Suggested edit` introduces an assertion to enforce an
+  invariant or replace an unreachable defensive branch, use `CHECK` (`CHECK_EQ`,
+  `CHECK_NE`, etc.) rather than `DCHECK` per `//styleguide/c++/checks.md` unless
+  the check is prohibitively expensive in release builds (even if older nearby
+  lines still use `DCHECK`). When a recommended fix or `Suggested edit` accesses
+  `this` or member state immediately after a teardown-, drain-, or close-named
+  helper that could appear to destroy `this` synchronously (or intentionally
+  excludes an adjacent state-machine state from a guard), include a concise
+  inline comment in the replacement explaining why `this` remains valid (for
+  example, that deletion is posted asynchronously) or why the excluded state is
+  omitted. In any P3 / style / assertion / test-cleanup finding on a modified
+  file, scope the requested changes strictly to lines, call sites, and classes
+  touched or extended by the CL's diff hunks — never bundle untouched
+  pre-existing lines or unmodified sibling classes in the same file into the
+  ask. Use the canonical multiline RC-row fields from `templates.md`; never
+  compress multiline selected/replacement text into a root-family table cell.
+  The table cell references the owning RC row, and reconciliation copies that
   row's decision byte-for-byte into the evidence card.
 - **Family coverage:** every candidate/verdict member, a State × Method matrix
   when a protocol state is involved, excluded nearby methods with reasons,
@@ -385,6 +395,17 @@ Use these drills to fill the row:
 - Search for an existing canonical state owner, shared helper, base-class
   contract, or sibling implementation before endorsing a new field, cache,
   wrapper, or special-case branch.
+- **Prefer shared-callee consolidation over caller duplication:** Before
+  recommending that a multi-line check, state transition, or post-action be
+  added to a caller (or moved out of a shared callee into its callers), inspect
+  all callers of that shared callee in `callers/index.tsv` (and all sibling
+  methods in the class). If multiple callers invoke the same shared helper (or
+  if a proposed fix would copy-paste an identical multi-line block across
+  callers), verify whether the guard or post-action can live once inside the
+  shared callee they already invoke (or in a single private helper). Never
+  recommend duplicating an identical multi-line block across callers when
+  consolidating it into the shared callee preserves the contract for all
+  callers.
 - For duplicated or cached state, prove why the cache belongs at the proposed
   layer instead of on the canonical object that owns the source value. A cache
   beside a derived consumer is fragile unless invalidation and all relevant
@@ -470,6 +491,12 @@ review:
   partitioning rules?
 - Do proposed fixes preserve the documented contract and nearby Chromium
   idioms? Have API-shaping fixes been weighed against reasonable alternatives?
+  Do fix recommendations and `suggestion` blocks follow `//styleguide/c++/checks.md`
+  (`CHECK` / `CHECK_EQ` rather than `DCHECK` for non-expensive invariant
+  assertions), consolidate shared caller logic into the common callee rather
+  than duplicating multi-line blocks across callers, and include a brief
+  clarifying comment when accessing member state after a non-deleting
+  teardown/drain call or excluding a subtle adjacent state-machine state?
 - **Cross-finding fix compatibility & no grab-bag bundling:** Do any two
   promoted findings recommend mutually incompatible fixes (for example, one
   finding recommending asynchronous `ImportantFileWriter::ScheduleWrite()` while
@@ -620,11 +647,17 @@ When formatting comments meant to be copy-pasted directly to Gerrit:
   target/comment fragment whose bytes occur exactly once in `gerrit-comments.md`.
   Owner questions (`Q<number>`) and Reviewer Notes (`N<number>`) live in
   `draft-review.md` only and use `-` for all three Gerrit columns in
-  `output-coverage.tsv`. Findings with `Origin: pre-existing` may either emit an
-  informational `gerrit-parts/<item>.md` fragment or omit Gerrit inline output
-  (`-` for all three Gerrit columns in `output-coverage.tsv`, with `Suggested
-  edit: omitted — <reason>`) when posting an inline comment on untouched or
-  adjacent pre-existing code would add noise to the Gerrit review. Merged
+  `output-coverage.tsv`. Findings with `Origin: pre-existing` on untouched code
+  (or unrelated to the CL's changed behavior) **default to omitting Gerrit
+  inline output** (`-` for all three Gerrit columns in `output-coverage.tsv`,
+  with `Suggested edit: omitted — pre-existing issue outside changed hunks;
+  address in a separate follow-up CL`) and must be framed in `draft-review.md`
+  (`## 2. Pre-Existing Codebase Issues (For Reference/Follow-up)`) as separate
+  follow-up CL candidates with their own dedicated unit tests — never ask the
+  author in Gerrit inline comments to bundle an unrelated drive-by fix into the
+  current CL. An `Origin: pre-existing` finding may emit an informational
+  `gerrit-parts/<item>.md` fragment only when the CL's own changed lines
+  directly interact with or rely on that pre-existing defect. Merged
   duplicates are already folded into their surviving finding, so they need no
   separate comment. Do not sample, compress, or truncate promoted findings to
   shorten output length. Presenting 100% of actionable bugs upfront is mandatory

@@ -36,12 +36,29 @@ dropping them from an otherwise-LGTM review.
 - Limit style, formatting, and consistency nits to lines modified by the CL.
   If a correctness issue depends on unchanged code, explain how the CL made
   that code relevant to the review.
-- Re-run the scope-relevance check on each hunk: is this changed line part of
-  the stated fix, a necessary consequence, or test/support plumbing? If it is
-  defensive hardening, null-checking, refactoring, renaming, or cleanup that is
-  merely adjacent to the fix, ask whether it should be reverted, split out, or
-  called out in the CL description. Do not silently endorse unrelated cleanup
-  just because it is harmless.
+- Re-run the scope-relevance check on each hunk (cross-checking `context.md`
+  `Description-to-code alignment` and `Scope relevance` plus `inventory.md`
+  `defensive hardening` / `opportunistic cleanup` labels): is this changed line
+  part of the stated fix, a necessary consequence, or test/support plumbing? If
+  a hunk bundles an unrelated behavioral change or drive-by bug fix for an
+  independent issue, emit a candidate asking to move it to a separate
+  standalone CL with its own unit test. If it is purely local defensive
+  hardening, null-checking, refactoring, renaming, or cleanup that is merely
+  adjacent to the fix, ask whether it should be reverted, split out, or called
+  out in the CL description. Do not silently endorse unrelated drive-by fixes or
+  cleanup just because they appear harmless.
+- Check whether newly changed guards or lifecycle sequences leave a non-obvious
+  state or lifetime assumption unexplained:
+  - When a changed condition checks a subset of state-machine states and
+    intentionally excludes an adjacent state (such as an intermediate
+    handshake, auth, or draining state) for a subtle protocol or lifecycle
+    reason, check whether a brief comment is needed explaining why the excluded
+    state is omitted.
+  - When changed code accesses `this` or member state immediately after calling
+    a teardown-, drain-, close-, or finish-sounding helper that could appear to
+    destroy `this` synchronously (but actually defers destruction asynchronously
+    via a posted task), check whether a brief comment is needed explaining why
+    `this` remains alive after the call.
 - Check declaration placement in headers and class bodies. New methods should
   preserve existing local grouping and should not split obvious pairs such as
   getter/setter, start/stop, create/destroy, or URL/getter mutation methods

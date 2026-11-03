@@ -23,7 +23,10 @@ to its immutable challenge round and delivery gate; it is not Gerrit prose.
    `introduced-in-PS<N>` findings as such within this section.
 2. **Pre-Existing Codebase Issues (For Reference/Follow-up):** Issues observed
    in the surrounding codebase but not introduced by the CL. These must be clearly
-   labeled as pre-existing and do not block landing of this CL.
+   labeled as pre-existing, do not block landing of this CL, default to omitting
+   Gerrit inline comments (`-` in `output-coverage.tsv`), and should recommend
+   addressing the defect in a separate standalone follow-up CL with its own unit
+   test rather than bundling a drive-by fix into the current CL.
 3. **High-Level Summary:** State whether the CL accomplishes its goal, name the
    patchset and revision SHA, and summarize bug alignment (citing the exact
    `Bug:` ID(s) from `pin.md` / `context.md` verbatim; never guess or substitute
