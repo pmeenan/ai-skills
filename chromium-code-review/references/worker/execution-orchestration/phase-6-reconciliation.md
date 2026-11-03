@@ -14,7 +14,13 @@ prohibition on reading helper source — and does not restate anything below.
 
 ## Phase 6 — Reconciliation
 
-Spawn one bounded **Reconciliation Builder** or row-disjoint builders plus a
+When surviving unmerged (`CONFIRMED` / `UNPROVEN`) verdicts are `<= 8`, run
+`scripts/build-reconciliation.py ⟨review-dir⟩` directly instead of spawning an
+LLM `RB` subagent; it deterministically writes `reconciliation.md`,
+`synthesis/index.md`, and `synthesis/⟨ROW-ID⟩.md` evidence cards for every
+promoted finding (`F001`, ...) and owner question (`Q001`, ...), including
+unscheduled non-risky `P3` families (`- Root cause: none` + `- Root family: RF⟨n⟩`).
+Otherwise spawn one bounded **Reconciliation Builder** or row-disjoint builders plus a
 deterministic collector, selected from `indexes/reconciliation.tsv`. They
 enumerate every row ID present in `ledger/*.md`, `collection.md`,
 `ledger/reopened/*.md`, `verification/*.md`, and `root-cause/*.md` — the files

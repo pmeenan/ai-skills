@@ -607,7 +607,12 @@ def verdict_rows(root: Path) -> list[list[str]]:
                 affinity = affinities.get(candidate, {})
                 output.append([
                     identifier, candidate, clean(row.get("verdict", "")),
-                    clean(row.get("severity (anchor)", row.get("severity", ""))),
+                    clean(
+                        row.get(
+                            "severity (anchor)",
+                            row.get("calibrated severity", row.get("severity", "")),
+                        )
+                    ),
                     clean(row.get("origin", "")), citations(evidence), clean(evidence), source,
                     "; ".join(closure.get(candidate, [])) or "-",
                     clean(affinity.get("base / interface", "")) or "-",

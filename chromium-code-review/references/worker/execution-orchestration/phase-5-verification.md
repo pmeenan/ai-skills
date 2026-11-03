@@ -15,7 +15,13 @@ prohibition on reading helper source — and does not restate anything below.
 ## Phase 5 — Verification
 
 If fresh `indexes/candidates.tsv` proves zero candidates, write the canonical
-empty `verification/batches.md` and skip planner and skeptics. Otherwise spawn
+empty `verification/batches.md` and skip planner and skeptics. When
+`indexes/candidates.tsv` has `<= 30` rows, run
+`scripts/build-batch-briefs.py ⟨review-dir⟩ --phase verification --plan --seal`
+directly instead of spawning an LLM `VPLAN` subagent; it deterministically groups
+candidates by connected component and file/risk affinity (`<= 5` per batch),
+writes `verification/batches.md`, and generates + seals `packets/V⟨batch⟩-candidates.md`
+and `briefs/V⟨batch⟩.md`. Otherwise spawn
 one bounded **Verification-Planner** or sharded planners over index slices. They
 open `indexes/topology.tsv` first and require every candidate to belong to at
 least one graph edge. Candidate-bearing connected components, not candidate row
@@ -40,8 +46,14 @@ verdict artifact closes every typed obligation from its candidate descriptor and
 restates the verified semantic affinity; worker-artifact validation rejects
 incomplete cross-layer traces.
 
-After every skeptic batch collects, spawn one global **Invariant Affinity
-Reconciler** using the Phase 5.25 brief. It assigns every CONFIRMED/UNPROVEN
+After every skeptic batch collects, rebuild indexes. When surviving
+(`CONFIRMED` / `UNPROVEN`) verdicts are `<= 8`, skip the `IAR` and `RCPLAN`
+subagents and run
+`scripts/build-batch-briefs.py ⟨review-dir⟩ --phase root-cause --plan --seal`
+directly; it deterministically writes `verification/affinity.md`,
+`root-cause/batches.md`, and any required `RC⟨batch⟩` packets/briefs. Otherwise
+spawn one global **Invariant Affinity Reconciler** using the Phase 5.25 brief.
+It assigns every CONFIRMED/UNPROVEN
 candidate and verdict to exactly one root family, audits assumptions across
 batches, and writes `verification/affinity.md`. Descriptor extraction may be
 sharded for scale, but family assignment is global. Rebuild indexes afterward.

@@ -29,10 +29,26 @@ Fast paths remove mechanical control-plane agents, never analytical coverage:
   or sweep.
 - When a fresh `indexes/candidates.tsv` has zero rows and Collection passed, write the
   canonical empty verification plan and skip Verification Planner/skeptics.
+- When `indexes/candidates.tsv` has `<= 30` rows, run
+  `scripts/build-batch-briefs.py <review-dir> --phase verification --plan --seal`
+  directly instead of spawning an LLM `VPLAN` subagent.
 - When `indexes/verdicts.tsv` has zero data rows and
   `indexes/inventory.tsv` has no
   root-cause-required scope, write canonical empty Trigger Accounting and skip
   Root-Cause Planner/challengers.
+- When surviving (`CONFIRMED` / `UNPROVEN`) verdicts in `indexes/verdicts.tsv`
+  are `<= 8`, run
+  `scripts/build-batch-briefs.py <review-dir> --phase root-cause --plan --seal`
+  directly instead of spawning `IAR` and `RCPLAN` subagents; it writes
+  `verification/affinity.md` and `root-cause/batches.md`, closes resolved `T*`
+  scopes whose `graph:E-*` edges are all `closed`/`clean` and non-risky
+  `CONFIRMED` `P3` `RF*` families as `not applicable` with cited proof, and
+  spawns zero `RC*` subagents when no `P1`, `P2`, `UNPROVEN`, risky `P3`, or
+  open-edge `T*` scope remains.
+- When surviving unmerged verdicts are `<= 8`, run
+  `scripts/build-reconciliation.py <review-dir>` directly instead of spawning an
+  LLM `RB` subagent to build `reconciliation.md`, `synthesis/index.md`, and
+  `synthesis/<ROW-ID>.md`.
 - When a challenge fits one bounded shard, render its brief/index
   mechanically, run one independent challenger, and finalize the index
   deterministically. Never skip the challenger.

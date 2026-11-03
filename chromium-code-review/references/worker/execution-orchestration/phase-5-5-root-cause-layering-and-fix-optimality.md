@@ -16,12 +16,25 @@ prohibition on reading helper source — and does not restate anything below.
 
 If the fresh verdict index has zero rows and the inventory index proves no
 root-cause-required scope, write canonical empty Trigger Accounting and skip
-planner and challengers. Otherwise root-cause trigger selection is analysis,
-never inferred by the orchestrator from status lines. Spawn the **Root-Cause
+planner and challengers. When surviving verdicts are `<= 8`,
+`scripts/build-batch-briefs.py ⟨review-dir⟩ --phase root-cause --plan --seal`
+handles both `verification/affinity.md` and `root-cause/batches.md`:
+- It marks `required:` `T*` trigger scopes whose `graph:E-*` edges are all
+  `closed` or `clean` in `indexes/topology.tsv` as
+  `not applicable — <cited edge/verdict/interdiff/file:line proof>` (with `rc batch` `—`).
+- It marks non-risky `CONFIRMED` `P3` root families (`RF*`) as
+  `not applicable — non-risky P3 validated in verification (<verdict_id>, <citation>)`
+  (with `rc batch` `—`) unless `--schedule-p3` is passed.
+- It schedules `RC⟨batch⟩` units only for `P1`, `P2`, `UNPROVEN`, risky `P3`, and
+  unresolved `T*` scopes, packing up to 4 small families/scopes per batch. When
+  zero `scheduled` rows remain, Phase 5.5 completes with zero `RC*` subagents.
+
+When surviving verdicts exceed `8`, spawn the **Root-Cause
 Planner** (brief in `phase-briefs.md`). It reads every skeptic verdict, applies
 every trigger in `references/verification-and-fixes.md`, includes the
-inventory's root-cause-required change scopes, groups complete root
-families/scopes into trace-sized batches, and writes `root-cause/batches.md`
+inventory's unresolved root-cause-required change scopes, groups complete root
+families/scopes into trace-sized batches (packing up to 4 small families/scopes
+per batch), and writes `root-cause/batches.md`
 plus one complete `briefs/RC⟨batch⟩.md` per batch. One family is indivisible
 even when its members came from different skeptic batches; unrelated families
 remain separate.

@@ -90,6 +90,7 @@ def main() -> int:
     resolutions, resolution_errors = load_clerical_resolutions(
         review_dir, round_dir, revision
     )
+    has_sections = (review_dir / "draft-sections" / "index.tsv").is_file()
 
     problems: list[str] = list(resolution_errors)
     total_issues = 0
@@ -164,6 +165,21 @@ def main() -> int:
                 )
                 unresolved.append(identifier)
         total_open += len(unresolved)
+        if not has_sections:
+            raw_tokens = [
+                tok.strip()
+                for tok in row.get("expected coverage", "").split(",")
+                if tok.strip()
+            ]
+            if row.get("scope", "").strip().lower().startswith("global-consistency"):
+                problems.append(
+                    f"shard {shard}: global-consistency scope requires "
+                    "draft-sections/index.tsv"
+                )
+            elif "global:consistency" in raw_tokens:
+                row["expected coverage"] = ", ".join(
+                    tok for tok in raw_tokens if tok != "global:consistency"
+                )
         row["issues"] = ", ".join(unresolved) if unresolved else "none"
         output.append("| " + " | ".join(
             row.get(column, "") for column in header) + " |")

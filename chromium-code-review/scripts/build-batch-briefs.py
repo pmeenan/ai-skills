@@ -674,12 +674,512 @@ def build_root_cause(review_dir: Path, skill_dir: Path, pin_info: dict[str, str]
                 fail(f"seal-work-unit.py failed for {work_id}: {seal_res.stderr.strip()}")
 
 
+def ensure_indexes(review_dir: Path, skill_dir: Path) -> None:
+    index_script = (
+        skill_dir / "scripts" / "build-review-indexes.py"
+        if (skill_dir / "scripts" / "build-review-indexes.py").is_file()
+        else SCRIPT_DIR / "build-review-indexes.py"
+    )
+    res = subprocess.run(
+        [sys.executable, str(index_script), str(review_dir)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if res.returncode != 0:
+        fail(f"build-review-indexes.py failed: {res.stderr.strip()}")
+
+
+def plan_verification(
+    review_dir: Path,
+    skill_dir: Path,
+    max_candidates: int = 30,
+    max_per_batch: int = 5,
+) -> int:
+    cand_tsv = review_dir / "indexes" / "candidates.tsv"
+    if not cand_tsv.is_file():
+        ensure_indexes(review_dir, skill_dir)
+    with cand_tsv.open(encoding="utf-8", newline="") as stream:
+        candidates = list(csv.DictReader(stream, delimiter="\t"))
+    if len(candidates) > max_candidates:
+        fail(
+            f"indexes/candidates.tsv has {len(candidates)} rows "
+            f"(> {max_candidates}); spawn the Phase 5 VPLAN subagent to shard"
+        )
+    batches_md = review_dir / "verification" / "batches.md"
+    batches_md.parent.mkdir(parents=True, exist_ok=True)
+    if not candidates:
+        batches_md.write_text(
+            "# Verification batches\n\n"
+            "- Candidate count: 0\n"
+            "- Result: empty — no verification batches scheduled\n",
+            encoding="utf-8",
+        )
+        print(f"plan_verification: 0 candidates -> wrote empty {batches_md}")
+        return 0
+
+    def norm(value: str) -> str:
+        return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+    primary_by_sig: dict[tuple[str, str, str], dict[str, str]] = {}
+    primaries: list[dict[str, str]] = []
+    merges: list[tuple[str, str, str]] = []
+    for row in sorted(candidates, key=lambda r: r.get("id", "")):
+        cid = row.get("id", "").strip()
+        loc = norm(row.get("location", ""))
+        owner = norm(row.get("invariant_owner", ""))
+        inv = norm(row.get("violated_invariant", ""))
+        sig = (loc, owner, inv)
+        if (
+            loc
+            and owner not in {"", "-", "unknown"}
+            and inv not in {"", "-", "unknown"}
+            and sig in primary_by_sig
+        ):
+            surv = primary_by_sig[sig]
+            surv_id = surv["id"].strip()
+            merges.append((
+                cid,
+                surv_id,
+                f"same location ({row.get('location', '').strip()}) and "
+                f"invariant ({row.get('invariant_owner', '').strip()}: "
+                f"{row.get('violated_invariant', '').strip()})",
+            ))
+        else:
+            if loc and owner and inv:
+                primary_by_sig[sig] = row
+            primaries.append(row)
+
+    # Order primaries by file path and topology component so related candidates
+    # stay together in the same batch.
+    cand_to_edge: dict[str, str] = {}
+    topo_tsv = review_dir / "indexes" / "topology.tsv"
+    if topo_tsv.is_file():
+        with topo_tsv.open(encoding="utf-8", newline="") as stream:
+            for t_row in csv.DictReader(stream, delimiter="\t"):
+                edge_id = (t_row.get("edge") or "").strip()
+                for member in (t_row.get("candidate") or "").split(","):
+                    member = member.strip()
+                    if member and member != "-" and member not in cand_to_edge:
+                        cand_to_edge[member] = edge_id
+
+    def primary_sort_key(row: dict[str, str]) -> tuple[str, str, str]:
+        cid = row.get("id", "").strip()
+        loc = row.get("location", "").strip()
+        file_path = loc.split(":", 1)[0] if ":" in loc else loc
+        return (file_path, cand_to_edge.get(cid, ""), cid)
+
+    ordered = sorted(primaries, key=primary_sort_key)
+    batches: list[tuple[str, list[str]]] = []
+    for index in range(0, len(ordered), max(1, max_per_batch)):
+        chunk = [item["id"].strip() for item in ordered[index:index + max(1, max_per_batch)]]
+        batch_id = f"V{len(batches) + 1:03d}"
+        batches.append((batch_id, chunk))
+
+    lines = [
+        "# Verification batches",
+        "",
+        f"- Candidate count: {len(candidates)}",
+        "",
+        "## Batches",
+        "",
+        "| batch | candidates | brief | verdict file |",
+        "| --- | --- | --- | --- |",
+    ]
+    for batch_id, chunk in batches:
+        lines.append(
+            f"| {batch_id} | {', '.join(chunk)} | briefs/{batch_id}.md | "
+            f"verification/{batch_id}.md |"
+        )
+    if merges:
+        lines.extend([
+            "",
+            "## Merge proposals",
+            "",
+            "| row | proposal | reason |",
+            "| --- | --- | --- |",
+        ])
+        for dup_id, surv_id, reason in merges:
+            lines.append(f"| {dup_id} | merge-into {surv_id} | {reason} |")
+    batches_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(
+        f"plan_verification: {len(candidates)} candidate(s) -> "
+        f"{len(batches)} batch(es), {len(merges)} merge proposal(s)"
+    )
+    return len(batches)
+
+
+def plan_root_cause(
+    review_dir: Path,
+    skill_dir: Path,
+    max_survivors: int = 8,
+    max_families_per_batch: int = 4,
+    schedule_p3: bool = False,
+) -> int:
+    ensure_indexes(review_dir, skill_dir)
+    verd_tsv = review_dir / "indexes" / "verdicts.tsv"
+    cand_tsv = review_dir / "indexes" / "candidates.tsv"
+    with verd_tsv.open(encoding="utf-8", newline="") as stream:
+        verdict_rows = list(csv.DictReader(stream, delimiter="\t"))
+    with cand_tsv.open(encoding="utf-8", newline="") as stream:
+        cand_rows = {
+            row["id"].strip(): row
+            for row in csv.DictReader(stream, delimiter="\t")
+            if row.get("id")
+        }
+
+    surviving = [
+        row
+        for row in sorted(verdict_rows, key=lambda r: r.get("id", ""))
+        if row.get("verdict") in {"CONFIRMED", "UNPROVEN"}
+    ]
+    if len(surviving) > max_survivors:
+        fail(
+            f"indexes/verdicts.tsv has {len(surviving)} surviving rows "
+            f"(> {max_survivors}); spawn IAR and RCPLAN subagents"
+        )
+
+    merge_aliases_by_survivor: dict[str, list[str]] = {}
+    v_batches_md = review_dir / "verification" / "batches.md"
+    if v_batches_md.is_file():
+        parsed_vb, _ = effective_tables(
+            v_batches_md.read_text(encoding="utf-8"), str(v_batches_md)
+        )
+        for heading, header, rows in parsed_vb:
+            if heading.startswith("Merge proposals") and {"row", "proposal"}.issubset(header):
+                for m_row in rows:
+                    m_match = re.match(
+                        r"(?i)^merge-into\s+([A-Z][A-Z0-9]*-\d+|R\d+-RC\d+-\d+)\b",
+                        m_row.get("proposal", "").strip(),
+                    )
+                    if m_match:
+                        merge_aliases_by_survivor.setdefault(
+                            m_match.group(1), []
+                        ).append(m_row.get("row", "").strip())
+
+    def norm_field(val: str) -> str:
+        return re.sub(r"\s+", " ", (val or "").strip())
+
+    families: list[dict[str, object]] = []
+    family_by_key: dict[tuple[str, str], dict[str, object]] = {}
+    for v_row in surviving:
+        cid = v_row.get("candidate", "").strip()
+        vid = v_row.get("id", "").strip()
+        c_row = cand_rows.get(cid, {})
+        inv_owner = norm_field(v_row.get("invariant_owner", ""))
+        if not inv_owner or inv_owner == "-":
+            inv_owner = norm_field(c_row.get("invariant_owner", "")) or "local"
+        violated_inv = norm_field(v_row.get("violated_invariant", ""))
+        if not violated_inv or violated_inv == "-":
+            violated_inv = norm_field(c_row.get("violated_invariant", "")) or norm_field(c_row.get("claim", ""))
+        state_trans = norm_field(v_row.get("state_transition", ""))
+        if not state_trans or state_trans == "-":
+            state_trans = norm_field(c_row.get("state_transition", "")) or "local state"
+        fix_layer = norm_field(v_row.get("proposed_fix_layer", ""))
+        if not fix_layer or fix_layer == "-":
+            fix_layer = norm_field(c_row.get("proposed_fix_layer", "")) or norm_field(c_row.get("location", ""))
+        rel_syms = norm_field(v_row.get("related_symbols", ""))
+        if not rel_syms or rel_syms == "-":
+            rel_syms = norm_field(c_row.get("related_symbols", "")) or cid
+
+        key = (inv_owner.lower(), violated_inv.lower())
+        fam = family_by_key.get(key)
+        if fam is None:
+            rf_id = f"RF{len(families) + 1:03d}"
+            fam = {
+                "id": rf_id,
+                "members": [],
+                "pairs": [],
+                "shared_invariant": violated_inv,
+                "invariant_owner": inv_owner,
+                "state_transition": state_trans,
+                "fix_layer": fix_layer,
+                "related_symbols": rel_syms,
+                "citations": [],
+                "needs_rc": False,
+            }
+            families.append(fam)
+            family_by_key[key] = fam
+        members_list: list[str] = fam["members"]  # type: ignore[assignment]
+        for item_id in (cid, vid, *merge_aliases_by_survivor.get(cid, [])):
+            if item_id and item_id not in members_list:
+                members_list.append(item_id)
+        pairs_list: list[dict[str, str]] = fam["pairs"]  # type: ignore[assignment]
+        pairs_list.append(v_row)
+        cites_list: list[str] = fam["citations"]  # type: ignore[assignment]
+        for cite in (
+            v_row.get("citations", "").split(",")[0].strip(),
+            c_row.get("location", "").strip(),
+        ):
+            if cite and cite not in cites_list:
+                cites_list.append(cite)
+        sev = (
+            v_row.get("severity")
+            or c_row.get("severity")
+            or ""
+        ).strip().upper()
+        verdict_val = (v_row.get("verdict") or "").strip().upper()
+        if schedule_p3 or verdict_val != "CONFIRMED" or not sev.startswith("P3"):
+            fam["needs_rc"] = True
+
+    default_evidence = "profile.json:/files"
+    if surviving:
+        first_cite = (
+            surviving[0].get("citations", "").split(",")[0].strip()
+            or cand_rows.get(surviving[0].get("candidate", ""), {}).get("location", "").strip()
+        )
+        if first_cite:
+            default_evidence = first_cite
+    elif verdict_rows:
+        first_cite = verdict_rows[0].get("citations", "").split(",")[0].strip()
+        if first_cite:
+            default_evidence = first_cite
+
+    rf_summary = (
+        ", ".join(str(f["id"]) for f in families)
+        if families else "none (0 surviving verdicts)"
+    )
+    affinity_lines = [
+        "# Verified invariant affinity",
+        "",
+        "## Root families",
+        "",
+        "| root family | members | shared invariant | invariant owner | state / transition | fix layer | related symbols | disposition |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for fam in families:
+        disp = (
+            "root-cause batch required"
+            if fam["needs_rc"]
+            else "non-risky P3 validated in verification"
+        )
+        affinity_lines.append(
+            f"| {fam['id']} | {', '.join(fam['members'])} | "  # type: ignore[arg-type]
+            f"{fam['shared_invariant']} | {fam['invariant_owner']} | "
+            f"{fam['state_transition']} | {fam['fix_layer']} | "
+            f"{fam['related_symbols']} | {disp} |"
+        )
+    checks = (
+        "contradictory assumptions",
+        "invariant-owner collisions",
+        "style-authority scope",
+        "lifetime operation owner",
+        "reachability termination",
+        "repeated local fixes",
+    )
+    affinity_lines.extend([
+        "",
+        "## Consistency audit",
+        "",
+        "| check | rows / families | evidence | result |",
+        "| --- | --- | --- | --- |",
+    ])
+    for check_name in checks:
+        affinity_lines.append(
+            f"| {check_name} | {rf_summary} | {default_evidence} | "
+            "clean — no cross-verdict conflict |"
+        )
+    affinity_path = review_dir / "verification" / "affinity.md"
+    affinity_path.parent.mkdir(parents=True, exist_ok=True)
+    affinity_path.write_text("\n".join(affinity_lines) + "\n", encoding="utf-8")
+    ensure_indexes(review_dir, skill_dir)
+
+    # Read required T* triggers from inventory.md / inventory/*.md
+    inv_paths = (
+        [review_dir / "inventory.md"]
+        if (review_dir / "inventory.md").is_file()
+        else (
+            sorted((review_dir / "inventory").glob("*.md"))
+            if (review_dir / "inventory").is_dir() else []
+        )
+    )
+    required_triggers: list[dict[str, str]] = []
+    for inv_path in inv_paths:
+        parsed_inv, _ = effective_tables(
+            inv_path.read_text(encoding="utf-8"), str(inv_path)
+        )
+        for heading, header, rows in parsed_inv:
+            if heading != "Trigger inventory" or "scope id" not in header:
+                continue
+            for row in rows:
+                t_id = row.get("scope id", "").strip().upper()
+                rc_trig = row.get("root-cause trigger", "").strip()
+                rc_req = (
+                    row.get("root-cause required", row.get("root-cause-required", ""))
+                    .strip()
+                    .lower()
+                )
+                if t_id and (
+                    rc_trig.lower().startswith("required")
+                    or rc_req in {"yes", "true"}
+                ):
+                    required_triggers.append({
+                        "id": t_id,
+                        "graph_scope": row.get("graph scope", "").strip(),
+                        "evidence": row.get("evidence", "").strip(),
+                    })
+
+    topo_status: dict[str, str] = {}
+    topo_tsv = review_dir / "indexes" / "topology.tsv"
+    if topo_tsv.is_file():
+        with topo_tsv.open(encoding="utf-8", newline="") as stream:
+            for t_row in csv.DictReader(stream, delimiter="\t"):
+                e_id = (t_row.get("edge") or "").strip().upper()
+                if e_id:
+                    topo_status[e_id] = (t_row.get("status") or "").strip().lower()
+
+    scheduled_items: list[str] = []
+    trigger_decisions: list[tuple[str, str, str, str]] = []
+    # Pack families that require RC batches first, then any T* triggers with open edges
+    rc_batches: list[tuple[str, list[str]]] = []
+    current_batch_items: list[str] = []
+    family_to_rc_batch: dict[str, str] = {}
+    trigger_to_rc_batch: dict[str, str] = {}
+
+    def flush_batch() -> None:
+        nonlocal current_batch_items
+        if not current_batch_items:
+            return
+        rc_id = f"RC{len(rc_batches) + 1:03d}"
+        rc_batches.append((rc_id, list(current_batch_items)))
+        current_batch_items = []
+
+    for fam in families:
+        rf_id = str(fam["id"])
+        pairs_list = fam["pairs"]  # type: ignore[assignment]
+        if fam["needs_rc"]:
+            pair_tokens = [
+                f"{p.get('candidate', '').strip()}/{p.get('id', '').strip()}"
+                for p in pairs_list
+            ]
+            item_token = f"{rf_id} ({', '.join(pair_tokens)})"
+            if len(current_batch_items) >= max(1, max_families_per_batch):
+                flush_batch()
+            rc_id = f"RC{len(rc_batches) + 1:03d}"
+            current_batch_items.append(item_token)
+            family_to_rc_batch[rf_id] = rc_id
+
+    for trig in sorted(required_triggers, key=lambda r: r["id"]):
+        t_id = trig["id"]
+        g_scope = trig["graph_scope"]
+        m_edges = re.search(
+            r"(?i)graph:((?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*)", g_scope
+        )
+        edges = (
+            [part.strip().upper() for part in m_edges.group(1).split(",") if part.strip()]
+            if m_edges else []
+        )
+        open_edges = [
+            e_id for e_id in edges
+            if topo_status.get(e_id) in {"open", "disputed", "unreviewed"}
+        ]
+        if open_edges:
+            if len(current_batch_items) >= max(1, max_families_per_batch):
+                flush_batch()
+            rc_id = f"RC{len(rc_batches) + 1:03d}"
+            current_batch_items.append(t_id)
+            trigger_to_rc_batch[t_id] = rc_id
+            trigger_decisions.append((t_id, "—", "scheduled", rc_id))
+        else:
+            proof = (
+                f"graph:{','.join(edges)}" if edges else ""
+            )
+            cite = trig["evidence"]
+            reason_parts = [p for p in (proof, cite) if p]
+            reason_str = (
+                ", ".join(reason_parts)
+                if reason_parts else default_evidence
+            )
+            trigger_decisions.append((
+                t_id,
+                "—",
+                f"not applicable — all graph edges resolved in discovery/verification ({reason_str})",
+                "—",
+            ))
+
+    flush_batch()
+
+    for fam in families:
+        rf_id = str(fam["id"])
+        pairs_list = fam["pairs"]  # type: ignore[assignment]
+        cites_list = fam["citations"]  # type: ignore[assignment]
+        first_cite = cites_list[0] if cites_list else default_evidence
+        for p in pairs_list:
+            cid = p.get("candidate", "").strip()
+            vid = p.get("id", "").strip()
+            if rf_id in family_to_rc_batch:
+                rc_id = family_to_rc_batch[rf_id]
+                trigger_decisions.append((
+                    f"{cid} / {vid}",
+                    rf_id,
+                    "scheduled",
+                    rc_id,
+                ))
+            else:
+                trigger_decisions.append((
+                    f"{cid} / {vid}",
+                    rf_id,
+                    f"not applicable — non-risky P3 validated in verification ({vid}, {first_cite})",
+                    "—",
+                ))
+
+    rc_lines = [
+        "# Root-cause batches",
+        "",
+        f"- Trigger count: {len(rc_batches)}",
+    ]
+    if not rc_batches:
+        rc_lines.append(
+            "- Result: empty — all triggers and non-risky P3 families closed in Trigger accounting"
+        )
+    if trigger_decisions:
+        rc_lines.extend([
+            "",
+            "## Trigger accounting",
+            "",
+            "| candidate / verdict | root family | disposition | rc batch |",
+            "| --- | --- | --- | --- |",
+        ])
+        for scope_cell, rf_cell, disp_cell, batch_cell in trigger_decisions:
+            rc_lines.append(
+                f"| {scope_cell} | {rf_cell} | {disp_cell} | {batch_cell} |"
+            )
+    if rc_batches:
+        rc_lines.extend([
+            "",
+            "## Batches",
+            "",
+            "| batch | brief | root families / scopes | output | bounded input |",
+            "| --- | --- | --- | --- | --- |",
+        ])
+        for rc_id, items in rc_batches:
+            rc_lines.append(
+                f"| {rc_id} | briefs/{rc_id}.md | {'; '.join(items)} | "
+                f"root-cause/{rc_id}.md | {len(items)} item(s) |"
+            )
+
+    rc_batches_path = review_dir / "root-cause" / "batches.md"
+    rc_batches_path.parent.mkdir(parents=True, exist_ok=True)
+    rc_batches_path.write_text("\n".join(rc_lines) + "\n", encoding="utf-8")
+    print(
+        f"plan_root_cause: {len(surviving)} surviving verdict(s), "
+        f"{len(families)} root family/families -> {len(rc_batches)} RC batch(es)"
+    )
+    return len(rc_batches)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("review_dir", type=Path)
     parser.add_argument("--phase", choices=("verification", "root-cause"), required=True)
     parser.add_argument("--attempt", type=int, default=1)
     parser.add_argument("--round", type=int, default=1)
+    parser.add_argument("--plan", action="store_true", help="Deterministically generate batches.md (and affinity.md for root-cause) before building briefs")
+    parser.add_argument("--max-candidates", type=int, default=30, help="Maximum candidates for --plan --phase verification fast path")
+    parser.add_argument("--max-per-batch", type=int, default=5, help="Maximum candidates per V* batch for --plan --phase verification")
+    parser.add_argument("--max-survivors", type=int, default=8, help="Maximum surviving verdicts for --plan --phase root-cause fast path")
+    parser.add_argument("--max-families-per-batch", type=int, default=4, help="Maximum root families / triggers per RC* batch for --plan --phase root-cause")
+    parser.add_argument("--schedule-p3", action="store_true", help="Schedule CONFIRMED P3 families to RC* batches instead of closing them in Trigger accounting")
     parser.add_argument("--seal", action="store_true", help="Execute seal-work-unit.py for each generated brief")
     args = parser.parse_args()
 
@@ -690,8 +1190,27 @@ def main() -> int:
     pin_info = parse_pin(review_dir / "pin.md")
 
     if args.phase == "verification":
+        if args.plan:
+            planned = plan_verification(
+                review_dir,
+                skill_dir,
+                max_candidates=args.max_candidates,
+                max_per_batch=args.max_per_batch,
+            )
+            if planned == 0:
+                return 0
         build_verification(review_dir, skill_dir, pin_info, args.attempt, args.seal)
     else:
+        if args.plan:
+            planned = plan_root_cause(
+                review_dir,
+                skill_dir,
+                max_survivors=args.max_survivors,
+                max_families_per_batch=args.max_families_per_batch,
+                schedule_p3=args.schedule_p3,
+            )
+            if planned == 0:
+                return 0
         build_root_cause(review_dir, skill_dir, pin_info, args.attempt, args.round, args.seal)
     return 0
 

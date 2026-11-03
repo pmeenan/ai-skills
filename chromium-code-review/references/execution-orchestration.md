@@ -117,7 +117,13 @@ mechanically proven success. Then rebuild the compact indexes.
 ## Phase 5 — Verification
 
 If fresh `indexes/candidates.tsv` proves zero candidates, write the canonical
-empty `verification/batches.md` and skip planner and skeptics. Otherwise spawn
+empty `verification/batches.md` and skip planner and skeptics. When
+`indexes/candidates.tsv` has `<= 30` rows, run
+`scripts/build-batch-briefs.py ⟨review-dir⟩ --phase verification --plan --seal`
+directly instead of spawning an LLM `VPLAN` subagent; it deterministically groups
+candidates by connected component and file/risk affinity (`<= 5` per batch),
+writes `verification/batches.md`, and generates + seals `packets/V⟨batch⟩-candidates.md`
+and `briefs/V⟨batch⟩.md`. Otherwise spawn
 one bounded **Verification-Planner** or sharded planners over index slices. They
 open `indexes/topology.tsv` first and require every candidate to belong to at
 least one graph edge. Candidate-bearing connected components, not candidate row
@@ -142,8 +148,14 @@ verdict artifact closes every typed obligation from its candidate descriptor and
 restates the verified semantic affinity; worker-artifact validation rejects
 incomplete cross-layer traces.
 
-After every skeptic batch collects, spawn one global **Invariant Affinity
-Reconciler** using the Phase 5.25 brief. It assigns every CONFIRMED/UNPROVEN
+After every skeptic batch collects, rebuild indexes. When surviving
+(`CONFIRMED` / `UNPROVEN`) verdicts are `<= 8`, skip the `IAR` and `RCPLAN`
+subagents and run
+`scripts/build-batch-briefs.py ⟨review-dir⟩ --phase root-cause --plan --seal`
+directly; it deterministically writes `verification/affinity.md`,
+`root-cause/batches.md`, and any required `RC⟨batch⟩` packets/briefs. Otherwise
+spawn one global **Invariant Affinity Reconciler** using the Phase 5.25 brief.
+It assigns every CONFIRMED/UNPROVEN
 candidate and verdict to exactly one root family, audits assumptions across
 batches, and writes `verification/affinity.md`. Descriptor extraction may be
 sharded for scale, but family assignment is global. Rebuild indexes afterward.
@@ -154,12 +166,25 @@ consistency-audit rows validate.
 
 If the fresh verdict index has zero rows and the inventory index proves no
 root-cause-required scope, write canonical empty Trigger Accounting and skip
-planner and challengers. Otherwise root-cause trigger selection is analysis,
-never inferred by the orchestrator from status lines. Spawn the **Root-Cause
+planner and challengers. When surviving verdicts are `<= 8`,
+`scripts/build-batch-briefs.py ⟨review-dir⟩ --phase root-cause --plan --seal`
+handles both `verification/affinity.md` and `root-cause/batches.md`:
+- It marks `required:` `T*` trigger scopes whose `graph:E-*` edges are all
+  `closed` or `clean` in `indexes/topology.tsv` as
+  `not applicable — <cited edge/verdict/interdiff/file:line proof>` (with `rc batch` `—`).
+- It marks non-risky `CONFIRMED` `P3` root families (`RF*`) as
+  `not applicable — non-risky P3 validated in verification (<verdict_id>, <citation>)`
+  (with `rc batch` `—`) unless `--schedule-p3` is passed.
+- It schedules `RC⟨batch⟩` units only for `P1`, `P2`, `UNPROVEN`, risky `P3`, and
+  unresolved `T*` scopes, packing up to 4 small families/scopes per batch. When
+  zero `scheduled` rows remain, Phase 5.5 completes with zero `RC*` subagents.
+
+When surviving verdicts exceed `8`, spawn the **Root-Cause
 Planner** (brief in `phase-briefs.md`). It reads every skeptic verdict, applies
 every trigger in `references/verification-and-fixes.md`, includes the
-inventory's root-cause-required change scopes, groups complete root
-families/scopes into trace-sized batches, and writes `root-cause/batches.md`
+inventory's unresolved root-cause-required change scopes, groups complete root
+families/scopes into trace-sized batches (packing up to 4 small families/scopes
+per batch), and writes `root-cause/batches.md`
 plus one complete `briefs/RC⟨batch⟩.md` per batch. One family is indivisible
 even when its members came from different skeptic batches; unrelated families
 remain separate.
@@ -196,7 +221,13 @@ final reopened round.
 
 ## Phase 6 — Reconciliation
 
-Spawn one bounded **Reconciliation Builder** or row-disjoint builders plus a
+When surviving unmerged (`CONFIRMED` / `UNPROVEN`) verdicts are `<= 8`, run
+`scripts/build-reconciliation.py ⟨review-dir⟩` directly instead of spawning an
+LLM `RB` subagent; it deterministically writes `reconciliation.md`,
+`synthesis/index.md`, and `synthesis/⟨ROW-ID⟩.md` evidence cards for every
+promoted finding (`F001`, ...) and owner question (`Q001`, ...), including
+unscheduled non-risky `P3` families (`- Root cause: none` + `- Root family: RF⟨n⟩`).
+Otherwise spawn one bounded **Reconciliation Builder** or row-disjoint builders plus a
 deterministic collector, selected from `indexes/reconciliation.tsv`. They
 enumerate every row ID present in `ledger/*.md`, `collection.md`,
 `ledger/reopened/*.md`, `verification/*.md`, and `root-cause/*.md` — the files

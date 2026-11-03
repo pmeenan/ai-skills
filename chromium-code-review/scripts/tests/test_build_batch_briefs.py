@@ -216,3 +216,239 @@ class MergeSupportTests(unittest.TestCase):
             'candidate_packet_budget_bytes': 100, 'worker_input_budget_bytes': 131072}}))
         with self.assertRaises(SystemExit):
             BUILDER.merge_support_context(self.root, ['GAI2-63'])
+
+
+class BackHalfFastPathAndShiftLeftTests(unittest.TestCase):
+    def test_plan_verification_root_cause_and_reconciliation_fast_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            review = root / 'review'
+            worktree = root / 'worktree'
+            worktree.mkdir()
+
+            def git(*args):
+                return subprocess.check_output(['git', '-C', str(worktree), *args], text=True).strip()
+
+            git('init', '-q')
+            git('config', 'user.name', 'Fixture')
+            git('config', 'user.email', 'fixture@example.test')
+            (worktree / 'a.cc').write_text('int x = 1;\nint y = 2;\n')
+            git('add', 'a.cc')
+            git('commit', '-qm', 'base')
+            parent = git('rev-parse', 'HEAD')
+            (worktree / 'a.cc').write_text('int x = 10;\nint y = 2;\n')
+            git('commit', '-qam', 'change')
+            revision = git('rev-parse', 'HEAD')
+            shutil.copytree(SCRIPTS.parent, review / 'skill-snapshot')
+            (review / 'ledger').mkdir()
+            (review / 'profile.json').write_text(json.dumps({
+                'files': [{'path': 'a.cc', 'status': 'M'}],
+                'budgets': {'candidate_packet_budget_bytes': 16384, 'worker_input_budget_bytes': 131072},
+            }))
+            (review / 'pin.md').write_text(
+                f'# CL 123 — patchset 1 pin\n- Revision SHA: {revision}\n- Parent SHA: {parent}\n- Worktree: {worktree}\n'
+            )
+            (review / 'inventory.md').write_text('''# Inventory
+
+## Changed surfaces
+| id | file | surface | kind | risk | trigger |
+| --- | --- | --- | --- | --- | --- |
+| S001 | a.cc | x | function | correctness | T001 |
+
+## Trigger inventory
+| scope id | surface | discovery triggers | root-cause trigger | graph scope | evidence |
+| --- | --- | --- | --- | --- | --- |
+| T001 | a.cc:1 | async | required: async-lifecycle | graph:E-001 | a.cc:1 |
+
+## Complexity graph edges
+| edge | from | to | kind | status | evidence |
+| --- | --- | --- | --- | --- | --- |
+| E-001 | a.cc:1 | a.cc:1 | caller | open | a.cc:1 |
+''')
+            (review / 'ledger/PR.md').write_text('''# PR
+
+## Candidate rows
+| id | claim | location | evidence / hypothesis | origin | severity | status |
+| --- | --- | --- | --- | --- | --- | --- |
+| PR-1 | minor naming nit on `x` | a.cc:1 | graph:E-001 inspected | CL-introduced | P3 | candidate |
+
+## Candidate descriptors
+| candidate | classes | obligations | base / interface | invariant owner | violated invariant | state / transition | proposed fix layer | related symbols |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| PR-1 | style | applicable-authority,project-precedent,local-consistency | none | a.cc:x | naming consistency | declaration | a.cc | x |
+
+## Complexity graph delta
+| edge | status | evidence | candidate | next obligation |
+| --- | --- | --- | --- | --- |
+| E-001 | resolved | a.cc:1 | PR-1 | none |
+
+## Checked clean rows
+| id | scope | evidence |
+| --- | --- | --- |
+| PR-C1 | a.cc:2 | unchanged line `int y = 2;` |
+''')
+            idx_res = subprocess.run(
+                [sys.executable, str(SCRIPTS / 'build-review-indexes.py'), str(review)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(0, idx_res.returncode, idx_res.stderr)
+
+            # 1. Phase 5 --plan fast path
+            vplan_res = subprocess.run(
+                [sys.executable, str(SCRIPTS / 'build-batch-briefs.py'), str(review), '--phase', 'verification', '--plan'],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(0, vplan_res.returncode, vplan_res.stderr)
+            self.assertTrue((review / 'verification/batches.md').is_file())
+            self.assertTrue((review / 'briefs/V001.md').is_file())
+            self.assertTrue((review / 'packets/V001-code.md').is_file())
+
+            # Write skeptic verdict confirming P3
+            (review / 'verification/V001.md').write_text('''# Verification Batch V001
+
+## Verdicts
+| id | candidate | verdict | calibrated severity | anchor | delta | evidence |
+| --- | --- | --- | --- | --- | --- | --- |
+| V001-1 | PR-1 | CONFIRMED | P3 | P3 style | none | a.cc:1 |
+
+## Trace closure
+| candidate | obligation | result | evidence |
+| --- | --- | --- | --- |
+| PR-1 | applicable-authority | SUPPORTS CANDIDATE | style guide a.cc:1 |
+| PR-1 | project-precedent | SUPPORTS CANDIDATE | local file a.cc:1 |
+| PR-1 | local-consistency | SUPPORTS CANDIDATE | local file a.cc:1 |
+
+## Verified affinity
+| candidate | invariant owner | violated invariant | state / transition |
+| --- | --- | --- | --- |
+| PR-1 | a.cc:x | naming consistency | declaration |
+''')
+            subprocess.run(
+                [sys.executable, str(SCRIPTS / 'build-review-indexes.py'), str(review)],
+                check=True, capture_output=True, text=True,
+            )
+
+            # 2. Phase 5.25 + 5.5 --plan fast path (0 RC batches needed because T001 edge E-001 is closed and RF001 is P3)
+            rcplan_res = subprocess.run(
+                [sys.executable, str(SCRIPTS / 'build-batch-briefs.py'), str(review), '--phase', 'root-cause', '--plan'],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(0, rcplan_res.returncode, rcplan_res.stderr)
+            self.assertTrue((review / 'verification/affinity.md').is_file())
+            batches_md = (review / 'root-cause/batches.md').read_text()
+            self.assertIn('| T001 | — | not applicable —', batches_md)
+            self.assertIn('| PR-1 / V001-1 | RF001 | not applicable — non-risky P3 validated in verification', batches_md)
+            self.assertIn('- Trigger count: 0', batches_md)
+            self.assertIn('- Result: empty', batches_md)
+
+            # 3. Phase 6 deterministic build-reconciliation.py fast path
+            rec_res = subprocess.run(
+                [sys.executable, str(SCRIPTS / 'build-reconciliation.py'), str(review)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(0, rec_res.returncode, rec_res.stderr)
+            self.assertTrue((review / 'reconciliation.md').is_file())
+            self.assertTrue((review / 'synthesis/index.md').is_file())
+            card = (review / 'synthesis/PR-1.md').read_text()
+            self.assertIn('- Root cause: none', card)
+            self.assertIn('- Root family: RF001', card)
+
+    def test_worker_validator_shift_left_checks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            review = root / 'review'
+            worktree = root / 'worktree'
+            worktree.mkdir()
+
+            def git(*args):
+                return subprocess.check_output(['git', '-C', str(worktree), *args], text=True).strip()
+
+            git('init', '-q')
+            git('config', 'user.name', 'Fixture')
+            git('config', 'user.email', 'fixture@example.test')
+            (worktree / 'src').mkdir()
+            (worktree / 'src/a.cc').write_text('int x = 1;\n' * 10 + 'int y = 2;\n')
+            git('add', 'src/a.cc')
+            git('commit', '-qm', 'base')
+            parent = git('rev-parse', 'HEAD')
+            (worktree / 'src/a.cc').write_text('int x = 10;\n' + 'int x = 1;\n' * 9 + 'int y = 2;\n')
+            git('commit', '-qam', 'change')
+            revision = git('rev-parse', 'HEAD')
+            review.mkdir()
+            (review / 'profile.json').write_text(json.dumps({
+                'files': [{'path': 'src/a.cc', 'status': 'M'}],
+            }))
+            (review / 'pin.md').write_text(
+                f'# CL 123 — patchset 1 pin\n- Revision SHA: {revision}\n- Parent SHA: {parent}\n- Worktree: {worktree}\n\n## Changed files\n- src/a.cc\n'
+            )
+            # Out-of-hunk suggestion on src/a.cc:11 (unchanged line outside diff hunk)
+            (review / 'root-cause').mkdir()
+            rc_file = review / 'root-cause/RC001.md'
+            rc_file.write_text('''# RC001
+
+## RC001-1 (for GAI-1)
+- Root family: RF001
+- Suggested-edit decision: applicable — replaces src/a.cc:11
+- Suggested-edit selected lines:
+  ```cpp
+  int y = 2;
+  ```
+- Suggested-edit replacement:
+  ```suggestion
+  int y = 3;
+  ```
+
+## Root-family analysis
+| root family | members | suggested edit |
+| --- | --- | --- |
+| RF001 | GAI-1 | applicable — RC001-1 |
+''')
+            res = subprocess.run(
+                [sys.executable, str(SCRIPTS / 'validate-worker-artifact.py'), str(review), str(rc_file)],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, res.returncode)
+            self.assertIn('does not intersect a changed-side hunk', res.stderr)
+
+            # Draft fragment missing Regression test
+            (review / 'draft-parts').mkdir()
+            f_file = review / 'draft-parts/F001.md'
+            f_file.write_text('''### [P3] src/a.cc:1 — Minor nit
+- **Synthesis item:** F001
+- **Claim:** minor naming nit
+- **Location:** src/a.cc:1
+- **Evidence:** src/a.cc:1 (`int x = 10;`)
+- **Severity:** P3 (anchor: style; delta: none)
+- **Origin:** CL-introduced
+- **Fix status:** validated right layer
+- **Suggested edit:** omitted — comment only
+- **Rows:** GAI-1; V001-1; RC: none; RF001
+''')
+            res2 = subprocess.run(
+                [sys.executable, str(SCRIPTS / 'validate-worker-artifact.py'), str(review), str(f_file)],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, res2.returncode)
+            self.assertIn('Regression test', res2.stderr)
+
+            # Challenge index with global:consistency when draft-sections/index.tsv is absent
+            (review / 'challenge/round-1').mkdir(parents=True)
+            ch_idx = review / 'challenge/round-1/index.md'
+            ch_idx.write_text('''# Challenge Round 1 Index
+- Round: 1
+- Draft sha256: deadbeef
+- Gerrit comments sha256: deadbeef
+- Overall status: pending
+
+## Shards
+| shard | brief | artifact | scope | expected coverage | status |
+| --- | --- | --- | --- | --- | --- |
+| CH001 | briefs/CH-R1-001.md | challenge/round-1/CH001.md | holistic | finding:F001, global:gates, global:consistency | pending |
+''')
+            res3 = subprocess.run(
+                [sys.executable, str(SCRIPTS / 'validate-worker-artifact.py'), str(review), str(ch_idx)],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, res3.returncode)
+            self.assertIn('global:consistency', res3.stderr)
+

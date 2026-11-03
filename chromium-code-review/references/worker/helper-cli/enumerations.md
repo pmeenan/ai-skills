@@ -35,7 +35,7 @@ not in these tables is rejected outright.
 | Enum | Legal values |
 | --- | --- |
 | `validate-review-dir.py --phase` | `auto`, `pin`, `collection`, `verification`, `reconciliation`, `final` |
-| `validate-worker-artifact.py --kind` | `auto`, `inventory`, `plan`, `ledger`, `verdict`, `affinity`, `generic` |
+| `validate-worker-artifact.py --kind` | `auto`, `inventory`, `plan`, `ledger`, `verdict`, `affinity`, `root-cause`, `reconciliation`, `synthesis-card`, `draft-fragment`, `gerrit-fragment`, `challenge-index`, `generic` |
 | `seal-work-unit.py --tier` | `frontier`, `inherit`, `mechanical`, `standard` |
 | subagent `Model` (Antigravity/Jetski default / Anthropic / OpenAI) | `frontier` $\rightarrow$ `inherit` (`pro` / `fable` / `astra`), `standard` $\rightarrow$ `flash` (`opus` / `sol`), `mechanical` $\rightarrow$ `flash_lite` (`sonnet` / `luna`) |
 | `seal-work-unit.py --input ROLE=` | `control`, `reference`, `assigned`, `candidate-packet`, `card`, `frame`, `section`, `prestate` |

@@ -2172,9 +2172,79 @@ def validate_root_cause_trigger_accounting(
     path = root / "root-cause" / "batches.md"
     text = read_text(path, report)
     suggestion_decisions = root_suggestion_decisions(root, report)
+    verdict_severities: dict[str, str] = {}
+    verification_dir = root / "verification"
+    if verification_dir.is_dir():
+        for verdict_path in sorted(verification_dir.glob("V*.md")):
+            if verdict_path.name in {"VTER.md", "batches.md", "affinity.md"}:
+                continue
+            for _, v_header, v_rows in table_dicts(
+                read_text(verdict_path, report, required=False)
+            ):
+                if not {"id", "candidate", "verdict"}.issubset(v_header):
+                    continue
+                for v_row in v_rows:
+                    cand = v_row.get("candidate", "").strip()
+                    vid = v_row.get("id", "").strip()
+                    sev = (
+                        v_row.get(
+                            "severity (anchor)",
+                            v_row.get(
+                                "calibrated severity",
+                                v_row.get("severity", ""),
+                            ),
+                        )
+                        or ""
+                    ).strip()
+                    if cand:
+                        verdict_severities[cand] = sev
+                    if vid:
+                        verdict_severities[vid] = sev
+    topology_edge_status: dict[str, str] = {}
+    topology_path = root / "indexes" / "topology.tsv"
+    if topology_path.is_file():
+        try:
+            with topology_path.open(encoding="utf-8", newline="") as stream:
+                for t_row in csv.DictReader(stream, delimiter="\t"):
+                    edge_id = (t_row.get("edge") or "").strip().upper()
+                    if edge_id:
+                        topology_edge_status[edge_id] = (
+                            t_row.get("status") or ""
+                        ).strip().lower()
+        except (OSError, csv.Error):
+            pass
+    trigger_graph_scopes: dict[str, set[str]] = {}
+    inv_paths = (
+        [root / "inventory.md"]
+        if (root / "inventory.md").is_file()
+        else (
+            sorted((root / "inventory").glob("*.md"))
+            if (root / "inventory").is_dir() else []
+        )
+    )
+    for inv_path in inv_paths:
+        for heading, i_header, i_rows in table_dicts(
+            read_text(inv_path, report, required=False)
+        ):
+            if heading != "Trigger inventory" or "scope id" not in i_header:
+                continue
+            for i_row in i_rows:
+                t_id = i_row.get("scope id", "").strip().upper()
+                g_scope = i_row.get("graph scope", "").strip()
+                m_edges = re.search(
+                    r"(?i)graph:((?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*)", g_scope
+                )
+                if t_id and m_edges:
+                    trigger_graph_scopes[t_id] = {
+                        part.strip().upper()
+                        for part in m_edges.group(1).split(",")
+                        if part.strip()
+                    }
     accounting: Counter[str] = Counter()
     scheduled: set[str] = set()
+    not_applicable_triggers: set[str] = set()
     family_batches: dict[str, set[str]] = defaultdict(set)
+    unscheduled_p3_families: set[str] = set()
     survivor_accounting: Counter[str] = Counter()
     found_table = False
     for heading, header, rows in table_dicts(text):
@@ -2199,9 +2269,44 @@ def validate_root_cause_trigger_accounting(
                     and re.fullmatch(r"RC\d+", batch)
                 ):
                     scheduled.add(trigger_scope)
+                elif (
+                    re.match(
+                        r"(?i)^not\s+applicable\s*(?:—|--|-)\s*\S",
+                        disposition,
+                    )
+                    and batch.strip().lower() in {"—", "-", "none", ""}
+                ):
+                    has_proof = bool(
+                        CITATION.search(disposition)
+                        or ARTIFACT_POINTER.search(disposition)
+                        or re.search(
+                            r"\b(?:E-[A-Z0-9-]+|IH\d+|V\d+-\d+|RF\d{3,}|RC\d+(?:-\d+)?)\b",
+                            disposition,
+                        )
+                    )
+                    open_edges = sorted(
+                        edge_id
+                        for edge_id in trigger_graph_scopes.get(trigger_scope, set())
+                        if topology_edge_status.get(edge_id)
+                        in {"open", "disputed", "unreviewed"}
+                    )
+                    if not has_proof:
+                        report.error(
+                            f"{path}: root-cause-required scope {trigger_scope} "
+                            "marked not applicable lacks cited edge, verdict, "
+                            "interdiff, or file:line evidence"
+                        )
+                    elif open_edges:
+                        report.error(
+                            f"{path}: root-cause-required scope {trigger_scope} "
+                            "cannot be marked not applicable while graph "
+                            f"edge(s) {open_edges} remain open/disputed/unreviewed"
+                        )
+                    else:
+                        not_applicable_triggers.add(trigger_scope)
                 continue
             row_ids = set(re.findall(ROW_ID_TEXT, scope))
-            for candidate, (verdict_id, _) in surviving.items():
+            for candidate, (verdict_id, verdict_status) in surviving.items():
                 if candidate not in row_ids and verdict_id not in row_ids:
                     continue
                 survivor_accounting[verdict_id] += 1
@@ -2219,6 +2324,52 @@ def validate_root_cause_trigger_accounting(
                         )
                     else:
                         family_batches[family].add(batch)
+                elif re.match(
+                    r"(?i)^not\s+applicable\s*(?:—|--|-)\s*\S", disposition
+                ):
+                    if batch.strip().lower() not in {"—", "-", "none", ""}:
+                        report.error(
+                            f"{path}: not-applicable root family {family} "
+                            f"must use '—' for rc batch, got '{batch}'"
+                        )
+                    sev = verdict_severities.get(
+                        candidate, verdict_severities.get(verdict_id, "")
+                    )
+                    if (
+                        verdict_status != "CONFIRMED"
+                        or not sev.upper().startswith("P3")
+                    ):
+                        report.error(
+                            f"{path}: surviving {verdict_status} "
+                            f"({sev or 'unspecified'}) row "
+                            f"{candidate}/{verdict_id} in {family} must be "
+                            "scheduled to an RC batch; only CONFIRMED P3 "
+                            "families may be marked not applicable"
+                        )
+                    elif not (
+                        verdict_id in disposition
+                        or candidate in disposition
+                        or CITATION.search(disposition)
+                        or ARTIFACT_POINTER.search(disposition)
+                    ):
+                        report.error(
+                            f"{path}: not-applicable P3 root family {family} "
+                            f"({candidate}/{verdict_id}) must cite its "
+                            "verification verdict or file:line evidence"
+                        )
+                    else:
+                        unscheduled_p3_families.add(family)
+                else:
+                    report.error(
+                        f"{path}: surviving row {candidate}/{verdict_id} has "
+                        f"invalid disposition '{disposition}'; expected "
+                        "'scheduled' or (for CONFIRMED P3) 'not applicable — <reason>'"
+                    )
+    for mixed_family in sorted(set(family_batches) & unscheduled_p3_families):
+        report.error(
+            f"{path}: root family {mixed_family} mixes scheduled and "
+            "not-applicable dispositions"
+        )
     if not found_table:
         empty_fast_path = (
             not required
@@ -2233,7 +2384,7 @@ def validate_root_cause_trigger_accounting(
         if accounting[scope] != 1:
             report.error(
                 f"root-cause trigger scope {scope} has {accounting[scope]} accounting rows")
-        elif scope not in scheduled:
+        elif scope not in scheduled and scope not in not_applicable_triggers:
             report.error(f"root-cause-required scope {scope} is not scheduled to an RC batch")
     for candidate, (verdict_id, _) in surviving.items():
         if survivor_accounting[verdict_id] != 1:
@@ -5265,6 +5416,28 @@ def validate_synthesis(
     index = root / "synthesis" / "index.md"
     text = read_text(index, report)
     rc_suggestions = root_suggestion_decisions(root, report)
+    unscheduled_p3_families: set[str] = set()
+    rc_batches_path = root / "root-cause" / "batches.md"
+    if rc_batches_path.is_file():
+        for t_heading, t_header, t_rows in table_dicts(
+            read_text(rc_batches_path, report, required=False)
+        ):
+            if t_heading != "Trigger accounting" or not {
+                "root family", "disposition", "rc batch"
+            }.issubset(t_header):
+                continue
+            for t_row in t_rows:
+                rf = t_row.get("root family", "").strip()
+                disp = t_row.get("disposition", "").strip()
+                rcb = t_row.get("rc batch", "").strip().lower()
+                if (
+                    ROOT_FAMILY.fullmatch(rf)
+                    and re.match(
+                        r"(?i)^not\s+applicable\s*(?:—|--|-)\s*\S", disp
+                    )
+                    and rcb in {"—", "-", "none", ""}
+                ):
+                    unscheduled_p3_families.add(rf)
     unresolved_thread_roots: set[str] | None = None
     all_threads_by_root = all_comment_threads(root)
     threads_path = root / "gerrit" / "unresolved-threads.json"
@@ -5377,6 +5550,10 @@ def validate_synthesis(
                     )
                     owner = expected[1] if expected is not None else ""
                     authoritative_family = family_membership.get(owner)
+                    is_unscheduled_p3_family = (
+                        authoritative_family is not None
+                        and authoritative_family in unscheduled_p3_families
+                    )
                     owner_rc_decisions = {
                         identifier: value
                         for identifier, value in rc_suggestions.items()
@@ -5398,7 +5575,7 @@ def validate_synthesis(
                             "edit to an RC row outside its root family"
                         )
                     if authoritative_family is not None:
-                        if rc_identifier == "none":
+                        if rc_identifier == "none" and not is_unscheduled_p3_family:
                             report.error(
                                 f"synthesis finding card {item} erases "
                                 f"authoritative root family "
@@ -5427,6 +5604,7 @@ def validate_synthesis(
                         rc_identifier == "none"
                         and root_family_match is not None
                         and root_family_match.group(1) != "none"
+                        and not is_unscheduled_p3_family
                     ):
                         report.error(
                             f"synthesis finding card {item} has a Root family "
@@ -5453,7 +5631,9 @@ def validate_synthesis(
                                 "Suggested edit lacks selected lines"
                             )
                         rc_decision = rc_suggestions.get(rc_identifier)
-                        if rc_decision is None:
+                        if is_unscheduled_p3_family and rc_identifier == "none":
+                            pass
+                        elif rc_decision is None:
                             report.error(
                                 f"synthesis finding card {item} applicable "
                                 "Suggested edit lacks a canonical RC decision"

@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from artifact_tables import (
     PLAN_DEFERRED_STATUS,
@@ -84,6 +84,32 @@ PLAN_NOT_APPLICABLE = re.compile(
     re.IGNORECASE,
 )
 PLAN_UNREVIEWED = re.compile(r"unreviewed\s+—\s+\S.*", re.IGNORECASE)
+SUGGESTED_EDIT_FIELD = re.compile(
+    r"(?im)^- \*\*Suggested edit:\*\*\s*(applicable|omitted)\s*(?:—|-)\s*"
+    r"(\S[^\r\n]*)$"
+)
+CARD_SUGGESTED_EDIT_FIELD = re.compile(
+    r"(?im)^- Suggested edit decision:\s*(applicable|omitted)\s*(?:—|-)\s*"
+    r"(\S[^\r\n]*)$"
+)
+SUGGESTION_TARGET = re.compile(
+    r"^replaces\s+([A-Za-z0-9_.+@{}\-/]+):([1-9]\d*)(?:-([1-9]\d*))?$"
+)
+NON_SPECIFIC_OMISSION = {
+    "n/a", "na", "none", "optional", "omitted", "not applicable", "tbd",
+    "todo", "unknown", "-", "—",
+}
+FINDING_REQUIRED_FIELDS = (
+    "Claim",
+    "Location",
+    "Evidence",
+    "Severity",
+    "Origin",
+    "Fix status",
+    "Suggested edit",
+    "Regression test",
+    "Rows",
+)
 SPECIALIST_LENSES = {
     "Threading And Synchronization",
     "Ownership And Blink Lifecycle",
@@ -682,17 +708,686 @@ def report_fragment_check(
     artifact: Path,
     is_gerrit: bool,
 ) -> None:
-    if WorktreeCorpus is None or verify_fragment_text is None:
+    if WorktreeCorpus is not None and verify_fragment_text is not None:
+        corpus = WorktreeCorpus.load(root)
+        errors = verify_fragment_text(
+            corpus,
+            artifact.relative_to(root).as_posix(),
+            text,
+            is_gerrit=is_gerrit,
+        )
+        if errors:
+            fail("; ".join(errors))
+    if not is_gerrit:
+        draft_fragment_structure_check(root, text, artifact)
+
+
+def fenced_blocks(text: str, info: str) -> list[str]:
+    blocks: list[str] = []
+    lines = text.splitlines()
+    cursor = 0
+    while cursor < len(lines):
+        opening = re.fullmatch(
+            rf"([ ]{{0,3}})```{re.escape(info)}\s*", lines[cursor]
+        )
+        if opening is None:
+            cursor += 1
+            continue
+        indent = opening.group(1)
+        content: list[str] = []
+        cursor += 1
+        while cursor < len(lines):
+            if re.fullmatch(rf"{re.escape(indent)}```\s*", lines[cursor]):
+                blocks.append(
+                    "\n".join(
+                        value[len(indent):]
+                        if value.startswith(indent) else value
+                        for value in content
+                    )
+                )
+                break
+            content.append(lines[cursor])
+            cursor += 1
+        cursor += 1
+    return blocks
+
+
+def fenced_field(text: str, label: str, info: str = "") -> str | None:
+    lines = text.splitlines()
+    heading = re.compile(rf"^[ \t]*-\s*{re.escape(label)}:\s*$")
+    for index, line in enumerate(lines):
+        if heading.match(line) is None:
+            continue
+        cursor = index + 1
+        while cursor < len(lines) and not lines[cursor].strip():
+            cursor += 1
+        if cursor >= len(lines):
+            return None
+        opening = re.fullmatch(
+            r"([ ]{0,6})```([A-Za-z0-9_+.-]*)[ \t]*", lines[cursor]
+        )
+        if opening is None:
+            return None
+        if info and opening.group(2) != info:
+            return None
+        indent = opening.group(1)
+        content: list[str] = []
+        cursor += 1
+        while cursor < len(lines):
+            if re.fullmatch(rf"{re.escape(indent)}```[ \t]*", lines[cursor]):
+                return "\n".join(
+                    value[len(indent):]
+                    if value.startswith(indent) else value
+                    for value in content
+                )
+            content.append(lines[cursor])
+            cursor += 1
+        return None
+    return None
+
+
+def pin_field(pin_text: str, name: str) -> str | None:
+    match = re.search(rf"^- {re.escape(name)}:\s*(.+?)\s*$", pin_text, re.M)
+    return match.group(1) if match else None
+
+
+def verify_suggestion_against_worktree(
+    root: Path,
+    label: str,
+    detail: str,
+    selected: str | None,
+    replacement: str | None,
+    require_selected: bool = True,
+) -> None:
+    target = SUGGESTION_TARGET.fullmatch(detail)
+    if target is None:
+        fail(
+            f"{label} has malformed applicable Suggested edit target "
+            f"'{detail}'; expected 'replaces path:start-end'"
+        )
+    repo_path = target.group(1)
+    pure_path = PurePosixPath(repo_path)
+    if (
+        pure_path.is_absolute()
+        or ".." in pure_path.parts
+        or not pure_path.parts
+        or pure_path.as_posix() != repo_path
+    ):
+        fail(
+            f"{label} Suggested edit target '{repo_path}' is not a normalized "
+            "repo-relative path"
+        )
+    start = int(target.group(2))
+    end = int(target.group(3) or start)
+    target_text = f"{repo_path}:{start}" + (f"-{end}" if target.group(3) else "")
+    if end < start:
+        fail(f"{label} Suggested edit target range {target_text} is reversed")
+    if end - start + 1 > 10:
+        fail(
+            f"{label} Suggested edit selects {end - start + 1} lines; "
+            "maximum is 10"
+        )
+    if require_selected and selected is None:
+        fail(f"{label} applicable Suggested edit lacks selected lines")
+    if replacement is None:
+        fail(f"{label} applicable Suggested edit lacks a suggestion block")
+    replacement_lines = replacement.rstrip("\r\n").splitlines()
+    if len(replacement_lines) > 20:
+        fail(
+            f"{label} Suggested edit has {len(replacement_lines)} replacement "
+            "lines; maximum is 20"
+        )
+    if any(
+        line.strip().lower()
+        in {"...", "…", "<replacement>", "<code>", "placeholder"}
+        for line in replacement_lines
+    ):
+        fail(f"{label} Suggested edit contains a placeholder or elision")
+
+    pin_path = root / "pin.md"
+    if not pin_path.is_file():
         return
-    corpus = WorktreeCorpus.load(root)
-    errors = verify_fragment_text(
-        corpus,
-        artifact.relative_to(root).as_posix(),
-        text,
-        is_gerrit=is_gerrit,
+    try:
+        pin = pin_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    changed: set[str] = set()
+    in_files = False
+    for line in pin.splitlines():
+        if line.startswith("- Files changed"):
+            in_files = True
+            continue
+        if in_files:
+            match = re.match(
+                r"^  - (.*?)(?: \[[A-Z?]+; \+[0-9?]+/-[0-9?]+\])?$",
+                line,
+            )
+            if match:
+                changed.add(match.group(1))
+            elif line.strip():
+                in_files = False
+    if changed and repo_path not in changed:
+        fail(
+            f"{label} Suggested edit targets unchanged or unknown file "
+            f"{repo_path}"
+        )
+    worktree_value = pin_field(pin, "Worktree")
+    revision = pin_field(pin, "Revision SHA")
+    parent = pin_field(pin, "Parent SHA")
+    if not worktree_value or not revision or not parent:
+        return
+    worktree = Path(worktree_value.split(" (", 1)[0])
+    if not worktree.is_dir():
+        return
+    inside = subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "--is-inside-work-tree"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
     )
-    if errors:
-        fail("; ".join(errors))
+    if inside.returncode != 0:
+        return
+    try:
+        source = subprocess.run(
+            ["git", "-C", str(worktree), "show", f"{revision}:{repo_path}"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).stdout.decode("utf-8")
+        diff = subprocess.run(
+            [
+                "git", "-C", str(worktree), "diff", "--unified=0",
+                parent, revision, "--", repo_path,
+            ],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).stdout
+    except (subprocess.CalledProcessError, UnicodeDecodeError):
+        return
+    source_lines = source.splitlines()
+    if end > len(source_lines):
+        fail(
+            f"{label} Suggested edit range {target_text} is outside the "
+            f"pinned file's {len(source_lines)} lines"
+        )
+    actual_selected = "\n".join(source_lines[start - 1:end])
+    if require_selected and selected != actual_selected:
+        fail(
+            f"{label} Suggested edit selected lines do not match the pinned "
+            f"changed-side range {target_text}"
+        )
+    changed_new_lines: set[int] = set()
+    for hunk in re.finditer(
+        r"(?m)^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", diff
+    ):
+        hunk_start = int(hunk.group(1))
+        hunk_count = int(hunk.group(2) or "1")
+        changed_new_lines.update(range(hunk_start, hunk_start + hunk_count))
+    if not changed_new_lines.intersection(range(start, end + 1)):
+        fail(
+            f"{label} Suggested edit range {target_text} does not intersect "
+            "a changed-side hunk in the pinned patch"
+        )
+
+
+def root_cause_check(
+    root: Path,
+    text: str,
+    parsed: list[tuple[str, list[str], list[dict[str, str]]]],
+    artifact: Path,
+) -> None:
+    decisions: dict[str, dict[str, str]] = {}
+    amendment_ids: set[str] = set()
+    matches = list(re.finditer(r"(?m)^## (RC\d+-\d+)\b[^\r\n]*$", text))
+    for match in matches:
+        identifier = match.group(1)
+        next_heading = re.search(r"(?m)^## (?!#)[^\r\n]+$", text[match.end():])
+        end = (
+            match.end() + next_heading.start()
+            if next_heading is not None else len(text)
+        )
+        section = text[match.end():end]
+        family_match = re.search(
+            r"(?im)^- Root family:[ \t]*(\S[^\r\n]*)$", section
+        )
+        decision_match = re.search(
+            r"(?im)^- Suggested-edit decision:\s*"
+            r"(applicable|omitted)\s*(?:—|-)\s*(\S[^\r\n]*)$",
+            section,
+        )
+        if decision_match is None:
+            continue
+        if identifier in decisions:
+            fail(
+                f"{artifact} root-cause Suggested edit decision {identifier} "
+                "is defined more than once"
+            )
+        status = decision_match.group(1).lower()
+        detail = decision_match.group(2).strip()
+        selected = fenced_field(section, "Suggested-edit selected lines")
+        replacement = fenced_field(
+            section, "Suggested-edit replacement", "suggestion"
+        )
+        if family_match is None:
+            fail(
+                f"{artifact} root-cause row {identifier} with a Suggested edit "
+                "decision lacks an exact Root family field"
+            )
+        family = family_match.group(1).strip()
+        if not re.fullmatch(r"RF\d{3,}", family):
+            if status != "omitted":
+                fail(
+                    f"{artifact} root-cause row {identifier} cannot own an "
+                    "applicable family decision without an exact RF identity"
+                )
+            elif detail.lower() in NON_SPECIFIC_OMISSION:
+                fail(
+                    f"{artifact} root-cause row {identifier} has a "
+                    "non-specific Suggested edit omission reason"
+                )
+            elif selected is not None or replacement is not None:
+                fail(
+                    f"{artifact} root-cause row {identifier} marks Suggested "
+                    "edit omitted but contains selected/replacement fences"
+                )
+            continue
+        decisions[identifier] = {
+            "family": family,
+            "status": status,
+            "detail": detail,
+            "selected": selected or "",
+            "replacement": replacement or "",
+            "has_selected": "yes" if selected is not None else "no",
+            "has_replacement": "yes" if replacement is not None else "no",
+        }
+    amendment_headings = list(re.finditer(
+        r"(?m)^## Suggested-edit amendments\s*$", text
+    ))
+    for amendment_heading in amendment_headings:
+        amendment_end = re.search(
+            r"(?m)^## (?!#)[^\r\n]+$", text[amendment_heading.end():]
+        )
+        amendment_text = text[
+            amendment_heading.end():
+            amendment_heading.end() + amendment_end.start()
+            if amendment_end is not None else len(text)
+        ]
+        amendment_matches = list(re.finditer(
+            r"(?m)^### (RC\d+-SA\d+)\s*$", amendment_text
+        ))
+        if not amendment_matches:
+            fail(
+                f"{artifact}: Suggested-edit amendments section has no "
+                "RC<batch>-SA<n> entries"
+            )
+        for position, amendment_match in enumerate(amendment_matches):
+            amendment_id = amendment_match.group(1)
+            end = (
+                amendment_matches[position + 1].start()
+                if position + 1 < len(amendment_matches)
+                else len(amendment_text)
+            )
+            section = amendment_text[amendment_match.end():end]
+            if amendment_id in amendment_ids:
+                fail(
+                    f"{artifact} Suggested edit amendment {amendment_id} is "
+                    "defined more than once"
+                )
+            amendment_ids.add(amendment_id)
+            if amendment_id.split("-", 1)[0] != artifact.stem:
+                fail(
+                    f"{artifact} Suggested edit amendment {amendment_id} does "
+                    f"not match file prefix {artifact.stem}"
+                )
+            target_match = re.search(
+                r"(?im)^- Target:[ \t]*(RC\d+-\d+)\s*$", section
+            )
+            decision_match = re.search(
+                r"(?im)^- Suggested-edit decision:\s*"
+                r"(applicable|omitted)\s*(?:—|-)\s*(\S[^\r\n]*)$",
+                section,
+            )
+            evidence_match = re.search(
+                r"(?im)^- Evidence:[ \t]*(\S[^\r\n]*)$", section
+            )
+            attempt_match = re.search(
+                r"(?im)^- Attempt:[ \t]*([1-9]\d*)\s*$", section
+            )
+            if not all((target_match, decision_match, evidence_match,
+                        attempt_match)):
+                fail(
+                    f"{artifact} Suggested edit amendment {amendment_id} "
+                    "requires Target, Suggested-edit decision, Evidence, and "
+                    "positive Attempt fields"
+                )
+            target_id = target_match.group(1)
+            if target_id not in decisions:
+                fail(
+                    f"{artifact} Suggested edit amendment {amendment_id} "
+                    f"targets unknown row {target_id}"
+                )
+            status = decision_match.group(1).lower()
+            detail = decision_match.group(2).strip()
+            selected = fenced_field(section, "Suggested-edit selected lines")
+            replacement = fenced_field(
+                section, "Suggested-edit replacement", "suggestion"
+            )
+            decisions[target_id].update({
+                "status": status,
+                "detail": detail,
+                "selected": selected or "",
+                "replacement": replacement or "",
+                "has_selected": "yes" if selected is not None else "no",
+                "has_replacement": "yes" if replacement is not None else "no",
+            })
+
+    for identifier, dec in sorted(decisions.items()):
+        status = dec["status"]
+        detail = dec["detail"]
+        if status == "applicable":
+            verify_suggestion_against_worktree(
+                root,
+                f"{artifact} row {identifier}",
+                detail,
+                dec["selected"] if dec["has_selected"] == "yes" else None,
+                dec["replacement"] if dec["has_replacement"] == "yes" else None,
+                require_selected=True,
+            )
+        else:
+            if detail.lower() in NON_SPECIFIC_OMISSION:
+                fail(
+                    f"{artifact} root-cause row {identifier} has a "
+                    "non-specific Suggested edit omission reason"
+                )
+            if dec["has_selected"] == "yes" or dec["has_replacement"] == "yes":
+                fail(
+                    f"{artifact} root-cause row {identifier} marks Suggested "
+                    "edit omitted but contains selected/replacement fences"
+                )
+
+    for heading, header, rows in parsed:
+        if heading != "Root-family analysis":
+            continue
+        required_columns = {
+            "root family", "members", "shared invariant",
+            "invariant owner", "state / transition", "method coverage",
+            "excluded nearby", "fix layer", "comment count",
+            "suggested edit", "evidence",
+        }
+        if not required_columns.issubset(header):
+            fail(f"{artifact} Root-family analysis has wrong columns")
+        for row in rows:
+            family = row.get("root family", "").strip()
+            if not re.fullmatch(r"RF\d{3,}", family):
+                continue
+            for col in required_columns - {"root family"}:
+                if not row.get(col, "").strip():
+                    fail(
+                        f"{artifact} root family {family} has blank {col}"
+                    )
+            choice = row.get("suggested edit", "").strip()
+            if not re.match(
+                r"(?i)^(?:applicable|omitted)\s*(?:—|-)\s*\S", choice
+            ):
+                fail(
+                    f"{artifact} root family {family} has malformed "
+                    "Suggested edit decision"
+                )
+            members = {
+                key: val for key, val in decisions.items()
+                if val["family"] == family
+            }
+            app_match = re.fullmatch(r"applicable\s*(?:—|-)\s*(RC\d+-\d+)", choice)
+            if app_match:
+                rc_id = app_match.group(1)
+                if rc_id not in members or members[rc_id]["status"] != "applicable":
+                    fail(
+                        f"{artifact} root family {family} names absent or "
+                        f"non-applicable RC decision {rc_id}"
+                    )
+            else:
+                matches_omitted = [
+                    key for key, val in members.items()
+                    if val["status"] == "omitted"
+                    and choice == f"omitted — {val['detail']}"
+                ]
+                if not matches_omitted:
+                    fail(
+                        f"{artifact} root family {family} Suggested edit cell "
+                        f"'{choice}' lacks an exact matching RC row decision"
+                    )
+
+
+def synthesis_card_check(
+    root: Path,
+    text: str,
+    artifact: Path,
+) -> None:
+    decision = CARD_SUGGESTED_EDIT_FIELD.search(text)
+    has_finding_markers = (
+        decision is not None
+        or re.search(r"(?im)^- Root cause:\s*", text) is not None
+        or re.search(r"(?im)^- Root family:\s*", text) is not None
+    )
+    if not has_finding_markers:
+        return
+    if decision is None:
+        fail(
+            f"{artifact} synthesis finding card lacks a non-empty "
+            "'- Suggested edit decision:' field"
+        )
+    root_cause_match = re.search(
+        r"(?im)^- Root cause:\s*(RC\d+-\d+|none)\b", text
+    )
+    root_family_match = re.search(
+        r"(?im)^- Root family:\s*(RF\d{3,}|none)\b", text
+    )
+    if root_cause_match is None or root_family_match is None:
+        fail(
+            f"{artifact} synthesis finding card lacks exact Root cause / "
+            "Root family binding fields"
+        )
+    status = decision.group(1).lower()
+    detail = decision.group(2).strip()
+    blocks = fenced_blocks(text, "suggestion")
+    card_replacement = fenced_field(
+        text, "Suggested edit replacement", "suggestion"
+    )
+    selected = fenced_field(text, "Suggested edit selected lines")
+    if status == "applicable":
+        if len(blocks) != 1 or card_replacement is None:
+            fail(
+                f"{artifact} synthesis finding card applicable Suggested edit "
+                f"has {len(blocks)} suggestion blocks; expected exactly one"
+            )
+        verify_suggestion_against_worktree(
+            root,
+            f"{artifact}",
+            detail,
+            selected,
+            card_replacement,
+            require_selected=True,
+        )
+    else:
+        if detail.lower() in NON_SPECIFIC_OMISSION:
+            fail(
+                f"{artifact} synthesis finding card has a non-specific "
+                "Suggested edit omission reason"
+            )
+        if blocks:
+            fail(
+                f"{artifact} synthesis finding card marks Suggested edit "
+                "omitted but contains a suggestion block"
+            )
+
+
+def draft_fragment_structure_check(
+    root: Path,
+    text: str,
+    artifact: Path,
+) -> None:
+    if artifact.parent.name == "draft-parts" and re.fullmatch(
+        r"([FQN]\d+)\.md", artifact.name
+    ):
+        item = artifact.stem
+        if not re.search(
+            rf"(?m)^- \*\*Synthesis item:\*\* {re.escape(item)}\s*$", text
+        ):
+            fail(
+                f"{artifact} draft fragment lacks exact "
+                f"'- **Synthesis item:** {item}' marker"
+            )
+        if item.startswith("F"):
+            required_fields = FINDING_REQUIRED_FIELDS
+        elif item.startswith("N"):
+            required_fields = ("Note", "Why it matters", "Rows")
+        else:
+            required_fields = ("Question", "Why it matters", "Rows")
+        for field_name in required_fields:
+            if not re.search(
+                rf"(?m)^- \*\*{re.escape(field_name)}:\*\*\s*\S", text
+            ):
+                fail(
+                    f"{artifact} draft fragment lacks non-empty "
+                    f"'{field_name}' field"
+                )
+        if item.startswith("F"):
+            decision = SUGGESTED_EDIT_FIELD.search(text)
+            if decision is None:
+                fail(
+                    f"{artifact} draft fragment lacks a valid "
+                    "'- **Suggested edit:** (applicable|omitted) — ...' field"
+                )
+            status = decision.group(1).lower()
+            detail = decision.group(2).strip()
+            blocks = fenced_blocks(text, "suggestion")
+            if status == "applicable":
+                if len(blocks) != 1:
+                    fail(
+                        f"{artifact} applicable Suggested edit requires "
+                        f"exactly one suggestion block (found {len(blocks)})"
+                    )
+                verify_suggestion_against_worktree(
+                    root,
+                    f"{artifact}",
+                    detail,
+                    None,
+                    blocks[0],
+                    require_selected=False,
+                )
+            else:
+                if detail.lower() in NON_SPECIFIC_OMISSION:
+                    fail(
+                        f"{artifact} has a non-specific Suggested edit "
+                        "omission reason"
+                    )
+                if blocks:
+                    fail(
+                        f"{artifact} marks Suggested edit omitted but "
+                        "contains a suggestion block"
+                    )
+    elif artifact.name == "draft-review.md":
+        markers = list(
+            re.finditer(
+                r"(?m)^- \*\*Synthesis item:\*\* (F\d+)\s*$", text
+            )
+        )
+        for idx, match in enumerate(markers):
+            item = match.group(1)
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            heading_before = list(
+                re.finditer(r"(?m)^###\s+[^\r\n]+$", text[:line_start])
+            )
+            block_start = (
+                heading_before[-1].start() if heading_before else line_start
+            )
+            next_heading = re.search(
+                r"(?m)^##(?:#)?\s+[^\r\n]+$", text[match.end():]
+            )
+            next_marker = (
+                markers[idx + 1].start()
+                if idx + 1 < len(markers) else len(text)
+            )
+            block_end = min(
+                match.end() + next_heading.start()
+                if next_heading is not None else len(text),
+                next_marker,
+            )
+            block_text = text[block_start:block_end]
+            for field_name in FINDING_REQUIRED_FIELDS:
+                if not re.search(
+                    rf"(?m)^- \*\*{re.escape(field_name)}:\*\*\s*\S",
+                    block_text,
+                ):
+                    fail(
+                        f"{artifact} finding {item} lacks non-empty "
+                        f"'{field_name}' field"
+                    )
+            decision = SUGGESTED_EDIT_FIELD.search(block_text)
+            if decision is not None:
+                status = decision.group(1).lower()
+                detail = decision.group(2).strip()
+                blocks = fenced_blocks(block_text, "suggestion")
+                if status == "applicable":
+                    if len(blocks) != 1:
+                        fail(
+                            f"{artifact} finding {item} applicable Suggested "
+                            f"edit requires 1 suggestion block (found {len(blocks)})"
+                        )
+                    verify_suggestion_against_worktree(
+                        root,
+                        f"{artifact} finding {item}",
+                        detail,
+                        None,
+                        blocks[0],
+                        require_selected=False,
+                    )
+                else:
+                    if detail.lower() in NON_SPECIFIC_OMISSION:
+                        fail(
+                            f"{artifact} finding {item} has a non-specific "
+                            "Suggested edit omission reason"
+                        )
+                    if blocks:
+                        fail(
+                            f"{artifact} finding {item} marks Suggested edit "
+                            "omitted but contains a suggestion block"
+                        )
+
+
+def challenge_index_check(
+    root: Path,
+    parsed: list[tuple[str, list[str], list[dict[str, str]]]],
+    artifact: Path,
+) -> None:
+    has_sections = (root / "draft-sections" / "index.tsv").is_file()
+    for _, header, rows in parsed:
+        if not {"shard", "scope", "expected coverage"}.issubset(header):
+            continue
+        for row in rows:
+            shard = row.get("shard", "").strip()
+            scope = row.get("scope", "").strip()
+            tokens_set = {
+                item.strip()
+                for item in row.get("expected coverage", "").split(",")
+                if item.strip()
+            }
+            is_global_scope = scope.lower().startswith("global-consistency")
+            if ("global:consistency" in tokens_set) != is_global_scope:
+                fail(
+                    f"{artifact} shard {shard or '?'} global-consistency "
+                    "scope and global:consistency token must match"
+                )
+            if not has_sections and (
+                is_global_scope or "global:consistency" in tokens_set
+            ):
+                fail(
+                    f"{artifact} shard {shard or '?'} includes "
+                    "global:consistency, which is only valid when "
+                    "draft-sections/index.tsv exists"
+                )
 
 
 def main() -> int:
@@ -703,7 +1398,8 @@ def main() -> int:
         "--kind",
         choices=(
             "auto", "inventory", "plan", "ledger", "verdict", "affinity",
-            "reconciliation", "draft-fragment", "gerrit-fragment", "generic",
+            "root-cause", "reconciliation", "synthesis-card",
+            "draft-fragment", "gerrit-fragment", "challenge-index", "generic",
         ),
         default="auto",
     )
@@ -745,8 +1441,19 @@ def main() -> int:
             kind = "verdict"
         elif relative.as_posix() == "verification/affinity.md":
             kind = "affinity"
+        elif (
+            relative.parts[:1] == ("root-cause",)
+            and re.fullmatch(r"RC\d+\.md", artifact.name)
+        ):
+            kind = "root-cause"
         elif relative.as_posix() == "reconciliation.md":
             kind = "reconciliation"
+        elif (
+            relative.parts[:1] == ("synthesis",)
+            and artifact.name != "index.md"
+            and artifact.suffix == ".md"
+        ):
+            kind = "synthesis-card"
         elif (
             relative.parts[:1] == ("draft-parts",)
             or relative.as_posix() == "draft-review.md"
@@ -757,6 +1464,8 @@ def main() -> int:
             or relative.as_posix() == "gerrit-comments.md"
         ):
             kind = "gerrit-fragment"
+        elif re.fullmatch(r"challenge/round-\d+/index\.md", relative.as_posix()):
+            kind = "challenge-index"
         else:
             kind = "generic"
     if kind == "inventory":
@@ -769,8 +1478,12 @@ def main() -> int:
         verdict_check(root, parsed, artifact)
     elif kind == "affinity":
         affinity_check(root, parsed, artifact)
+    elif kind == "root-cause":
+        root_cause_check(root, text, parsed, artifact)
     elif kind == "reconciliation":
         reconciliation_check(text, parsed, artifact)
+    elif kind == "synthesis-card":
+        synthesis_card_check(root, text, artifact)
     elif kind == "draft-fragment":
         report_fragment_check(root, text, artifact, is_gerrit=False)
     elif kind == "gerrit-fragment":
@@ -780,6 +1493,8 @@ def main() -> int:
             artifact,
             is_gerrit=(artifact.name != "FRAME.md"),
         )
+    elif kind == "challenge-index":
+        challenge_index_check(root, parsed, artifact)
     print(f"valid {kind}: {artifact}")
     return 0
 

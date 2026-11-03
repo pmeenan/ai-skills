@@ -183,3 +183,80 @@ class RootSuggestionTests(unittest.TestCase):
 '''
         self.assertTrue(any('does not match its file prefix' in error
                             for error in self.check(cross_batch)[1]))
+
+    def test_trigger_accounting_not_applicable_for_resolved_t_and_p3_rf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'indexes').mkdir()
+            (root / 'root-cause').mkdir()
+            (root / 'verification').mkdir()
+            (root / 'indexes/topology.tsv').write_text(
+                'edge\tfrom\tto\tkind\tstatus\tevidence\tcandidate\tnext_obligation\tsource\teffective_source\n'
+                'E-001\ta.cc:1\ta.cc:1\tcall\tclosed\ta.cc:1\tGAI-1\tnone\tinventory.md\tledger/GAI.md\n'
+            )
+            (root / 'inventory.md').write_text('''# Inventory
+
+## Trigger inventory
+| scope id | files / surfaces | trigger | root-cause-required | graph scope | evidence |
+| --- | --- | --- | --- | --- | --- |
+| T001 | a.cc:1 | async-lifecycle | yes | graph:E-001 | a.cc:1 |
+''')
+            (root / 'verification/V001.md').write_text('''# Verification V001
+
+## Verdicts
+| id | candidate | verdict | calibrated severity | evidence |
+| --- | --- | --- | --- | --- |
+| V001-1 | GAI-1 | CONFIRMED | P3 | a.cc:1 |
+''')
+            (root / 'root-cause/batches.md').write_text('''# Root-Cause Batches
+
+## Trigger accounting
+| candidate / verdict | root family | disposition | rc batch |
+| --- | --- | --- | --- |
+| T001 | — | not applicable — all graph edges (E-001) resolved in topology.tsv (a.cc:1) | — |
+| GAI-1 / V001-1 | RF001 | not applicable — non-risky P3 validated in verification (V001-1, a.cc:1) | — |
+
+## Batches
+
+None.
+''')
+            surviving = {'GAI-1': ('V001-1', 'CONFIRMED')}
+            membership = {'GAI-1': 'RF001', 'V001-1': 'RF001'}
+            report = validator.Report()
+            validator.validate_root_cause_trigger_accounting(
+                root, {'T001'}, surviving, membership, report,
+            )
+            self.assertEqual([], report.errors)
+
+            # Should fail if RF001 is P2 instead of P3
+            (root / 'verification/V001.md').write_text('''# Verification V001
+
+## Verdicts
+| id | candidate | verdict | calibrated severity | evidence |
+| --- | --- | --- | --- | --- |
+| V001-1 | GAI-1 | CONFIRMED | P2 | a.cc:1 |
+''')
+            report_p2 = validator.Report()
+            validator.validate_root_cause_trigger_accounting(
+                root, {'T001'}, surviving, membership, report_p2,
+            )
+            self.assertTrue(any('must be scheduled to an RC batch' in e for e in report_p2.errors))
+
+            # Should fail if E-001 is still open in topology.tsv
+            (root / 'verification/V001.md').write_text('''# Verification V001
+
+## Verdicts
+| id | candidate | verdict | calibrated severity | evidence |
+| --- | --- | --- | --- | --- |
+| V001-1 | GAI-1 | CONFIRMED | P3 | a.cc:1 |
+''')
+            (root / 'indexes/topology.tsv').write_text(
+                'edge\tfrom\tto\tkind\tstatus\tevidence\tcandidate\tnext_obligation\tsource\teffective_source\n'
+                'E-001\ta.cc:1\ta.cc:1\tcall\topen\ta.cc:1\tGAI-1\tnone\tinventory.md\tinventory.md\n'
+            )
+            report_open_edge = validator.Report()
+            validator.validate_root_cause_trigger_accounting(
+                root, {'T001'}, surviving, membership, report_open_edge,
+            )
+            self.assertTrue(any('remain open/disputed/unreviewed' in e for e in report_open_edge.errors))
+

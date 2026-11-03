@@ -258,7 +258,8 @@ directly are `fetch-cl.sh`, `snapshot-skill.py`, `profile-review.py`,
 `interdiff_hunks.py`, `resolve-internal-review-capabilities.py`,
 `build-review-indexes.py`, `build-caller-index.py`, `build-initial-plan.py`,
 `extract-unresolved-comments.py`, `build-phase-brief.py`,
-`build-scope-packets.py`, `seal-work-unit.py`, `await-workers.py`,
+`build-scope-packets.py`, `build-batch-briefs.py`, `build-reconciliation.py`,
+`seal-work-unit.py`, `await-workers.py`,
 `set-work-state.py`, `refresh-manifest.py`, `log-progress.py`,
 `worktree-lease.py`, `validate-worker-artifact.py`, `validate-review-dir.py`,
 `collect-challenge-round.py`, `refresh-delivery-gate.py`,
@@ -268,10 +269,13 @@ reviews only — `instrument-command.py` and
 **`references/helper-cli.md` is the normative description of all of them; this
 list exists so you know what is available, not how to call it.**
 
-Two of these are deterministic and must never be delegated to an agent:
-`collect-challenge-round.py` collects a challenge round, and
-`extract-unresolved-comments.py` normalizes the Gerrit reply graph. Spending a
-subagent on either is pure waste.
+Several of these are deterministic and must never be delegated to an agent:
+`collect-challenge-round.py` collects a challenge round,
+`extract-unresolved-comments.py` normalizes the Gerrit reply graph,
+`build-batch-briefs.py --plan` plans small/medium verification and root-cause
+batches (plus `verification/affinity.md`), and `build-reconciliation.py` builds
+`reconciliation.md` and `synthesis/` cards for small survivor sets. Spending a
+subagent on any of them is pure waste.
 
 Worker-facing (loaded by subagents because their briefs point at them; the
 orchestrator never loads these):

@@ -33,7 +33,7 @@ not in these tables is rejected outright.
 | Enum | Legal values |
 | --- | --- |
 | `validate-review-dir.py --phase` | `auto`, `pin`, `collection`, `verification`, `reconciliation`, `final` |
-| `validate-worker-artifact.py --kind` | `auto`, `inventory`, `plan`, `ledger`, `verdict`, `affinity`, `generic` |
+| `validate-worker-artifact.py --kind` | `auto`, `inventory`, `plan`, `ledger`, `verdict`, `affinity`, `root-cause`, `reconciliation`, `synthesis-card`, `draft-fragment`, `gerrit-fragment`, `challenge-index`, `generic` |
 | `seal-work-unit.py --tier` | `frontier`, `inherit`, `mechanical`, `standard` |
 | subagent `Model` (Antigravity/Jetski default / Anthropic / OpenAI) | `frontier` $\rightarrow$ `inherit` (`pro` / `fable` / `astra`), `standard` $\rightarrow$ `flash` (`opus` / `sol`), `mechanical` $\rightarrow$ `flash_lite` (`sonnet` / `luna`) |
 | `seal-work-unit.py --input ROLE=` | `control`, `reference`, `assigned`, `candidate-packet`, `card`, `frame`, `section`, `prestate` |
@@ -391,13 +391,21 @@ resolve-internal-review-capabilities.py --base P [--revision R] --output OUT [--
 build-initial-plan.py [--worktree W] [--max-unsharded-edges N] <review-dir>
 build-scope-packets.py --worktree W --parent P --revision R [--spec SPEC] [--output OUT] <review-dir> <work_id>
 build-discovery-brief.py --work-id ID [--attempt N] --entry E --procedure P [--pathspec SPEC] [--output OUT] <review-dir>
-build-batch-briefs.py --phase {verification,root-cause} [--attempt N] [--round R] [--seal] <review-dir>
+build-batch-briefs.py --phase {verification,root-cause} [--plan] [--max-candidates N] [--max-per-batch N] [--max-survivors N] [--max-families-per-batch N] [--schedule-p3] [--attempt N] [--round R] [--seal] <review-dir>
+build-reconciliation.py [--max-survivors N] <review-dir>
 ```
 
 Run `build-scope-packets.py` (or `build-batch-briefs.py` for Phase 5 `V*` and
 Phase 5.5 `RC*` batches) before sealing, so the scoped code packet and generated
 briefs are deterministic, hashable inputs rather than hand-crafted by planner
-subagents.
+subagents. When `--plan` is passed to `build-batch-briefs.py`, it also
+deterministically plans `verification/batches.md` (`<= 30` candidates) or
+`verification/affinity.md` + `root-cause/batches.md` (`<= 8` surviving verdicts)
+without spawning `VPLAN`, `IAR`, or `RCPLAN` subagents, and exits `0` cleanly
+when all root-cause triggers and non-risky `P3` families close as
+`not applicable`. `build-reconciliation.py` deterministically builds
+`reconciliation.md`, `synthesis/index.md`, and `synthesis/<ROW-ID>.md` cards when
+surviving unmerged verdicts are `<= 8`.
 
 `build-batch-briefs.py` reads the canonical `## Batches` tables in the
 verification/root-cause templates. Root-cause membership uses

@@ -12,6 +12,6 @@ preamble, so its rules travel with every section.
 | --- | --- | --- |
 | Phase 4 — Discovery Execution | phase-4-discovery-execution.md | 74 |
 | Phase 4.5 — Collection Audit | phase-4-5-collection-audit.md | 24 |
-| Phase 5 — Verification | phase-5-verification.md | 36 |
-| Phase 5.5 — Root-Cause, Layering, And Fix Optimality | phase-5-5-root-cause-layering-and-fix-optimality.md | 44 |
-| Phase 6 — Reconciliation | phase-6-reconciliation.md | 37 |
+| Phase 5 — Verification | phase-5-verification.md | 48 |
+| Phase 5.5 — Root-Cause, Layering, And Fix Optimality | phase-5-5-root-cause-layering-and-fix-optimality.md | 57 |
+| Phase 6 — Reconciliation | phase-6-reconciliation.md | 43 |
