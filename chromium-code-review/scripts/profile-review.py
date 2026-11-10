@@ -1144,6 +1144,10 @@ def main() -> int:
         "topology": {
             "policy": "evidence-graph-v1",
             "initial_generalists": 2,
+            # An always-run holistic-and-polish pass (`HOL`) covers changed-line
+            # polish, test-code hygiene, declaration comments, and description
+            # alignment, which the graph-routed generalists do not own.
+            "holistic_polish": True,
             "generalist_unit": "independent-pass",
             "generalist_sharding": "matching-connected-component-budget-slices",
             "size_role": "budget-prior-only",
@@ -1178,6 +1182,8 @@ def main() -> int:
         # State the collapse here so the orchestrator never has to.
         profile["topology"]["collapsed"] = True
         profile["topology"]["initial_generalists"] = 1
+        # The single collapsed discovery thread also runs the polish checklist.
+        profile["topology"]["holistic_polish"] = False
         profile["topology"]["max_challenge_rounds"] = 1
     tier_budgets = {"frontier": 1048576, "standard": 1048576}
     tier_tokens = {}

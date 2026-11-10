@@ -19,6 +19,8 @@ next live review.
 - `cl-8017223.md` — cross-layer lifetime/style false-positive and root-family
   compression eval for delayed datagram shaping.
 - `cl-8020646.md` — pinned PS4 follow-up eval with exact PS4/PS3 revisions.
+- `cl-8724792.md` — PS6 follow-up polish eval: changed-line, declaration
+  comment, and test-hygiene P3s that no schema-3 thread owned.
 - `corpus-from-skill-prose.md` — the backlog: every measured failure
   currently cited in the skill prose, awaiting its CL number and promotion
   into a per-CL file.

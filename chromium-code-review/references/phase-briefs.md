@@ -437,7 +437,12 @@ spawn`, `tier: frontier`, `scope: graph:all-inventory-edges` or `graph:none`) in
 the initial `D01` batch and generate both `briefs/ICRR.md` (`--work-id ICRR`)
 and `briefs/ICR.md` (`--work-id ICR`) pointing at
 `worker/chromium-specialist-checklists/in-tree-experimental-code-review-icrr-icr.md`
-and sharing `packets/ICR-code.md`. Use
+and sharing `packets/ICR-code.md`. When `profile.json` sets
+`topology.holistic_polish: true`, also include `Holistic-and-polish thread`
+(`status: spawn`, `tier: standard`, `scope: graph:all-inventory-edges` or
+`graph:none`) in `D01`, generating `briefs/HOL.md` (`--work-id HOL`) with
+Procedure `worker/discovery-checklists/changed-lines-polish.md` and listing
+`mechanical-leads.md` and `context.md` as assigned inputs. Use
 one `graph:all-inventory-edges` row per pass only when it fits; otherwise give
 both passes the same connected-component/budget shards, with every edge
 assigned exactly once per pass. Every generalist shard emits `Specialist
@@ -493,7 +498,7 @@ sequence; any ambiguous, duplicate, stale, or unsupported target blocks the
 whole repair table.
 
 Deliverables:
-- ⟨review-dir⟩/plan.md — two initial generalist passes (sharded when required) plus append-only graph-routed rows, status `spawn` or
+- ⟨review-dir⟩/plan.md — two initial generalist passes (sharded when required), the always-run `Holistic-and-polish thread` when `topology.holistic_polish` is true, plus append-only graph-routed rows, status `spawn` or
   `not applicable — trigger absence proved by ⟨T IDs⟩`, priority batch assignments, in
   the shape from
   ⟨skill-dir⟩/references/worker/templates/plan-md-thread-plan-roster.md. When Transformation

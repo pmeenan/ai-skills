@@ -545,6 +545,13 @@ trusted; the candidate stands unless the browser-side range check exists.
   domain type would express absence or special behavior more safely. Keep a
   sentinel only when default construction, wire format, persistence, or
   interoperability makes it clearly preferable.
+- For every new method on an interface or public class, check that the name
+  states the effect it actually has, not the event that triggers it. If the
+  method's only side effect belongs to a domain (logging, reporting, metrics,
+  caching), and a sibling method names that domain (`DeferFooReporting()`), the
+  pair should be symmetric (`CompleteFooReporting()`, not a generic
+  `OnBarComplete()`). Generic event names on a base interface invite unrelated
+  overrides and hide what wrappers must forward.
 - For time, rate, and size fields, verify that the name communicates the
   semantic unit: total vs additional, round-trip vs one-way, per-item vs
   aggregate, budget vs elapsed, and configured vs observed. If the comment
@@ -722,7 +729,42 @@ dropping them from an otherwise-LGTM review.
   test-only introspection helpers, ask whether the name alone explains the
   invariant. If not, request a brief comment naming what the field means and
   what invalidates or owns it. Prefer a comment on the state group over
-  scattered comments when several fields form one invariant.
+  scattered comments when several fields form one invariant. A new field
+  slipped under an existing comment that describes only its neighbor (for
+  example a new `foo_deferred_` directly beneath `// Whether foo was
+  generated.`) is undocumented, not grouped — the neighbor's comment does not
+  cover the new lifecycle.
+- Enumerate every method newly declared in a changed header — public,
+  protected, private, and overrides of a new or changed interface — and ask
+  whether its name and signature alone convey its contract. Request a concise
+  declaration comment (Google C++ Style "Function Comments") when the method
+  filters or ignores some inputs, is idempotent or one-shot, must be called in
+  a particular order or state, or has side effects the name does not state.
+  Trivial accessors and overrides of an already-documented base method need
+  none.
+- For every method newly defined out of line in a `.cc`, compare its position
+  with its declaration order in the matching `.h`. New definitions should sit
+  between the definitions of their declared neighbors. This is a widely
+  applied Chromium review convention (and an in-tree rule in the internal
+  code-review rule catalog), so report a deviation as an optional P3 nit.
+  Pre-existing disorder elsewhere in the file does not excuse the new code;
+  it only lowers the severity floor — note it in the comment rather than
+  dropping the candidate.
+- Scan new `auto` declarations. Google C++ Style permits `auto` when the type
+  is obvious from context (`std::make_unique<T>()`, casts, iterators, long
+  template types spelled on the right-hand side) or genuinely irrelevant. When
+  the right-hand side is a call whose return type a reader cannot see — in
+  particular smart/weak pointers, `std::optional`, `base::expected`, or
+  containers returned from helpers — request the explicit type.
+- For comments on base classes, shared interfaces, and other foundational
+  APIs, check that the contract is phrased in the layer's own terms. A base
+  interface comment that names one current downstream consumer ("until the
+  CDT wrapper finishes", "called by FooService") couples the contract to that
+  consumer; suggest generic wording with the consumer as an example.
+- Commit message prose: besides the mechanical 72-column scan, check that the
+  description is in complete sentences, that scope statements ("X is out of
+  scope") are sentences rather than fragments, and that the description still
+  matches the final patchset after revisions.
 - Treat boolean naming as a convention lead, not a repository-wide rule.
   Predicate prefixes such as `is_`, `has_`, and `should_` are not universal
   Chromium requirements, and Blink/WebKit guidance does not automatically
@@ -790,3 +832,29 @@ dropping them from an otherwise-LGTM review.
   symbol names and non-overlapping per-file hunks — judged by inspection
   against the file contents, never by applying or compiling it. Suggested
   patches live in the review text; the checkout stays read-only.
+
+### Test-code hygiene (changed test lines)
+
+Test code is reviewed code. Run these on every added or modified test line;
+real hits are optional P3 polish, not blocking.
+
+- **Matchers over boolean collapse.** An assertion that reduces a container or
+  comparison to a bool discards the values on failure. Flag
+  `EXPECT_TRUE(x.empty())` → `EXPECT_THAT(x, testing::IsEmpty())`,
+  `EXPECT_EQ(x.size(), N)` → `testing::SizeIs(N)` / `ElementsAre(...)`,
+  `EXPECT_TRUE(a == b)` → `EXPECT_EQ(a, b)`,
+  `EXPECT_TRUE(base::Contains(c, v))` → `testing::Contains(v)`, and
+  `EXPECT_TRUE(opt.has_value())` followed by a value check →
+  `testing::Optional(...)`. Name every occurrence (file:line list) in one
+  candidate rather than one candidate per line.
+- **Direct includes in tests.** Tests using gMock matchers or `EXPECT_THAT`
+  include `testing/gmock/include/gmock/gmock.h`; tests naming `net::OK` /
+  `net::ERR_*` include `net/base/net_errors.h`; the same holds for every
+  other test helper. A transitive include through a test-util header does not
+  count.
+- **Duplicated setup.** When two or more new tests in one fixture repeat the
+  same multi-line setup (mock sockets, session, transaction start), suggest a
+  fixture helper, keeping scenario-specific values visible at the call site
+  (DAMP, not DRY: extract boilerplate, not the behavior under test).
+- **Test descriptions.** New tests carry a short comment stating the behavior
+  they verify, unless the name already says it.

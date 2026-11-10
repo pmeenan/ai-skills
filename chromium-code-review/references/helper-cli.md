@@ -393,7 +393,14 @@ build-scope-packets.py --worktree W --parent P --revision R [--spec SPEC] [--out
 build-discovery-brief.py --work-id ID [--attempt N] --entry E --procedure P [--pathspec SPEC] [--output OUT] <review-dir>
 build-batch-briefs.py --phase {verification,root-cause} [--plan] [--max-candidates N] [--max-per-batch N] [--max-survivors N] [--max-families-per-batch N] [--schedule-p3] [--attempt N] [--round R] [--seal] <review-dir>
 build-reconciliation.py [--max-survivors N] <review-dir>
+mechanical-leads.sh <parent-sha> <revision-sha> [worktree] [-- <pathspec>...] > <review-dir>/mechanical-leads.md
 ```
+
+`mechanical-leads.sh` runs once in Phase 1, after `build-caller-index.py` and
+before planning; exit `0` is complete, exit `2` means at least one scanner
+failed and the (still useful) artifact is incomplete, exit `1` is a usage or
+git error. `build-initial-plan.py` attaches the artifact to `GSS` and `HOL`
+when it exists.
 
 Run `build-scope-packets.py` (or `build-batch-briefs.py` for Phase 5 `V*` and
 Phase 5.5 `RC*` batches) before sealing, so the scoped code packet and generated

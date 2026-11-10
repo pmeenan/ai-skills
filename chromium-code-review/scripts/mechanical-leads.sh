@@ -226,6 +226,67 @@ echo "Lead only: predicate prefixes are not a Chromium-wide rule. Cite the appli
 echo
 optional_scan grep -E '(^|[^A-Za-z0-9_])bool[[:space:]]+[A-Za-z0-9_]+_[[:space:]]*[;={]' "$ADDED_CC"
 
+section "Added auto declarations (verify the type is obvious from the right-hand side)"
+echo "Lead only: auto is fine for make_unique/casts/iterators/spelled template types. Flag calls whose return type (WeakPtr, optional, expected, containers) is not visible."
+echo
+grep -E '(^|[^A-Za-z0-9_])auto[[:space:]]*[*&]*[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=' "$ADDED_CC" \
+  | grep -vE '=[[:space:]]*(std::make_(unique|shared)|base::MakeRefCounted|base::WrapUnique|std::move\(|(static|reinterpret|const|dynamic)_cast<|new[[:space:]])' \
+  > "$SCAN_OUT" || true
+emit_file "$SCAN_OUT"
+
+section "Boolean-collapsing test assertions (prefer gMock matchers)"
+echo "EXPECT_TRUE(x.empty()) -> EXPECT_THAT(x, IsEmpty()); size()==N -> SizeIs/ElementsAre; TRUE(a == b) -> EXPECT_EQ."
+echo
+grep -E '(EXPECT|ASSERT)_(TRUE|FALSE)\(.*(\.empty\(\)|\.size\(\)|\.contains\(|Contains\(|\.has_value\(\)|[^=!<>]==[^=]|!=)' "$ADDED_CC" \
+  | awk -F: '$1 ~ /(test|tests)[^\/]*\.(cc|mm)$/ || $1 ~ /_unittest\.|_browsertest\.|_test\./ { print }' \
+  > "$SCAN_OUT" || true
+emit_file "$SCAN_OUT"
+grep -E '(EXPECT|ASSERT)_(EQ|NE)\([^,]*\.size\(\)' "$ADDED_CC" \
+  | awk -F: '$1 ~ /(test|tests)[^\/]*\.(cc|mm)$/ || $1 ~ /_unittest\.|_browsertest\.|_test\./ { print }' \
+  > "$SCAN_OUT" || true
+if [[ -s "$SCAN_OUT" ]]; then
+  echo
+  echo "Size comparisons (consider SizeIs/ElementsAre):"
+  emit_file "$SCAN_OUT"
+fi
+
+section "Changed test files using gMock or net error codes without a direct include"
+python3 - "$REPO" "$REV" "$ADDED_CC" > "$SCAN_OUT" 2> "$SCAN_ERR" <<'PYEOF' || true
+import re
+import subprocess
+import sys
+
+repo, rev, added = sys.argv[1], sys.argv[2], sys.argv[3]
+uses = {}
+for line in open(added, encoding="utf-8", errors="surrogateescape"):
+    path = line.split(":", 1)[0]
+    if not re.search(r"(_unittest|_browsertest|_test|test_util)\.(cc|mm)$", path):
+        continue
+    uses.setdefault(path, set())
+    if re.search(r"EXPECT_THAT|ASSERT_THAT|testing::(ElementsAre|IsEmpty|SizeIs|Contains|UnorderedElementsAre|Pointee|Optional|Field|Property|_)\b|\bMOCK_METHOD", line):
+        uses[path].add("gmock")
+    if re.search(r"\bnet::(OK|ERR_[A-Z0-9_]+)\b", line):
+        uses[path].add("net_errors")
+checks = {
+    "gmock": ("testing/gmock/include/gmock/gmock.h", "gMock matchers / EXPECT_THAT"),
+    "net_errors": ("net/base/net_errors.h", "net::OK / net::ERR_*"),
+}
+for path, kinds in sorted(uses.items()):
+    if not kinds:
+        continue
+    try:
+        text = subprocess.check_output(
+            ["git", "-C", repo, "show", f"{rev}:{path}"],
+            text=True, errors="surrogateescape", stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        continue
+    for kind in sorted(kinds):
+        header, what = checks[kind]
+        if f'#include "{header}"' not in text:
+            print(f"{path}: uses {what} in added lines but does not directly include \"{header}\"")
+PYEOF
+emit_file "$SCAN_OUT"
+
 section "Count-returning calls with possibly discarded results (Push/Pull/Write/Send/Read)"
 echo "Partial acceptance is the contract for these APIs; verify each result is consumed."
 echo
@@ -290,7 +351,7 @@ else
   done < "$TMP_SCAN/features"
 fi
 echo
-echo "#### Added `FeatureParam` / `GetFieldTrialParam` reads (verify guard when parent `BASE_FEATURE` is disabled)"
+echo '#### Added `FeatureParam` / `GetFieldTrialParam` reads (verify guard when parent `BASE_FEATURE` is disabled)'
 echo
 optional_scan grep -E 'FeatureParam|GetFieldTrialParam' "$ADDED_CC"
 

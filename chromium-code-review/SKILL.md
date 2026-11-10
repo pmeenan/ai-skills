@@ -607,6 +607,22 @@ writes `callers/index.tsv` plus per-symbol result files, and generates 2-hop
 class lifetime & async hop dossiers under `callers/dossiers/`; discovery threads
 consult those instead of re-running identical searches.
 
+**Then run `scripts/mechanical-leads.sh` directly, before planning** — also
+deterministic, never an agent:
+
+```sh
+cd ⟨pinned worktree⟩ && ⟨skill-dir⟩/scripts/mechanical-leads.sh \
+    ⟨parent sha⟩ ⟨revision sha⟩ ⟨pinned worktree⟩ > ⟨review-dir⟩/mechanical-leads.md
+```
+
+Exit 2 means a scanner failed and the artifact is incomplete; keep it and
+record the gap in `progress.md`. The planner attaches the artifact to `GSS`
+and to the `Holistic-and-polish thread` (`HOL`), which close its rows.
+
+  Measured: no step owned this script under schema 3, so two consecutive
+  rounds of one CL ran without it and missed its commit-message and test-code
+  leads.
+
 ## Phase 2 — Prior-Feedback Reconciliation (follow-up reviews only)
 
 Write the prior review text (from the conversation or wherever the user supplied
@@ -647,7 +663,10 @@ inventory complexity graph fits in a single unsharded pass (`<= 12` edges), run
 directly instead of spawning an LLM Planner agent for the initial round.
 Otherwise spawn the **Planner agent** (brief in `phase-briefs.md`). For profile schema 3
 `evidence-graph-v1`, it starts two independent bounded generalist **passes** over
-all inventory graph edges, plus — when `profile.json` sets
+all inventory graph edges, the always-run **`Holistic-and-polish thread`**
+(`HOL`, whenever `profile.json` sets `topology.holistic_polish: true`; it owns
+changed-line polish, test-code hygiene, declaration comments, and description
+alignment, which no generalist or graph-routed lens covers), plus — when `profile.json` sets
 `internal_code_review.available: true` and `topology.collapsed` is false — the
 `In-Tree Code Review` (`ICR`) roster row paired with its raw runner (`ICRR`
 $\rightarrow$ `ICR`), which executes the in-tree `experimental-code-review`

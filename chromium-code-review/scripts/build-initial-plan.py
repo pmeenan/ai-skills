@@ -10,8 +10,10 @@ Phase 3 thread plan is a deterministic function of:
   3. `inventory.md` (`Trigger inventory` `<PREFIX> hard` specialist triggers)
 
 Instead of spawning an LLM Planner (`PLAN`) agent merely to emit the two
-unsharded generalist rows (`GSS` and `GAI`) plus any `<PREFIX> hard`
-specialist rows, this helper deterministically writes:
+unsharded generalist rows (`GSS` and `GAI`), the always-run
+`Holistic-and-polish thread` (`HOL`, when `profile.json`
+`topology.holistic_polish` is true), plus any `<PREFIX> hard` specialist rows,
+this helper deterministically writes:
   - `plan.md`
   - `packets/<WORK>.spec.tsv` and `packets/<WORK>-code.md` (via
     `build-scope-packets.py`)
@@ -213,6 +215,18 @@ def main() -> int:
             ("In-Tree Code Review", "ICR", graph_scope, "internal-code-review")
         )
 
+    holistic_required = (
+        profile.get("topology", {}).get("holistic_polish") is True
+        and not profile.get("topology", {}).get("collapsed", False)
+    )
+    if holistic_required:
+        plan_table_rows.append(
+            ("Holistic-and-polish thread", graph_scope, "spawn", "standard", "D01")
+        )
+        spawn_units.append(
+            ("Holistic-and-polish thread", "HOL", graph_scope, "holistic")
+        )
+
     for prefix, edges in sorted(hard_triggers.items()):
         roster_name = SPECIALIST_PREFIX_TO_NAME[prefix]
         spec_scope = f"specialist:full; graph:{','.join(sorted(edges))}"
@@ -257,6 +271,7 @@ def main() -> int:
         "GAI": "worker/discovery-checklists/async-and-lifecycle.md",
         "ICRR": "worker/chromium-specialist-checklists/in-tree-experimental-code-review-icrr-icr.md",
         "ICR": "worker/chromium-specialist-checklists/in-tree-experimental-code-review-icrr-icr.md",
+        "HOL": "worker/discovery-checklists/changed-lines-polish.md",
         "TSY": "worker/chromium-specialist-checklists/threading-and-synchronization-tsy.md",
         "OBL": "worker/chromium-specialist-checklists/ownership-and-blink-lifecycle-obl.md",
         "MIS": "worker/chromium-specialist-checklists/mojo-ipc-authorization-and-sandbox-mis.md",
@@ -355,6 +370,20 @@ def main() -> int:
             if (review_dir / "context.md").is_file():
                 assigned_extras.append(
                     f"- `{review_dir / 'context.md'}` (audit external specification compliance, normative contract clauses, and spec-to-code/test alignment)"
+                )
+        if work_id == "HOL":
+            if (review_dir / "mechanical-leads.md").is_file():
+                assigned_extras.append(
+                    f"- `{review_dir / 'mechanical-leads.md'}` (close the commit-message, formatter, non-ASCII, `auto`, test-assertion, and test-include lead sections)"
+                )
+            if (review_dir / "context.md").is_file():
+                assigned_extras.append(
+                    f"- `{review_dir / 'context.md'}` (audit bug alignment, scope, and diff-to-description coverage)"
+                )
+            directory_docs = review_dir / "callers" / "directory-docs.md"
+            if directory_docs.is_file():
+                assigned_extras.append(
+                    f"- `{directory_docs}` (ancestor README/OWNERS/DEPS guidance for idiom and layering checks)"
                 )
         if work_id == "GAI":
             if (review_dir / "context.md").is_file():

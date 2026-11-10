@@ -162,6 +162,7 @@ GENERALIST_ROSTER = (
     "Generalist Adversarial And Integration Discovery",
 )
 INTERNAL_REVIEW_ENTRY = "In-Tree Code Review"
+HOLISTIC_ENTRY = "Holistic-and-polish thread"
 SPECIALIST_LENSES = (
     "Threading And Synchronization",
     "Ownership And Blink Lifecycle",
@@ -188,7 +189,12 @@ MANIFEST_COLUMNS = (
 )
 MANIFEST_TIERS = {"mechanical", "standard", "frontier", "inherit"}
 TIER_ORDER = {"mechanical": 0, "standard": 1, "frontier": 2}
-TIER_FLOOR_STANDARD = {"Mechanical Leads", "Changed-Lines Polish"}
+TIER_FLOOR_STANDARD = {
+    "Mechanical Leads",
+    "Changed-Lines Polish",
+    # Enumeration-heavy; every candidate still passes a frontier skeptic.
+    "Holistic-and-polish thread",
+}
 EVIDENCE_EXCEPTION = re.compile(r"evidence-exception:\s*\S+")
 ROOT_FAMILY = re.compile(r"^RF\d{3,}$")
 OBLIGATIONS = {
@@ -1717,6 +1723,25 @@ def validate_plan(
                 f"plan.md omits roster entry: {INTERNAL_REVIEW_ENTRY} "
                 "(internal experimental-code-review skill is available)"
             )
+    if (
+        adaptive_graph
+        and isinstance(profile, dict)
+        and profile.get("topology", {}).get("holistic_polish") is True
+        and not profile.get("topology", {}).get("collapsed", False)
+    ):
+        holistic_rows = [
+            row for row in roster_rows
+            if plan_row_identity(row["roster entry"])[0] == HOLISTIC_ENTRY
+        ]
+        if not holistic_rows:
+            report.error(
+                f"plan.md omits roster entry: {HOLISTIC_ENTRY} "
+                "(profile.json topology.holistic_polish is true)"
+            )
+        elif not any(row.get("status") == "spawn" for row in holistic_rows):
+            report.error(
+                f"adaptive graph plan requires a spawned {HOLISTIC_ENTRY} row"
+            )
     if adaptive_graph:
         topology_edges: set[str] = set()
         topology_rows: list[dict[str, str]] = []
@@ -2002,7 +2027,10 @@ def validate_plan(
                 )
         for row in roster_rows:
             name, _ = plan_row_identity(row["roster entry"])
-            if name == INTERNAL_REVIEW_ENTRY and row.get("status") == "spawn":
+            if (
+                name in (INTERNAL_REVIEW_ENTRY, HOLISTIC_ENTRY)
+                and row.get("status") == "spawn"
+            ):
                 scope_val = row.get("scope", "")
                 has_all = "graph:all-inventory-edges" in scope_val.lower()
                 has_none = bool(
@@ -2039,7 +2067,11 @@ def validate_plan(
                         f"adaptive row '{row['roster entry']}' scope must cite "
                         "graph:all-inventory-edges, graph:none, or graph:<edge-id(s)>"
                     )
-            if name in ROSTER and row.get("status") == "spawn":
+            if (
+                name in ROSTER
+                and name != HOLISTIC_ENTRY
+                and row.get("status") == "spawn"
+            ):
                 match = re.search(
                     r"(?i)graph:((?:E-[A-Z0-9-]+)(?:,E-[A-Z0-9-]+)*)",
                     row.get("scope", ""),
