@@ -8,6 +8,9 @@ challenge rounds, and freshness-safe delivery; worker content rules remain in
 
 ## Phase 7 — Draft Review
 
+**Self-review:** skip this phase; `build-reconciliation.py` already wrote
+the draft, fragments, and `output-coverage.tsv` in Phase 6.
+
 First set an **agent input budget**. If the harness exposes context capacity,
 the assigned artifacts plus required reference sections may consume at most
 35% of it, using a tokenizer when available and a conservative four-bytes-per-

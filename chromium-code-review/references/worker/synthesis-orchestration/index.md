@@ -10,6 +10,6 @@ preamble, so its rules travel with every section.
 
 | section | file | source lines |
 | --- | --- | --- |
-| Phase 7 — Draft Review | phase-7-draft-review.md | 48 |
-| Phase 8 — Synthesis Challenge | phase-8-synthesis-challenge.md | 42 |
+| Phase 7 — Draft Review | phase-7-draft-review.md | 51 |
+| Phase 8 — Synthesis Challenge | phase-8-synthesis-challenge.md | 44 |
 | Phase 9 — Delivery | phase-9-delivery.md | 76 |

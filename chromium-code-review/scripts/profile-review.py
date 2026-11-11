@@ -491,6 +491,48 @@ EQUIVALENT_REVIEWER_DOMAINS = frozenset({"chromium.org", "google.com"})
 DIRECTIVE_REVIEWER_EMAIL_RE = re.compile(
     r"(?im)^-\s*Reviewer email:\s*(.+?)\s*$"
 )
+DIRECTIVE_SELF_REVIEW_RE = re.compile(
+    r"(?im)^-\s*Self-review:\s*(true|yes|1|false|no|0)\b"
+)
+DIRECTIVE_MODE_SELF_REVIEW_RE = re.compile(
+    r"(?im)^-\s*Mode:\s*self[- ]review\b"
+)
+OWNER_EMAIL_ANGLE_RE = re.compile(r"<([^<>@\s]+@[^<>@\s]+)>")
+
+
+def extract_owner_email(fields: dict[str, str], detail: dict[str, Any] | None = None) -> str:
+    """Extract CL owner email from `detail.json` or `pin.md` (`- Owner:`)."""
+    if isinstance(detail, dict):
+        owner_obj = detail.get("owner")
+        if isinstance(owner_obj, dict):
+            raw = str(owner_obj.get("email") or "").strip()
+            if raw and raw != "?":
+                return raw
+    pin_owner = fields.get("Owner", "").strip()
+    if pin_owner:
+        angle = OWNER_EMAIL_ANGLE_RE.search(pin_owner)
+        if angle:
+            return angle.group(1).strip()
+        if "@" in pin_owner and " " not in pin_owner:
+            return pin_owner
+    return ""
+
+
+def resolve_self_review_directive(review_dir: Path) -> bool | None:
+    """Return explicit `True`/`False` if `directives.md` sets self-review mode, else `None`."""
+    directives_path = review_dir / "directives.md"
+    if not directives_path.is_file():
+        return None
+    try:
+        directives_text = directives_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = DIRECTIVE_SELF_REVIEW_RE.search(directives_text)
+    if match:
+        return match.group(1).lower() in {"true", "yes", "1"}
+    if DIRECTIVE_MODE_SELF_REVIEW_RE.search(directives_text):
+        return True
+    return None
 
 
 def expand_reviewer_emails(raw_spec: str) -> tuple[list[str], set[str]]:
@@ -513,9 +555,12 @@ def expand_reviewer_emails(raw_spec: str) -> tuple[list[str], set[str]]:
 
 
 def resolve_reviewer_email_spec(
-    review_dir: Path, fields: dict[str, str]
+    review_dir: Path,
+    fields: dict[str, str],
+    worktree: Path | None = None,
+    has_owner_metadata: bool = False,
 ) -> tuple[str | None, str, set[str]]:
-    """Resolve reviewer email spec from env, `directives.md`, or `pin.md`."""
+    """Resolve reviewer email spec from env, `directives.md`, `pin.md`, or `git config user.email`."""
     env_raw = os.environ.get("CHROMIUM_REVIEWER_EMAIL", "").strip()
     configured, accepted = expand_reviewer_emails(env_raw)
     if configured:
@@ -537,6 +582,19 @@ def resolve_reviewer_email_spec(
     configured, accepted = expand_reviewer_emails(pin_raw)
     if configured:
         return ", ".join(configured), "pin.md", accepted
+
+    if has_owner_metadata and worktree is not None and worktree.is_dir():
+        git_email = subprocess.run(
+            ["git", "-C", str(worktree), "config", "user.email"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+        configured, accepted = expand_reviewer_emails(git_email)
+        if configured:
+            return ", ".join(configured), "git:user.email", accepted
+
     return None, "none", set()
 
 
@@ -547,9 +605,34 @@ def reviewer_history(
     revision: str = "",
 ) -> tuple[dict[str, Any], list[dict[str, Any]] | None]:
     fields = fields or {}
+    detail_path = review_dir / "detail.json"
+    detail_obj: dict[str, Any] | None = None
+    if detail_path.is_file():
+        loaded = read_json_xssi(detail_path)
+        if isinstance(loaded, dict):
+            detail_obj = loaded
+
+    owner_raw = extract_owner_email(fields, detail_obj)
+    _, expanded_owner = expand_reviewer_emails(owner_raw)
     reviewer_email, email_source, accepted_emails = resolve_reviewer_email_spec(
-        review_dir, fields
+        review_dir,
+        fields,
+        worktree=worktree,
+        has_owner_metadata=bool(owner_raw),
     )
+    directive_self = resolve_self_review_directive(review_dir)
+    pin_self = fields.get("Self-review", "").strip().lower()
+    if directive_self is not None:
+        is_self_review = directive_self
+    elif pin_self in {"yes", "true", "1"}:
+        is_self_review = True
+    elif pin_self in {"no", "false", "0"}:
+        is_self_review = False
+    else:
+        is_self_review = bool(
+            accepted_emails and expanded_owner and (accepted_emails & expanded_owner)
+        )
+
     raw_ps = fields.get("Pinned patchset", "").strip()
     pinned_ps = int(raw_ps) if raw_ps.isdigit() else None
 
@@ -558,49 +641,51 @@ def reviewer_history(
     sha_by_ps: dict[int, str] = {}
     matched_emails: set[str] = set()
     unmatched_prior_authors: set[str] = set()
-    owner_emails: set[str] = set()
+    owner_emails: set[str] = expanded_owner - accepted_emails
 
-    detail_path = review_dir / "detail.json"
-    if detail_path.is_file():
-        detail = read_json_xssi(detail_path)
-        if isinstance(detail, dict):
-            owner_obj = detail.get("owner")
-            if isinstance(owner_obj, dict):
-                owner_raw = str(owner_obj.get("email") or "").strip()
-                _, expanded_owner = expand_reviewer_emails(owner_raw)
-                owner_emails = expanded_owner - accepted_emails
-            revisions = detail.get("revisions")
-            if isinstance(revisions, dict):
-                for sha, rev_info in revisions.items():
-                    if isinstance(sha, str) and isinstance(rev_info, dict):
-                        num = rev_info.get("_number")
-                        if isinstance(num, int):
-                            sha_by_ps[num] = sha
-            messages = detail.get("messages")
-            if accepted_emails and pinned_ps is not None and isinstance(messages, list):
-                for msg in messages:
-                    if not isinstance(msg, dict):
-                        continue
-                    tag = str(msg.get("tag") or "")
-                    if tag.startswith("autogenerated:"):
-                        continue
-                    rev_num = msg.get("_revision_number")
-                    author = msg.get("author")
-                    author_email = (
-                        str(author.get("email") or "").strip().lower()
-                        if isinstance(author, dict)
-                        else ""
-                    )
-                    if (
-                        isinstance(rev_num, int)
-                        and rev_num < pinned_ps
-                        and author_email in accepted_emails
-                    ):
-                        prior_ps_set.add(rev_num)
-                        matched_emails.add(author_email)
+    if detail_obj is not None:
+        revisions = detail_obj.get("revisions")
+        if isinstance(revisions, dict):
+            for sha, rev_info in revisions.items():
+                if isinstance(sha, str) and isinstance(rev_info, dict):
+                    num = rev_info.get("_number")
+                    if isinstance(num, int):
+                        sha_by_ps[num] = sha
+        messages = detail_obj.get("messages")
+        if (
+            not is_self_review
+            and accepted_emails
+            and pinned_ps is not None
+            and isinstance(messages, list)
+        ):
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                tag = str(msg.get("tag") or "")
+                if tag.startswith("autogenerated:"):
+                    continue
+                rev_num = msg.get("_revision_number")
+                author = msg.get("author")
+                author_email = (
+                    str(author.get("email") or "").strip().lower()
+                    if isinstance(author, dict)
+                    else ""
+                )
+                if (
+                    isinstance(rev_num, int)
+                    and rev_num < pinned_ps
+                    and author_email in accepted_emails
+                ):
+                    prior_ps_set.add(rev_num)
+                    matched_emails.add(author_email)
 
     comments_path = review_dir / "comments.json"
-    if accepted_emails and pinned_ps is not None and comments_path.is_file():
+    if (
+        not is_self_review
+        and accepted_emails
+        and pinned_ps is not None
+        and comments_path.is_file()
+    ):
         comments = read_json_xssi(comments_path)
         if isinstance(comments, dict):
             for entries in comments.values():
@@ -649,7 +734,8 @@ def reviewer_history(
     posted_count = sum(len(ids) for ids in normalized_ids_by_ps.values())
     identity_warning: str | None = None
     if (
-        accepted_emails
+        not is_self_review
+        and accepted_emails
         and not prior_patchsets
         and posted_count == 0
         and unmatched_prior_authors
@@ -677,6 +763,8 @@ def reviewer_history(
         {
             "reviewer_email": reviewer_email,
             "reviewer_email_source": email_source,
+            "owner_email": owner_raw or None,
+            "self_review": is_self_review,
             "matched_reviewer_emails": sorted(matched_emails),
             "unmatched_prior_comment_authors": sorted(unmatched_prior_authors),
             "identity_warning": identity_warning,
@@ -929,6 +1017,17 @@ def markdown(profile: dict[str, Any]) -> str:
         f"- Unresolved / malformed comment threads: {profile['prior_context']['unresolved_threads']} / {profile['prior_context']['malformed_entries']}",
         *(
             [
+                "- Self-review: **yes** "
+                "(CL owner matches reviewer identity; report refinement, synthesis challenge, and Gerrit comment formatting skipped)"
+            ]
+            if profile.get("self_review")
+            or profile["prior_context"]
+            .get("reviewer_history", {})
+            .get("self_review")
+            else []
+        ),
+        *(
+            [
                 "- Same-reviewer follow-up: "
                 f"round {profile['prior_context']['reviewer_history']['review_round']} "
                 "(prior reviewed: "
@@ -1084,10 +1183,22 @@ def main() -> int:
         args.check
         and isinstance(existing, dict)
         and isinstance(existing.get("prior_context"), dict)
-        and "reviewer_history" not in existing["prior_context"]
     ):
-        context.pop("reviewer_history", None)
-        computed_interdiff_hunks = None
+        if "reviewer_history" not in existing["prior_context"]:
+            context.pop("reviewer_history", None)
+            computed_interdiff_hunks = None
+        elif isinstance(existing["prior_context"].get("reviewer_history"), dict):
+            existing_rh = existing["prior_context"]["reviewer_history"]
+            if isinstance(context.get("reviewer_history"), dict):
+                if "self_review" not in existing_rh:
+                    context["reviewer_history"].pop("self_review", None)
+                if "owner_email" not in existing_rh:
+                    context["reviewer_history"].pop("owner_email", None)
+    is_self_review = bool(
+        context.get("reviewer_history", {}).get("self_review")
+        if isinstance(context.get("reviewer_history"), dict)
+        else False
+    )
     patch_bytes = len(patch.encode("utf-8"))
     effort, reasons, micro, trivial_code = choose_effort(
         files, hunks, surfaces, signals, triggers, context, patch_bytes, worker_budget
@@ -1104,6 +1215,7 @@ def main() -> int:
         }
     profile = {
         "schema_version": 3,
+        "self_review": is_self_review,
         "effort": effort,
         "effort_reasons": reasons,
         "micro_eligibility": micro,
@@ -1185,6 +1297,9 @@ def main() -> int:
         # The single collapsed discovery thread also runs the polish checklist.
         profile["topology"]["holistic_polish"] = False
         profile["topology"]["max_challenge_rounds"] = 1
+    if is_self_review:
+        profile["topology"]["self_review"] = True
+        profile["topology"]["max_challenge_rounds"] = 0
     tier_budgets = {"frontier": 1048576, "standard": 1048576}
     tier_tokens = {}
     for item in args.tier_context_window_tokens:
@@ -1240,6 +1355,12 @@ def main() -> int:
         and "internal_code_review" not in existing
     ):
         profile.pop("internal_code_review", None)
+    if (
+        args.check
+        and isinstance(existing, dict)
+        and "self_review" not in existing
+    ):
+        profile.pop("self_review", None)
 
     encoded = json.dumps(profile, indent=2, sort_keys=True) + "\n"
     if args.stdout:

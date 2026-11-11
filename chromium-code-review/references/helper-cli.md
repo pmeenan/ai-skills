@@ -392,7 +392,7 @@ build-initial-plan.py [--worktree W] [--max-unsharded-edges N] <review-dir>
 build-scope-packets.py --worktree W --parent P --revision R [--spec SPEC] [--output OUT] <review-dir> <work_id>
 build-discovery-brief.py --work-id ID [--attempt N] --entry E --procedure P [--pathspec SPEC] [--output OUT] <review-dir>
 build-batch-briefs.py --phase {verification,root-cause} [--plan] [--max-candidates N] [--max-per-batch N] [--max-survivors N] [--max-families-per-batch N] [--schedule-p3] [--attempt N] [--round R] [--seal] <review-dir>
-build-reconciliation.py [--max-survivors N] <review-dir>
+build-reconciliation.py [--max-survivors N] [--self-review|--no-self-review] <review-dir>
 mechanical-leads.sh <parent-sha> <revision-sha> [worktree] [-- <pathspec>...] > <review-dir>/mechanical-leads.md
 ```
 
@@ -412,7 +412,12 @@ without spawning `VPLAN`, `IAR`, or `RCPLAN` subagents, and exits `0` cleanly
 when all root-cause triggers and non-risky `P3` families close as
 `not applicable`. `build-reconciliation.py` deterministically builds
 `reconciliation.md`, `synthesis/index.md`, and `synthesis/<ROW-ID>.md` cards when
-surviving unmerged verdicts are `<= 8`.
+surviving unmerged verdicts are `<= 8`. In self-review mode (auto-detected from
+`pin.md` / `directives.md` / `profile.json`, or forced with `--self-review`) the
+survivor cap is lifted and it also writes the final `draft-review.md`,
+`draft-parts/*.md`, `output-coverage.tsv` (Gerrit columns `-`), and a stub
+`gerrit-comments.md`; `refresh-delivery-gate.py` then accepts a missing
+`challenge.md` and ignores Gerrit comment staleness.
 
 `build-batch-briefs.py` reads the canonical `## Batches` tables in the
 verification/root-cause templates. Root-cause membership uses

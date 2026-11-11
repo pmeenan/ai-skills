@@ -8,6 +8,8 @@ challenge rounds, and freshness-safe delivery; worker content rules remain in
 
 ## Phase 8 — Synthesis Challenge
 
+**Self-review:** skip this phase (`topology.max_challenge_rounds: 0`).
+
 Partition the draft and record into shards that fit the same agent input
 budget. For a bounded draft requiring only one content/structural shard,
 mechanically render the one-row plan/index at `challenge/round-<N>/index.md` (listing reconciliation row tokens `row:<ID>` under `expected coverage`) and spawn the independent challenger

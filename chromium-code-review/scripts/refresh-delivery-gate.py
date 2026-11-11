@@ -321,12 +321,47 @@ def current_data(detail: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
     return str(current["_number"]), str(current_sha), revisions
 
 
+def is_self_review(root: Path) -> bool:
+    """True when the review is a self-review (reviewer authored the CL)."""
+    directives = root / "directives.md"
+    if directives.is_file():
+        text = directives.read_text(encoding="utf-8", errors="replace")
+        m = re.search(r"(?im)^-\s*Self-review:\s*(true|false|yes|no|1|0)\b", text)
+        if m:
+            return m.group(1).lower() in {"true", "yes", "1"}
+        if re.search(r"(?im)^-\s*Mode:\s*[^\r\n]*\bself[- ]review\b", text):
+            return True
+    profile = root / "profile.json"
+    if profile.is_file():
+        try:
+            data = json.loads(profile.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = None
+        if isinstance(data, dict):
+            if data.get("self_review") is True:
+                return True
+            topology = data.get("topology")
+            if isinstance(topology, dict) and topology.get("self_review") is True:
+                return True
+    for name in ("pin.md", "draft-review.md"):
+        path = root / name
+        if path.is_file() and re.search(
+            r"(?im)^-\s*Self-review:\s*(?:yes|true|1)\b",
+            path.read_text(encoding="utf-8", errors="replace"),
+        ):
+            return True
+    return False
+
+
 def challenge_proof(root: Path) -> tuple[str, str] | None:
     draft = (root / "draft-review.md").read_text(encoding="utf-8") if (root / "draft-review.md").is_file() else ""
     draft_revision = fields(draft).get("Draft revision", "")
     pointer_text = (root / "challenge.md").read_text(encoding="utf-8") if (root / "challenge.md").is_file() else ""
     pointer = re.search(r"challenge/round-(\d+)/index\.md", pointer_text)
     if not pointer:
+        # Self-reviews skip the Phase 8 challenge; the draft itself is the proof.
+        if draft_revision and is_self_review(root):
+            return draft_revision, "self-review (challenge skipped)"
         return None
     index_path = root / pointer.group(0)
     if not index_path.is_file():
@@ -364,7 +399,7 @@ def freshness_replacement(root: Path, result: str) -> tuple[str, str] | None:
     if not path.is_file():
         return None
     original = path.read_text(encoding="utf-8")
-    pattern = re.compile(r"^2\.\s+(?:\*\*)?Freshness:(?:\*\*)?\s*.*$", re.MULTILINE)
+    pattern = re.compile(r"^2\.\s+(?:\*\*)?Freshness(?: gate)?:(?:\*\*)?\s*.*$", re.MULTILINE)
     matches = list(pattern.finditer(original))
     if len(matches) != 1:
         return None
@@ -426,6 +461,10 @@ def main() -> int:
             refresh_comment_threads(root, live_comments)
             if live_comments is not None else None
         )
+        if comment_staleness and is_self_review(root):
+            # Nothing is posted to Gerrit in a self-review, so new comment
+            # activity cannot make the output stale.
+            comment_staleness = None
         if mode == "historical":
             result = "historical pin verified"
             reason = f"pinned PS{pinned_ps}/SHA mapping remains present; current is PS{current_ps}"

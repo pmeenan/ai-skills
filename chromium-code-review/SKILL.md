@@ -349,6 +349,19 @@ orchestrator never loads these):
   lifecycle, threading, and performance without flagging absent tests.
 - **Short summary:** honor the shorter format, but still pin the patchset and
   disclose important unverified areas.
+- **Self-review (automatic):** when the reviewer's email (`git config
+  user.email`, `- Reviewer email:` in `directives.md`, or
+  `CHROMIUM_REVIEWER_EMAIL`) matches the CL owner (`detail.json:/owner/email`,
+  with `@chromium.org` ↔ `@google.com` treated as equal), `fetch-cl.sh` and
+  `pin-local.sh` write `- Self-review: yes` to `pin.md` and `profile-review.py`
+  sets `self_review: true` and `topology.max_challenge_rounds: 0`. Override with
+  `- Self-review: true|false` in `directives.md`. Self-review output is never
+  posted to Gerrit, so it keeps **full rigor through Phase 6** (discovery,
+  collection audit, verification, root-cause) but skips report refinement:
+  `build-reconciliation.py` writes `draft-review.md`, `draft-parts/`,
+  `output-coverage.tsv`, and a stub `gerrit-comments.md` directly; skip Phase 7
+  drafting workers and the Phase 8 challenge, and go straight to Phase 9. See
+  [Self-review fast path](#self-review-fast-path).
 
 Record the mode and any user directives (scope limits, format requests,
 prior-review text location, skip-test-coverage flag, model-tier/cost preference
@@ -746,6 +759,19 @@ Execute the Phase 6 section of `references/execution-orchestration.md`: the
 reconciliation table with one disposition per row, the merge-equivalence rules,
 and the per-finding synthesis evidence cards that are the handoff into drafting.
 
+### Self-review fast path
+
+When `pin.md`, `directives.md`, or `profile.json` marks the review as a
+self-review, run `scripts/build-reconciliation.py ⟨review-dir⟩` directly
+regardless of survivor count (the `--max-survivors` cap does not apply; never
+spawn the `RB` agent). Its outputs are the final draft: do **not** spawn
+Draft Writer, finding-writer, frame, assembly, or challenge workers, and do not
+polish prose or format Gerrit inline comments. Proceed to Phase 9:
+`refresh-delivery-gate.py` accepts the missing `challenge.md` and ignores new
+Gerrit comment activity, and `validate-review-dir.py --phase final` skips the
+challenge, Gerrit-fragment, thread-reply, and report-verifier prose checks.
+Present the findings to the user tersely; nothing is posted.
+
 ## Phase 7 — Draft Review
 
 Load `references/synthesis-orchestration.md` and execute its Phase 7 section. It
@@ -761,6 +787,8 @@ sketch. Final validation checks applicable targets against the pinned revision
 and changed-side hunks, not just their Markdown shape.
 
 ## Phase 8 — Synthesis Challenge
+
+Skipped entirely for self-reviews (`topology.max_challenge_rounds: 0`).
 
 Execute Phase 8 in `references/synthesis-orchestration.md`: shard the challenge,
 collect an immutable complete round, revise only through a worker, and

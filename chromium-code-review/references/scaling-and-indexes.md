@@ -302,7 +302,8 @@ Fast paths remove mechanical control-plane agents, never analytical coverage:
 - When surviving unmerged verdicts are `<= 8`, run
   `scripts/build-reconciliation.py <review-dir>` directly instead of spawning an
   LLM `RB` subagent to build `reconciliation.md`, `synthesis/index.md`, and
-  `synthesis/<ROW-ID>.md`.
+  `synthesis/<ROW-ID>.md`. For a self-review, run it at any survivor count; it
+  also emits the final draft and Phases 7–8 are skipped.
 - When a challenge fits one bounded shard, render its brief/index
   mechanically, run one independent challenger, and finalize the index
   deterministically. Never skip the challenger.

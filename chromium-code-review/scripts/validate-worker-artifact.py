@@ -708,7 +708,16 @@ def report_fragment_check(
     artifact: Path,
     is_gerrit: bool,
 ) -> None:
-    if WorktreeCorpus is not None and verify_fragment_text is not None:
+    # Self-review output is never posted to Gerrit; skip prose/quote nitpicks.
+    self_review = any(
+        (root / name).is_file() and re.search(
+            r"(?im)^-\s*Self-review:\s*(?:yes|true|1)\b",
+            (root / name).read_text(encoding="utf-8", errors="replace"),
+        )
+        for name in ("pin.md", "directives.md", "draft-review.md")
+    )
+    if (not self_review and WorktreeCorpus is not None
+            and verify_fragment_text is not None):
         corpus = WorktreeCorpus.load(root)
         errors = verify_fragment_text(
             corpus,

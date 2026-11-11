@@ -495,6 +495,8 @@ lines.extend([
     f"- Subject: {one_line(detail.get('subject', ''))}",
     f"- Status: {one_line(detail.get('status', 'LOCAL'))}",
     f"- Owner: {one_line(owner.get('name', 'Developer'))} <{one_line(owner.get('email', 'developer@chromium.org'))}>",
+    f"- Reviewer email: {one_line(owner.get('email', 'developer@chromium.org'))}",
+    "- Self-review: yes",
     f"- Updated: {one_line(detail.get('updated', ''))}",
     f"- Pinned patchset: {ps}",
     f"- Revision SHA: {sha}",

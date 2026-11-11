@@ -574,6 +574,25 @@ reviewer_email = subprocess.run(
     text=True, encoding="utf-8", errors="surrogateescape"
 ).stdout.strip()
 
+def expand_email_aliases(email_str):
+    addr = str(email_str or "").strip().lower()
+    if not addr or "@" not in addr:
+        return set()
+    out = {addr}
+    local, domain = addr.rsplit("@", 1)
+    if domain == "chromium.org":
+        out.add(f"{local}@google.com")
+    elif domain == "google.com":
+        out.add(f"{local}@chromium.org")
+    return out
+
+owner_email = one_line(owner.get("email", ""))
+is_self_review = bool(
+    reviewer_email
+    and owner_email
+    and (expand_email_aliases(reviewer_email) & expand_email_aliases(owner_email))
+)
+
 is_current = "yes" if ps == current_ps else "no"
 current_sha = detail.get("current_revision", "")
 fetched_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -585,6 +604,8 @@ lines.extend([
 ])
 if reviewer_email:
     lines.append(f"- Reviewer email: {one_line(reviewer_email)}")
+if is_self_review:
+    lines.append("- Self-review: yes")
 lines.extend([
     f"- Updated: {one_line(detail.get('updated', ''))}",
     f"- Pinned patchset: {ps}",

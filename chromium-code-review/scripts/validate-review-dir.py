@@ -48,6 +48,40 @@ except ImportError:
 
 PHASES = {"pin": 0, "collection": 1, "verification": 2,
           "reconciliation": 3, "final": 4}
+
+
+def is_self_review(root: Path) -> bool:
+    """True when the reviewer authored the CL (output is never posted to Gerrit)."""
+    directives = root / "directives.md"
+    if directives.is_file():
+        text = directives.read_text(encoding="utf-8", errors="replace")
+        match = re.search(
+            r"(?im)^-\s*Self-review:\s*(true|false|yes|no|1|0)\b", text
+        )
+        if match:
+            return match.group(1).lower() in {"true", "yes", "1"}
+        if re.search(r"(?im)^-\s*Mode:\s*[^\r\n]*\bself[- ]review\b", text):
+            return True
+    profile = root / "profile.json"
+    if profile.is_file():
+        try:
+            data = json.loads(profile.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = None
+        if isinstance(data, dict):
+            if data.get("self_review") is True:
+                return True
+            topology = data.get("topology")
+            if isinstance(topology, dict) and topology.get("self_review") is True:
+                return True
+    for name in ("pin.md", "draft-review.md"):
+        path = root / name
+        if path.is_file() and re.search(
+            r"(?im)^-\s*Self-review:\s*(?:yes|true|1)\b",
+            path.read_text(encoding="utf-8", errors="replace"),
+        ):
+            return True
+    return False
 ROW_ID_TEXT = r"(?:[A-Z][A-Z0-9]*-\d+|R\d+-RC\d+-\d+)"
 ROW_ID = re.compile(rf"^{ROW_ID_TEXT}$")
 CITATION = re.compile(r"(?:^|[\s`(\[])([A-Za-z0-9_.+@{}\-/]+):\d+")
@@ -5761,7 +5795,8 @@ def validate_synthesis(
         report.error(
             f"reconciliation {kind} {item} for row {owner} has no synthesis card"
         )
-    if len(cards) > 12 or (worker_budget is not None and total_bytes > worker_budget):
+    if (len(cards) > 12 or (worker_budget is not None and total_bytes > worker_budget)) \
+            and not (is_self_review(root) and (root / "draft-review.md").is_file()):
         parts = root / "draft-parts"
         assembly = root / "draft-assembly" / "manifest.md"
         if not parts.is_dir() or not any(parts.glob("*.md")):
@@ -5896,7 +5931,12 @@ def validate_output_coverage(
         return
 
     seen: set[str] = set()
-    corpus = WorktreeCorpus.load(root) if WorktreeCorpus is not None else None
+    self_review = is_self_review(root)
+    # Self-review output is never posted, so skip the prose/quote verifier.
+    corpus = (
+        WorktreeCorpus.load(root)
+        if WorktreeCorpus is not None and not self_review else None
+    )
     frame_path = root / "draft-parts" / "FRAME.md"
     if frame_path.is_file() and corpus is not None and verify_fragment_text is not None:
         for err in verify_fragment_text(
@@ -6156,7 +6196,25 @@ def validate_output_coverage(
             and row["gerrit_bytes"] == "-"
             and row["gerrit_sha256"] == "-"
         )
-        if expected_kind == "finding" and is_preexisting_finding and gerrit_omitted:
+        if expected_kind == "finding" and self_review and gerrit_omitted:
+            if draft_fragment is not None:
+                decision = SUGGESTED_EDIT_FIELD.search(draft_text)
+                if decision is None:
+                    report.error(
+                        f"output coverage {item} draft fragment lacks a non-empty "
+                        "'Suggested edit' field"
+                    )
+                else:
+                    card_decision = card_suggestions.get(item)
+                    if card_decision is not None and (
+                        decision.group(1).lower() != card_decision[0]
+                        or decision.group(2).strip() != card_decision[1]
+                    ):
+                        report.error(
+                            f"output coverage {item} Suggested edit decision "
+                            "differs from its synthesis card"
+                        )
+        elif expected_kind == "finding" and is_preexisting_finding and gerrit_omitted:
             if draft_fragment is not None:
                 decision = SUGGESTED_EDIT_FIELD.search(draft_text)
                 if decision is None:
@@ -6597,7 +6655,9 @@ def validate_final(root: Path, sha: str | None, source_ids: dict[str, Path],
         report.error("draft-review.md contains a local filesystem path or file:// URL")
     if contains_local_path_url_or_placeholder(gerrit):
         report.error("gerrit-comments.md contains a local path/URL or placeholder inline")
-    validate_gerrit_thread_replies(root, gerrit, report, draft)
+    self_review = is_self_review(root)
+    if not self_review:
+        validate_gerrit_thread_replies(root, gerrit, report, draft)
     validate_output_coverage(root, synthesis_items, draft, gerrit, report)
     sections = validate_draft_sections(
         root, draft_revision, budgets.get("worker_input_budget_bytes"), report
@@ -6659,9 +6719,21 @@ def validate_final(root: Path, sha: str | None, source_ids: dict[str, Path],
                 "trivial-delta draft does not state the delivered Gerrit-current patchset"
             )
 
-    challenge_pointer = read_text(root / "challenge.md", report)
+    skip_challenge = self_review and not (root / "challenge.md").exists()
+    if skip_challenge:
+        checked_revision = field(delivery_text, "Checked after challenge revision") or ""
+        if checked_revision != draft_revision:
+            report.error(
+                f"{delivery.name} self-review revision {checked_revision or 'missing'} "
+                f"does not match draft revision {draft_revision or 'missing'}"
+            )
+    challenge_pointer = (
+        "" if skip_challenge else read_text(root / "challenge.md", report)
+    )
     pointer = re.search(r"challenge/round-(\d+)/index\.md", challenge_pointer)
-    if not pointer:
+    if skip_challenge:
+        pass
+    elif not pointer:
         report.error("challenge.md does not point to a completed round index")
     else:
         index_path = root / pointer.group(0)

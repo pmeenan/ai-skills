@@ -15,12 +15,19 @@ This helper writes:
   - `reconciliation.md` (covering 100% of canonical rows, `## Merge equivalence`,
     and the 13-item `## Pre-output gate`)
 and refreshes `indexes/` via `build-review-indexes.py`.
+
+In self-review mode (the reviewer authored the CL; detected from
+`directives.md`, `profile.json`, or `pin.md`, or forced with `--self-review`)
+the survivor cap is lifted and the helper also writes `draft-parts/*.md`,
+`draft-review.md`, `output-coverage.tsv`, and a stub `gerrit-comments.md`, so
+Phase 7 drafting and the Phase 8 challenge are skipped.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -226,19 +233,339 @@ def load_rc_decisions(
     return canonical_by_family, rc_summaries
 
 
+def resolve_self_review(
+    review_dir: Path,
+    prof: dict[str, Any] | None,
+    pin_text: str,
+    cli_override: bool | None = None,
+) -> bool:
+    """Detect whether the review is a self-review of a CL authored by the reviewer."""
+    if cli_override is not None:
+        return cli_override
+    directives_path = review_dir / "directives.md"
+    if directives_path.is_file():
+        directives_text = directives_path.read_text(
+            encoding="utf-8", errors="replace"
+        )
+        m = re.search(
+            r"(?im)^-\s*Self-review:\s*(true|false|yes|no|1|0)\b",
+            directives_text,
+        )
+        if m:
+            return m.group(1).strip().lower() in {"true", "yes", "1"}
+        if re.search(
+            r"(?im)^-\s*Mode:\s*[^\r\n]*\bself[- ]review\b", directives_text
+        ):
+            return True
+    if isinstance(prof, dict):
+        if prof.get("self_review") is True:
+            return True
+        topo = prof.get("topology")
+        if isinstance(topo, dict) and topo.get("self_review") is True:
+            return True
+        rev_hist = prof.get("prior_context", {}).get("reviewer_history", {})
+        if isinstance(rev_hist, dict) and rev_hist.get("self_review") is True:
+            return True
+    if re.search(r"(?im)^-\s*Self-review:\s*(?:yes|true|1)\b", pin_text):
+        return True
+    return False
+
+
+def strip_local_paths(text: str, worktree: str = "") -> str:
+    """Remove local filesystem paths and file:// URLs from draft report text."""
+    cleaned = text or ""
+    if worktree:
+        wt = worktree.rstrip("/")
+        if wt:
+            cleaned = cleaned.replace(wt + "/", "").replace(wt, "worktree")
+    cleaned = re.sub(r"file://[^\s)\]`\"']*", "local-ref", cleaned)
+    cleaned = re.sub(
+        r"/(?:tmp|home|usr/local|codereview/worktrees)/[^\s)\]`\"']*",
+        lambda m: Path(m.group(0)).name or "local-path",
+        cleaned,
+    )
+    return cleaned
+
+
+def write_self_review_outputs(
+    review_dir: Path,
+    pin_text: str,
+    finding_items: list[dict[str, Any]],
+    question_items: list[dict[str, Any]],
+    unreviewed_candidates: set[str],
+    total_candidates: int,
+    total_verdicts: int,
+) -> None:
+    """Deterministically write Phase 7 draft/Gerrit/coverage artifacts for self-reviews."""
+    parts_dir = review_dir / "draft-parts"
+    parts_dir.mkdir(parents=True, exist_ok=True)
+    for old_part in parts_dir.glob("*.md"):
+        old_part.unlink()
+
+    pin_hdr = re.search(
+        r"(?im)^#\s*CL\s+(\S+)\s*(?:—|--|-)\s*patchset\s+(\d+)\b", pin_text
+    )
+    cl_num = pin_hdr.group(1) if pin_hdr else "local"
+    ps_num = pin_hdr.group(2) if pin_hdr else "1"
+    ps_field = re.search(r"(?im)^-\s*Patchset:\s*(\d+)\b", pin_text)
+    if ps_field and not pin_hdr:
+        ps_num = ps_field.group(1)
+    sha_match = re.search(r"(?im)^-\s*Revision SHA:\s*(\S+)", pin_text)
+    rev_sha = sha_match.group(1).strip() if sha_match else "unknown"
+    wt_match = re.search(r"(?im)^-\s*Worktree:\s*(\S[^\r\n]*)", pin_text)
+    worktree = wt_match.group(1).strip() if wt_match else ""
+
+    coverage_rows: list[tuple[str, str, str, int, str]] = []
+    finding_fragments: list[str] = []
+    question_fragments: list[str] = []
+
+    for f_meta in finding_items:
+        item_id = f_meta["item_id"]
+        sev = strip_local_paths(f_meta["sev"], worktree)
+        loc = strip_local_paths(f_meta["loc"], worktree)
+        claim = strip_local_paths(f_meta["claim"], worktree)
+        vid = f_meta["vid"]
+        ev_excerpt = strip_local_paths(
+            f_meta["ev_excerpt"] or "verified in skeptic phase", worktree
+        )
+        orig = strip_local_paths(f_meta["orig"], worktree)
+        fix_layer = strip_local_paths(f_meta["fix_layer"], worktree)
+        sug_status = f_meta["sug_status"]
+        sug_detail = strip_local_paths(f_meta["sug_detail"], worktree)
+        sug_replacement = f_meta["sug_replacement"]
+        source_row_list = f_meta["source_row_list"]
+        rf = f_meta["rf"]
+        reg_test = strip_local_paths(
+            f"Add or update unit test covering {loc} ({claim}).", worktree
+        )
+
+        part_lines = [
+            f"### [{sev}] {loc} — {claim}",
+            f"- **Synthesis item:** {item_id}",
+            f"- **Claim:** {claim}",
+            f"- **Location:** {loc}",
+            f"- **Evidence:** {vid} (`{loc}`): {ev_excerpt}",
+            f"- **Severity:** {sev}",
+            f"- **Origin:** {orig}",
+            f"- **Fix status:** validated ({fix_layer})",
+            f"- **Suggested edit:** {sug_status} — {sug_detail}",
+        ]
+        if sug_status == "applicable":
+            part_lines.extend([
+                "```suggestion",
+                sug_replacement,
+                "```",
+            ])
+        part_lines.extend([
+            f"- **Regression test:** {reg_test}",
+            f"- **Rows:** {', '.join(source_row_list)}; RF: {rf}",
+        ])
+        part_text = "\n".join(part_lines) + "\n"
+        part_rel = f"draft-parts/{item_id}.md"
+        part_path = review_dir / part_rel
+        part_bytes = part_text.encode("utf-8")
+        part_path.write_bytes(part_bytes)
+        finding_fragments.append(part_text)
+        coverage_rows.append((
+            item_id,
+            "finding",
+            part_rel,
+            len(part_bytes),
+            hashlib.sha256(part_bytes).hexdigest(),
+        ))
+
+    for q_meta in question_items:
+        item_id = q_meta["item_id"]
+        loc = strip_local_paths(q_meta["loc"], worktree)
+        claim = strip_local_paths(q_meta["claim"], worktree)
+        vid = q_meta["vid"]
+        ev_excerpt = strip_local_paths(
+            q_meta["ev_excerpt"] or "unresolved question from verification",
+            worktree,
+        )
+        source_row_list = q_meta["source_row_list"]
+
+        part_lines = [
+            f"### [Question] {loc} — {claim}",
+            f"- **Synthesis item:** {item_id}",
+            f"- **Question:** {claim}",
+            f"- **Why it matters:** {vid} (`{loc}`): {ev_excerpt}",
+            f"- **Rows:** {', '.join(source_row_list)}",
+        ]
+        part_text = "\n".join(part_lines) + "\n"
+        part_rel = f"draft-parts/{item_id}.md"
+        part_path = review_dir / part_rel
+        part_bytes = part_text.encode("utf-8")
+        part_path.write_bytes(part_bytes)
+        question_fragments.append(part_text)
+        coverage_rows.append((
+            item_id,
+            "question",
+            part_rel,
+            len(part_bytes),
+            hashlib.sha256(part_bytes).hexdigest(),
+        ))
+
+    header_lines = [
+        f"# Code Review — CL {cl_num} (Patchset {ps_num})",
+        "",
+        "- Draft revision: 1",
+        "- Self-review: yes",
+        f"- Reviewed pin: CL {cl_num} patchset {ps_num} (PS{ps_num}), revision `{rev_sha}`",
+    ]
+    if unreviewed_candidates:
+        header_lines.append("- Review completeness: limited")
+
+    if unreviewed_candidates:
+        summary_text = (
+            f"Self-review of CL {cl_num} patchset {ps_num} (`{rev_sha}`): "
+            f"{len(finding_items)} verified finding(s) and {len(question_items)} "
+            "question(s) before review budget exhaustion. Report refinement and "
+            "Gerrit inline comment formatting were skipped because the CL is "
+            "authored by the reviewer."
+        )
+    elif finding_items or question_items:
+        summary_text = (
+            f"Self-review of CL {cl_num} patchset {ps_num} (`{rev_sha}`): "
+            f"{len(finding_items)} verified finding(s) and {len(question_items)} "
+            "question(s). Report refinement and Gerrit inline comment formatting "
+            "were skipped because the CL is authored by the reviewer."
+        )
+    else:
+        summary_text = (
+            f"Self-review of CL {cl_num} patchset {ps_num} (`{rev_sha}`): "
+            "0 verified findings and 0 open questions survived skeptic "
+            "verification. Report refinement and Gerrit inline comment formatting "
+            "were skipped because the CL is authored by the reviewer."
+        )
+
+    frame_lines = [
+        *header_lines,
+        "",
+        "## High-Level Summary",
+        "",
+        summary_text,
+        "",
+    ]
+    (parts_dir / "FRAME.md").write_text(
+        "\n".join(frame_lines), encoding="utf-8"
+    )
+
+    draft_sections: list[str] = ["\n".join(frame_lines), "## Findings\n\n"]
+    if finding_fragments:
+        draft_sections.append("\n".join(finding_fragments) + "\n")
+    else:
+        draft_sections.append("None.\n\n")
+
+    draft_sections.append("## Questions & Clarifications\n\n")
+    if question_fragments:
+        draft_sections.append("\n".join(question_fragments) + "\n")
+    else:
+        draft_sections.append("None.\n\n")
+
+    draft_sections.append("## Verification Notes\n\n")
+    if unreviewed_candidates:
+        draft_sections.append(
+            f"Limited review: {len(unreviewed_candidates)} candidate IDs were not "
+            "independently verified because the review budget was exhausted. "
+            "See `verification/batches.md`.\n\n"
+        )
+    draft_sections.append(
+        f"- Verified {total_candidates} candidate(s) across {total_verdicts} "
+        "skeptic verdict(s) (`reconciliation.md`).\n\n"
+    )
+
+    draft_sections.append("## Next Steps\n\n")
+    if finding_items or question_items:
+        draft_sections.append(
+            f"- Address {len(finding_items)} verified finding(s) and "
+            f"{len(question_items)} question(s) locally before uploading or "
+            "sending the CL for review.\n"
+        )
+    else:
+        draft_sections.append(
+            "- No blocking defects identified in self-review.\n"
+        )
+
+    (review_dir / "draft-review.md").write_text(
+        "".join(draft_sections), encoding="utf-8"
+    )
+    (review_dir / "gerrit-comments.md").write_text(
+        "# Gerrit Review Comments (Self-Review — Not Posted)\n\n"
+        "Self-review mode is active (CL author matches reviewer). Inline Gerrit "
+        "comment formatting and thread replies were skipped; see `draft-review.md` "
+        "for verified findings and questions.\n",
+        encoding="utf-8",
+    )
+
+    cov_lines = [
+        "\t".join((
+            "item",
+            "kind",
+            "draft_path",
+            "draft_bytes",
+            "draft_sha256",
+            "gerrit_path",
+            "gerrit_bytes",
+            "gerrit_sha256",
+        ))
+    ]
+    for item_id, kind, part_rel, byte_len, sha_hex in coverage_rows:
+        cov_lines.append(
+            f"{item_id}\t{kind}\t{part_rel}\t{byte_len}\t{sha_hex}\t-\t-\t-"
+        )
+    (review_dir / "output-coverage.tsv").write_text(
+        "\n".join(cov_lines) + "\n", encoding="utf-8"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("review_dir", type=Path)
     parser.add_argument(
         "--max-survivors",
         type=int,
-        default=8,
-        help="Maximum surviving CONFIRMED/UNPROVEN rows for deterministic reconciliation",
+        default=None,
+        help=(
+            "Maximum surviving CONFIRMED/UNPROVEN rows for deterministic "
+            "reconciliation (default: 8, or unlimited in self-review mode)"
+        ),
+    )
+    parser.add_argument(
+        "--self-review",
+        dest="self_review",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Force or disable self-review fast-path draft generation",
     )
     args = parser.parse_args()
     review_dir = args.review_dir.resolve()
     if not review_dir.is_dir():
         fail(f"not a directory: {review_dir}")
+
+    pin_path = review_dir / "pin.md"
+    pin_text = (
+        pin_path.read_text(encoding="utf-8", errors="replace")
+        if pin_path.is_file() else ""
+    )
+    prof: dict[str, Any] = {}
+    profile_path = review_dir / "profile.json"
+    if profile_path.is_file():
+        try:
+            loaded_prof = json.loads(profile_path.read_text(encoding="utf-8"))
+            if isinstance(loaded_prof, dict):
+                prof = loaded_prof
+        except (OSError, ValueError):
+            pass
+
+    is_self_review = resolve_self_review(
+        review_dir, prof, pin_text, args.self_review
+    )
+    max_survivors = (
+        args.max_survivors
+        if args.max_survivors is not None
+        else (10000 if is_self_review else 8)
+    )
 
     run_indexes(review_dir)
 
@@ -300,8 +627,9 @@ def main() -> int:
                     if rid and rid not in ledger_rows_by_id:
                         ledger_rows_by_id[rid] = {**row, "_source": rel_l}
 
-    # Parse merge proposals from verification/batches.md
+    # Parse merge proposals and budget-limited verification gaps from verification/batches.md
     merge_edges: dict[str, str] = {}
+    unreviewed_candidates: set[str] = set()
     v_batches_path = review_dir / "verification" / "batches.md"
     if v_batches_path.is_file():
         parsed_vb, _ = effective_tables(
@@ -318,6 +646,11 @@ def main() -> int:
                     )
                     if m:
                         merge_edges[row.get("row", "").strip()] = m.group(1)
+            elif heading == "Budget-limited verification" and "candidate" in header:
+                for row in rows:
+                    cid = row.get("candidate", "").strip()
+                    if cid:
+                        unreviewed_candidates.add(cid)
 
     # Flatten merge chains to final verdict-owning survivor
     for m_row in list(merge_edges):
@@ -353,10 +686,10 @@ def main() -> int:
         if v_row.get("verdict") in {"CONFIRMED", "UNPROVEN"}
         and v_row.get("candidate", "").strip() not in merge_edges
     ]
-    if len(surviving_unmerged) > args.max_survivors:
+    if len(surviving_unmerged) > max_survivors:
         fail(
             f"{len(surviving_unmerged)} surviving unmerged verdicts "
-            f"(> {args.max_survivors}); spawn the Phase 6 RB subagent"
+            f"(> {max_survivors}); spawn the Phase 6 RB subagent"
         )
 
     primary_by_family: dict[str, str] = {}
@@ -376,22 +709,14 @@ def main() -> int:
     # Check follow-up suppression rules from profile.json and interdiff-hunks.tsv
     same_reviewer_followup = False
     latest_prior_ps: int | None = None
-    profile_path = review_dir / "profile.json"
-    if profile_path.is_file():
-        try:
-            prof = json.loads(profile_path.read_text(encoding="utf-8"))
-            rev_hist = (
-                prof.get("prior_context", {}).get("reviewer_history", {})
-                if isinstance(prof, dict) else {}
+    if prof:
+        rev_hist = prof.get("prior_context", {}).get("reviewer_history", {})
+        if isinstance(rev_hist, dict):
+            same_reviewer_followup = bool(
+                rev_hist.get("same_reviewer_followup")
             )
-            if isinstance(rev_hist, dict):
-                same_reviewer_followup = bool(
-                    rev_hist.get("same_reviewer_followup")
-                )
-                if isinstance(rev_hist.get("latest_prior_reviewed_patchset"), int):
-                    latest_prior_ps = rev_hist["latest_prior_reviewed_patchset"]
-        except (OSError, ValueError):
-            pass
+            if isinstance(rev_hist.get("latest_prior_reviewed_patchset"), int):
+                latest_prior_ps = rev_hist["latest_prior_reviewed_patchset"]
     loaded_interdiff: list[dict[str, Any]] | None = None
     try:
         loaded_interdiff = interdiff_hunks.load_interdiff_hunks(review_dir)
@@ -501,6 +826,8 @@ def main() -> int:
     index_rows: list[tuple[str, str, str, int, str]] = []
     finding_item_by_cand: dict[str, str] = {}
     question_item_by_cand: dict[str, str] = {}
+    finding_items: list[dict[str, Any]] = []
+    question_items: list[dict[str, Any]] = []
 
     for item_id, v_row in promoted_findings:
         cid = v_row.get("candidate", "").strip()
@@ -589,6 +916,13 @@ def main() -> int:
                 sug_replacement,
                 "```",
             ])
+        finding_items.append({
+            "item_id": item_id, "sev": sev, "loc": loc, "claim": claim,
+            "vid": vid, "ev_excerpt": ev_excerpt, "orig": orig,
+            "fix_layer": fix_layer, "sug_status": sug_status,
+            "sug_detail": sug_detail, "sug_replacement": sug_replacement,
+            "source_row_list": list(source_row_list), "rf": rf,
+        })
         card_rel = f"synthesis/{cid}.md"
         card_path = review_dir / card_rel
         card_path.write_text("\n".join(card_lines) + "\n", encoding="utf-8")
@@ -622,6 +956,10 @@ def main() -> int:
             f"- Question: {claim}",
             f"- Why it matters: {vid} ({ev_excerpt})",
         ]
+        question_items.append({
+            "item_id": item_id, "loc": loc, "claim": claim, "vid": vid,
+            "ev_excerpt": ev_excerpt, "source_row_list": list(source_row_list),
+        })
         card_rel = f"synthesis/{cid}.md"
         card_path = review_dir / card_rel
         card_path.write_text("\n".join(card_lines) + "\n", encoding="utf-8")
@@ -767,7 +1105,23 @@ def main() -> int:
     (review_dir / "reconciliation.md").write_text(
         "\n".join(recon_lines) + "\n", encoding="utf-8"
     )
+    if is_self_review:
+        write_self_review_outputs(
+            review_dir,
+            pin_text,
+            finding_items,
+            question_items,
+            unreviewed_candidates,
+            len(candidates_by_id),
+            len(verdicts_list),
+        )
     run_indexes(review_dir)
+    if is_self_review:
+        print(
+            "build-reconciliation.py: self-review — wrote draft-review.md, "
+            "draft-parts/, output-coverage.tsv and a stub gerrit-comments.md; "
+            "skip Phase 7 drafting and Phase 8 challenge"
+        )
     print(
         f"build-reconciliation.py: reconciled {len(recon_table_rows)} row(s) -> "
         f"{len(promoted_findings)} finding(s), {len(promoted_questions)} question(s), "

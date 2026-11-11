@@ -227,6 +227,11 @@ LLM `RB` subagent; it deterministically writes `reconciliation.md`,
 `synthesis/index.md`, and `synthesis/⟨ROW-ID⟩.md` evidence cards for every
 promoted finding (`F001`, ...) and owner question (`Q001`, ...), including
 unscheduled non-risky `P3` families (`- Root cause: none` + `- Root family: RF⟨n⟩`).
+**Self-review** (`- Self-review: yes` in `pin.md`, `directives.md`, or
+`profile.json:/self_review`): always run `build-reconciliation.py` regardless of
+survivor count; it also writes `draft-review.md`, `draft-parts/`,
+`output-coverage.tsv`, and a stub `gerrit-comments.md`, so Phases 7 and 8 are
+skipped and the orchestrator proceeds directly to Phase 9.
 Otherwise spawn one bounded **Reconciliation Builder** or row-disjoint builders plus a
 deterministic collector, selected from `indexes/reconciliation.tsv`. They
 enumerate every row ID present in `ledger/*.md`, `collection.md`,
