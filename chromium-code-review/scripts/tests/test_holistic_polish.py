@@ -126,10 +126,17 @@ class HolisticInitialPlanTests(unittest.TestCase):
         git(self.repo, "add", ".")
         git(self.repo, "commit", "-q", "-m", "base")
         self.parent_sha = git(self.repo, "rev-parse", "HEAD")
-        (self.repo / "net" / "foo.cc").write_text("int Foo() { return 1; }\n")
+        (self.repo / "net" / "foo.cc").write_text(
+            "int Foo(bool is_done, int error) {\n"
+            "  return is_done ? OK : error;\n"
+            "}\n"
+        )
         (self.repo / "net" / "foo_unittest.cc").write_text(
             '#include "testing/gtest/include/gtest/gtest.h"\n'
             "TEST(Foo, Bar) {\n"
+            '  const char kBody[] = "hello";\n'
+            "  size_t len = strlen(kBody);\n"
+            "  (void)len;\n"
             "  std::vector<int> v;\n"
             "  auto w = MakeThing();\n"
             "  auto u = std::make_unique<int>(1);\n"
@@ -181,6 +188,10 @@ class HolisticInitialPlanTests(unittest.TestCase):
         )
         (review_dir / "inventory.md").write_text("# Inventory\n", encoding="utf-8")
         (review_dir / "mechanical-leads.md").write_text("# leads\n", encoding="utf-8")
+        (review_dir / "callers").mkdir(parents=True, exist_ok=True)
+        (review_dir / "callers" / "styleguides.md").write_text(
+            "# Runtime-Discovered `//styleguide/` Guides\n", encoding="utf-8"
+        )
         result = subprocess.run(
             [sys.executable, str(INITIAL_PLAN_SCRIPT), str(review_dir),
              "--worktree", str(self.repo)],
@@ -196,6 +207,10 @@ class HolisticInitialPlanTests(unittest.TestCase):
         self.assertIn("Holistic-and-polish Requirements", brief)
         self.assertIn("changed-lines-polish.md", brief)
         self.assertIn("mechanical-leads.md", brief)
+        self.assertIn("styleguides.md", brief)
+        self.assertIn("Styleguide pass (`//styleguide/` runtime discovery)", brief)
+        gai_brief = (review_dir / "briefs" / "GAI.md").read_text(encoding="utf-8")
+        self.assertIn("tests-as-specifications.md", gai_brief)
 
     def test_mechanical_leads_flag_test_hygiene(self) -> None:
         result = subprocess.run(
@@ -209,6 +224,11 @@ class HolisticInitialPlanTests(unittest.TestCase):
         auto_section = out.split("## Added auto declarations", 1)[1].split("\n## ", 1)[0]
         self.assertIn("auto w = MakeThing()", auto_section)
         self.assertNotIn("std::make_unique<int>", auto_section)
+        coercion_section = out.split("## Error-to-success coercion leads", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("is_done ? OK : error", coercion_section)
+        const_section = out.split("## Compile-time string constants and strlen leads", 1)[1].split("\n## ", 1)[0]
+        self.assertIn('const char kBody[] = "hello"', const_section)
+        self.assertIn("strlen(kBody)", const_section)
         bool_section = out.split("## Boolean-collapsing test assertions", 1)[1].split("\n## ", 1)[0]
         self.assertIn("EXPECT_TRUE(v.empty())", bool_section)
         self.assertIn("EXPECT_EQ(v.size(), 0u)", bool_section)

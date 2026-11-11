@@ -179,6 +179,47 @@ class CallerIndexTests(unittest.TestCase):
         self.assertIn("Temporary Allowlist `!` Rules", dir_docs)
         self.assertIn("!content/public/browser/legacy_helper.h", dir_docs)
 
+    def test_discovers_language_filtered_styleguides_at_runtime(self) -> None:
+        (self.repo / "styleguide" / "c++").mkdir(parents=True)
+        (self.repo / "styleguide" / "java").mkdir(parents=True)
+        (self.repo / "styleguide" / "styleguide.md").write_text(
+            "# Chromium Style Guides\nGeneral style rules.\nLine 3\nLine 4\nLine 5\nLine 6\n",
+            encoding="utf-8",
+        )
+        (self.repo / "styleguide" / "c++" / "defining_compile_time_const.md").write_text(
+            "# Defining Compile-Time Constants\n## Strings\nUse static constexpr std::string_view.\nLine 4\nLine 5\nLine 6\n",
+            encoding="utf-8",
+        )
+        (self.repo / "styleguide" / "c++" / "blink-c++.md").write_text(
+            "# Blink C++ Style Guide\n## Naming\nBlink-only rules.\nLine 4\nLine 5\nLine 6\n",
+            encoding="utf-8",
+        )
+        (self.repo / "styleguide" / "c++" / "c++11.md").write_text(
+            "# 301 Moved Permanently\nMoved to c++-features.md.\n",
+            encoding="utf-8",
+        )
+        (self.repo / "styleguide" / "java" / "java.md").write_text(
+            "# Java Style Guide\n## Nullness\nJava-only rules.\nLine 4\nLine 5\nLine 6\n",
+            encoding="utf-8",
+        )
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "add styleguides")
+        new_rev = git(self.repo, "rev-parse", "HEAD")
+
+        result = self.run_index(revision=new_rev)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        sg_doc = (self.review / "callers" / "styleguides.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("//styleguide/styleguide.md", sg_doc)
+        self.assertIn("//styleguide/c++/defining_compile_time_const.md", sg_doc)
+        self.assertIn("Use static constexpr std::string_view.", sg_doc)
+        # Blink guide excluded when no third_party/blink/ files are touched
+        self.assertNotIn("//styleguide/c++/blink-c++.md", sg_doc)
+        # Redirect stubs and untouched language guides excluded
+        self.assertNotIn("c++11.md", sg_doc)
+        self.assertNotIn("//styleguide/java/java.md", sg_doc)
+
 
 if __name__ == "__main__":
     unittest.main()

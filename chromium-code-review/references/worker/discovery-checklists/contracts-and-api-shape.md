@@ -67,6 +67,13 @@ same P0 throughput collapse by adjudicating the design intended in-thread.
   domain type would express absence or special behavior more safely. Keep a
   sentinel only when default construction, wire format, persistence, or
   interoperability makes it clearly preferable.
+- For every new method on an interface or public class, check that the name
+  states the effect it actually has, not the event that triggers it. If the
+  method's only side effect belongs to a domain (logging, reporting, metrics,
+  caching), and a sibling method names that domain (`DeferFooReporting()`), the
+  pair should be symmetric (`CompleteFooReporting()`, not a generic
+  `OnBarComplete()`). Generic event names on a base interface invite unrelated
+  overrides and hide what wrappers must forward.
 - For time, rate, and size fields, verify that the name communicates the
   semantic unit: total vs additional, round-trip vs one-way, per-item vs
   aggregate, budget vs elapsed, and configured vs observed. If the comment
@@ -81,6 +88,25 @@ same P0 throughput collapse by adjudicating the design intended in-thread.
   Trace every existing caller at the moment the helper is entered, and the
   helper's side effects (forced success, cleanup, callback state) on the new
   path.
+- **Error suppression and failure-to-success coercion:** Whenever added or
+  modified code converts, overrides, or ignores an error parameter, failure
+  status, or abort/close signal in favor of a success or normal-completion
+  result (`OK`, `0`/EOF, `kSuccess`, `true`, `base::ok()`, or a default value)
+  based on a state or progress predicate (`IsDone*()`, `IsComplete*()`,
+  `is_finished_`, etc.):
+  1. *Lossy "done" predicates on error paths:* Do not assume a "done",
+     "finished", or "consumed" predicate means "succeeded without error."
+     Parsers, sequencers, and state machines frequently mark a phase or input
+     stream "done/consumed" on terminal parse, validation, or protocol errors as
+     well as on clean completion. Trace every implementation and assignment of
+     the predicate to verify whether error or abort paths can also leave it
+     `true`.
+  2. *Explicit no-error precondition:* Verify that any branch converting an
+     error, close, or teardown path into normal completion explicitly checks
+     that no operation-, stream-, or session-level error was latched before
+     reporting success, so real failures are propagated to the caller rather
+     than silently swallowed. Emit a candidate whenever an error-handling or
+     close path can coerce a latched failure into `OK`.
 - **Sibling Interface Implementation Comparison:** When a CL implements a
   standard Mojo interface, `content/` delegate, or storage/network backend
   method that already has a canonical sibling implementation in the same layer

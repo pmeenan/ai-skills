@@ -114,7 +114,13 @@ Use these drills to fill the row:
 - For async operations, trace the ownership of the pending operation, the
   cancellation/reset/destruction path, and the callback completion contract.
   A local waiter fix is insufficient if the operation itself can still drop,
-  duplicate, or reorder completion. When a fix threads an async result struct
+  duplicate, or reorder completion. When proposing a fix in a close, abort, or
+  error-propagation helper, never override an error status with `OK` or normal
+  completion based solely on a completion predicate (`IsDone*()`,
+  `IsComplete*()`, etc.) without proving that the predicate cannot become `true`
+  on malformed-input, parse, or protocol-error paths and explicitly requiring
+  that stored operation, stream, and session error codes are clean. When a fix
+  threads an async result struct
   across `PostTaskAndReplyWithResult` or `SequenceBound::AsyncCall(...).Then(...)`
   into a `WeakPtr`-guarded callback, verify that every resource on the reply
   struct (such as `scoped_refptr`, `std::unique_ptr`, file descriptors, or Mojo

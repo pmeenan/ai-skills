@@ -546,6 +546,185 @@ def build_directory_docs(
     return docs_found
 
 
+STYLEGUIDE_SKIP_NAMES = {"README.md", "COIL_for_Partners.md"}
+
+
+def _styleguide_subdir_matches(subdir: str, changed_files: list[str]) -> bool:
+    """Return whether `styleguide/<subdir>/` applies to `changed_files`."""
+    if not changed_files:
+        return False
+    suffixes = {Path(p).suffix.lower() for p in changed_files}
+    names = {Path(p).name for p in changed_files}
+    if subdir == "c++":
+        return bool(
+            suffixes & {".cc", ".h", ".cpp", ".cxx", ".hpp", ".inl", ".mm", ".c"}
+        )
+    if subdir == "objective-c":
+        return bool(suffixes & {".mm", ".m"}) or any(
+            p.endswith(".h")
+            and (p.startswith("ios/") or "/mac/" in p or "/cocoa/" in p)
+            for p in changed_files
+        )
+    if subdir == "java":
+        return ".java" in suffixes
+    if subdir == "web":
+        return bool(
+            suffixes & {".js", ".ts", ".html", ".css", ".mjs", ".tsx", ".jsx"}
+        )
+    if subdir == "python":
+        return ".py" in suffixes or bool(names & {"PRESUBMIT.py", "DEPS"})
+    if subdir == "rust":
+        return ".rs" in suffixes
+    if subdir == "swift":
+        return ".swift" in suffixes
+    if subdir == "markdown":
+        return ".md" in suffixes
+    # Forward-compatible fallback for any newly added `styleguide/<subdir>/`:
+    # match if any changed file has `.subdir` extension or `<subdir>` path segment.
+    return f".{subdir.lower()}" in suffixes or any(
+        subdir.lower() in {part.lower() for part in Path(p).parts}
+        for p in changed_files
+    )
+
+
+def _extract_markdown_sections(lines: list[str]) -> list[str]:
+    """Return markdown headings (`#`, `##`, `###`) with line numbers."""
+    headings: list[str] = []
+    in_fence = False
+    for lineno, raw in enumerate(lines, start=1):
+        stripped = raw.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = re.match(r"^(#{1,3})\s+(.+?)\s*$", stripped)
+        if m:
+            title = re.sub(r"\s*\{#[^}]+\}\s*$", "", m.group(2)).strip()
+            headings.append(f"L{lineno}: {m.group(1)} {title}")
+    return headings
+
+
+def build_styleguide_docs(
+    worktree: Path,
+    callers_dir: Path,
+    changed_files: list[str],
+    revision: str,
+) -> int:
+    """Discover applicable `//styleguide/**/*.md` files at runtime for `HOL`."""
+    styleguide_root = worktree / "styleguide"
+    if not styleguide_root.is_dir():
+        return 0
+
+    touches_blink = any(
+        p.startswith("third_party/blink/") for p in changed_files
+    )
+    discovered: list[tuple[str, str, list[str], list[str]]] = []
+
+    for md_path in sorted(styleguide_root.rglob("*.md")):
+        if not md_path.is_file() or md_path.name in STYLEGUIDE_SKIP_NAMES:
+            continue
+        rel_to_sg = md_path.relative_to(styleguide_root)
+        parts = rel_to_sg.parts
+        subdir = parts[0] if len(parts) > 1 else ""
+        if subdir and not _styleguide_subdir_matches(subdir, changed_files):
+            continue
+        if md_path.name.startswith("blink-") and not touches_blink:
+            continue
+        try:
+            lines = md_path.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines()
+        except OSError:
+            continue
+        non_empty = [ln.strip() for ln in lines if ln.strip()]
+        if len(non_empty) < 5:
+            continue
+        first_line = non_empty[0]
+        if (
+            "301 Moved Permanently" in first_line
+            or first_line.startswith("See the [")
+        ):
+            continue
+        rel_repo = f"styleguide/{rel_to_sg.as_posix()}"
+        category = subdir if subdir else "general"
+        headings = _extract_markdown_sections(lines)
+        discovered.append((rel_repo, category, lines, headings))
+
+    if not discovered:
+        return 0
+
+    callers_dir.mkdir(parents=True, exist_ok=True)
+    out_path = callers_dir / "styleguides.md"
+    body: list[str] = [
+        f"# Runtime-Discovered `//styleguide/` Guides (revision {revision[:12]})",
+        "",
+        "Discovered dynamically from `//styleguide/` in the pinned worktree based on the",
+        "languages and paths touched by this CL.",
+        "",
+        "- **For `HOL` (Holistic-and-polish thread):** Iterate through **every** discovered",
+        "  styleguide listed in the table below, audit all newly added or modified lines",
+        "  (both production and test code, including lines copy-pasted from older neighboring",
+        "  functions/tests) against each guide's sections, and emit **one compliance-matrix",
+        "  row per discovered styleguide** (`Styleguide: //styleguide/...`).",
+        "- For any guide whose inline text below is truncated (such as large language-feature",
+        "  catalogs), inspect its full section heading index below and open `<styleguide-path>`",
+        "  in the pinned worktree whenever the diff uses a construct covered by that section.",
+        "",
+        "## Discovered Styleguides (Mandatory Per-Guide Compliance Audit)",
+        "",
+        "| Styleguide | Category | Lines | Section Headings |",
+        "| --- | --- | --- | --- |",
+    ]
+
+    guide_blocks: list[str] = []
+    for rel_repo, category, lines, headings in discovered:
+        heading_summary = (
+            "; ".join(h.split(": ", 1)[1] for h in headings[:12])
+            if headings
+            else "(full guide)"
+        )
+        if len(headings) > 12:
+            heading_summary += f"; ... (+{len(headings) - 12} more)"
+        body.append(
+            f"| `//{rel_repo}` | `{category}` | {len(lines)} | {heading_summary} |"
+        )
+
+        max_inline_lines = 260 if len(lines) <= 500 else 80
+        snippet = "\n".join(lines[:max_inline_lines])
+        if len(lines) > max_inline_lines:
+            trunc_note = (
+                f" (showing lines 1-{max_inline_lines} of {len(lines)}; "
+                f"open `{rel_repo}` in worktree for lines {max_inline_lines + 1}-{len(lines)})"
+            )
+        else:
+            trunc_note = f" ({len(lines)} lines, complete)"
+
+        guide_blocks.extend([
+            f"## Guide `//{rel_repo}`{trunc_note}",
+            "",
+        ])
+        if len(lines) > max_inline_lines and headings:
+            guide_blocks.extend([
+                "### Complete Section Index (with worktree line numbers)",
+                "",
+                *[f"- `{h}`" for h in headings[:80]],
+                "",
+            ])
+        guide_blocks.extend([
+            "```markdown",
+            snippet,
+            "```",
+            "",
+        ])
+
+    body.extend(["", *guide_blocks])
+    tmp = out_path.with_name(out_path.name + ".tmp")
+    tmp.write_text("\n".join(body) + "\n", encoding="utf-8")
+    tmp.replace(out_path)
+    return len(discovered)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("review_dir", type=Path)
@@ -631,11 +810,15 @@ def main() -> int:
     dir_docs_built = build_directory_docs(
         worktree, callers, changed_files, revision
     )
+    styleguides_built = build_styleguide_docs(
+        worktree, callers, changed_files, revision
+    )
     skipped = sum(1 for row in index_rows if row[2] == "-")
     print(f"{callers / 'index.tsv'}: {len(surfaces)} surfaces, "
           f"{len(searched)} symbols ({reused} reused), {skipped} skipped, "
           f"{sum(searched.values())} total hits, {dossiers_built} class dossiers, "
           f"{dir_docs_built} directory doc blocks, "
+          f"{styleguides_built} styleguides, "
           f"scope: {scope}")
     return 0
 

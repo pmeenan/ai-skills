@@ -50,7 +50,10 @@ Calibration notes:
   helper called a few times, recommending `const T&` on a `base::BindOnce` /
   `PostTask` value-sink parameter, or asking to reorder methods when `.h` and
   `.cc` already match each other and follow a coherent logical grouping—must be
-  marked **REFUTED** in verification rather than promoted as P3 noise.
+  marked **REFUTED** in verification rather than promoted as P3 noise. The
+  reorder exemption covers only matching `.h`/`.cc` order: newly added `.cc`
+  definitions placed out of their `.h` declaration order are a legitimate P3
+  nit even when older parts of the file are already out of order.
 - State propagation or bookkeeping bugs (e.g. copying a permission flag by
   value instead of sharing state) whose sole consumer method is explicitly
   unimplemented/stubbed (`TODO`, `NOTIMPLEMENTED`, `kOperationFailed`) in the

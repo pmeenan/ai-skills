@@ -11,8 +11,8 @@ preamble, so its rules travel with every section.
 | section | file | source lines |
 | --- | --- | --- |
 | Agent Input Budget | agent-input-budget.md | 29 |
-| Model Tiers | model-tiers.md | 74 |
+| Model Tiers | model-tiers.md | 75 |
 | Review Profile | review-profile.md | 33 |
 | Compact Indexes | compact-indexes.md | 108 |
-| Safe Fast Paths | safe-fast-paths.md | 50 |
+| Safe Fast Paths | safe-fast-paths.md | 52 |
 | Sharded Aggregation | sharded-aggregation.md | 23 |

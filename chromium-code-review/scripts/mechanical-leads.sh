@@ -234,6 +234,21 @@ grep -E '(^|[^A-Za-z0-9_])auto[[:space:]]*[*&]*[[:space:]]+[A-Za-z_][A-Za-z0-9_]
   > "$SCAN_OUT" || true
 emit_file "$SCAN_OUT"
 
+section "Error-to-success coercion leads (verify predicates cannot be true on error paths)"
+echo "Whenever added code overrides or maps an error/status variable to OK/kSuccess/0 based on a completion predicate, verify (1) the predicate cannot become true on parse/validation/reset error paths and (2) stored operation/stream/session error codes are explicitly clean."
+echo
+grep -E '\?[[:space:]]*(net::)?(OK|kSuccess|kOk|0)[[:space:]]*:[[:space:]]*[A-Za-z0-9_.]*(err|status|result)|\b(err|error|status|rv)[[:space:]]*=[[:space:]]*(net::)?(OK|kSuccess|kOk)\b' "$ADDED_CC" \
+  | awk -F: '$1 !~ /(test|tests)[^\/]*\.(cc|mm)$/ && $1 !~ /_unittest\.|_browsertest\.|_test\./ { print }' \
+  > "$SCAN_OUT" || true
+emit_file "$SCAN_OUT"
+
+section "Compile-time string constants and strlen leads (//styleguide/c++/defining_compile_time_const.md)"
+echo "Prefer 'static constexpr std::string_view kFoo = \"...\";' (and kFoo.size() / base::StrCat) over function-local 'const char kFoo[] = \"...\";', non-static 'constexpr char kFoo[] = \"...\";', or strlen() on compile-time literals, even when nearby legacy tests use older patterns."
+echo
+grep -E '(^|:)[[:space:]]*(const[[:space:]]+char|constexpr[[:space:]]+char)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\[[[:space:]]*\][[:space:]]*=|[[:space:](]strlen\(' "$ADDED_CC" \
+  > "$SCAN_OUT" || true
+emit_file "$SCAN_OUT"
+
 section "Boolean-collapsing test assertions (prefer gMock matchers)"
 echo "EXPECT_TRUE(x.empty()) -> EXPECT_THAT(x, IsEmpty()); size()==N -> SizeIs/ElementsAre; TRUE(a == b) -> EXPECT_EQ."
 echo

@@ -315,7 +315,15 @@ orchestrator never loads these):
 - **Follow-up review:** run the full pipeline including Phase 2 (prior-feedback
   reconciliation). Prior feedback is context, not the boundary of the review:
   after resolving prior findings, discovery still covers the whole changed
-  surface. When `profile.json:/prior_context/reviewer_history/same_reviewer_followup`
+  surface. **Any request to "verify" or "check" whether a new patchset (e.g.
+  PS2+) fixed the issues from an earlier review is a Follow-up review and must
+  run the full Phase 0–9 pipeline on the new patchset — never bypass the
+  pipeline by spawning a single ad-hoc verifier subagent or merely checking
+  whether the new diff matches the prior review's suggested code.** Fixes added
+  in a follow-up patchset (including fixes recommended by Phase 5.5 of the prior
+  review) frequently touch new functions or introduce edge-case regressions that
+  require full discovery, skeptic verification, and root-cause scrutiny. When
+  `profile.json:/prior_context/reviewer_history/same_reviewer_followup`
   is `true` (Round 2+ by the same `Reviewer email`, matching
   `<local>@chromium.org` and `<local>@google.com` interchangeably or honoring
   `- Reviewer email:` in `directives.md` / `CHROMIUM_REVIEWER_EMAIL`),

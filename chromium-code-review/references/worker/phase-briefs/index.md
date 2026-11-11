@@ -17,7 +17,7 @@ preamble, so its rules travel with every section.
 | Brief — Inventory Shard (Phase 1, one per file group or dense hunk range) | brief-inventory-shard-phase-1-one-per-file-group-or-dense-hunk-range.md | 55 |
 | Brief — Gerrit Thread Normalizer (after Phase 0, all review modes) | brief-gerrit-thread-normalizer-after-phase-0-all-review-modes.md | 34 |
 | Brief — Prior Feedback (Phase 2, follow-up reviews only) | brief-prior-feedback-phase-2-follow-up-reviews-only.md | 52 |
-| Brief — Planner (Phase 3) | brief-planner-phase-3.md | 143 |
+| Brief — Planner (Phase 3) | brief-planner-phase-3.md | 148 |
 | Brief — TER Gate-Brief Builder (Phase 4, only after the TER thread collects) | brief-ter-gate-brief-builder-phase-4-only-after-the-ter-thread-collects.md | 40 |
 | Brief — Collection Audit (Phase 4.5) | brief-collection-audit-phase-4-5.md | 59 |
 | Brief — Collection-Audit Shard (Phase 4.5, when indexed) | brief-collection-audit-shard-phase-4-5-when-indexed.md | 25 |
@@ -29,7 +29,7 @@ preamble, so its rules travel with every section.
 | Brief — Root-Cause Planner (Phase 5.5) | brief-root-cause-planner-phase-5-5.md | 51 |
 | Brief — Root-Cause-Planning Shard (Phase 5.5, RCPLAN⟨shard⟩) | brief-root-cause-planning-shard-phase-5-5-rcplan-shard.md | 39 |
 | Brief — Root-Cause-Plan Exact Collector (Phase 5.5) | brief-root-cause-plan-exact-collector-phase-5-5.md | 29 |
-| Brief — Root-Cause Challenger (Phase 5.5, one per batch) | brief-root-cause-challenger-phase-5-5-one-per-batch.md | 56 |
+| Brief — Root-Cause Challenger (Phase 5.5, one per batch) | brief-root-cause-challenger-phase-5-5-one-per-batch.md | 58 |
 | Brief — Reconciliation Builder (Phase 6) | brief-reconciliation-builder-phase-6.md | 79 |
 | Brief — Reconciliation Shard (Phase 6, when indexed) | brief-reconciliation-shard-phase-6-when-indexed.md | 33 |
 | Brief — Reconciliation Exact-Coverage Collector (Phase 6, sharded) | brief-reconciliation-exact-coverage-collector-phase-6-sharded.md | 28 |

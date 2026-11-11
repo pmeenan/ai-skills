@@ -107,3 +107,22 @@ code, not from memory.
     standard Chromium idiom), grep the changed directory and sibling directories
     in the pinned worktree; refute (`REFUTED`) any claim that contradicts
     prevalent Chromium usage.
+  - "Contradicts prevalent usage" means the codebase deliberately does the
+    opposite. It does not mean "the file already has other violations". For a
+    P3 convention candidate about **lines the CL adds** — `.cc` definition order
+    vs `.h` declaration order, missing declaration comments on new non-obvious
+    methods or fields, `auto` hiding a non-obvious type, boolean-collapsing
+    test assertions, direct includes — pre-existing deviations elsewhere in the
+    file are not a guard. Neither is the absence of runtime effect: these are
+    readability candidates and never need a bad runtime outcome. Confirm at P3
+    when the new lines deviate and the convention comes from the Google or
+    Chromium style guides, an in-tree rule-catalog `Rule:` ID, or consistent
+    usage in sibling files; mention any pre-existing inconsistency in the
+    finding so the author can judge it. Refute only on a cited
+    directory-specific authority that permits the deviation, or on proof that
+    the new code already follows the convention.
+
+      Measured: a `.cc`-vs-`.h` definition-order nit on newly added methods
+      was discovered in two consecutive rounds and refuted both times because
+      "the file already groups methods by lifecycle" and "ordering has no
+      runtime effect". A human reviewer then filed it on the same lines.

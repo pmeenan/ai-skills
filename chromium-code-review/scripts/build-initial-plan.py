@@ -374,7 +374,7 @@ def main() -> int:
         if work_id == "HOL":
             if (review_dir / "mechanical-leads.md").is_file():
                 assigned_extras.append(
-                    f"- `{review_dir / 'mechanical-leads.md'}` (close the commit-message, formatter, non-ASCII, `auto`, test-assertion, and test-include lead sections)"
+                    f"- `{review_dir / 'mechanical-leads.md'}` (close the commit-message, formatter, non-ASCII, `auto`, compile-time-string-constant, test-assertion, and test-include lead sections)"
                 )
             if (review_dir / "context.md").is_file():
                 assigned_extras.append(
@@ -384,6 +384,11 @@ def main() -> int:
             if directory_docs.is_file():
                 assigned_extras.append(
                     f"- `{directory_docs}` (ancestor README/OWNERS/DEPS guidance for idiom and layering checks)"
+                )
+            styleguides_doc = review_dir / "callers" / "styleguides.md"
+            if styleguides_doc.is_file():
+                assigned_extras.append(
+                    f"- `{styleguides_doc}` (runtime-discovered `//styleguide/` guides matched to changed files; iterate through every listed guide and emit one compliance-matrix row per guide)"
                 )
         if work_id == "GAI":
             if (review_dir / "context.md").is_file():

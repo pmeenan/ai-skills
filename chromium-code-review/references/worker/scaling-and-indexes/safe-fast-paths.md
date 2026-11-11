@@ -22,9 +22,11 @@ Fast paths remove mechanical control-plane agents, never analytical coverage:
   `scripts/build-initial-plan.py` directly instead of spawning the initial
   Phase 3 `PLAN` agent. It deterministically emits `plan.md`,
   `packets/<WORK>.spec.tsv`, `packets/<WORK>-code.md`, and `briefs/<WORK>.md`
-  for the two independent generalist passes (`GSS` and `GAI`) plus any
+  for the two independent generalist passes (`GSS` and `GAI`), the always-run
+  `Holistic-and-polish thread` (`HOL`, when `topology.holistic_polish` is
+  true), plus any
   `<PREFIX> hard` specialist sweeps, attaching `mechanical-leads.md` to `GSS`
-  and `context.md` + `callers/dossiers/*.md` to `GAI`. Spawn `PLAN` only when
+  and `HOL`, and `context.md` + `callers/dossiers/*.md` to `GAI`. Spawn `PLAN` only when
   sharding is needed or when `GSS`/`GAI` escalate a round-two specialist probe
   or sweep.
 - When a fresh `indexes/candidates.tsv` has zero rows and Collection passed, write the

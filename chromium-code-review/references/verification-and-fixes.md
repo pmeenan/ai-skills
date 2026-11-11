@@ -237,6 +237,25 @@ Sanity-check fixes against common Chromium edge cases:
   math.
 - Terminal or one-shot sentinel results (EOF, closed, cancelled, no more data)
   must not be masked by status predicates added before the operation runs.
+- **Never mask errors when coercing failure, close, or abort paths into
+  success:** Never propose or endorse a fix that overrides, suppresses, or maps
+  an `error` parameter, failure status, or teardown/close signal to a success or
+  normal-completion result (`OK`, `0`/EOF, `kSuccess`, `true`, `base::ok()`, or
+  a fallback value) based solely on a state or completion predicate
+  (`IsDone*()`, `IsComplete*()`, `is_finished_`, etc.) without tracing and
+  proving **both**:
+  1. *Predicate truth value on error and abort paths:* Inspect every
+     implementation and assignment of the completion predicate to verify whether
+     malformed input, parse/validation failure, cancellation, or protocol reset
+     can also leave that predicate `true` (parsers, sequencers, and state
+     machines frequently mark a phase or stream "done/consumed" when aborting on
+     invalid input before closing).
+  2. *Explicit clean-status precondition:* Any conversion of an error, close, or
+     teardown path into normal completion must explicitly require that all
+     relevant operation, stream, and session/connection error states are clean
+     (no latched error code), so real failures are passed through to the caller
+     rather than silently converted into success. Require a unit test for the
+     error-propagation path alongside the clean-completion path.
 - Compile-time gate polarity: when a fix adds or edits `#if`,
   `#if defined(...)`, or `#if !defined(...)` gates — especially snippets
   suggested in review — re-verify branch polarity against the feature name,
@@ -444,7 +463,13 @@ Use these drills to fill the row:
 - For async operations, trace the ownership of the pending operation, the
   cancellation/reset/destruction path, and the callback completion contract.
   A local waiter fix is insufficient if the operation itself can still drop,
-  duplicate, or reorder completion. When a fix threads an async result struct
+  duplicate, or reorder completion. When proposing a fix in a close, abort, or
+  error-propagation helper, never override an error status with `OK` or normal
+  completion based solely on a completion predicate (`IsDone*()`,
+  `IsComplete*()`, etc.) without proving that the predicate cannot become `true`
+  on malformed-input, parse, or protocol-error paths and explicitly requiring
+  that stored operation, stream, and session error codes are clean. When a fix
+  threads an async result struct
   across `PostTaskAndReplyWithResult` or `SequenceBound::AsyncCall(...).Then(...)`
   into a `WeakPtr`-guarded callback, verify that every resource on the reply
   struct (such as `scoped_refptr`, `std::unique_ptr`, file descriptors, or Mojo

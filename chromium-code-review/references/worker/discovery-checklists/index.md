@@ -17,6 +17,6 @@ preamble, so its rules travel with every section.
 | State, Persistence, And Cache | state-persistence-and-cache.md | 86 |
 | Integration And Feature Control | integration-and-feature-control.md | 78 |
 | Security And Trust Boundaries | security-and-trust-boundaries.md | 42 |
-| Contracts And API Shape | contracts-and-api-shape.md | 91 |
-| Tests As Specifications | tests-as-specifications.md | 84 |
-| Changed-Lines Polish | changed-lines-polish.md | 110 |
+| Contracts And API Shape | contracts-and-api-shape.md | 117 |
+| Tests As Specifications | tests-as-specifications.md | 96 |
+| Changed-Lines Polish | changed-lines-polish.md | 191 |

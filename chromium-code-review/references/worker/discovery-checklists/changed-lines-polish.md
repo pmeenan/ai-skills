@@ -36,6 +36,26 @@ dropping them from an otherwise-LGTM review.
 - Limit style, formatting, and consistency nits to lines modified by the CL.
   If a correctness issue depends on unchanged code, explain how the CL made
   that code relevant to the review.
+- **Runtime `//styleguide/` pass (`callers/styleguides.md`):** Iterate through
+  every runtime-discovered `//styleguide/` document in `callers/styleguides.md`
+  (matched by `build-caller-index.py` from `styleguide/**/*.md` in the pinned
+  worktree based on the changed files' languages and paths — e.g.,
+  `//styleguide/styleguide.md`, `//styleguide/inclusive_code.md`, and the
+  language-specific guides such as `//styleguide/c++/*.md`,
+  `//styleguide/java/*.md`, `//styleguide/web/*.md`, `//styleguide/python/*.md`,
+  `//styleguide/rust/*.md`). For each discovered styleguide:
+  - Audit all newly added or modified lines in both production and test files
+    against the guide's sections (reading the full worktree file when a section
+    in `callers/styleguides.md` is truncated and relevant to constructs in the
+    diff). Do not excuse violations in newly added production or test lines just
+    because they were copy-pasted from older neighboring functions or tests;
+    authoritative `//styleguide/` guidance supersedes legacy local patterns on
+    added lines.
+  - Emit one compliance-matrix row per discovered styleguide file
+    (`Styleguide: //styleguide/<path>`) citing concrete `path:line` evidence
+    (or `N/A — <reason>` with the primary changed `path:line` when none of that
+    guide's constructs appear in the diff), and emit a candidate row citing the
+    exact `//styleguide/<path>` rule for any violation found.
 - Re-run the scope-relevance check on each hunk (cross-checking `context.md`
   `Description-to-code alignment` and `Scope relevance` plus `inventory.md`
   `defensive hardening` / `opportunistic cleanup` labels): is this changed line
@@ -69,7 +89,42 @@ dropping them from an otherwise-LGTM review.
   test-only introspection helpers, ask whether the name alone explains the
   invariant. If not, request a brief comment naming what the field means and
   what invalidates or owns it. Prefer a comment on the state group over
-  scattered comments when several fields form one invariant.
+  scattered comments when several fields form one invariant. A new field
+  slipped under an existing comment that describes only its neighbor (for
+  example a new `foo_deferred_` directly beneath `// Whether foo was
+  generated.`) is undocumented, not grouped — the neighbor's comment does not
+  cover the new lifecycle.
+- Enumerate every method newly declared in a changed header — public,
+  protected, private, and overrides of a new or changed interface — and ask
+  whether its name and signature alone convey its contract. Request a concise
+  declaration comment (Google C++ Style "Function Comments") when the method
+  filters or ignores some inputs, is idempotent or one-shot, must be called in
+  a particular order or state, or has side effects the name does not state.
+  Trivial accessors and overrides of an already-documented base method need
+  none.
+- For every method newly defined out of line in a `.cc`, compare its position
+  with its declaration order in the matching `.h`. New definitions should sit
+  between the definitions of their declared neighbors. This is a widely
+  applied Chromium review convention (and an in-tree rule in the internal
+  code-review rule catalog), so report a deviation as an optional P3 nit.
+  Pre-existing disorder elsewhere in the file does not excuse the new code;
+  it only lowers the severity floor — note it in the comment rather than
+  dropping the candidate.
+- Scan new `auto` declarations. Google C++ Style permits `auto` when the type
+  is obvious from context (`std::make_unique<T>()`, casts, iterators, long
+  template types spelled on the right-hand side) or genuinely irrelevant. When
+  the right-hand side is a call whose return type a reader cannot see — in
+  particular smart/weak pointers, `std::optional`, `base::expected`, or
+  containers returned from helpers — request the explicit type.
+- For comments on base classes, shared interfaces, and other foundational
+  APIs, check that the contract is phrased in the layer's own terms. A base
+  interface comment that names one current downstream consumer ("until the
+  CDT wrapper finishes", "called by FooService") couples the contract to that
+  consumer; suggest generic wording with the consumer as an example.
+- Commit message prose: besides the mechanical 72-column scan, check that the
+  description is in complete sentences, that scope statements ("X is out of
+  scope") are sentences rather than fragments, and that the description still
+  matches the final patchset after revisions.
 - Treat boolean naming as a convention lead, not a repository-wide rule.
   Predicate prefixes such as `is_`, `has_`, and `should_` are not universal
   Chromium requirements, and Blink/WebKit guidance does not automatically
@@ -137,3 +192,29 @@ dropping them from an otherwise-LGTM review.
   symbol names and non-overlapping per-file hunks — judged by inspection
   against the file contents, never by applying or compiling it. Suggested
   patches live in the review text; the checkout stays read-only.
+
+### Test-code hygiene (changed test lines)
+
+Test code is reviewed code. Run these on every added or modified test line;
+real hits are optional P3 polish, not blocking.
+
+- **Matchers over boolean collapse.** An assertion that reduces a container or
+  comparison to a bool discards the values on failure. Flag
+  `EXPECT_TRUE(x.empty())` → `EXPECT_THAT(x, testing::IsEmpty())`,
+  `EXPECT_EQ(x.size(), N)` → `testing::SizeIs(N)` / `ElementsAre(...)`,
+  `EXPECT_TRUE(a == b)` → `EXPECT_EQ(a, b)`,
+  `EXPECT_TRUE(base::Contains(c, v))` → `testing::Contains(v)`, and
+  `EXPECT_TRUE(opt.has_value())` followed by a value check →
+  `testing::Optional(...)`. Name every occurrence (file:line list) in one
+  candidate rather than one candidate per line.
+- **Direct includes in tests.** Tests using gMock matchers or `EXPECT_THAT`
+  include `testing/gmock/include/gmock/gmock.h`; tests naming `net::OK` /
+  `net::ERR_*` include `net/base/net_errors.h`; the same holds for every
+  other test helper. A transitive include through a test-util header does not
+  count.
+- **Duplicated setup.** When two or more new tests in one fixture repeat the
+  same multi-line setup (mock sockets, session, transaction start), suggest a
+  fixture helper, keeping scenario-specific values visible at the call site
+  (DAMP, not DRY: extract boilerplate, not the behavior under test).
+- **Test descriptions.** New tests carry a short comment stating the behavior
+  they verify, unless the name already says it.

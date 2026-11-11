@@ -46,7 +46,18 @@ splits. When building discovery briefs for these generalist passes with
 for `Generalist Adversarial And Integration Discovery` (or the primary
 matching checklist file under `worker/discovery-checklists/`). A zero-edge inventory instead uses one unsharded `graph:none` row per
 pass; all ten assessments must be `low` with cited counterevidence, because a
-higher likelihood proves the inventory omitted an edge. Append routed rows
+higher likelihood proves the inventory omitted an edge.
+
+**Always plan the `Holistic-and-polish thread` (`HOL`) alongside the two
+generalists** whenever `profile.json` sets `topology.holistic_polish: true`
+(every non-collapsed schema-3 profile): `status: spawn`, `tier: standard`,
+batch `D01`, scope `graph:all-inventory-edges` (or `graph:none` for a
+zero-edge inventory), Procedure
+`worker/discovery-checklists/changed-lines-polish.md`. It is not graph-routed
+and needs no trigger row. In a collapsed topology the single discovery thread
+also names `changed-lines-polish.md` in its Procedure.
+
+Append routed rows
 under `## Graph routing continuation — PLAN attempt <N>` and cite
 `graph:<edge-id(s)>` in every
 scope. The following list is the catalog for schema 3 and the mandatory legacy
@@ -95,13 +106,16 @@ specialist roster (added only via graph routing):
 
 Assign each `spawn` row a model tier per the Model Tiers contract in
 `references/scaling-and-indexes.md`: default `frontier` for every
-trace-reasoning thread; downgrade to `standard` only for Mechanical Leads and
-Changed-Lines Polish, whose checks are predominantly enumeration. Tests As
+trace-reasoning thread; downgrade to `standard` only for Mechanical Leads,
+Changed-Lines Polish, and the schema-3 `Holistic-and-polish thread`, whose
+checks are predominantly enumeration and whose every candidate still passes a
+`frontier` skeptic, which filters standard-tier over-reporting. Tests As
 Specifications (does the test fail against parent behavior for the intended
 reason), Build API And Generated Assets (ABI, lifetime, and downstream
 migration reasoning), Accessibility And Internationalization (dynamic
-behavior), and the holistic thread (bug alignment and performance judgment)
-all carry semantic analysis and stay `frontier`. No discovery thread is ever
+behavior), and the legacy-roster holistic thread (bug alignment and
+performance judgment) all carry semantic analysis and stay `frontier`; under
+schema 3 that judgment is shared with `GAI`'s description-alignment audit. No discovery thread is ever
 `mechanical`. When in doubt, `frontier`.
 
 **Residue-scoped planning for proven-mechanical bulk changes is two planning

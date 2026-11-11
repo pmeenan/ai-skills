@@ -63,7 +63,14 @@ changed surface.
   temporal orderings**: (`B` becomes true, then `A` occurs) **and** (`A`
   occurs while `B` is false so the fast path skips work, and `B` transitions
   to true afterward) — not only static cases where `B` is already true or
-  permanently false when `A` runs.
+  permanently false when `A` runs. Likewise, when a CL adds or modifies a
+  conditional guard `if (A && B)` in a function, trace existing and new unit
+  tests through that exact function to verify that **both truth outcomes (`true`
+  and `false`) of the modified guard** are exercised inside that function. Never
+  assume an older test covers the `true` branch in that function without
+  verifying that `A` and `B` actually hold at the moment the older test enters
+  that function (existing tests often enter the function at an earlier lifecycle
+  step where `A` is still `false`, leaving the `true` branch unexercised).
 - For each important test: would it fail without the claimed fix? Does it
   exercise the edge case named by its name or comment, or merely codify the
   current implementation? Trace the test's control flow and assertions
@@ -100,11 +107,16 @@ changed surface.
   them. If the guard is reachable, ask for the smallest public-API test that
   hits it; if it is not, ask whether the defensive branch should be removed
   or justified.
-- Mutation probe: pick the three most critical conditionals in the diff,
-  mentally flip each (`<` ↔ `<=`, `&&` ↔ `||`, invert the condition), and
-  name the existing test that would fail. If no test fails for a flip, the
-  suite does not specify that branch's behavior — file a coverage candidate
-  for it.
+- Mutation probe (operator flip AND guarded side-effect deletion): pick the
+  three most critical conditionals in the diff, mentally flip each (`<` ↔ `<=`,
+  `&&` ↔ `||`, invert the condition) **and** mentally replace each guarded
+  block (`if (cond) { side_effect(); }`) with a no-op (`if (false)`), then name
+  the existing test that would fail for each mutation. If replacing `if (cond)
+  { side_effect(); }` with `if (false)` still leaves all tests passing —
+  because tests only assert a high-level completion predicate already satisfied
+  upstream rather than asserting `side_effect()`'s specific observable state
+  transition — file a coverage candidate asking to assert the guarded side
+  effect and cover the missing branch.
 
 Example pattern: the fixture sets `is_compressed = true` directly while
 production derives it from `Content-Encoding` parsing. Every test passes, and

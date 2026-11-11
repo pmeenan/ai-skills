@@ -1034,8 +1034,10 @@ inventory trigger-scope rows, and ⟨review-dir⟩/context.md.
 
 Procedure: read
 ⟨skill-dir⟩/references/worker/verification-and-fixes/root-cause-layering-and-fix-optimality.md
-and execute it fully — every layer
-walk and drill — for each complete family in your batch. Produce a
+and
+⟨skill-dir⟩/references/worker/verification-and-fixes/evaluating-fixes.md,
+and execute them fully — every layer
+walk, edge-case trace, and drill — for each complete family in your batch. Produce a
 State × Method matrix when protocol state is involved, explain excluded
 nearby methods, select one fix layer and comment count for the family, and
 make the required Suggested-edit decision. For an applicable edit, re-read the

@@ -36,4 +36,5 @@ roster**, copied verbatim with one line each — never derived from memory:
   Accessibility And Internationalization, Network Semantics,
   Fuzzing And Test Strategy, In-Tree Code Review (when `profile.json` sets
   `internal_code_review.available: true`).
-- Always: the holistic thread.
+- Always: the holistic thread (`Holistic-and-polish thread`, `HOL`) — in both
+  the legacy roster and schema 3.

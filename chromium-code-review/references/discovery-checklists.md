@@ -566,6 +566,25 @@ trusted; the candidate stands unless the browser-side range check exists.
   Trace every existing caller at the moment the helper is entered, and the
   helper's side effects (forced success, cleanup, callback state) on the new
   path.
+- **Error suppression and failure-to-success coercion:** Whenever added or
+  modified code converts, overrides, or ignores an error parameter, failure
+  status, or abort/close signal in favor of a success or normal-completion
+  result (`OK`, `0`/EOF, `kSuccess`, `true`, `base::ok()`, or a default value)
+  based on a state or progress predicate (`IsDone*()`, `IsComplete*()`,
+  `is_finished_`, etc.):
+  1. *Lossy "done" predicates on error paths:* Do not assume a "done",
+     "finished", or "consumed" predicate means "succeeded without error."
+     Parsers, sequencers, and state machines frequently mark a phase or input
+     stream "done/consumed" on terminal parse, validation, or protocol errors as
+     well as on clean completion. Trace every implementation and assignment of
+     the predicate to verify whether error or abort paths can also leave it
+     `true`.
+  2. *Explicit no-error precondition:* Verify that any branch converting an
+     error, close, or teardown path into normal completion explicitly checks
+     that no operation-, stream-, or session-level error was latched before
+     reporting success, so real failures are propagated to the caller rather
+     than silently swallowed. Emit a candidate whenever an error-handling or
+     close path can coerce a latched failure into `OK`.
 - **Sibling Interface Implementation Comparison:** When a CL implements a
   standard Mojo interface, `content/` delegate, or storage/network backend
   method that already has a canonical sibling implementation in the same layer
@@ -639,7 +658,14 @@ changed surface.
   temporal orderings**: (`B` becomes true, then `A` occurs) **and** (`A`
   occurs while `B` is false so the fast path skips work, and `B` transitions
   to true afterward) — not only static cases where `B` is already true or
-  permanently false when `A` runs.
+  permanently false when `A` runs. Likewise, when a CL adds or modifies a
+  conditional guard `if (A && B)` in a function, trace existing and new unit
+  tests through that exact function to verify that **both truth outcomes (`true`
+  and `false`) of the modified guard** are exercised inside that function. Never
+  assume an older test covers the `true` branch in that function without
+  verifying that `A` and `B` actually hold at the moment the older test enters
+  that function (existing tests often enter the function at an earlier lifecycle
+  step where `A` is still `false`, leaving the `true` branch unexercised).
 - For each important test: would it fail without the claimed fix? Does it
   exercise the edge case named by its name or comment, or merely codify the
   current implementation? Trace the test's control flow and assertions
@@ -676,11 +702,16 @@ changed surface.
   them. If the guard is reachable, ask for the smallest public-API test that
   hits it; if it is not, ask whether the defensive branch should be removed
   or justified.
-- Mutation probe: pick the three most critical conditionals in the diff,
-  mentally flip each (`<` ↔ `<=`, `&&` ↔ `||`, invert the condition), and
-  name the existing test that would fail. If no test fails for a flip, the
-  suite does not specify that branch's behavior — file a coverage candidate
-  for it.
+- Mutation probe (operator flip AND guarded side-effect deletion): pick the
+  three most critical conditionals in the diff, mentally flip each (`<` ↔ `<=`,
+  `&&` ↔ `||`, invert the condition) **and** mentally replace each guarded
+  block (`if (cond) { side_effect(); }`) with a no-op (`if (false)`), then name
+  the existing test that would fail for each mutation. If replacing `if (cond)
+  { side_effect(); }` with `if (false)` still leaves all tests passing —
+  because tests only assert a high-level completion predicate already satisfied
+  upstream rather than asserting `side_effect()`'s specific observable state
+  transition — file a coverage candidate asking to assert the guarded side
+  effect and cover the missing branch.
 
 Example pattern: the fixture sets `is_compressed = true` directly while
 production derives it from `Content-Encoding` parsing. Every test passes, and
@@ -696,6 +727,26 @@ dropping them from an otherwise-LGTM review.
 - Limit style, formatting, and consistency nits to lines modified by the CL.
   If a correctness issue depends on unchanged code, explain how the CL made
   that code relevant to the review.
+- **Runtime `//styleguide/` pass (`callers/styleguides.md`):** Iterate through
+  every runtime-discovered `//styleguide/` document in `callers/styleguides.md`
+  (matched by `build-caller-index.py` from `styleguide/**/*.md` in the pinned
+  worktree based on the changed files' languages and paths — e.g.,
+  `//styleguide/styleguide.md`, `//styleguide/inclusive_code.md`, and the
+  language-specific guides such as `//styleguide/c++/*.md`,
+  `//styleguide/java/*.md`, `//styleguide/web/*.md`, `//styleguide/python/*.md`,
+  `//styleguide/rust/*.md`). For each discovered styleguide:
+  - Audit all newly added or modified lines in both production and test files
+    against the guide's sections (reading the full worktree file when a section
+    in `callers/styleguides.md` is truncated and relevant to constructs in the
+    diff). Do not excuse violations in newly added production or test lines just
+    because they were copy-pasted from older neighboring functions or tests;
+    authoritative `//styleguide/` guidance supersedes legacy local patterns on
+    added lines.
+  - Emit one compliance-matrix row per discovered styleguide file
+    (`Styleguide: //styleguide/<path>`) citing concrete `path:line` evidence
+    (or `N/A — <reason>` with the primary changed `path:line` when none of that
+    guide's constructs appear in the diff), and emit a candidate row citing the
+    exact `//styleguide/<path>` rule for any violation found.
 - Re-run the scope-relevance check on each hunk (cross-checking `context.md`
   `Description-to-code alignment` and `Scope relevance` plus `inventory.md`
   `defensive hardening` / `opportunistic cleanup` labels): is this changed line

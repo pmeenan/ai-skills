@@ -59,7 +59,8 @@ Rules:
   and verification skeptics are the last to downgrade.
 - **Floors are validated, not advisory.** The validator errors on any spawn
   row below its floor (`frontier` for every discovery thread except
-  Mechanical Leads and Changed-Lines Polish at `standard`; `mechanical`
+  Mechanical Leads, Changed-Lines Polish, and `Holistic-and-polish thread`
+  at `standard`; `mechanical`
   never), on any orchestration attempt whose recorded tier is below its
   plan row's tier, on any frontier-contract work kind (skeptic `V⟨n⟩`,
   `VTER`, root-cause `RC⟨n⟩`, challenge `CH*`, planning shards
