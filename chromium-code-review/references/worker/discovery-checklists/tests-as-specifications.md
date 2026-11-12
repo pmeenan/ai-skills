@@ -71,6 +71,12 @@ changed surface.
   verifying that `A` and `B` actually hold at the moment the older test enters
   that function (existing tests often enter the function at an earlier lifecycle
   step where `A` is still `false`, leaving the `true` branch unexercised).
+  Conversely, when a test is added to verify a specific sub-condition `B` in
+  `A && B` (or `A || B`), trace the test setup (including any synthetic fixture
+  helpers) to verify that `A` is actually `true` while `B` is `false` (or `A` is
+  `false` while `B` is `true` for `||`) when the guard runs — if a synthetic
+  helper bypasses the lower-layer path that sets `A = true`, `A && B`
+  short-circuits on `A == false` and the test passes even with `&& B` deleted.
 - For each important test: would it fail without the claimed fix? Does it
   exercise the edge case named by its name or comment, or merely codify the
   current implementation? Trace the test's control flow and assertions

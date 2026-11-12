@@ -18,5 +18,5 @@ preamble, so its rules travel with every section.
 | Integration And Feature Control | integration-and-feature-control.md | 78 |
 | Security And Trust Boundaries | security-and-trust-boundaries.md | 42 |
 | Contracts And API Shape | contracts-and-api-shape.md | 117 |
-| Tests As Specifications | tests-as-specifications.md | 96 |
+| Tests As Specifications | tests-as-specifications.md | 102 |
 | Changed-Lines Polish | changed-lines-polish.md | 191 |
