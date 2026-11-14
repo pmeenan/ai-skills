@@ -776,12 +776,18 @@ dropping them from an otherwise-LGTM review.
     destroy `this` synchronously (but actually defers destruction asynchronously
     via a posted task), check whether a brief comment is needed explaining why
     `this` remains alive after the call.
-- Check declaration placement in headers and class bodies. New methods should
-  preserve existing local grouping and should not split obvious pairs such as
-  getter/setter, start/stop, create/destroy, or URL/getter mutation methods
-  unless the new declaration logically belongs between them. New data members
-  should sit with the state they derive from or invalidate, not simply at the
-  first compiling location.
+- Check declaration placement in headers and class bodies, and parameter
+  ordering in constructors and functions. New methods should preserve existing
+  local grouping and should not split obvious pairs such as getter/setter,
+  start/stop, create/destroy, or URL/getter mutation methods unless the new
+  declaration logically belongs between them. New data members should sit with
+  the state they derive from or invalidate, not simply at the first compiling
+  location. When a new constructor or method parameter initializes a member
+  declared in a specific group (for example, a new `const bool` member placed
+  immediately after an existing `const bool connection_is_reused_`), check that
+  the parameter sits in the matching position in the parameter list rather than
+  tacked onto the end as a trailing default argument just to avoid updating
+  callers.
 - For newly added private members, caches, optional state, feature latches, and
   test-only introspection helpers, ask whether the name alone explains the
   invariant. If not, request a brief comment naming what the field means and
